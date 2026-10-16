@@ -723,3 +723,20 @@ fn reset_preferences_asks_first_and_keeps_the_windows_place(cx: &mut TestAppCont
         assert_eq!(prefs.window.as_ref().map(|window| window.x), Some(10.));
     });
 }
+
+#[gpui_kit::test]
+fn about_shows_the_version_license_and_what_the_app_includes(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, _) = open(cx, 1300.);
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(menus::About), cx)
+    });
+    act(cx, window, |window, _| {
+        assert!(window.try_find("about").is_some());
+        // The tests run without the built-in fonts.
+        assert!(window.try_find("credit-fonts").is_none());
+        assert!(window.try_find("credit-themes").is_some());
+        assert!(window.try_find("credit-icons").is_some());
+        assert!(window.try_find("source-link").is_some());
+    });
+}

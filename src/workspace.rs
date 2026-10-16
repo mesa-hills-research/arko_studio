@@ -17,7 +17,7 @@ use crate::settings_page::{CloseRequested, SettingsPage};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::title_bar::AppTitleBar;
 use crate::workers_panel::WorkersPanel;
-use crate::{chrome, menus, palette, shortcuts, status_bar};
+use crate::{about, chrome, menus, palette, shortcuts, status_bar};
 
 /// The narrowest and widest the workers panel docks, in rem.
 const MIN_PANEL_WIDTH: f32 = 16.;
@@ -590,13 +590,7 @@ impl Workspace {
     }
 
     fn about(&mut self, _: &menus::About, window: &mut Window, cx: &mut Context<Self>) {
-        window.open_alert_dialog(cx, |alert, _, _| {
-            alert.title(crate::APP_NAME).description(format!(
-                "Version {}\n{}",
-                env!("CARGO_PKG_VERSION"),
-                crate::COPYRIGHT
-            ))
-        });
+        about::open(window, cx);
     }
 
     fn set_view(&mut self, view: prefs::TranscriptView, cx: &mut Context<Self>) {

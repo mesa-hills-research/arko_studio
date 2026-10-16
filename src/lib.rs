@@ -4,6 +4,7 @@
 //! binary (`src/main.rs`) sets up logging, reads a [`Startup`] and opens the
 //! first window after [`init`].
 
+pub mod about;
 pub mod appearance;
 pub mod assets;
 pub mod backend;
