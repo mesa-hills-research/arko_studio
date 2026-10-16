@@ -982,15 +982,34 @@ impl Render for Sidebar {
                     .flex_none()
                     .p_2()
                     .gap_2()
+                    // Laid out as a row of the list, its icon in the
+                    // chevrons' place and its label where group names start.
                     .child(
-                        Button::new("new-session")
-                            .ghost()
-                            .small()
+                        h_flex()
+                            .id("new-session")
+                            .test_support()
+                            .role(Role::Button)
+                            .aria_label(SharedString::from("New session"))
+                            .h_7()
                             .w_full()
-                            .justify_start()
-                            .icon(IconName::Plus)
-                            .label("New session")
-                            .tooltip_with_action("New session", &NewSession, None)
+                            .px_2()
+                            .gap_1p5()
+                            .rounded(theme.radius)
+                            .border_1()
+                            .border_color(theme.transparent)
+                            .text_sm()
+                            .cursor_pointer()
+                            .hover(|this| {
+                                this.bg(theme.sidebar_accent.opacity(0.8))
+                                    .text_color(theme.sidebar_accent_foreground)
+                            })
+                            .child(Icon::new(IconName::Plus).xsmall())
+                            .child("New session")
+                            .tooltip(|window, cx| {
+                                Tooltip::new("New session")
+                                    .action(&NewSession, None)
+                                    .build(window, cx)
+                            })
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(NewSession), cx)
                             }),

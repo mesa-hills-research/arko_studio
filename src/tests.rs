@@ -474,3 +474,20 @@ fn the_status_bar_keeps_its_height_with_nothing_to_show(cx: &mut TestAppContext)
         assert_eq!(window.find("status-bar").bounds().size.height, px(28.));
     });
 }
+
+#[gpui_kit::test]
+fn new_session_lines_up_with_the_rows_below(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let row = row_of(&workspace, "Split the engine out of main.rs", cx);
+    act(cx, window, |window, cx| {
+        let button = window.find("new-session").bounds();
+        let group = window.find(("row", 0usize)).bounds();
+        assert_eq!(button.left(), group.left());
+        assert_eq!(button.size.width, group.size.width);
+        window.click(("row", row), cx);
+    });
+    assert!(open_title(&workspace, cx).is_some());
+    act(cx, window, |window, cx| window.click("new-session", cx));
+    assert_eq!(open_title(&workspace, cx), None);
+}
