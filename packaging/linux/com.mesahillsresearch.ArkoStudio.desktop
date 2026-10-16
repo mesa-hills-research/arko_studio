@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Arko Studio
+Exec=arko_studio
+Icon=com.mesahillsresearch.ArkoStudio
+Terminal=false
+Categories=Utility;
+StartupWMClass=com.mesahillsresearch.ArkoStudio
