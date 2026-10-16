@@ -30,6 +30,20 @@ in `src/backend.rs`, with a fixed set of sessions.
 
 Every change in behaviour comes with a test.
 
+### Screenshots
+
+On Linux, `tests/screenshots.rs` renders whole windows headlessly with Mesa's software Vulkan
+driver (lavapipe, `mesa-vulkan-drivers` on Ubuntu) in Work Sans and JetBrains Mono, and compares
+them with the PNG goldens in `tests/screenshots`. On a mismatch, the actual image and a diff go to
+`tests/screenshots/failures`. After a change that is meant to look different, check those images,
+then write the new goldens:
+
+```sh
+UPDATE_GOLDENS=1 cargo test --test screenshots
+```
+
+A commit that changes goldens says so in a `Goldens:` paragraph, with what changed in them.
+
 ## How the source is laid out
 
 | Path | What it holds |

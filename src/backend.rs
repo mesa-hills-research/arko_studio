@@ -229,7 +229,8 @@ impl FakeBackend {
     }
 
     /// A handful of sessions in two folders and two chats, one of them open
-    /// in the terminal, relative to `now`.
+    /// in the terminal, all active in the week before `now`, so the sidebar
+    /// shows the same times on any day.
     pub fn sample(root: impl Into<PathBuf>, now: SystemTime) -> Self {
         let ago = |minutes: u64| now - Duration::from_secs(minutes * 60);
         let agent = |id: &str, title: &str, folder: &str, minutes: u64| SessionEntry {
@@ -273,7 +274,7 @@ impl FakeBackend {
                 "Variable fonts and the wght axis",
                 90,
             ),
-            chat("20261009-120000-c9d0", "Naming a desktop app", 60 * 24 * 7),
+            chat("20261011-120000-c9d0", "Naming a desktop app", 60 * 24 * 5),
         ];
         sessions[1].conversations = vec![
             ConversationEntry {
