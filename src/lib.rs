@@ -38,6 +38,7 @@ use std::thread::JoinHandle;
 use gpui_kit::component::ThemeConfig;
 use gpui_kit::{App, QuitMode};
 
+use crate::appearance::ThemesFolder;
 use crate::backend::{Backend, FakeBackend, SharedBackend};
 use crate::prefs::{Prefs, PrefsStore};
 
@@ -61,7 +62,7 @@ pub struct Startup {
     /// The user's home folder.
     home: Option<PathBuf>,
     /// The user's themes, watched while the app runs.
-    themes_folder: Option<PathBuf>,
+    themes_folder: Option<ThemesFolder>,
 }
 
 enum Themes {
@@ -95,7 +96,7 @@ impl Startup {
             added_fonts,
             backend,
             home: session_view::home_from_env(),
-            themes_folder: Some(paths::themes_folder(&arko)),
+            themes_folder: Some(ThemesFolder::Watch(paths::themes_folder(&arko))),
         }
     }
 
@@ -121,9 +122,9 @@ impl Startup {
         self
     }
 
-    /// Reads and watches the user's themes in `folder`.
+    /// Reads the user's themes in `folder`, once.
     pub fn with_themes_folder(mut self, folder: PathBuf) -> Self {
-        self.themes_folder = Some(folder);
+        self.themes_folder = Some(ThemesFolder::ReadOnce(folder));
         self
     }
 

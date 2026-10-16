@@ -94,9 +94,17 @@ struct Applied {
 
 impl Global for Applied {}
 
-/// Registers the bundled themes, watches the user's `themes_folder` when
+/// Where the user's themes are, and whether to watch them.
+pub enum ThemesFolder {
+    /// Read now and again whenever a file in it changes.
+    Watch(PathBuf),
+    /// Read once: for tests, whose executor rejects the watcher's thread.
+    ReadOnce(PathBuf),
+}
+
+/// Registers the bundled themes and the user's in `themes_folder` when
 /// given, and applies the preferences, then follows their changes.
-pub fn init(themes: Vec<ThemeConfig>, themes_folder: Option<PathBuf>, cx: &mut App) {
+pub fn init(themes: Vec<ThemeConfig>, themes_folder: Option<ThemesFolder>, cx: &mut App) {
     let registry = ThemeRegistry::global_mut(cx);
     let kit_defaults = vec![
         registry.default_light_theme().clone(),
@@ -115,10 +123,14 @@ pub fn init(themes: Vec<ThemeConfig>, themes_folder: Option<PathBuf>, cx: &mut A
     cx.observe_global::<PrefsStore>(apply).detach();
     // A theme file that changes in the folder may be the one in force.
     cx.observe_global::<ThemeRegistry>(apply).detach();
-    if let Some(folder) = themes_folder
-        && let Err(error) = ThemeRegistry::watch_dir(folder, cx, apply)
-    {
-        tracing::error!("couldn't read the themes folder: {error}");
+    match themes_folder {
+        Some(ThemesFolder::Watch(folder)) => {
+            if let Err(error) = ThemeRegistry::watch_dir(folder, cx, apply) {
+                tracing::error!("couldn't watch the themes folder: {error}");
+            }
+        }
+        Some(ThemesFolder::ReadOnce(folder)) => ThemeRegistry::load_dir(folder, cx, apply),
+        None => {}
     }
 }
 

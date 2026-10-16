@@ -770,3 +770,34 @@ fn about_shows_the_version_license_and_what_the_app_includes(cx: &mut TestAppCon
         assert!(window.try_find("source-link").is_some());
     });
 }
+
+#[gpui_kit::test]
+fn a_theme_in_the_themes_folder_replaces_the_bundled_one(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(
+        folder.path().join("mine.json"),
+        r#"{ "name": "Mine", "themes": [
+            { "name": "MACOS CLASSIC LIGHT", "mode": "light", "radius": 13 },
+            { "name": "Mine Dark", "mode": "dark" }
+        ] }"#,
+    )
+    .unwrap();
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let mut settings = prefs::Prefs::default();
+    settings.appearance.theme_mode = ThemeMode::Light;
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_themes_folder(folder.path().to_path_buf());
+    cx.update(|cx| crate::init(startup, cx));
+    // The folder is read on a background thread.
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| Theme::global(cx).radius), px(13.));
+    let dark = cx.read(|cx| crate::appearance::theme_names(true, cx));
+    assert!(dark.iter().any(|name| name == "Mine Dark"));
+    let light = cx.read(|cx| crate::appearance::theme_names(false, cx));
+    let same = light
+        .iter()
+        .filter(|name| name.eq_ignore_ascii_case(prefs::DEFAULT_LIGHT_THEME))
+        .count();
+    assert_eq!(same, 1, "replaced, not listed twice");
+}
