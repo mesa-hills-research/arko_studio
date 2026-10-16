@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui_kit::component::input::{Textarea, TextareaState};
+use gpui_kit::component::input::{Keymap, Textarea, TextareaState};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _, Toggle, ToggleGroup},
@@ -44,16 +44,33 @@ pub struct SessionView {
     composer: Entity<TextareaState>,
     width: WidthClass,
     _model: Task<()>,
+    _prefs: Subscription,
 }
 
 impl SessionView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let smooth = prefs::get(cx).input.smooth_typing;
+        let input = prefs::get(cx).input.clone();
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 10)
                 .placeholder("Message Arko")
-                .smooth_caret(smooth)
+                .smooth_caret(input.smooth_typing)
+                .keymap(text_keymap(input.keymap))
+        });
+        // The composer follows Settings > Input as it changes. Send key, spell
+        // check and word suggestions wait for GPUI Kit's writing tools
+        // (PENDING(K1)): Settings shows them unavailable until then.
+        let prefs = cx.observe_global::<prefs::PrefsStore>(|this, cx| {
+            let input = prefs::get(cx).input.clone();
+            this.composer.update(cx, |composer, cx| {
+                if composer.has_smooth_caret() != input.smooth_typing {
+                    composer.set_smooth_caret(input.smooth_typing, cx);
+                }
+                let keymap = text_keymap(input.keymap);
+                if composer.current_keymap() != keymap {
+                    composer.set_keymap(keymap, cx);
+                }
+            });
         });
         let backend = cx.global::<SharedBackend>().clone();
         let model = cx.background_spawn(async move { backend.default_model() });
@@ -77,6 +94,7 @@ impl SessionView {
             composer,
             width: WidthClass::Wide,
             _model: model,
+            _prefs: prefs,
         }
     }
 
@@ -358,6 +376,15 @@ impl SessionView {
                             .on_click(|_, window, cx| not_yet("Sending", window, cx)),
                     ),
             )
+    }
+}
+
+/// GPUI Kit's keybinding scheme for the composer.
+fn text_keymap(keymap: prefs::Keymap) -> Keymap {
+    match keymap {
+        prefs::Keymap::Standard => Keymap::Cua,
+        prefs::Keymap::Emacs => Keymap::Emacs,
+        prefs::Keymap::Vim => Keymap::Vim,
     }
 }
 

@@ -501,7 +501,6 @@ fn switch(
 /// A dropdown bound to a preference with a few named values.
 fn choice<T: Copy + PartialEq + 'static>(
     title: &'static str,
-    description: &'static str,
     options: &'static [(T, &'static str)],
     get: fn(&prefs::Prefs) -> T,
     set: fn(&mut prefs::Prefs, T),
@@ -531,7 +530,6 @@ fn choice<T: Copy + PartialEq + 'static>(
         )
         .default_value(label(default)),
     )
-    .description(description)
 }
 
 fn zoom_label(zoom: f32) -> SharedString {
@@ -573,18 +571,30 @@ fn send_key_options() -> &'static [(SendKey, &'static str)] {
     }
 }
 
+/// Says why a setting can't be changed yet, after what it does.
+fn pending(item: SettingItem, description: &str) -> SettingItem {
+    item.description(format!("{description} Not available yet."))
+        .disabled(true)
+}
+
 fn input_page() -> SettingPage {
     let defaults = prefs::Input::default();
+    // PENDING(K1): send key, spell check and word suggestions come with GPUI
+    // Kit's writing tools (the composer's submit key, the spell checker and
+    // the word list), and pasting as a token with the composer's tokens.
+    // Until then they show what they'll do, unavailable.
     SettingPage::new(PAGES[1])
         .icon(IconName::ALargeSmall)
         .groups([
-            SettingGroup::new().title("Sending").item(choice(
-                "Send key",
+            SettingGroup::new().title("Sending").item(pending(
+                choice(
+                    "Send key",
+                    send_key_options(),
+                    |prefs| prefs.input.send_key,
+                    |prefs, key| prefs.input.send_key = key,
+                    defaults.send_key,
+                ),
                 "The key that sends a message. The other one adds a line.",
-                send_key_options(),
-                |prefs| prefs.input.send_key,
-                |prefs, key| prefs.input.send_key = key,
-                defaults.send_key,
             )),
             SettingGroup::new().title("Typing").items([
                 switch(
@@ -594,28 +604,32 @@ fn input_page() -> SettingPage {
                     |prefs, on| prefs.input.smooth_typing = on,
                     defaults.smooth_typing,
                 ),
-                switch(
-                    "Spell check",
+                pending(
+                    switch(
+                        "Spell check",
+                        "",
+                        |prefs| prefs.input.spell_check,
+                        |prefs, on| prefs.input.spell_check = on,
+                        defaults.spell_check,
+                    ),
                     "Underlines misspelled words (English).",
-                    |prefs| prefs.input.spell_check,
-                    |prefs, on| prefs.input.spell_check = on,
-                    defaults.spell_check,
                 ),
-                choice(
-                    "Word suggestions",
+                pending(
+                    choice(
+                        "Word suggestions",
+                        &[
+                            (Suggestions::Off, "Off"),
+                            (Suggestions::Quiet, "Quiet"),
+                            (Suggestions::Eager, "Eager"),
+                        ],
+                        |prefs| prefs.input.suggestions,
+                        |prefs, value| prefs.input.suggestions = value,
+                        defaults.suggestions,
+                    ),
                     "Completes words you’ve typed before. Tab accepts.",
-                    &[
-                        (Suggestions::Off, "Off"),
-                        (Suggestions::Quiet, "Quiet"),
-                        (Suggestions::Eager, "Eager"),
-                    ],
-                    |prefs| prefs.input.suggestions,
-                    |prefs, value| prefs.input.suggestions = value,
-                    defaults.suggestions,
                 ),
                 choice(
                     "Keybindings",
-                    "How the composer’s keys move and edit.",
                     &[
                         (Keymap::Standard, "Standard"),
                         (Keymap::Emacs, "Emacs"),
@@ -624,9 +638,12 @@ fn input_page() -> SettingPage {
                     |prefs| prefs.input.keymap,
                     |prefs, value| prefs.input.keymap = value,
                     defaults.keymap,
+                )
+                .description(
+                    "How the composer’s keys move and edit: your platform’s, Emacs’s or Vim’s.",
                 ),
             ]),
-            SettingGroup::new().title("Pasting").item(
+            SettingGroup::new().title("Pasting").item(pending(
                 SettingItem::new(
                     "Paste as a token",
                     SettingField::number_input(
@@ -644,9 +661,9 @@ fn input_page() -> SettingPage {
                         },
                     )
                     .default_value(defaults.paste_token_lines as f64),
-                )
-                .description("Pastes longer than this many lines become one token you can open."),
-            ),
+                ),
+                "Pastes longer than this many lines become one token you can open.",
+            )),
         ])
 }
 

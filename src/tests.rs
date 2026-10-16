@@ -653,3 +653,73 @@ fn the_shortcuts_sheet_opens_on_mod_slash_and_searches(cx: &mut TestAppContext) 
         assert!(window.try_find(("shortcut", stop)).is_none());
     });
 }
+
+#[gpui_kit::test]
+fn the_composer_follows_smooth_typing_and_keybindings(cx: &mut TestAppContext) {
+    start(cx);
+    let (_, workspace) = open(cx, 1300.);
+    let composer = cx.read(|cx| {
+        workspace
+            .read(cx)
+            .session_view()
+            .read(cx)
+            .composer()
+            .clone()
+    });
+    assert!(cx.read(|cx| composer.read(cx).has_smooth_caret()));
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.input.smooth_typing = false;
+            prefs.input.keymap = prefs::Keymap::Emacs;
+        })
+    });
+    assert!(!cx.read(|cx| composer.read(cx).has_smooth_caret()));
+    assert_eq!(
+        cx.read(|cx| composer.read(cx).current_keymap()),
+        gpui_kit::component::input::Keymap::Emacs
+    );
+}
+
+#[gpui_kit::test]
+fn reset_preferences_asks_first_and_keeps_the_windows_place(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.appearance.zoom = 1.5;
+            prefs.input.keymap = prefs::Keymap::Vim;
+            prefs.window = Some(prefs::WindowPlacement {
+                x: 10.,
+                y: 20.,
+                width: 1300.,
+                height: 720.,
+                maximized: false,
+            });
+        })
+    });
+    act(cx, window, |window, cx| window.press("secondary-,", cx));
+    cx.update(|cx| {
+        let settings = workspace.read(cx).settings().unwrap().clone();
+        settings.update(cx, |settings, cx| settings.show_page(7, cx));
+    });
+    act(cx, window, |window, cx| {
+        // Advanced's first buttons show. Reset sits lower, under the fold of
+        // the test's window, so its action goes in as its button sends it.
+        assert!(window.try_find("open-data").is_some());
+        window.dispatch_action(Box::new(crate::settings_page::ResetPreferences), cx);
+    });
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).appearance.zoom),
+        1.5,
+        "asks first"
+    );
+    act(cx, window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    cx.read(|cx| {
+        let prefs = prefs::get(cx);
+        assert_eq!(prefs.appearance.zoom, 1.0);
+        assert_eq!(prefs.input.keymap, prefs::Keymap::Standard);
+        assert_eq!(prefs.window.as_ref().map(|window| window.x), Some(10.));
+    });
+}
