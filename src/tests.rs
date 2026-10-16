@@ -801,3 +801,15 @@ fn a_theme_in_the_themes_folder_replaces_the_bundled_one(cx: &mut TestAppContext
         .count();
     assert_eq!(same, 1, "replaced, not listed twice");
 }
+
+#[gpui_kit::test]
+fn the_font_pickers_offer_only_what_the_settings_keep(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, _) = open(cx, 1300.);
+    act(cx, window, |window, cx| window.press("secondary-,", cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("settings-page").is_some());
+        // A family and a size: no weight, line height or features.
+        assert!(window.try_find("font-picker-weight").is_none());
+    });
+}

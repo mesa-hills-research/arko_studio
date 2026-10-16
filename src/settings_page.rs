@@ -391,10 +391,10 @@ impl SettingsPage {
                 ]),
                 SettingGroup::new()
                     .title("Interface font")
-                    .item(SettingItem::render(move |_, _, _| FontPicker::new(&ui_font).compact()).keywords(["font", "typeface", "size"])),
+                    .item(SettingItem::render(move |_, _, _| FontPicker::new(&ui_font).compact().show_weight(false).show_line_height(false).show_features(false)).keywords(["font", "typeface", "size"])),
                 SettingGroup::new()
                     .title("Code font")
-                    .item(SettingItem::render(move |_, _, _| FontPicker::new(&code_font).compact()).keywords(["font", "monospace", "size"])),
+                    .item(SettingItem::render(move |_, _, _| FontPicker::new(&code_font).compact().show_weight(false).show_line_height(false).show_features(false)).keywords(["font", "monospace", "size"])),
                 SettingGroup::new().title("Size").items([
                     SettingItem::new(
                         "Add font file…",
