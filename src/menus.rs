@@ -76,7 +76,9 @@ pub fn init(cx: &mut App) {
         cx.open_with_system(&root);
     });
 
-    cx.bind_keys(bindings());
+    // Windows and Linux close windows with Alt+F4 through the system, which
+    // runs the close check.
+    cx.bind_keys(crate::commands::key_bindings());
     set_menus(cx);
     // The menus show the sidebar's and the panel's state, so they follow it.
     cx.observe_global::<prefs::PrefsStore>(|cx| {
@@ -87,42 +89,9 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
-/// The key bindings. Windows and Linux close windows with Alt+F4 through the
-/// system, which runs the close check.
-fn bindings() -> Vec<KeyBinding> {
-    vec![
-        KeyBinding::new("secondary-q", Quit, None),
-        KeyBinding::new("secondary-,", OpenSettings, None),
-        KeyBinding::new("secondary-n", NewSession, None),
-        KeyBinding::new("secondary-shift-n", NewWindow, None),
-        KeyBinding::new("secondary-f", Find, None),
-        KeyBinding::new("secondary-\\", ToggleSidebar, None),
-        KeyBinding::new("secondary-shift-\\", ToggleWorkersPanel, None),
-        KeyBinding::new("secondary-p", FocusSessionFilter, None),
-        KeyBinding::new("secondary-shift-p", CommandPalette, None),
-        KeyBinding::new("secondary-shift-o", CycleView, None),
-        KeyBinding::new("secondary-=", ZoomIn, None),
-        KeyBinding::new("secondary-+", ZoomIn, None),
-        KeyBinding::new("secondary--", ZoomOut, None),
-        KeyBinding::new("secondary-0", ResetZoom, None),
-        KeyBinding::new("secondary-.", StopTurn, None),
-        KeyBinding::new("ctrl-b", MoveToBackground, None),
-        KeyBinding::new("secondary-shift-e", ExpandComposer, None),
-        KeyBinding::new("secondary-/", KeyboardShortcuts, None),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-w", CloseWindow, None),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-m", Minimize, None),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-h", Hide, None),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("alt-cmd-h", HideOthers, None),
-    ]
-}
-
 /// What the menus show of the app's state.
 #[derive(Clone, Copy, PartialEq, Default)]
-struct MenuStateKey {
+pub(crate) struct MenuStateKey {
     sidebar_open: bool,
     view: prefs::TranscriptView,
 }
@@ -161,7 +130,7 @@ pub fn set_menus(cx: &mut App) {
     GlobalState::global_mut(cx).set_app_menus(menus(state).into_iter().map(Menu::owned).collect());
 }
 
-fn menus(state: MenuStateKey) -> Vec<Menu> {
+pub(crate) fn menus(state: MenuStateKey) -> Vec<Menu> {
     let mac = cfg!(target_os = "macos");
     let mut menus = Vec::new();
     if mac {

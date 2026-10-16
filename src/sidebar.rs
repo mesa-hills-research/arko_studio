@@ -22,8 +22,10 @@ use crate::layout::relative_time;
 use crate::menus::{DeleteSession, NewSession, RenameSession};
 use crate::prefs;
 
-const CONTEXT: &str = "SessionList";
-const FILTER_CONTEXT: &str = "SessionFilter";
+/// The key contexts of the list, the filter and a rename in place.
+pub const LIST_CONTEXT: &str = "SessionList";
+pub const FILTER_CONTEXT: &str = "SessionFilter";
+pub const RENAME_CONTEXT: &str = "SessionRename";
 
 /// The group key of the chats.
 pub const CHATS: &str = "chats";
@@ -43,26 +45,6 @@ actions!(
         CancelRename,
     ]
 );
-
-pub fn init(cx: &mut App) {
-    let list = Some(CONTEXT);
-    let filter = Some(FILTER_CONTEXT);
-    cx.bind_keys([
-        KeyBinding::new("up", SelectPrevious, list),
-        KeyBinding::new("down", SelectNext, list),
-        KeyBinding::new("home", SelectFirst, list),
-        KeyBinding::new("end", SelectLast, list),
-        KeyBinding::new("left", Collapse, list),
-        KeyBinding::new("right", Expand, list),
-        KeyBinding::new("enter", OpenSelected, list),
-        KeyBinding::new("f2", RenameSession, list),
-        KeyBinding::new("delete", DeleteSession, list),
-        KeyBinding::new("backspace", DeleteSession, list),
-        KeyBinding::new("down", FocusList, filter),
-        KeyBinding::new("escape", ClearFilter, filter),
-        KeyBinding::new("escape", CancelRename, Some("SessionRename")),
-    ]);
-}
 
 /// What the sidebar asks of the window.
 #[derive(Debug, Clone, PartialEq)]
@@ -852,7 +834,7 @@ impl Sidebar {
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .key_context("SessionRename")
+                                .key_context(RENAME_CONTEXT)
                                 .on_action(cx.listener(Self::cancel_rename))
                                 .child(Input::new(&input).xsmall()),
                         ),
@@ -1031,7 +1013,7 @@ impl Render for Sidebar {
                 div()
                     .id("session-list")
                     .test_support()
-                    .key_context(CONTEXT)
+                    .key_context(LIST_CONTEXT)
                     .track_focus(&self.focus_handle)
                     .role(Role::Tree)
                     .aria_label(SharedString::from("Sessions"))

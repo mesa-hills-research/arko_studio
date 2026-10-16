@@ -9,9 +9,11 @@ pub mod assets;
 pub mod backend;
 mod bundled_themes;
 pub mod chrome;
+pub mod commands;
 pub mod fonts;
 pub mod layout;
 pub mod menus;
+pub mod palette;
 pub mod paths;
 pub mod prefs;
 pub mod session_view;
@@ -144,8 +146,6 @@ pub fn init(startup: Startup, cx: &mut App) {
             .unwrap_or_else(|_| appearance::parse_bundled()),
     };
     appearance::init(themes, cx);
-    sidebar::init(cx);
-    settings_page::init(cx);
     // Before any title bar builds its menu bar.
     menus::init(cx);
 }

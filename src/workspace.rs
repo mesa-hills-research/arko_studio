@@ -17,7 +17,7 @@ use crate::settings_page::{CloseRequested, SettingsPage};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::title_bar::AppTitleBar;
 use crate::workers_panel::WorkersPanel;
-use crate::{chrome, menus, status_bar};
+use crate::{chrome, menus, palette, status_bar};
 
 /// The narrowest and widest the workers panel docks, in rem.
 const MIN_PANEL_WIDTH: f32 = 16.;
@@ -495,6 +495,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.show_settings(window, cx);
+    }
+
+    /// Shows Settings in the main column, and gives back its page.
+    fn show_settings(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<SettingsPage> {
         let settings = match &self.settings {
             Some(settings) => settings.clone(),
             None => {
@@ -510,6 +519,67 @@ impl Workspace {
         };
         settings.read(cx).focus_handle(cx).focus(window, cx);
         cx.notify();
+        settings
+    }
+
+    /// Opens the command palette over the window.
+    fn command_palette(
+        &mut self,
+        _: &menus::CommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let sections = palette::sections(self.sidebar.read(cx).sessions());
+        // The keyboard goes back where it was, and the command runs from there.
+        let before = window.focused(cx);
+        let this = cx.entity().downgrade();
+        palette::open(
+            sections,
+            move |target, window, cx| {
+                let before = before.clone();
+                this.update(cx, |this, cx| this.run(target, before, window, cx))
+                    .ok();
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Runs what the palette chose, as if from `focus`.
+    pub fn run(
+        &mut self,
+        target: palette::Target,
+        focus: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            palette::Target::Action(action) => {
+                let focus = focus.unwrap_or_else(|| self.focus_handle.clone());
+                // After this update: the command may be one of this window's.
+                window.defer(cx, move |window, cx| {
+                    focus.focus(window, cx);
+                    focus.dispatch_action(action.as_ref(), window, cx);
+                });
+            }
+            palette::Target::SettingsPage(page) => {
+                let settings = self.show_settings(window, cx);
+                settings.update(cx, |settings, cx| settings.show_page(page, cx));
+            }
+            palette::Target::Session(id) => self.open_session(id, window, cx),
+        }
+    }
+
+    fn expand_composer(
+        &mut self,
+        _: &menus::ExpandComposer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_composer(window, cx);
+        prefs::update(cx, |prefs| {
+            prefs.input.composer_expanded = !prefs.input.composer_expanded
+        });
     }
 
     fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -629,6 +699,8 @@ impl Render for Workspace {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::about))
             .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::command_palette))
+            .on_action(cx.listener(Self::expand_composer))
             .on_action(cx.listener(Self::new_session))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_workers))
@@ -674,9 +746,6 @@ impl Render for Workspace {
                 }),
             )
             .on_action(cx.listener(|_, _: &menus::Find, window, cx| not_yet("Find", window, cx)))
-            .on_action(cx.listener(|_, _: &menus::CommandPalette, window, cx| {
-                not_yet("The command palette", window, cx)
-            }))
             .on_action(cx.listener(|_, _: &menus::KeyboardShortcuts, window, cx| {
                 not_yet("The shortcuts sheet", window, cx)
             }))

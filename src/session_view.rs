@@ -18,7 +18,7 @@ use gpui_kit::*;
 
 use crate::backend::{Mode, SessionEntry, SharedBackend};
 use crate::layout::WidthClass;
-use crate::{menus, prefs};
+use crate::prefs;
 
 /// How many recent folders Change… offers.
 const RECENT_FOLDERS: usize = 8;
@@ -445,12 +445,6 @@ impl Render for SessionView {
             .bg(theme.background)
             .text_color(theme.foreground)
             .items_center()
-            .on_action(cx.listener(|this, _: &menus::ExpandComposer, window, cx| {
-                this.focus_composer(window, cx);
-                prefs::update(cx, |prefs| {
-                    prefs.input.composer_expanded = !prefs.input.composer_expanded
-                });
-            }))
             .child(
                 // The reading column: centred and at most ~46 rem wide, full
                 // width on narrow windows.

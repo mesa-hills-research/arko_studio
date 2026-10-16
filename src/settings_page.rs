@@ -10,7 +10,7 @@ use gpui_kit::component::font_picker::{
     FontPicker, FontPickerEvent, FontPickerState, FontSettings,
 };
 use gpui_kit::component::setting::{
-    NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
+    NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _,
@@ -26,13 +26,20 @@ use crate::{fonts, menus, paths};
 
 actions!(settings_page, [CloseSettings]);
 
-pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new(
-        "escape",
-        CloseSettings,
-        Some("SettingsPage"),
-    )]);
-}
+/// The key context of the Settings page.
+pub const CONTEXT: &str = "SettingsPage";
+
+/// The pages, in their order in the page list.
+pub const PAGES: [&str; 8] = [
+    "Appearance",
+    "Input",
+    "Models & accounts",
+    "Sessions",
+    "Notifications",
+    "Web page",
+    "Extensions",
+    "Advanced",
+];
 
 /// Asks the window to go back from Settings.
 pub struct CloseRequested;
@@ -45,6 +52,10 @@ pub struct SettingsPage {
     dark_theme: Entity<ThemePicker>,
     ui_font: Entity<FontPickerState>,
     code_font: Entity<FontPickerState>,
+    /// The page to show, set from outside (the command palette), and how
+    /// many times it was: the page list starts afresh on it each time.
+    page: usize,
+    shown: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -104,8 +115,22 @@ impl SettingsPage {
             dark_theme: cx.new(|cx| ThemePicker::new(true, window, cx)),
             ui_font,
             code_font,
+            page: 0,
+            shown: 0,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Shows the page at `page` in [`PAGES`].
+    pub fn show_page(&mut self, page: usize, cx: &mut Context<Self>) {
+        self.page = page.min(PAGES.len() - 1);
+        self.shown += 1;
+        cx.notify();
+    }
+
+    /// The page last asked for with [`Self::show_page`].
+    pub fn page(&self) -> usize {
+        self.page
     }
 
     pub fn light_theme(&self) -> &Entity<ThemePicker> {
@@ -196,7 +221,7 @@ impl SettingsPage {
             self.appearance_page(cx),
             input_page(),
             planned_page(
-                "Models & accounts",
+                PAGES[2],
                 IconName::Bot,
                 &[
                     ("Default mode", "Chat or Agent, for new sessions."),
@@ -220,7 +245,7 @@ impl SettingsPage {
                 ],
             ),
             planned_page(
-                "Sessions",
+                PAGES[3],
                 IconName::FolderOpen,
                 &[
                     (
@@ -256,7 +281,7 @@ impl SettingsPage {
             ),
             notifications_page(),
             planned_page(
-                "Web page",
+                PAGES[5],
                 IconName::Globe,
                 &[
                     (
@@ -267,7 +292,7 @@ impl SettingsPage {
                 ],
             ),
             planned_page(
-                "Extensions",
+                PAGES[6],
                 IconName::Frame,
                 &[
                     (
@@ -295,7 +320,7 @@ impl SettingsPage {
                 (label.clone(), label)
             })
             .collect();
-        SettingPage::new("Appearance")
+        SettingPage::new(PAGES[0])
             .icon(IconName::Palette)
             .default_open(true)
             .groups([
@@ -550,7 +575,7 @@ fn send_key_options() -> &'static [(SendKey, &'static str)] {
 
 fn input_page() -> SettingPage {
     let defaults = prefs::Input::default();
-    SettingPage::new("Input")
+    SettingPage::new(PAGES[1])
         .icon(IconName::ALargeSmall)
         .groups([
             SettingGroup::new().title("Sending").item(choice(
@@ -627,7 +652,7 @@ fn input_page() -> SettingPage {
 
 fn notifications_page() -> SettingPage {
     let defaults = prefs::Notifications::default();
-    SettingPage::new("Notifications")
+    SettingPage::new(PAGES[4])
         .icon(IconName::Bell)
         .group(SettingGroup::new().items([
             switch(
@@ -688,7 +713,7 @@ fn advanced_page(cx: &App) -> SettingPage {
     let logs = paths::logs_folder()
         .map(|folder| folder.display().to_string())
         .unwrap_or_default();
-    SettingPage::new("Advanced")
+    SettingPage::new(PAGES[7])
         .icon(IconName::Settings2)
         .resettable(false)
         .groups([
@@ -756,7 +781,7 @@ impl Render for SettingsPage {
         v_flex()
             .id("settings-page")
             .test_support()
-            .key_context("SettingsPage")
+            .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|_, _: &CloseSettings, _, cx| cx.emit(CloseRequested)))
             .on_action(
@@ -782,13 +807,17 @@ impl Render for SettingsPage {
                             .small()
                             .compact()
                             .icon(IconName::Close)
-                            .tooltip_with_action("Close", &CloseSettings, Some("SettingsPage"))
+                            .tooltip_with_action("Close", &CloseSettings, Some(CONTEXT))
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseRequested))),
                     ),
             )
             .child(
                 div().flex_1().min_h_0().child(
-                    Settings::new("settings")
+                    Settings::new(("settings", self.shown))
+                        .default_selected_index(SelectIndex {
+                            page_ix: self.page,
+                            group_ix: None,
+                        })
                         .with_group_variant(GroupBoxVariant::Outline)
                         .sidebar_width(nav_width)
                         .pages(pages),

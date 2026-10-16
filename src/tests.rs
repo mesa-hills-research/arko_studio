@@ -553,3 +553,58 @@ fn a_new_session_says_where_it_will_run_and_the_chip_switches_it(cx: &mut TestAp
     act(cx, window, |window, cx| window.click(("row", row), cx));
     assert_eq!(line(cx), None);
 }
+
+/// Opens the command palette, types `query` and takes the first match.
+fn run_from_palette(cx: &mut TestAppContext, window: AnyWindowHandle, query: &str) {
+    act(cx, window, |window, cx| window.press("secondary-k", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("command-palette").is_some());
+        window.input(query, cx);
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("command-palette").is_none(), "closed");
+    });
+}
+
+#[gpui_kit::test]
+fn the_command_palette_runs_commands_in_the_window(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    run_from_palette(cx, window, "toggle sidebar");
+    assert!(!cx.read(|cx| prefs::get(cx).sidebar.open));
+    // Mod+Shift+P opens it too.
+    act(cx, window, |window, cx| {
+        window.press("secondary-shift-p", cx)
+    });
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("command-palette").is_some());
+        window.press("escape", cx);
+    });
+    act(cx, window, |window, _| {
+        assert!(window.try_find("command-palette").is_none())
+    });
+    run_from_palette(cx, window, "expand composer");
+    assert!(cx.read(|cx| prefs::get(cx).input.composer_expanded));
+    assert!(cx.read(|cx| workspace.read(cx).settings().is_none()));
+}
+
+#[gpui_kit::test]
+fn the_command_palette_opens_settings_pages_and_sessions(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    run_from_palette(cx, window, "settings: notifications");
+    let page = cx.read(|cx| {
+        workspace
+            .read(cx)
+            .settings()
+            .map(|settings| settings.read(cx).page())
+    });
+    assert_eq!(page, Some(4));
+    run_from_palette(cx, window, "naming a desktop");
+    assert_eq!(
+        open_title(&workspace, cx).as_deref(),
+        Some("Naming a desktop app")
+    );
+    assert!(cx.read(|cx| workspace.read(cx).settings().is_none()));
+}
