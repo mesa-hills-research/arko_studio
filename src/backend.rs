@@ -162,6 +162,25 @@ pub trait Backend: Send + Sync + 'static {
     /// Deletes a session's saved data (never the files in its folder).
     /// Refuses while the session is open anywhere, this app included.
     fn delete(&self, id: &SessionId) -> Result<(), BackendError>;
+
+    /// The model a new session starts on, as arko names it: the last
+    /// session's, as in the terminal app. `None` before any session.
+    fn default_model(&self) -> Option<String>;
+}
+
+/// The main model in Arko's `last-model.json`, which the terminal app
+/// writes for each new session: `{ "main": "claude-opus-5-5", ... }`.
+///
+/// Stands in for the engine's `providers::default_models` until the engine
+/// is a library, which also checks that the model's credentials are there.
+pub fn last_model(arko_folder: &Path) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct LastModels {
+        main: String,
+    }
+    let text = std::fs::read_to_string(arko_folder.join("last-model.json")).ok()?;
+    let last: LastModels = serde_json::from_str(&text).ok()?;
+    Some(last.main).filter(|model| !model.is_empty())
 }
 
 /// The backend the app runs on, shared by its windows.
@@ -182,6 +201,7 @@ impl std::ops::Deref for SharedBackend {
 /// engine is wired in.
 pub struct FakeBackend {
     root: PathBuf,
+    default_model: Option<String>,
     state: Mutex<FakeState>,
 }
 
@@ -195,6 +215,7 @@ impl FakeBackend {
     pub fn new(root: impl Into<PathBuf>, sessions: Vec<SessionEntry>) -> Self {
         Self {
             root: root.into(),
+            default_model: None,
             state: Mutex::new(FakeState {
                 sessions,
                 open: Vec::new(),
@@ -272,7 +293,13 @@ impl FakeBackend {
             pid: 4121,
             host: "studio".into(),
         });
-        Self::new(root, sessions)
+        Self::new(root, sessions).with_default_model(Some("claude-opus-5-5".into()))
+    }
+
+    /// Starts new sessions on `model`.
+    pub fn with_default_model(mut self, model: Option<String>) -> Self {
+        self.default_model = model;
+        self
     }
 
     fn with_state<R>(&self, f: impl FnOnce(&mut FakeState) -> R) -> R {
@@ -360,11 +387,32 @@ impl Backend for FakeBackend {
             Ok(())
         })
     }
+
+    fn default_model(&self) -> Option<String> {
+        self.default_model.clone()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_model_comes_from_last_model_json() {
+        let folder = tempfile::tempdir().unwrap();
+        assert_eq!(last_model(folder.path()), None);
+        std::fs::write(
+            folder.path().join("last-model.json"),
+            r#"{ "main": "cc:claude-opus-5-5", "worker": "gemini-3.8-flash" }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            last_model(folder.path()).as_deref(),
+            Some("cc:claude-opus-5-5")
+        );
+        std::fs::write(folder.path().join("last-model.json"), "not json").unwrap();
+        assert_eq!(last_model(folder.path()), None);
+    }
 
     fn backend() -> FakeBackend {
         FakeBackend::sample("/arko", SystemTime::now())

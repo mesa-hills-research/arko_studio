@@ -16,7 +16,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::backend::{Mode, SessionEntry};
+use crate::backend::{Mode, SessionEntry, SharedBackend};
 use crate::layout::WidthClass;
 use crate::{menus, prefs};
 
@@ -37,8 +37,11 @@ pub struct SessionView {
     draft: Draft,
     /// The folders of recent agent sessions, the latest first.
     recent_folders: Vec<PathBuf>,
+    /// The model new sessions start on.
+    default_model: Option<String>,
     composer: Entity<TextareaState>,
     width: WidthClass,
+    _model: Task<()>,
 }
 
 impl SessionView {
@@ -50,6 +53,16 @@ impl SessionView {
                 .placeholder("Message Arko")
                 .smooth_caret(smooth)
         });
+        let backend = cx.global::<SharedBackend>().clone();
+        let model = cx.background_spawn(async move { backend.default_model() });
+        let model = cx.spawn(async move |this, cx| {
+            let model = model.await;
+            this.update(cx, |this, cx| {
+                this.default_model = model;
+                cx.notify();
+            })
+            .ok();
+        });
         Self {
             session: None,
             draft: Draft {
@@ -57,8 +70,10 @@ impl SessionView {
                 folder: None,
             },
             recent_folders: Vec::new(),
+            default_model: None,
             composer,
             width: WidthClass::Wide,
+            _model: model,
         }
     }
 
@@ -148,13 +163,18 @@ impl SessionView {
             .map_or(self.draft.mode, |session| session.mode)
     }
 
-    /// The chip's text: the mode, and the model where there's room.
+    /// The chip's text: the mode, and the model where there's room. The
+    /// model is arko's id for it ("claude-opus-5-5") until the engine gives
+    /// its display name and effort ("Opus 5.5 · high").
     pub fn chip_label(&self) -> String {
         let mode = match self.mode() {
             Mode::Chat => "Chat",
             Mode::Agent => "Agent",
         };
-        let model = self.session.as_ref().map(|session| session.model.as_str());
+        let model = match &self.session {
+            Some(session) => Some(session.model.as_str()),
+            None => self.default_model.as_deref(),
+        };
         match model {
             Some(model) if !model.is_empty() && self.width != WidthClass::Narrow => {
                 format!("{mode} · {model}")

@@ -527,17 +527,17 @@ fn a_new_session_says_where_it_will_run_and_the_chip_switches_it(cx: &mut TestAp
     let view = cx.read(|cx| workspace.read(cx).session_view().clone());
     let line = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).draft_line());
     let chip = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).chip_label());
-    // The most recent agent session's folder.
+    // The most recent agent session's folder, and the last session's model.
     assert_eq!(
         line(cx).as_deref(),
         Some("New agent session in /home/ada/src/arko")
     );
-    assert_eq!(chip(cx), "Agent");
+    assert_eq!(chip(cx), "Agent · claude-opus-5-5");
 
     act(cx, window, |window, cx| window.click("mode-model", cx));
     act(cx, window, |window, cx| window.click("mode-chat", cx));
     assert_eq!(line(cx).as_deref(), Some("New chat"));
-    assert_eq!(chip(cx), "Chat");
+    assert_eq!(chip(cx), "Chat · claude-opus-5-5");
     act(cx, window, |window, cx| window.click("mode-agent", cx));
     act(cx, window, |window, cx| window.press("escape", cx));
 

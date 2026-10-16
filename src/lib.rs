@@ -82,7 +82,10 @@ impl Startup {
         let added_fonts = fonts::added(&paths::fonts_folder(&arko));
         // The engine's backend replaces this one once arko is a library:
         // until then the sidebar lists sample sessions, kept in memory.
-        let backend = Arc::new(FakeBackend::sample(&arko, std::time::SystemTime::now()));
+        let backend = Arc::new(
+            FakeBackend::sample(&arko, std::time::SystemTime::now())
+                .with_default_model(backend::last_model(&arko)),
+        );
         Self {
             prefs: PrefsStore::new(prefs, Some(paths::prefs_file(&arko))),
             themes,
