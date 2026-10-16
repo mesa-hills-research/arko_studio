@@ -18,6 +18,7 @@ pub mod paths;
 pub mod prefs;
 pub mod session_view;
 pub mod settings_page;
+pub mod shortcuts;
 pub mod sidebar;
 pub mod status_bar;
 pub mod theme_picker;

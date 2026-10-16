@@ -17,7 +17,7 @@ use crate::settings_page::{CloseRequested, SettingsPage};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::title_bar::AppTitleBar;
 use crate::workers_panel::WorkersPanel;
-use crate::{chrome, menus, palette, status_bar};
+use crate::{chrome, menus, palette, shortcuts, status_bar};
 
 /// The narrowest and widest the workers panel docks, in rem.
 const MIN_PANEL_WIDTH: f32 = 16.;
@@ -747,7 +747,7 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(|_, _: &menus::Find, window, cx| not_yet("Find", window, cx)))
             .on_action(cx.listener(|_, _: &menus::KeyboardShortcuts, window, cx| {
-                not_yet("The shortcuts sheet", window, cx)
+                shortcuts::open(window, cx)
             }))
             .on_drag_move(
                 cx.listener(|this, event: &DragMoveEvent<ResizeDrag>, window, cx| {

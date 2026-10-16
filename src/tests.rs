@@ -608,3 +608,48 @@ fn the_command_palette_opens_settings_pages_and_sessions(cx: &mut TestAppContext
     );
     assert!(cx.read(|cx| workspace.read(cx).settings().is_none()));
 }
+
+#[gpui_kit::test]
+fn every_bound_key_is_on_the_shortcuts_sheet(cx: &mut TestAppContext) {
+    start(cx);
+    let sheet = crate::shortcuts::shortcuts();
+    let keymap = cx.read(|cx| cx.key_bindings());
+    let keymap = keymap.borrow();
+    let ours = ["app::", "session_list::", "settings_page::"];
+    let mut checked = 0;
+    for binding in keymap.bindings() {
+        let action = binding.action().name();
+        if !ours.iter().any(|namespace| action.starts_with(namespace)) {
+            continue;
+        }
+        let stroke = gpui_kit::AsKeystroke::as_keystroke(&binding.keystrokes()[0]).clone();
+        assert!(
+            sheet
+                .iter()
+                .any(|row| row.action == action && row.keys.contains(&stroke)),
+            "{action} on {stroke:?} isn't on the sheet"
+        );
+        checked += 1;
+    }
+    assert!(checked > 30, "only {checked} bindings");
+}
+
+#[gpui_kit::test]
+fn the_shortcuts_sheet_opens_on_mod_slash_and_searches(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, _) = open(cx, 1300.);
+    let sheet = crate::shortcuts::shortcuts();
+    let row = |name: &str| sheet.iter().position(|row| row.name == name).unwrap();
+    let (zoom_in, stop) = (row("Zoom In"), row("Stop"));
+    act(cx, window, |window, cx| window.press("secondary-/", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("shortcuts").is_some());
+        assert!(window.try_find(("shortcut", zoom_in)).is_some());
+        assert!(window.try_find(("shortcut", stop)).is_some());
+        window.input("zoom", cx);
+    });
+    act(cx, window, |window, _| {
+        assert!(window.try_find(("shortcut", zoom_in)).is_some());
+        assert!(window.try_find(("shortcut", stop)).is_none());
+    });
+}
