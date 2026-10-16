@@ -1,6 +1,9 @@
 //! Arko Studio: the desktop app of the Arko agent, on GPUI and GPUI Kit.
 
+pub mod appearance;
 pub mod backend;
+mod bundled_themes;
+pub mod fonts;
 pub mod paths;
 pub mod prefs;
 
