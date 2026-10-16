@@ -717,6 +717,12 @@ impl Render for Workspace {
                         )
                     }),
             )
-            .child(status_bar::status_bar())
+            .child(
+                div()
+                    .id("status-bar")
+                    .test_support()
+                    .flex_none()
+                    .child(status_bar::status_bar()),
+            )
     }
 }

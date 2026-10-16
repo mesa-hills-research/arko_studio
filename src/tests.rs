@@ -465,3 +465,12 @@ fn new_session_leaves_the_open_one(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| window.press("secondary-n", cx));
     assert_eq!(open_title(&workspace, cx), None);
 }
+
+#[gpui_kit::test]
+fn the_status_bar_keeps_its_height_with_nothing_to_show(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, _) = open(cx, 1300.);
+    act(cx, window, |window, _| {
+        assert_eq!(window.find("status-bar").bounds().size.height, px(28.));
+    });
+}
