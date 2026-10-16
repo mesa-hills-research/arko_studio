@@ -73,6 +73,8 @@ pub enum SidebarEvent {
     /// A session was renamed; the window updates its title if it shows it.
     Renamed(SessionId, String),
     Deleted(SessionId),
+    /// The sessions were listed again.
+    Listed,
 }
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
@@ -305,6 +307,7 @@ impl Sidebar {
         self.sessions = sessions;
         self.loaded = true;
         self.rebuild(cx);
+        cx.emit(SidebarEvent::Listed);
     }
 
     pub fn sessions(&self) -> &[SessionEntry] {

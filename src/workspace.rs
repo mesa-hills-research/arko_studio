@@ -12,7 +12,7 @@ use crate::appearance;
 use crate::backend::{SessionHandle, SessionId, SharedBackend};
 use crate::layout::WidthClass;
 use crate::prefs::{self, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
-use crate::session_view::{SessionView, not_yet};
+use crate::session_view::{SessionView, not_yet, recent_folders};
 use crate::settings_page::{CloseRequested, SettingsPage};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::title_bar::AppTitleBar;
@@ -386,6 +386,11 @@ impl Workspace {
                         .update(cx, |view, cx| view.set_session(Some(entry), cx));
                     self.sync_chrome(window, cx);
                 }
+            }
+            SidebarEvent::Listed => {
+                let folders = recent_folders(self.sidebar.read(cx).sessions());
+                self.session_view
+                    .update(cx, |view, cx| view.set_recent_folders(folders, cx));
             }
             SidebarEvent::Deleted(id) => {
                 if self

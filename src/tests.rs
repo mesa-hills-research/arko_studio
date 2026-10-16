@@ -519,3 +519,40 @@ fn the_layout_buttons_sit_together_and_the_workers_one_comes_with_workers(cx: &m
     });
     assert!(cx.read(|cx| workspace.read(cx).is_workers_open()));
 }
+
+#[gpui_kit::test]
+fn a_new_session_says_where_it_will_run_and_the_chip_switches_it(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let line = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).draft_line());
+    let chip = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).chip_label());
+    // The most recent agent session's folder.
+    assert_eq!(
+        line(cx).as_deref(),
+        Some("New agent session in /home/ada/src/arko")
+    );
+    assert_eq!(chip(cx), "Agent");
+
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("mode-chat", cx));
+    assert_eq!(line(cx).as_deref(), Some("New chat"));
+    assert_eq!(chip(cx), "Chat");
+    act(cx, window, |window, cx| window.click("mode-agent", cx));
+    act(cx, window, |window, cx| window.press("escape", cx));
+
+    // Change… lists the recent folders.
+    act(cx, window, |window, cx| window.click("change-folder", cx));
+    act(cx, window, |window, cx| {
+        window.within("popup-menu").click(1usize, cx)
+    });
+    assert_eq!(
+        line(cx).as_deref(),
+        Some("New agent session in /home/ada/src/gpui_kit")
+    );
+
+    // An open session shows its transcript instead.
+    let row = row_of(&workspace, "Split the engine out of main.rs", cx);
+    act(cx, window, |window, cx| window.click(("row", row), cx));
+    assert_eq!(line(cx), None);
+}
