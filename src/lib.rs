@@ -15,8 +15,10 @@ pub mod menus;
 pub mod paths;
 pub mod prefs;
 pub mod session_view;
+pub mod settings_page;
 pub mod sidebar;
 pub mod status_bar;
+pub mod theme_picker;
 pub mod title_bar;
 pub mod workers_panel;
 pub mod workspace;
@@ -134,6 +136,7 @@ pub fn init(startup: Startup, cx: &mut App) {
     };
     appearance::init(themes, cx);
     sidebar::init(cx);
+    settings_page::init(cx);
     // Before any title bar builds its menu bar.
     menus::init(cx);
 }

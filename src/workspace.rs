@@ -1,5 +1,6 @@
-//! A window: the title bar, the sessions sidebar, the main column, the
-//! workers panel and the status bar, laid out for the window's width.
+//! A window: the title bar, the sessions sidebar, the main column (a
+//! session, or Settings), the workers panel and the status bar, laid out
+//! for the window's width.
 
 use gpui_kit::component::{
     ActiveTheme as _, Placement, WindowExt as _, h_flex, notification::Notification, v_flex,
@@ -12,6 +13,7 @@ use crate::backend::{SessionHandle, SessionId, SharedBackend};
 use crate::layout::WidthClass;
 use crate::prefs::{self, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
 use crate::session_view::{SessionView, not_yet};
+use crate::settings_page::{CloseRequested, SettingsPage};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::title_bar::AppTitleBar;
 use crate::workers_panel::WorkersPanel;
@@ -80,6 +82,7 @@ pub struct Workspace {
     sidebar: Entity<Sidebar>,
     session_view: Entity<SessionView>,
     workers: Entity<WorkersPanel>,
+    settings: Option<Entity<SettingsPage>>,
     /// The session open here, held so it stays open.
     handle: Option<SessionHandle>,
     width: WidthClass,
@@ -131,6 +134,7 @@ impl Workspace {
             sidebar,
             session_view,
             workers,
+            settings: None,
             handle: None,
             width: WidthClass::of(window.viewport_size().width),
             workers_open: false,
@@ -157,6 +161,10 @@ impl Workspace {
 
     pub fn session_view(&self) -> &Entity<SessionView> {
         &self.session_view
+    }
+
+    pub fn settings(&self) -> Option<&Entity<SettingsPage>> {
+        self.settings.as_ref()
     }
 
     pub fn width_class(&self) -> WidthClass {
@@ -265,6 +273,7 @@ impl Workspace {
     /// After a session is picked: the sheet closes and the composer has focus.
     fn after_choosing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_sheet(window, cx);
+        self.close_settings(window, cx);
         self.focus_composer(window, cx);
     }
 
@@ -465,6 +474,36 @@ impl Workspace {
         }
     }
 
+    fn open_settings(
+        &mut self,
+        _: &menus::OpenSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let settings = match &self.settings {
+            Some(settings) => settings.clone(),
+            None => {
+                let settings = cx.new(|cx| SettingsPage::new(window, cx));
+                self._subscriptions.push(cx.subscribe_in(
+                    &settings,
+                    window,
+                    |this, _, _: &CloseRequested, window, cx| this.close_settings(window, cx),
+                ));
+                self.settings = Some(settings.clone());
+                settings
+            }
+        };
+        settings.read(cx).focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.take().is_some() {
+            self.focus_composer(window, cx);
+            cx.notify();
+        }
+    }
+
     fn about(&mut self, _: &menus::About, window: &mut Window, cx: &mut Context<Self>) {
         window.open_alert_dialog(cx, |alert, _, _| {
             alert.title(crate::APP_NAME).description(format!(
@@ -506,6 +545,13 @@ impl Workspace {
             prefs.sidebar.width = sidebar;
             prefs.workers_panel.width = panel;
         });
+    }
+
+    fn render_main(&self) -> AnyElement {
+        match &self.settings {
+            Some(settings) => settings.clone().into_any_element(),
+            None => self.session_view.clone().into_any_element(),
+        }
     }
 }
 
@@ -567,6 +613,7 @@ impl Render for Workspace {
             .font_family(font_family)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::about))
+            .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::new_session))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_workers))
@@ -653,7 +700,7 @@ impl Render for Workspace {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .child(self.session_view.clone()),
+                            .child(self.render_main()),
                     )
                     .when(panel_docked, |this| {
                         this.child(

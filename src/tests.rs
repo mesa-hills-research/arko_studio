@@ -11,6 +11,7 @@ use gpui_kit::{
     WindowBounds, WindowOptions, px, size,
 };
 
+use crate::appearance::PREVIEW_REST;
 use crate::backend::{Backend as _, FakeBackend};
 use crate::prefs::{self, ThemeMode};
 use crate::sidebar::Row;
@@ -327,6 +328,20 @@ fn dragging_the_sidebars_edge_resizes_it_and_remembers(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
+fn settings_open_in_the_window_and_escape_goes_back(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    act(cx, window, |window, cx| window.press("secondary-,", cx));
+    assert!(cx.read(|cx| workspace.read(cx).settings().is_some()));
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("settings-page").is_some());
+        assert!(window.try_find("session-view").is_none());
+        window.press("escape", cx);
+    });
+    assert!(cx.read(|cx| workspace.read(cx).settings().is_none()));
+}
+
+#[gpui_kit::test]
 fn the_theme_follows_the_mode_and_keeps_the_zoom(cx: &mut TestAppContext) {
     start(cx);
     let (window, _) = open(cx, 1300.);
@@ -357,6 +372,87 @@ fn system_mode_follows_the_systems_appearance(cx: &mut TestAppContext) {
     assert_eq!(name(cx), prefs::DEFAULT_DARK_THEME);
     cx.update(|cx| crate::appearance::set_system_appearance(gpui_kit::WindowAppearance::Light, cx));
     assert_eq!(name(cx), prefs::DEFAULT_LIGHT_THEME);
+}
+
+#[gpui_kit::test]
+fn the_theme_list_asks_once_then_previews_after_a_rest(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.theme_mode = ThemeMode::Dark));
+    act(cx, window, |window, cx| window.press("secondary-,", cx));
+    let picker = cx.read(|cx| {
+        workspace
+            .read(cx)
+            .settings()
+            .unwrap()
+            .read(cx)
+            .dark_theme()
+            .clone()
+    });
+    let name = |cx: &mut TestAppContext| cx.read(|cx| Theme::global(cx).theme_name().to_string());
+
+    // The first time, the notice comes before any preview.
+    act(cx, window, |window, cx| {
+        window.click("dark-theme-button", cx)
+    });
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("flash-notice").is_some());
+        window.click("preview-themes", cx);
+    });
+    assert!(cx.read(|cx| prefs::get(cx).appearance.flash_notice));
+
+    // Moving rests, then shows the theme moved to.
+    act(cx, window, |window, cx| window.press("down", cx));
+    assert_eq!(name(cx), prefs::DEFAULT_DARK_THEME, "not before the rest");
+    cx.executor().advance_clock(PREVIEW_REST);
+    cx.run_until_parked();
+    let previewed = name(cx);
+    assert_ne!(previewed, prefs::DEFAULT_DARK_THEME);
+
+    // Esc goes back to the chosen theme at once.
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert!(!cx.read(|cx| picker.read(cx).is_open()));
+    assert_eq!(name(cx), prefs::DEFAULT_DARK_THEME);
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).appearance.dark_theme.clone()),
+        prefs::DEFAULT_DARK_THEME
+    );
+
+    // Enter keeps the one the list rests on.
+    act(cx, window, |window, cx| {
+        window.click("dark-theme-button", cx)
+    });
+    act(cx, window, |window, cx| window.press("down", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).appearance.dark_theme.clone()),
+        previewed
+    );
+    assert_eq!(name(cx), previewed);
+}
+
+#[gpui_kit::test]
+fn with_previews_off_moving_shows_nothing(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, _) = open(cx, 1300.);
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.appearance.theme_mode = ThemeMode::Dark;
+            prefs.appearance.flash_notice = true;
+            prefs.appearance.theme_previews = false;
+        })
+    });
+    act(cx, window, |window, cx| window.press("secondary-,", cx));
+    act(cx, window, |window, cx| {
+        window.click("dark-theme-button", cx)
+    });
+    act(cx, window, |window, cx| window.press("down", cx));
+    cx.executor().advance_clock(PREVIEW_REST * 4);
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| Theme::global(cx).theme_name().to_string()),
+        prefs::DEFAULT_DARK_THEME
+    );
 }
 
 #[gpui_kit::test]
