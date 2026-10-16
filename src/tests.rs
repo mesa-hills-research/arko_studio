@@ -528,10 +528,7 @@ fn a_new_session_says_where_it_will_run_and_the_chip_switches_it(cx: &mut TestAp
     let line = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).draft_line());
     let chip = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).chip_label());
     // The most recent agent session's folder, and the last session's model.
-    assert_eq!(
-        line(cx).as_deref(),
-        Some("New agent session in /home/ada/src/arko")
-    );
+    assert_eq!(line(cx).as_deref(), Some("New agent session in ~/src/arko"));
     assert_eq!(chip(cx), "Agent · claude-opus-5-5");
 
     act(cx, window, |window, cx| window.click("mode-model", cx));
@@ -548,7 +545,7 @@ fn a_new_session_says_where_it_will_run_and_the_chip_switches_it(cx: &mut TestAp
     });
     assert_eq!(
         line(cx).as_deref(),
-        Some("New agent session in /home/ada/src/gpui_kit")
+        Some("New agent session in ~/src/gpui_kit")
     );
 
     // An open session shows its transcript instead.

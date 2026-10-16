@@ -54,6 +54,8 @@ pub struct Startup {
     bundled_fonts: Vec<Cow<'static, [u8]>>,
     added_fonts: Vec<Cow<'static, [u8]>>,
     backend: Arc<dyn Backend>,
+    /// The user's home folder.
+    home: Option<PathBuf>,
 }
 
 enum Themes {
@@ -92,11 +94,13 @@ impl Startup {
             bundled_fonts: fonts::bundled(),
             added_fonts,
             backend,
+            home: session_view::home_from_env(),
         }
     }
 
     /// An app on `backend` with the default preferences, kept in memory,
-    /// the bundled themes and no fonts of its own: for tests.
+    /// the bundled themes and no fonts of its own, for `/home/ada`: for
+    /// tests, which then read the same on every machine.
     pub fn for_tests(backend: Arc<dyn Backend>) -> Self {
         Self {
             prefs: PrefsStore::new(Prefs::default(), None),
@@ -104,6 +108,7 @@ impl Startup {
             bundled_fonts: Vec::new(),
             added_fonts: Vec::new(),
             backend,
+            home: Some(PathBuf::from("/home/ada")),
         }
     }
 
@@ -131,6 +136,7 @@ pub fn init(startup: Startup, cx: &mut App) {
     fonts::init(startup.bundled_fonts, startup.added_fonts, cx);
     prefs::init(startup.prefs, cx);
     cx.set_global(SharedBackend(startup.backend));
+    cx.set_global(session_view::HomeFolder(startup.home));
     let themes = match startup.themes {
         Themes::Ready(themes) => themes,
         Themes::Loading(thread) => thread

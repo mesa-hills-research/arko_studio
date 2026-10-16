@@ -37,6 +37,8 @@ pub struct SessionView {
     draft: Draft,
     /// The folders of recent agent sessions, the latest first.
     recent_folders: Vec<PathBuf>,
+    /// The user's home folder, the last place a new session falls back on.
+    home: Option<PathBuf>,
     /// The model new sessions start on.
     default_model: Option<String>,
     composer: Entity<TextareaState>,
@@ -70,6 +72,7 @@ impl SessionView {
                 folder: None,
             },
             recent_folders: Vec::new(),
+            home: cx.global::<HomeFolder>().0.clone(),
             default_model: None,
             composer,
             width: WidthClass::Wide,
@@ -110,7 +113,7 @@ impl SessionView {
             .folder
             .clone()
             .or_else(|| self.recent_folders.first().cloned())
-            .or_else(home)
+            .or_else(|| self.home.clone())
     }
 
     /// The line the empty transcript of a new session shows: "New agent
@@ -122,7 +125,10 @@ impl SessionView {
         Some(match self.draft.mode {
             Mode::Chat => "New chat".to_string(),
             Mode::Agent => match self.draft_folder() {
-                Some(folder) => format!("New agent session in {}", shown_folder(&folder)),
+                Some(folder) => format!(
+                    "New agent session in {}",
+                    shown_folder(&folder, self.home.as_deref())
+                ),
                 None => "New agent session".to_string(),
             },
         })
@@ -257,6 +263,7 @@ impl SessionView {
         let theme = cx.theme();
         let folder = self.draft_folder();
         let recent = self.recent_folders.clone();
+        let home = self.home.clone();
         let view = cx.entity().downgrade();
         h_flex()
             .id("draft-line")
@@ -275,7 +282,7 @@ impl SessionView {
                         this.child(
                             div()
                                 .text_color(theme.foreground)
-                                .child(shown_folder(&folder)),
+                                .child(shown_folder(&folder, home.as_deref())),
                         )
                     })
                     .child(
@@ -288,7 +295,7 @@ impl SessionView {
                                     let view = view.clone();
                                     let choice = path.clone();
                                     menu.item(
-                                        PopupMenuItem::new(shown_folder(path))
+                                        PopupMenuItem::new(shown_folder(path, home.as_deref()))
                                             .checked(folder.as_ref() == Some(path))
                                             .on_click(move |_, _, cx| {
                                                 let choice = choice.clone();
@@ -394,8 +401,13 @@ pub fn recent_folders(sessions: &[SessionEntry]) -> Vec<PathBuf> {
     folders
 }
 
-/// The user's home folder.
-fn home() -> Option<PathBuf> {
+/// The user's home folder, as the app found it at start-up.
+pub struct HomeFolder(pub Option<PathBuf>);
+
+impl Global for HomeFolder {}
+
+/// The user's home folder, from the environment.
+pub fn home_from_env() -> Option<PathBuf> {
     let name = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     std::env::var_os(name)
         .filter(|home| !home.is_empty())
@@ -404,9 +416,8 @@ fn home() -> Option<PathBuf> {
 
 /// `folder` as people read it: under the home folder as `~/…` on macOS and
 /// Linux, in full on Windows.
-fn shown_folder(folder: &Path) -> String {
-    let home = home().filter(|_| !cfg!(windows));
-    shown_folder_from(folder, home.as_deref())
+fn shown_folder(folder: &Path, home: Option<&Path>) -> String {
+    shown_folder_from(folder, home.filter(|_| !cfg!(windows)))
 }
 
 fn shown_folder_from(folder: &Path, home: Option<&Path>) -> String {
