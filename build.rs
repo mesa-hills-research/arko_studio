@@ -9,10 +9,7 @@ fn main() {
             .set_icon("assets/icon.ico")
             .set("FileDescription", "Arko Studio")
             .set("ProductName", "Arko Studio")
-            .set(
-                "LegalCopyright",
-                "Copyright © 2026 The Arko Studio Authors",
-            )
+            .set("LegalCopyright", "Copyright © 2026 Luke Erickson")
             .compile()
             .expect("failed to embed the Windows icon");
     }
