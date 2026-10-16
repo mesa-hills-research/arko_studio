@@ -89,6 +89,9 @@ pub struct SessionEntry {
     pub conversations: Vec<ConversationEntry>,
     /// Who has it open, when someone does.
     pub holder: Option<Holder>,
+    /// Whether it has started workers, running now or finished: its
+    /// window then offers the workers panel.
+    pub had_workers: bool,
 }
 
 impl SessionEntry {
@@ -218,6 +221,7 @@ impl FakeBackend {
             last_active: Some(ago(minutes)),
             conversations: Vec::new(),
             holder: None,
+            had_workers: false,
         };
         let chat = |id: &str, title: &str, minutes: u64| SessionEntry {
             mode: Mode::Chat,
@@ -262,6 +266,7 @@ impl FakeBackend {
                 current: true,
             },
         ];
+        sessions[1].had_workers = true;
         sessions[2].holder = Some(Holder {
             app: "arko".into(),
             pid: 4121,

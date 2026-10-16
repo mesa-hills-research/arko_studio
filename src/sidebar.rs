@@ -1200,6 +1200,7 @@ mod tests {
                 current: true,
             }],
             holder: None,
+            had_workers: false,
         };
         let rows = rows(&[entry], &[], &HashSet::new(), "", now);
         assert!(

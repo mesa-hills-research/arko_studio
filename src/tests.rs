@@ -491,3 +491,31 @@ fn new_session_lines_up_with_the_rows_below(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| window.click("new-session", cx));
     assert_eq!(open_title(&workspace, cx), None);
 }
+
+#[gpui_kit::test]
+fn the_layout_buttons_sit_together_and_the_workers_one_comes_with_workers(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    act(cx, window, |window, cx| {
+        assert!(
+            window.try_find("toggle-workers").is_none(),
+            "a new session has no workers"
+        );
+        window.click("toggle-sidebar", cx);
+    });
+    assert!(!cx.read(|cx| prefs::get(cx).sidebar.open));
+    act(cx, window, |window, cx| window.click("toggle-sidebar", cx));
+    assert!(cx.read(|cx| prefs::get(cx).sidebar.open));
+
+    let row = row_of(&workspace, "Fix the handover size for workers", cx);
+    act(cx, window, |window, cx| window.click(("row", row), cx));
+    act(cx, window, |window, cx| {
+        // At the right end, after the session's title.
+        let sidebar = window.find("toggle-sidebar").bounds();
+        let workers = window.find("toggle-workers").bounds();
+        let title = window.find("session-title").bounds();
+        assert!(sidebar.left() >= title.right() && workers.left() > sidebar.left());
+        window.click("toggle-workers", cx);
+    });
+    assert!(cx.read(|cx| workspace.read(cx).is_workers_open()));
+}

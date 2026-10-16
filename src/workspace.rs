@@ -227,9 +227,18 @@ impl Workspace {
             true => prefs::get(cx).sidebar.open,
             false => self.sheet == Some(Edge::Sidebar),
         };
+        // The workers panel's button: for a session that has or had
+        // workers, or while the panel shows anyway (from the View menu).
+        let workers_open = match self.width.docks_panel() {
+            true => self.workers_open,
+            false => self.sheet == Some(Edge::Panel),
+        };
+        let workers = (entry.as_ref().is_some_and(|entry| entry.had_workers) || workers_open)
+            .then_some(workers_open);
         self.title_bar.update(cx, |bar, cx| {
             bar.set_session(Some(title.clone()), folder, cx);
             bar.set_sidebar_open(open, cx);
+            bar.set_workers(workers, cx);
         });
         window.set_window_title(&format!("{title} – {}", crate::APP_NAME));
     }
@@ -466,6 +475,7 @@ impl Workspace {
     ) {
         if self.width.docks_panel() {
             self.workers_open = !self.workers_open;
+            self.sync_chrome(window, cx);
             cx.notify();
         } else if self.sheet == Some(Edge::Panel) {
             self.close_sheet(window, cx);

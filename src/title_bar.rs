@@ -1,8 +1,9 @@
 //! The title bar: GPUI Kit's `TitleBar` with the menus (Windows and Linux),
-//! the sidebar button, and the open session's title and folder.
+//! the open session's title and folder, and the layout buttons at the
+//! right end.
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, TitleBar,
+    ActiveTheme as _, IconName, Selectable as _, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::AppMenuBar,
@@ -19,6 +20,9 @@ pub struct AppTitleBar {
     title: Option<SharedString>,
     folder: Option<SharedString>,
     sidebar_open: bool,
+    /// The workers panel's button: shown for a session that has or had
+    /// workers, and whether the panel shows.
+    workers: Option<bool>,
     _menus: Subscription,
 }
 
@@ -34,6 +38,7 @@ impl AppTitleBar {
             title: None,
             folder: None,
             sidebar_open: true,
+            workers: None,
             _menus: menus,
         }
     }
@@ -58,17 +63,21 @@ impl AppTitleBar {
             cx.notify();
         }
     }
+
+    /// Offers the workers panel's button (`Some`, with whether the panel
+    /// shows), or leaves it out.
+    pub fn set_workers(&mut self, workers: Option<bool>, cx: &mut Context<Self>) {
+        if self.workers != workers {
+            self.workers = workers;
+            cx.notify();
+        }
+    }
 }
 
 impl Render for AppTitleBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mac = cfg!(target_os = "macos");
         let theme = cx.theme();
-        let sidebar_label = if self.sidebar_open {
-            "Hide Sidebar"
-        } else {
-            "Show Sidebar"
-        };
         TitleBar::new()
             // GPUI Kit's Linux close button calls `window.remove_window()`, which
             // skips the close check. This sends it through the check instead. Only
@@ -79,32 +88,17 @@ impl Render for AppTitleBar {
                     .size_full()
                     .min_w_0()
                     .gap_1()
-                    // The menus (Windows and Linux; macOS has them in the menu bar),
-                    // then the sidebar button.
+                    // The menus (Windows and Linux; macOS has them in the menu bar).
                     .when(!mac, |this| {
                         this.child(title_bar_item(self.menu_bar.clone()))
                     })
-                    .child(title_bar_item(
-                        Button::new("toggle-sidebar")
-                            .small()
-                            .ghost()
-                            .compact()
-                            .icon(if self.sidebar_open {
-                                IconName::PanelLeftClose
-                            } else {
-                                IconName::PanelLeftOpen
-                            })
-                            .tooltip_with_action(sidebar_label, &menus::ToggleSidebar, None)
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(menus::ToggleSidebar), cx);
-                            }),
-                    ))
                     // The session's title, centred in the space left, and cut
                     // short when it doesn't fit. Plain text: the bar stays a drag
                     // area around it.
                     .child(
                         h_flex()
                             .id("session-title")
+                            .test_support()
                             .flex_1()
                             .min_w_0()
                             .justify_center()
@@ -122,11 +116,54 @@ impl Render for AppTitleBar {
                                 )
                             }),
                     )
-                    // Balances the buttons on the left of a macOS bar, so the title
-                    // sits in the middle of the window there.
-                    .when(mac, |this| this.child(div().w_20().flex_none())),
+                    // The layout buttons, together at the right end, before
+                    // the window buttons on Windows and Linux.
+                    .child(
+                        title_bar_item(
+                            h_flex()
+                                .id("layout-buttons")
+                                .gap_0p5()
+                                .child(layout_button(
+                                    "toggle-sidebar",
+                                    IconName::PanelLeft,
+                                    self.sidebar_open,
+                                    "Toggle sidebar",
+                                    Box::new(menus::ToggleSidebar),
+                                ))
+                                .when_some(self.workers, |this, open| {
+                                    this.child(layout_button(
+                                        "toggle-workers",
+                                        IconName::PanelRight,
+                                        open,
+                                        "Toggle workers panel",
+                                        Box::new(menus::ToggleWorkersPanel),
+                                    ))
+                                }),
+                        )
+                        .mr_1(),
+                    ),
             )
     }
+}
+
+/// A button that shows or hides a pane, with the pane's shortcut in its
+/// tooltip.
+fn layout_button(
+    id: &'static str,
+    icon: IconName,
+    selected: bool,
+    label: &'static str,
+    action: Box<dyn Action>,
+) -> Button {
+    let tooltip_action = action.boxed_clone();
+    Button::new(id)
+        .small()
+        .ghost()
+        .compact()
+        .icon(icon)
+        .selected(selected)
+        .tooltip_with_action(label, tooltip_action.as_ref(), None)
+        .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
 }
 
 /// Holds clickable title bar content: buttons, menus, tabs, search fields.
