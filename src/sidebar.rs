@@ -983,7 +983,6 @@ impl Render for Sidebar {
                             .border_1()
                             .border_color(theme.transparent)
                             .text_sm()
-                            .cursor_pointer()
                             .hover(|this| {
                                 this.bg(theme.sidebar_accent.opacity(0.8))
                                     .text_color(theme.sidebar_accent_foreground)
