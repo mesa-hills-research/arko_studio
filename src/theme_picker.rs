@@ -14,7 +14,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::appearance::{self, Catalog, PREVIEW_REST};
+use crate::appearance::{self, PREVIEW_REST};
 use crate::prefs;
 
 /// What previews do, said before the first one.
@@ -79,11 +79,7 @@ impl ThemePicker {
         self._preview = None;
         if open {
             let chosen = self.chosen(cx);
-            let names: Vec<SharedString> = cx
-                .global::<Catalog>()
-                .of_mode(self.dark)
-                .map(|theme| theme.name.clone())
-                .collect();
+            let names = appearance::theme_names(self.dark, cx);
             let selected = names
                 .iter()
                 .position(|name| name.eq_ignore_ascii_case(&chosen));

@@ -3,15 +3,17 @@
 //! interface and code fonts, zoom, and motion.
 //!
 //! The themes are the 41 Arko Studio bundles plus the ones in
-//! `<arko folder>/themes`, which the terminal app reads too. A theme there
-//! replaces a bundled one with the same name, as in the terminal app.
+//! `<arko folder>/themes`, which the terminal app reads too. GPUI Kit's
+//! theme registry holds them: a theme in the folder replaces a bundled one
+//! with the same name, as in the terminal app, and a change to the folder
+//! shows at once.
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui_kit::component::{Theme, ThemeConfig, ThemeMode, ThemeSet};
-use gpui_kit::{App, Global, Pixels, SharedString, WindowAppearance, px};
+use gpui_kit::component::{FontOverrides, Theme, ThemeConfig, ThemeRegistry, ThemeSet};
+use gpui_kit::{App, Global, SharedString, WindowAppearance, px};
 
 use crate::fonts;
 use crate::prefs::{self, Motion, PrefsStore};
@@ -28,32 +30,6 @@ pub fn parse_bundled() -> Vec<ThemeConfig> {
         .collect()
 }
 
-/// The themes in `folder`'s JSON files. Files that don't parse are logged
-/// and skipped. Blocks: call it off the UI thread.
-pub fn read_user_themes(folder: &Path) -> Vec<ThemeConfig> {
-    let Ok(entries) = std::fs::read_dir(folder) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<_> = entries
-        .filter_map(|entry| Some(entry.ok()?.path()))
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "json")
-        })
-        .collect();
-    paths.sort();
-    paths
-        .into_iter()
-        .flat_map(|path| match std::fs::read_to_string(&path) {
-            Ok(text) => parse(&path.display().to_string(), &text),
-            Err(error) => {
-                tracing::warn!("couldn't read {}: {error}", path.display());
-                Vec::new()
-            }
-        })
-        .collect()
-}
-
 fn parse(file: &str, text: &str) -> Vec<ThemeConfig> {
     match serde_json::from_str::<ThemeSet>(text) {
         Ok(set) => set.themes,
@@ -64,54 +40,32 @@ fn parse(file: &str, text: &str) -> Vec<ThemeConfig> {
     }
 }
 
-/// The bundled themes with the user's: a user theme replaces a bundled one
-/// with the same name, compared without case, and the rest are added.
-///
-/// Workaround until GPUI Kit's theme registry keeps bundled themes across
-/// reloads of the user's folder: the app keeps this catalog itself, and
-/// picks up changes to the folder at its next start.
-pub fn merge(bundled: Vec<ThemeConfig>, user: Vec<ThemeConfig>) -> Vec<ThemeConfig> {
-    let mut themes = bundled;
-    for theme in user {
-        match themes
-            .iter_mut()
-            .find(|existing| existing.name.eq_ignore_ascii_case(&theme.name))
-        {
-            Some(existing) => *existing = theme,
-            None => themes.push(theme),
-        }
-    }
-    themes
+/// The light or the dark themes the user can choose, by name: the bundled
+/// ones and the user's, sorted without case.
+pub fn theme_names(dark: bool, cx: &App) -> Vec<SharedString> {
+    let kit_defaults = &cx.global::<KitDefaults>().0;
+    let mut names: Vec<SharedString> = ThemeRegistry::global(cx)
+        .themes()
+        .values()
+        .filter(|theme| theme.mode.is_dark() == dark)
+        .filter(|theme| !kit_defaults.iter().any(|kit| Rc::ptr_eq(kit, theme)))
+        .map(|theme| theme.name.clone())
+        .collect();
+    names.sort_by_key(|name| name.to_lowercase());
+    names
 }
 
-/// Every theme the user can choose.
-pub struct Catalog {
-    themes: Vec<Rc<ThemeConfig>>,
+/// The theme named `name`, compared without case when no name matches
+/// exactly.
+pub fn find(name: &str, cx: &App) -> Option<Rc<ThemeConfig>> {
+    ThemeRegistry::global(cx).theme(name).cloned()
 }
 
-impl Global for Catalog {}
+/// GPUI Kit's own light and dark themes, which stand in when a theme is
+/// missing and stay out of the theme lists.
+struct KitDefaults(Vec<Rc<ThemeConfig>>);
 
-impl Catalog {
-    pub fn new(themes: Vec<ThemeConfig>) -> Self {
-        let mut themes: Vec<Rc<ThemeConfig>> = themes.into_iter().map(Rc::new).collect();
-        themes.sort_by_key(|theme| theme.name.to_lowercase());
-        Self { themes }
-    }
-
-    /// The theme named `name`, compared without case.
-    pub fn find(&self, name: &str) -> Option<&Rc<ThemeConfig>> {
-        self.themes
-            .iter()
-            .find(|theme| theme.name.eq_ignore_ascii_case(name))
-    }
-
-    /// The light or the dark themes, by name.
-    pub fn of_mode(&self, dark: bool) -> impl Iterator<Item = &Rc<ThemeConfig>> {
-        self.themes
-            .iter()
-            .filter(move |theme| theme.mode.is_dark() == dark)
-    }
-}
+impl Global for KitDefaults {}
 
 /// The system's light or dark appearance, as the windows last reported it.
 pub struct SystemAppearance {
@@ -131,29 +85,25 @@ impl Global for Preview {}
 
 /// What was applied last, so that a change elsewhere in the preferences
 /// leaves the theme alone.
-#[derive(Default, PartialEq, Clone)]
+#[derive(Default, Clone)]
 struct Applied {
-    theme: Option<SharedString>,
-    fonts: Option<FontsInForce>,
+    theme: Option<Rc<ThemeConfig>>,
+    fonts: Option<FontOverrides>,
     motion: Option<Motion>,
 }
 
 impl Global for Applied {}
 
-/// The fonts the theme carries, as the preferences and zoom make them.
-#[derive(Debug, Clone, PartialEq)]
-struct FontsInForce {
-    /// `None` keeps the theme's own (the family isn't installed).
-    ui_family: Option<SharedString>,
-    ui_size: Pixels,
-    code_family: Option<SharedString>,
-    code_size: Pixels,
-}
-
-/// Installs the themes and applies the preferences, then follows their
-/// changes.
-pub fn init(themes: Vec<ThemeConfig>, cx: &mut App) {
-    cx.set_global(Catalog::new(themes));
+/// Registers the bundled themes, watches the user's `themes_folder` when
+/// given, and applies the preferences, then follows their changes.
+pub fn init(themes: Vec<ThemeConfig>, themes_folder: Option<PathBuf>, cx: &mut App) {
+    let registry = ThemeRegistry::global_mut(cx);
+    let kit_defaults = vec![
+        registry.default_light_theme().clone(),
+        registry.default_dark_theme().clone(),
+    ];
+    registry.add_bundled_themes(themes);
+    cx.set_global(KitDefaults(kit_defaults));
     let dark = matches!(
         cx.window_appearance(),
         WindowAppearance::Dark | WindowAppearance::VibrantDark
@@ -163,6 +113,13 @@ pub fn init(themes: Vec<ThemeConfig>, cx: &mut App) {
     cx.set_global(Applied::default());
     apply(cx);
     cx.observe_global::<PrefsStore>(apply).detach();
+    // A theme file that changes in the folder may be the one in force.
+    cx.observe_global::<ThemeRegistry>(apply).detach();
+    if let Some(folder) = themes_folder
+        && let Err(error) = ThemeRegistry::watch_dir(folder, cx, apply)
+    {
+        tracing::error!("couldn't read the themes folder: {error}");
+    }
 }
 
 /// Records the system's appearance, which windows report as it changes.
@@ -179,7 +136,7 @@ pub fn set_system_appearance(appearance: WindowAppearance, cx: &mut App) {
 
 /// Shows `name` in place of the chosen theme, or the chosen one again.
 pub fn preview(name: Option<&str>, cx: &mut App) {
-    let theme = name.and_then(|name| cx.global::<Catalog>().find(name).cloned());
+    let theme = name.and_then(|name| find(name, cx));
     cx.global_mut::<Preview>().theme = theme;
     apply(cx);
 }
@@ -212,21 +169,11 @@ pub fn chosen_theme(cx: &App) -> Rc<ThemeConfig> {
     } else {
         (&appearance.light_theme, prefs::DEFAULT_LIGHT_THEME)
     };
-    let catalog = cx.global::<Catalog>();
-    catalog
-        .find(name)
-        .or_else(|| catalog.find(fallback))
-        .cloned()
+    find(name, cx)
+        .or_else(|| find(fallback, cx))
         .unwrap_or_else(|| {
-            let mode = if dark {
-                ThemeMode::Dark
-            } else {
-                ThemeMode::Light
-            };
-            Rc::new(ThemeConfig {
-                mode,
-                ..ThemeConfig::default()
-            })
+            let kit_defaults = &cx.global::<KitDefaults>().0;
+            kit_defaults[usize::from(dark)].clone()
         })
 }
 
@@ -238,26 +185,26 @@ pub fn apply(cx: &mut App) {
         .theme
         .clone()
         .unwrap_or_else(|| chosen_theme(cx));
-    let fonts = fonts_in_force(cx);
+    let fonts = font_overrides(cx);
     let motion = prefs::get(cx).appearance.motion;
     let last = cx.global::<Applied>().clone();
 
-    if last.theme.as_ref() != Some(&theme.name) {
-        Theme::update(cx, |t| t.apply_config(&theme));
-    }
-    // Applying a theme puts its own fonts back, so they go on again after
-    // every theme change. Workaround until GPUI Kit's font overrides, which
-    // survive theme changes: then they're set once, with the zoom.
-    if last.theme.as_ref() != Some(&theme.name) || last.fonts.as_ref() != Some(&fonts) {
+    // A theme file reloaded from the folder is a new config under the same
+    // name, so the configs are compared, not their names.
+    let theme_changed = !last
+        .theme
+        .as_ref()
+        .is_some_and(|last| Rc::ptr_eq(last, &theme));
+    let fonts_changed = last.fonts.as_ref() != Some(&fonts);
+    if theme_changed || fonts_changed {
+        // The fonts outlast every theme applied after them.
         Theme::update(cx, |t| {
-            if let Some(family) = &fonts.ui_family {
-                t.font_family = family.clone();
+            if fonts_changed {
+                t.set_font_overrides(fonts.clone());
             }
-            t.font_size = fonts.ui_size;
-            if let Some(family) = &fonts.code_family {
-                t.mono_font_family = family.clone();
+            if theme_changed {
+                t.apply_config(&theme);
             }
-            t.mono_font_size = fonts.code_size;
         });
     }
     if last.motion != Some(motion) {
@@ -268,24 +215,27 @@ pub fn apply(cx: &mut App) {
         }
     }
     cx.set_global(Applied {
-        theme: Some(theme.name.clone()),
+        theme: Some(theme),
         fonts: Some(fonts),
         motion: Some(motion),
     });
 }
 
-fn fonts_in_force(cx: &mut App) -> FontsInForce {
+/// The fonts and sizes the preferences and zoom ask for. A family the text
+/// system can't draw is left to the theme.
+fn font_overrides(cx: &mut App) -> FontOverrides {
     let appearance = prefs::get(cx).appearance.clone();
     let zoom = appearance.zoom();
-    let family = |name: &str, cx: &mut App| {
-        fonts::is_available(name, cx).then(|| SharedString::from(name.to_string()))
-    };
-    FontsInForce {
-        ui_family: family(&appearance.ui_font.family, cx),
-        ui_size: px((appearance.ui_font.size() * zoom).round()),
-        code_family: family(&appearance.code_font.family, cx),
-        code_size: px((appearance.code_font.size() * zoom).round()),
+    let mut fonts = FontOverrides::new()
+        .with_font_size(px((appearance.ui_font.size() * zoom).round()))
+        .with_mono_font_size(px((appearance.code_font.size() * zoom).round()));
+    if fonts::is_available(&appearance.ui_font.family, cx) {
+        fonts = fonts.with_font_family(appearance.ui_font.family.clone());
     }
+    if fonts::is_available(&appearance.code_font.family, cx) {
+        fonts = fonts.with_mono_font_family(appearance.code_font.family.clone());
+    }
+    fonts
 }
 
 /// Zooms in (`direction` > 0), out (< 0) or back to 100 % (0).
@@ -303,77 +253,17 @@ pub fn zoom(direction: i32, cx: &mut App) {
 mod tests {
     use super::*;
 
-    fn theme(name: &str, dark: bool) -> ThemeConfig {
-        ThemeConfig {
-            name: name.to_string().into(),
-            mode: if dark {
-                ThemeMode::Dark
-            } else {
-                ThemeMode::Light
-            },
-            ..ThemeConfig::default()
-        }
-    }
-
     #[test]
     fn every_bundled_theme_parses_and_the_default_pair_is_there() {
         let themes = parse_bundled();
         assert!(themes.len() >= 41, "{} themes", themes.len());
-        let catalog = Catalog::new(themes);
-        assert!(
-            !catalog
-                .find(prefs::DEFAULT_LIGHT_THEME)
-                .unwrap()
-                .mode
-                .is_dark()
-        );
-        assert!(
-            catalog
-                .find(prefs::DEFAULT_DARK_THEME)
-                .unwrap()
-                .mode
-                .is_dark()
-        );
-    }
-
-    #[test]
-    fn a_user_theme_replaces_a_bundled_one_of_the_same_name() {
-        let mut replacement = theme("ALDUIN", true);
-        replacement.radius = Some(2);
-        let merged = merge(
-            vec![theme("Alduin", true), theme("Fern", false)],
-            vec![replacement, theme("Mine", false)],
-        );
-        let names: Vec<_> = merged.iter().map(|theme| theme.name.to_string()).collect();
-        assert_eq!(names, ["ALDUIN", "Fern", "Mine"]);
-        assert_eq!(merged[0].radius, Some(2));
-    }
-
-    #[test]
-    fn user_theme_files_that_dont_parse_are_skipped() {
-        let folder = tempfile::tempdir().unwrap();
-        std::fs::write(folder.path().join("broken.json"), "{").unwrap();
-        std::fs::write(
-            folder.path().join("mine.json"),
-            r#"{ "name": "Mine", "themes": [ { "name": "Mine Dark", "mode": "dark" } ] }"#,
-        )
-        .unwrap();
-        std::fs::write(folder.path().join("notes.txt"), "x").unwrap();
-        let themes = read_user_themes(folder.path());
-        assert_eq!(themes.len(), 1);
-        assert_eq!(themes[0].name, "Mine Dark");
-        assert!(read_user_themes(&folder.path().join("missing")).is_empty());
-    }
-
-    #[test]
-    fn the_catalog_lists_by_mode_and_name() {
-        let catalog = Catalog::new(vec![
-            theme("b dark", true),
-            theme("A light", false),
-            theme("a dark", true),
-        ]);
-        let dark: Vec<_> = catalog.of_mode(true).map(|t| t.name.to_string()).collect();
-        assert_eq!(dark, ["a dark", "b dark"]);
-        assert_eq!(catalog.find("A LIGHT").unwrap().name, "A light");
+        let mode = |name: &str| {
+            themes
+                .iter()
+                .find(|theme| theme.name == name)
+                .map(|theme| theme.mode.is_dark())
+        };
+        assert_eq!(mode(prefs::DEFAULT_LIGHT_THEME), Some(false));
+        assert_eq!(mode(prefs::DEFAULT_DARK_THEME), Some(true));
     }
 }

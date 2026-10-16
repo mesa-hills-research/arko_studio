@@ -7,6 +7,15 @@ Arko Studio is licensed under the MIT License or the Apache License, Version
 Arko Studio bundles the third-party files below, each under its own license.
 
 
+Work Sans and JetBrains Mono
+  Variable fonts from GPUI Kit's asset crate, built into the binary
+  Work Sans: Copyright 2019 The Work Sans Project Authors
+  (https://github.com/weiweihuanghuang/Work-Sans)
+  JetBrains Mono: Copyright 2020 The JetBrains Mono Project Authors
+  (https://github.com/JetBrains/JetBrainsMono)
+  SIL Open Font License 1.1, in GPUI Kit's crates/assets/fonts/work-sans/OFL.txt
+  and crates/assets/fonts/jetbrains-mono/OFL.txt
+
 Color themes (themes/*.json)
   From Arko, which takes them from GPUI Kit
   (https://github.com/mesa-hills-research/gpui_kit), based on the themes of

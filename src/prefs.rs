@@ -89,8 +89,8 @@ pub enum Motion {
 
 pub const DEFAULT_LIGHT_THEME: &str = "macOS Classic Light";
 pub const DEFAULT_DARK_THEME: &str = "macOS Classic Dark";
-pub const DEFAULT_UI_FONT: &str = "Work Sans";
-pub const DEFAULT_CODE_FONT: &str = "JetBrains Mono";
+pub const DEFAULT_UI_FONT: &str = gpui_kit::assets::fonts::WORK_SANS_FAMILY;
+pub const DEFAULT_CODE_FONT: &str = gpui_kit::assets::fonts::JETBRAINS_MONO_FAMILY;
 /// The interface's base size at 100 % zoom: the rem every size derives from.
 pub const DEFAULT_UI_SIZE: f32 = 16.;
 pub const DEFAULT_CODE_SIZE: f32 = 13.;

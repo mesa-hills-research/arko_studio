@@ -12,14 +12,10 @@ use gpui_kit::{App, Global, SharedString};
 /// Font files Arko Studio reads from the fonts folder.
 const FONT_EXTENSIONS: [&str; 4] = ["ttf", "otf", "ttc", "otc"];
 
-/// The fonts Arko Studio bundles: Work Sans for the interface and JetBrains
-/// Mono for code, both variable, upright and italic.
-///
-/// Workaround until GPUI Kit's `fonts` feature lands (it bundles the same
-/// files for every app on the kit): until then the app ships none, and the
-/// interface falls back to the theme's fonts when these aren't installed.
+/// The fonts Arko Studio bundles, from GPUI Kit: Work Sans for the
+/// interface and JetBrains Mono for code, both variable, upright and italic.
 pub fn bundled() -> Vec<Cow<'static, [u8]>> {
-    Vec::new()
+    gpui_kit::assets::fonts::all()
 }
 
 /// The font files the user added earlier, read from `folder`.

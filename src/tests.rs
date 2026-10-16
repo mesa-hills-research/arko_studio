@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use gpui_kit::component::{Theme, WindowExt as _};
+use gpui_kit::component::{Theme, ThemeRegistry, WindowExt as _};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Entity, Point, TestAppContext, Window,
@@ -372,6 +372,36 @@ fn system_mode_follows_the_systems_appearance(cx: &mut TestAppContext) {
     assert_eq!(name(cx), prefs::DEFAULT_DARK_THEME);
     cx.update(|cx| crate::appearance::set_system_appearance(gpui_kit::WindowAppearance::Light, cx));
     assert_eq!(name(cx), prefs::DEFAULT_LIGHT_THEME);
+}
+
+#[gpui_kit::test]
+fn the_theme_lists_hold_the_bundled_themes_by_mode(cx: &mut TestAppContext) {
+    start(cx);
+    let light = cx.read(|cx| crate::appearance::theme_names(false, cx));
+    let dark = cx.read(|cx| crate::appearance::theme_names(true, cx));
+    assert!(light.iter().any(|name| name == prefs::DEFAULT_LIGHT_THEME));
+    assert!(dark.iter().any(|name| name == prefs::DEFAULT_DARK_THEME));
+    assert!(!light.iter().any(|name| name == prefs::DEFAULT_DARK_THEME));
+    // GPUI Kit's own pair stays out of them.
+    assert_eq!(
+        light.len() + dark.len(),
+        crate::appearance::parse_bundled().len()
+    );
+}
+
+#[gpui_kit::test]
+fn a_theme_that_changes_while_in_use_shows_at_once(cx: &mut TestAppContext) {
+    start(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.theme_mode = ThemeMode::Light));
+    // As when the user edits their copy of the theme in the themes folder.
+    cx.update(|cx| {
+        let theme = crate::appearance::find(prefs::DEFAULT_LIGHT_THEME, cx).unwrap();
+        let mut edited = (*theme).clone();
+        edited.radius = Some(13);
+        ThemeRegistry::global_mut(cx).add_bundled_themes([edited]);
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| Theme::global(cx).radius), px(13.));
 }
 
 #[gpui_kit::test]

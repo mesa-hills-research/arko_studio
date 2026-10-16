@@ -69,4 +69,4 @@ source is laid out.
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
 [MIT license](LICENSE-MIT), at your option.
 
-The bundled color themes and icons keep their own licenses, listed in [NOTICE](NOTICE).
+The bundled fonts, color themes and icons keep their own licenses, listed in [NOTICE](NOTICE).

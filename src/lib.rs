@@ -60,6 +60,8 @@ pub struct Startup {
     backend: Arc<dyn Backend>,
     /// The user's home folder.
     home: Option<PathBuf>,
+    /// The user's themes, watched while the app runs.
+    themes_folder: Option<PathBuf>,
 }
 
 enum Themes {
@@ -69,20 +71,14 @@ enum Themes {
 }
 
 impl Startup {
-    /// Reads Arko's folder. The themes are parsed on another thread, which
-    /// [`init`] waits for.
+    /// Reads Arko's folder. The bundled themes are parsed on another
+    /// thread, which [`init`] waits for.
     pub fn load() -> Self {
         let arko = paths::arko_folder().unwrap_or_else(|| PathBuf::from("arko"));
         let prefs = Prefs::load(&paths::prefs_file(&arko));
-        let themes_folder = paths::themes_folder(&arko);
         let themes = std::thread::Builder::new()
             .name("themes".into())
-            .spawn(move || {
-                appearance::merge(
-                    appearance::parse_bundled(),
-                    appearance::read_user_themes(&themes_folder),
-                )
-            })
+            .spawn(appearance::parse_bundled)
             .map(Themes::Loading)
             .unwrap_or_else(|_| Themes::Ready(appearance::parse_bundled()));
         let added_fonts = fonts::added(&paths::fonts_folder(&arko));
@@ -99,6 +95,7 @@ impl Startup {
             added_fonts,
             backend,
             home: session_view::home_from_env(),
+            themes_folder: Some(paths::themes_folder(&arko)),
         }
     }
 
@@ -113,6 +110,7 @@ impl Startup {
             added_fonts: Vec::new(),
             backend,
             home: Some(PathBuf::from("/home/ada")),
+            themes_folder: None,
         }
     }
 
@@ -120,6 +118,12 @@ impl Startup {
     /// the interface fonts this way).
     pub fn with_fonts(mut self, fonts: Vec<Cow<'static, [u8]>>) -> Self {
         self.bundled_fonts.extend(fonts);
+        self
+    }
+
+    /// Reads and watches the user's themes in `folder`.
+    pub fn with_themes_folder(mut self, folder: PathBuf) -> Self {
+        self.themes_folder = Some(folder);
         self
     }
 
@@ -147,7 +151,7 @@ pub fn init(startup: Startup, cx: &mut App) {
             .join()
             .unwrap_or_else(|_| appearance::parse_bundled()),
     };
-    appearance::init(themes, cx);
+    appearance::init(themes, startup.themes_folder, cx);
     // Before any title bar builds its menu bar.
     menus::init(cx);
 }
