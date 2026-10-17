@@ -244,41 +244,7 @@ impl SettingsPage {
                     ),
                 ],
             ),
-            planned_page(
-                PAGES[3],
-                IconName::FolderOpen,
-                &[
-                    (
-                        "Handover size",
-                        "When the main agent and workers hand over to a fresh conversation.",
-                    ),
-                    (
-                        "Background after",
-                        "When a running command moves to the background.",
-                    ),
-                    (
-                        "Outside access",
-                        "Whether new sessions may touch files outside their folder.",
-                    ),
-                    (
-                        "Text replies",
-                        "Whether the agent ends its turns with a reply in text.",
-                    ),
-                    (
-                        "Claude Code compaction",
-                        "Whether Claude Code compacts or hands over.",
-                    ),
-                    (
-                        "Extra rules and project instructions",
-                        "What new agents are told.",
-                    ),
-                    (
-                        "Chat instructions",
-                        "Your custom instructions for chats, and what happens at the context limit.",
-                    ),
-                    ("Quitting", "Whether to ask about background jobs."),
-                ],
-            ),
+            sessions_page(),
             notifications_page(),
             planned_page(
                 PAGES[5],
@@ -579,23 +545,28 @@ fn pending(item: SettingItem, description: &str) -> SettingItem {
 
 fn input_page() -> SettingPage {
     let defaults = prefs::Input::default();
-    // PENDING(K1): send key, spell check and word suggestions come with GPUI
-    // Kit's writing tools (the composer's submit key, the spell checker and
-    // the word list), and pasting as a token with the composer's tokens.
-    // Until then they show what they'll do, unavailable.
+    let modifier = if cfg!(target_os = "macos") {
+        "⌘"
+    } else {
+        "Ctrl+"
+    };
+    // Spell check, word suggestions and paste tokens come with the
+    // composer's tools: until then they show what they'll do, unavailable.
     SettingPage::new(PAGES[1])
         .icon(IconName::ALargeSmall)
         .groups([
-            SettingGroup::new().title("Sending").item(pending(
+            SettingGroup::new().title("Sending").item(
                 choice(
                     "Send key",
                     send_key_options(),
                     |prefs| prefs.input.send_key,
                     |prefs, key| prefs.input.send_key = key,
                     defaults.send_key,
-                ),
-                "The key that sends a message. The other one adds a line.",
-            )),
+                )
+                .description(format!(
+                    "The key that sends a message; the other one adds a line. {modifier}Enter always sends too."
+                )),
+            ),
             SettingGroup::new().title("Typing").items([
                 switch(
                     "Smooth typing",
@@ -703,8 +674,66 @@ fn notifications_page() -> SettingPage {
         ]))
 }
 
-/// A page whose settings come with the engine: their names and what they'll
-/// do, without controls yet.
+/// Sessions: asking before quitting works; the defaults for new sessions
+/// come later.
+fn sessions_page() -> SettingPage {
+    let defaults = prefs::SessionPrefs::default();
+    SettingPage::new(PAGES[3])
+        .icon(IconName::FolderOpen)
+        .groups([
+            SettingGroup::new().title("Quitting").item(switch(
+                "Ask about running work",
+                "Before quitting or closing a session stops background jobs and workers.",
+                |prefs| prefs.sessions.ask_before_quit,
+                |prefs, on| prefs.sessions.ask_before_quit = on,
+                defaults.ask_before_quit,
+            )),
+            SettingGroup::new()
+                .title("New sessions")
+                .description("These settings come with a later version.")
+                .items(
+                    [
+                        (
+                            "Handover size",
+                            "When the main agent and workers hand over to a fresh conversation.",
+                        ),
+                        (
+                            "Background after",
+                            "When a running command moves to the background.",
+                        ),
+                        (
+                            "Outside access",
+                            "Whether new sessions may touch files outside their folder.",
+                        ),
+                        (
+                            "Text replies",
+                            "Whether the agent ends its turns with a reply in text.",
+                        ),
+                        (
+                            "Claude Code compaction",
+                            "Whether Claude Code compacts or hands over.",
+                        ),
+                        (
+                            "Extra rules and project instructions",
+                            "What new agents are told.",
+                        ),
+                        (
+                            "Chat instructions",
+                            "Your custom instructions for new chats, and what happens at the context limit.",
+                        ),
+                    ]
+                    .into_iter()
+                    .map(|(title, description)| {
+                        SettingItem::new(title, SettingField::render(|_, _, _| div()))
+                            .description(description)
+                            .disabled(true)
+                    }),
+                ),
+        ])
+}
+
+/// A page whose settings come later: their names and what they'll do,
+/// without controls yet.
 fn planned_page(
     title: &'static str,
     icon: IconName,

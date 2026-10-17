@@ -87,9 +87,15 @@ pub fn remember_placement(window: &Window, cx: &mut App) {
 /// The one close check. The macOS and Windows close buttons, Alt+F4, the
 /// Linux compositor and title bar, Close Window and Quit all end here.
 ///
-/// To ask about running work, show a dialog, return `false`, and call
-/// `window.remove_window()` (or `quit` again) once the user decides.
-pub fn can_close(_window: &mut Window, _cx: &mut App) -> bool {
+/// Closing the last window quits the app on Windows and Linux, so its
+/// sessions close first (asking about the work still running), and the app
+/// quits once they did. On macOS the app and its sessions run on.
+pub fn can_close(window: &mut Window, cx: &mut App) -> bool {
+    let last = cx.windows().len() <= 1;
+    if last && !cfg!(target_os = "macos") && crate::quit::any_running(cx) {
+        crate::quit::quit(window, cx);
+        return false;
+    }
     true
 }
 
@@ -108,6 +114,15 @@ pub fn close_window(window: &mut Window, cx: &mut App) {
 pub fn quit(cx: &mut App) {
     // Deferred, so the window that sent Quit is free to answer too.
     cx.defer(|cx| {
+        // The sessions close first, asking about their work in one window.
+        if crate::quit::any_running(cx)
+            && let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied())
+        {
+            window
+                .update(cx, |_, window, cx| crate::quit::quit(window, cx))
+                .ok();
+            return;
+        }
         let all_agree = cx.windows().into_iter().all(|window| {
             window
                 .update(cx, |_, window, cx| can_close(window, cx))

@@ -9,15 +9,16 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::appearance;
-use crate::backend::{SessionHandle, SessionId, SharedBackend};
+use crate::backend::{SessionEntry, SessionId};
 use crate::layout::WidthClass;
+use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase};
 use crate::prefs::{self, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
-use crate::session_view::{SessionView, not_yet, recent_folders};
+use crate::session_view::{SessionView, SessionViewEvent, not_yet, recent_folders};
 use crate::settings_page::{CloseRequested, SettingsPage};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::title_bar::AppTitleBar;
 use crate::workers_panel::WorkersPanel;
-use crate::{about, chrome, menus, palette, shortcuts, status_bar};
+use crate::{about, chrome, menus, palette, prompts, quit, shortcuts, status_bar};
 
 /// The narrowest and widest the workers panel docks, in rem.
 const MIN_PANEL_WIDTH: f32 = 16.;
@@ -83,8 +84,11 @@ pub struct Workspace {
     session_view: Entity<SessionView>,
     workers: Entity<WorkersPanel>,
     settings: Option<Entity<SettingsPage>>,
-    /// The session open here, held so it stays open.
-    handle: Option<SessionHandle>,
+    /// The session this window shows. It runs on whether shown or not.
+    session: Option<Entity<LiveSession>>,
+    _session: Vec<Subscription>,
+    /// The title the window last showed.
+    shown_title: Option<SharedString>,
     width: WidthClass,
     workers_open: bool,
     /// The pane showing as a sheet over a narrow window.
@@ -123,6 +127,7 @@ impl Workspace {
                 }
             }),
             cx.subscribe_in(&sidebar, window, Self::on_sidebar_event),
+            cx.subscribe_in(&session_view, window, Self::on_session_view_event),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 this.prefs_changed(window, cx)
             }),
@@ -135,7 +140,9 @@ impl Workspace {
             session_view,
             workers,
             settings: None,
-            handle: None,
+            session: None,
+            _session: Vec::new(),
+            shown_title: None,
             width: WidthClass::of(window.viewport_size().width),
             workers_open: false,
             sheet: None,
@@ -151,8 +158,19 @@ impl Workspace {
     }
 
     fn focus_composer(&self, window: &mut Window, cx: &mut App) {
-        let composer = self.session_view.read(cx).composer().clone();
-        composer.update(cx, |composer, cx| composer.focus(window, cx));
+        let textarea = self
+            .session_view
+            .read(cx)
+            .composer()
+            .read(cx)
+            .textarea()
+            .clone();
+        textarea.update(cx, |textarea, cx| textarea.focus(window, cx));
+    }
+
+    /// The session this window shows.
+    pub fn live_session(&self) -> Option<&Entity<LiveSession>> {
+        self.session.as_ref()
     }
 
     pub fn sidebar(&self) -> &Entity<Sidebar> {
@@ -213,16 +231,24 @@ impl Workspace {
 
     /// Shows the open session's title in the title bar and window switchers.
     fn sync_chrome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let entry = self.handle.as_ref().map(|handle| handle.entry.clone());
-        let title = entry
-            .as_ref()
-            .map(|entry| SharedString::from(entry.title.clone()))
+        let session = self.session.as_ref().map(|session| session.read(cx));
+        let title = session
+            .map(|session| session.title().clone())
             .unwrap_or_else(|| "New session".into());
-        let folder = entry
-            .as_ref()
-            .and_then(|entry| entry.workspace.as_ref())
+        let folder = session
+            .and_then(|session| session.workspace())
             .and_then(|folder| folder.file_name())
             .map(|name| SharedString::from(name.to_string_lossy().into_owned()));
+        let had_workers = session.is_some_and(|session| !session.workers().is_empty())
+            || self.session.as_ref().is_some_and(|session| {
+                let id = session.read(cx).id();
+                self.sidebar
+                    .read(cx)
+                    .sessions()
+                    .iter()
+                    .any(|entry| Some(&entry.id) == id && entry.had_workers)
+            });
+        self.shown_title = Some(title.clone());
         let open = match self.width.docks_sidebar() {
             true => prefs::get(cx).sidebar.open,
             false => self.sheet == Some(Edge::Sidebar),
@@ -233,8 +259,7 @@ impl Workspace {
             true => self.workers_open,
             false => self.sheet == Some(Edge::Panel),
         };
-        let workers = (entry.as_ref().is_some_and(|entry| entry.had_workers) || workers_open)
-            .then_some(workers_open);
+        let workers = (had_workers || workers_open).then_some(workers_open);
         self.title_bar.update(cx, |bar, cx| {
             bar.set_session(Some(title.clone()), folder, cx);
             bar.set_sidebar_open(open, cx);
@@ -243,40 +268,73 @@ impl Workspace {
         window.set_window_title(&format!("{title} – {}", crate::APP_NAME));
     }
 
-    /// Opens a session in this window, closing the one open here.
+    /// Shows the session `id` in this window: the one running in this app,
+    /// or it opens. The session shown before keeps running.
     pub fn open_session(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
         if self
-            .handle
+            .session
             .as_ref()
-            .is_some_and(|handle| handle.entry.id == id)
+            .is_some_and(|session| session.read(cx).id() == Some(&id))
         {
             self.after_choosing(window, cx);
             return;
         }
-        let backend = cx.global::<SharedBackend>().clone();
-        let opening = cx.background_spawn(async move { backend.open(&id) });
-        cx.spawn_in(window, async move |this, cx| {
-            let opened = opening.await;
-            this.update_in(cx, |this, window, cx| match opened {
-                Ok(handle) => {
-                    this.close_session(cx);
-                    this.show(Some(handle), window, cx);
-                    this.after_choosing(window, cx);
-                }
-                Err(error) => {
-                    let host = std::env::var("HOSTNAME").ok();
-                    window.push_notification(
-                        Notification::error(format!(
-                            "Couldn’t open the session. {}",
-                            error.message(host.as_deref())
-                        )),
-                        cx,
-                    );
-                }
-            })
-            .ok();
-        })
-        .detach();
+        let session = match LiveSessions::find(&id, cx) {
+            Some(session) => session,
+            None => {
+                let entry = self
+                    .sidebar
+                    .read(cx)
+                    .sessions()
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .cloned()
+                    .unwrap_or_else(|| SessionEntry {
+                        id: id.clone(),
+                        title: "Session".into(),
+                        mode: crate::backend::Mode::Agent,
+                        workspace: None,
+                        model: String::new(),
+                        created: std::time::SystemTime::now(),
+                        last_active: None,
+                        conversations: Vec::new(),
+                        holder: None,
+                        had_workers: false,
+                    });
+                LiveSession::resume(&entry, cx)
+            }
+        };
+        // Refused at once: open elsewhere, or gone.
+        if let Phase::Failed(why) = session.read(cx).phase() {
+            window.push_notification(
+                Notification::error(format!("Couldn’t open the session. {why}")),
+                cx,
+            );
+            return;
+        }
+        self.show(Some(session), window, cx);
+        self.after_choosing(window, cx);
+    }
+
+    /// Shows the conversation `number` of the session `id`, as `/resume N`.
+    fn open_conversation(
+        &mut self,
+        id: SessionId,
+        number: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_session(id.clone(), window, cx);
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let input = arko::Input::Message(arko::Message {
+            text: format!("/resume {number}"),
+            images: Vec::new(),
+        });
+        if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
+            window.push_notification(why, cx);
+        }
     }
 
     /// After a session is picked: the sheet closes and the composer has focus.
@@ -327,29 +385,135 @@ impl Workspace {
         self.sync_chrome(window, cx);
     }
 
-    fn close_session(&mut self, cx: &mut Context<Self>) {
-        if let Some(handle) = self.handle.take() {
-            let backend = cx.global::<SharedBackend>().clone();
-            cx.background_spawn(async move { backend.close(handle) })
-                .detach();
+    /// Shows `session` here, or a new session when `None`.
+    fn show(
+        &mut self,
+        session: Option<Entity<LiveSession>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._session.clear();
+        if let Some(session) = &session {
+            self._session
+                .push(cx.subscribe_in(session, window, Self::on_live_event));
+            // The title follows the session's name as the engine gives it.
+            self._session
+                .push(cx.observe_in(session, window, |this, session, window, cx| {
+                    if this.shown_title.as_ref() != Some(session.read(cx).title()) {
+                        this.sync_chrome(window, cx);
+                    }
+                }));
         }
-    }
-
-    fn show(&mut self, handle: Option<SessionHandle>, window: &mut Window, cx: &mut Context<Self>) {
-        let entry = handle.as_ref().map(|handle| handle.entry.clone());
-        let id = entry.as_ref().map(|entry| entry.id.clone());
-        self.handle = handle;
+        let id = session
+            .as_ref()
+            .and_then(|session| session.read(cx).id().cloned());
+        self.session = session.clone();
         self.session_view
-            .update(cx, |view, cx| view.set_session(entry, cx));
+            .update(cx, |view, cx| view.set_session(session.clone(), window, cx));
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_active(id, cx));
         self.sync_chrome(window, cx);
     }
 
     fn new_session(&mut self, _: &menus::NewSession, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_session(cx);
         self.show(None, window, cx);
         self.after_choosing(window, cx);
+    }
+
+    /// What the session this window shows says.
+    fn on_live_event(
+        &mut self,
+        session: &Entity<LiveSession>,
+        event: &LiveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            LiveEvent::Opened => {
+                // A new session has its id now, and a row in the list.
+                let id = session.read(cx).id().cloned();
+                self.sidebar.update(cx, |sidebar, cx| {
+                    sidebar.set_active(id, cx);
+                    sidebar.refresh(cx);
+                });
+                self.sync_chrome(window, cx);
+            }
+            LiveEvent::Failed(why) => {
+                if let Some(why) = why {
+                    window.push_notification(
+                        Notification::error(format!("Couldn’t open the session. {why}")),
+                        cx,
+                    );
+                }
+                self.show(None, window, cx);
+            }
+            LiveEvent::Ended => {
+                self.show(None, window, cx);
+                self.sidebar.update(cx, |sidebar, cx| sidebar.refresh(cx));
+            }
+            LiveEvent::TurnEnded => {
+                self.sidebar.update(cx, |sidebar, cx| sidebar.refresh(cx));
+                self.sync_chrome(window, cx);
+            }
+            // `/exit` typed with jobs or workers running: closing asks first.
+            // (A close the app started asks through its own dialog.)
+            LiveEvent::QuitAsked if *session.read(cx).phase() != Phase::Closing => {
+                let Some(ask) = session.read(cx).quit_ask().cloned() else {
+                    return;
+                };
+                if !prefs::get(cx).sessions.ask_before_quit {
+                    session.update(cx, |session, cx| session.agree_to_quit(cx));
+                    return;
+                }
+                let work = vec![(session.read(cx).title().clone(), ask)];
+                let session = session.clone();
+                prompts::confirm_stop(work, false, window, cx, move |agreed, _, cx| {
+                    session.update(cx, |session, cx| {
+                        if agreed {
+                            session.agree_to_quit(cx)
+                        } else {
+                            session.cancel_close(cx)
+                        }
+                    });
+                });
+            }
+            LiveEvent::Refused(why) => window.push_notification(why.clone(), cx),
+            _ => {}
+        }
+    }
+
+    fn on_session_view_event(
+        &mut self,
+        _: &Entity<SessionView>,
+        event: &SessionViewEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SessionViewEvent::Created(session) => {
+                if let Phase::Failed(why) = session.read(cx).phase() {
+                    window.push_notification(
+                        Notification::error(format!("Couldn’t start the session. {why}")),
+                        cx,
+                    );
+                    return;
+                }
+                self.show(Some(session.clone()), window, cx);
+                self.sidebar.update(cx, |sidebar, cx| sidebar.refresh(cx));
+            }
+        }
+    }
+
+    /// Closes the session shown here, asking first about what runs.
+    fn close_shown_session(
+        &mut self,
+        _: &menus::CloseSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = self.session.clone() {
+            quit::close(vec![session], false, window, cx);
+        }
     }
 
     fn on_sidebar_event(
@@ -359,18 +523,19 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let shows = |this: &Self, id: &SessionId, cx: &App| {
+            this.session
+                .as_ref()
+                .is_some_and(|session| session.read(cx).id() == Some(id))
+        };
         match event {
-            SidebarEvent::Open(id) | SidebarEvent::OpenConversation(id, _) => {
-                self.open_session(id.clone(), window, cx)
+            SidebarEvent::Open(id) => self.open_session(id.clone(), window, cx),
+            SidebarEvent::OpenConversation(id, number) => {
+                self.open_conversation(id.clone(), *number, window, cx)
             }
             SidebarEvent::OpenInNewWindow(id) => {
-                let here = self
-                    .handle
-                    .as_ref()
-                    .is_some_and(|handle| &handle.entry.id == id);
-                if here {
-                    // It moves: a session is open in one window at a time.
-                    self.close_session(cx);
+                if shows(self, id, cx) {
+                    // It moves: the new window shows it, this one a new session.
                     self.show(None, window, cx);
                 }
                 let id = id.clone();
@@ -378,12 +543,8 @@ impl Workspace {
                     open_with(Some(id), cx);
                 });
             }
-            SidebarEvent::Renamed(id, title) => {
-                if let Some(handle) = self.handle.as_mut().filter(|handle| &handle.entry.id == id) {
-                    handle.entry.title = title.clone();
-                    let entry = handle.entry.clone();
-                    self.session_view
-                        .update(cx, |view, cx| view.set_session(Some(entry), cx));
+            SidebarEvent::Renamed(id, _) => {
+                if shows(self, id, cx) {
                     self.sync_chrome(window, cx);
                 }
             }
@@ -393,12 +554,7 @@ impl Workspace {
                     .update(cx, |view, cx| view.set_recent_folders(folders, cx));
             }
             SidebarEvent::Deleted(id) => {
-                if self
-                    .handle
-                    .as_ref()
-                    .is_some_and(|handle| &handle.entry.id == id)
-                {
-                    self.handle = None;
+                if shows(self, id, cx) {
                     self.show(None, window, cx);
                 }
             }
@@ -450,7 +606,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self.handle.as_ref().map(|handle| handle.entry.id.clone()) else {
+        let Some(id) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.read(cx).id().cloned())
+        else {
             return;
         };
         self.reveal_sidebar(window, cx);
@@ -466,7 +626,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(id) = self.handle.as_ref().map(|handle| handle.entry.id.clone()) {
+        if let Some(id) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.read(cx).id().cloned())
+        {
             self.sidebar
                 .update(cx, |sidebar, cx| sidebar.confirm_delete(id, window, cx));
         }
@@ -720,20 +884,35 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &menus::Minimize, window, _| window.minimize_window()))
             .on_action(cx.listener(|_, _: &menus::Zoom, window, _| window.zoom_window()))
             .on_action(cx.listener(|_, _: &menus::SessionInfo, window, cx| {
+                // HOOK(stage 3): the session info popover.
                 not_yet("Session info", window, cx)
             }))
             .on_action(cx.listener(|_, _: &menus::BranchSession, window, cx| {
+                // HOOK(engine): branching (D6).
                 not_yet("Branching", window, cx)
             }))
-            .on_action(cx.listener(|_, _: &menus::StopTurn, window, cx| {
-                not_yet("Stopping a turn", window, cx)
+            .on_action(cx.listener(|this, _: &menus::StopTurn, window, cx| {
+                this.session_view
+                    .update(cx, |view, cx| view.stop(window, cx));
             }))
-            .on_action(cx.listener(|_, _: &menus::MoveToBackground, window, cx| {
-                not_yet("Moving a command to the background", window, cx)
+            .on_action(
+                cx.listener(|this, _: &menus::MoveToBackground, window, cx| {
+                    this.session_view
+                        .update(cx, |view, cx| view.move_to_background(window, cx));
+                }),
+            )
+            .on_action(cx.listener(|this, _: &menus::HandOverNow, window, cx| {
+                if let Some(session) = this.session.clone() {
+                    let input = arko::Input::Message(arko::Message {
+                        text: "/handover".into(),
+                        images: Vec::new(),
+                    });
+                    if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
+                        window.push_notification(why, cx);
+                    }
+                }
             }))
-            .on_action(cx.listener(|_, _: &menus::HandOverNow, window, cx| {
-                not_yet("Handing over", window, cx)
-            }))
+            .on_action(cx.listener(Self::close_shown_session))
             .on_action(
                 cx.listener(|_, _: &menus::ExportMarkdown, window, cx| {
                     not_yet("Export", window, cx)

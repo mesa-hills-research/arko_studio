@@ -26,6 +26,7 @@ pub struct Prefs {
     pub workers_panel: PanelPrefs,
     /// How much of a session the transcript shows, app-wide.
     pub view: TranscriptView,
+    pub sessions: SessionPrefs,
 }
 
 impl Default for Prefs {
@@ -38,6 +39,24 @@ impl Default for Prefs {
             sidebar: SidebarPrefs::default(),
             workers_panel: PanelPrefs::default(),
             view: TranscriptView::Full,
+            sessions: SessionPrefs::default(),
+        }
+    }
+}
+
+/// How sessions behave, app-wide (Settings › Sessions).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionPrefs {
+    /// Quitting, or closing a session, asks first when background jobs or
+    /// workers would stop.
+    pub ask_before_quit: bool,
+}
+
+impl Default for SessionPrefs {
+    fn default() -> Self {
+        Self {
+            ask_before_quit: true,
         }
     }
 }

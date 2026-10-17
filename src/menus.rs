@@ -47,6 +47,7 @@ actions!(
         KeyboardShortcuts,
         OpenLogsFolder,
         OpenDataFolder,
+        CloseSession,
     ]
 );
 
@@ -248,6 +249,7 @@ fn session_menu() -> Menu {
         MenuItem::action("Move Command to Background", MoveToBackground),
         MenuItem::action("Hand Over Now", HandOverNow),
         MenuItem::separator(),
+        MenuItem::action("Close Session", CloseSession),
         MenuItem::action("Delete Session…", DeleteSession),
     ])
 }

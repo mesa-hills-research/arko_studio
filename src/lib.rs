@@ -1,8 +1,9 @@
 //! Arko Studio: the desktop app of the Arko agent, on GPUI and GPUI Kit.
 //!
-//! The interface talks to Arko's engine through [`backend::Backend`]. The
-//! binary (`src/main.rs`) sets up logging, reads a [`Startup`] and opens the
-//! first window after [`init`].
+//! The interface talks to Arko's engine through [`backend::Backend`], and
+//! runs each open session on the engine's threads ([`live`]). The binary
+//! (`src/main.rs`) sets up logging, reads a [`Startup`] and opens the first
+//! window after [`init`].
 
 pub mod about;
 pub mod appearance;
@@ -11,12 +12,16 @@ pub mod backend;
 mod bundled_themes;
 pub mod chrome;
 pub mod commands;
+pub mod composer;
 pub mod fonts;
 pub mod layout;
+pub mod live;
 pub mod menus;
 pub mod palette;
 pub mod paths;
 pub mod prefs;
+pub mod prompts;
+pub mod quit;
 pub mod session_view;
 pub mod settings_page;
 pub mod shortcuts;
@@ -27,6 +32,10 @@ pub mod title_bar;
 pub mod workers_panel;
 pub mod workspace;
 
+#[cfg(test)]
+mod engine_tests;
+#[cfg(test)]
+mod testing;
 #[cfg(test)]
 mod tests;
 
@@ -39,7 +48,7 @@ use gpui_kit::component::ThemeConfig;
 use gpui_kit::{App, QuitMode};
 
 use crate::appearance::ThemesFolder;
-use crate::backend::{Backend, FakeBackend, SharedBackend};
+use crate::backend::{ArkoBackend, Backend, SharedBackend};
 use crate::prefs::{Prefs, PrefsStore};
 
 /// The name people see in menus, window titles and the About dialog.
@@ -83,18 +92,12 @@ impl Startup {
             .map(Themes::Loading)
             .unwrap_or_else(|_| Themes::Ready(appearance::parse_bundled()));
         let added_fonts = fonts::added(&paths::fonts_folder(&arko));
-        // The engine's backend replaces this one once arko is a library:
-        // until then the sidebar lists sample sessions, kept in memory.
-        let backend = Arc::new(
-            FakeBackend::sample(&arko, std::time::SystemTime::now())
-                .with_default_model(backend::last_model(&arko)),
-        );
         Self {
             prefs: PrefsStore::new(prefs, Some(paths::prefs_file(&arko))),
             themes,
             bundled_fonts: fonts::bundled(),
             added_fonts,
-            backend,
+            backend: Arc::new(ArkoBackend::new(&arko)),
             home: session_view::home_from_env(),
             themes_folder: Some(ThemesFolder::Watch(paths::themes_folder(&arko))),
         }
@@ -146,6 +149,7 @@ pub fn init(startup: Startup, cx: &mut App) {
     prefs::init(startup.prefs, cx);
     cx.set_global(SharedBackend(startup.backend));
     cx.set_global(session_view::HomeFolder(startup.home));
+    live::init(cx);
     let themes = match startup.themes {
         Themes::Ready(themes) => themes,
         Themes::Loading(thread) => thread

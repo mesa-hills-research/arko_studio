@@ -1,15 +1,18 @@
 //! The boundary between Arko Studio's interface and arko's engine.
 //!
-//! The interface asks a [`Backend`] for the sessions in Arko's folder and
-//! acts on them. Its calls block (they read and write files, or wait for the
-//! engine), so the interface makes them on a background thread and applies
-//! the answers on the UI thread. [`FakeBackend`] answers from memory, for
-//! tests and for the interface's work before the engine is wired in; the
-//! engine's backend wraps arko's library (`arko::sessions`, `arko::Engine`).
+//! The interface asks a [`Backend`] for the sessions in Arko's folder, acts
+//! on them, and starts them. Its calls block (they read and write files), so
+//! the interface makes them on a background thread and applies the answers
+//! on the UI thread; [`Backend::start`] returns at once, the session opening
+//! on threads of its own. [`ArkoBackend`] wraps arko's library
+//! (`arko::sessions`, `arko::spawn`); [`FakeBackend`] answers from memory,
+//! for tests whose sessions don't need to run.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
+
+pub use arko::Holder;
 
 /// A session's id: the name of its folder in `<arko>/sessions`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -28,10 +31,38 @@ impl std::fmt::Display for SessionId {
 }
 
 /// How a session works: a chat (no tools, no folder) or an agent in a folder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Mode {
     Chat,
+    #[default]
     Agent,
+}
+
+impl Mode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Chat => "Chat",
+            Mode::Agent => "Agent",
+        }
+    }
+}
+
+impl From<arko::sessions::Mode> for Mode {
+    fn from(mode: arko::sessions::Mode) -> Self {
+        match mode {
+            arko::sessions::Mode::Chat => Mode::Chat,
+            _ => Mode::Agent,
+        }
+    }
+}
+
+impl From<Mode> for arko::sessions::Mode {
+    fn from(mode: Mode) -> Self {
+        match mode {
+            Mode::Chat => arko::sessions::Mode::Chat,
+            Mode::Agent => arko::sessions::Mode::Agent,
+        }
+    }
 }
 
 /// A conversation inside a session (the terminal's `/new` starts another,
@@ -45,32 +76,6 @@ pub struct ConversationEntry {
     pub current: bool,
 }
 
-/// Who has a session open. A session is open in one app at a time.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Holder {
-    /// `arko` (the terminal) or `arko-studio`.
-    pub app: String,
-    pub pid: u32,
-    pub host: String,
-}
-
-impl Holder {
-    /// "arko (process 4121)", with the host when it isn't this machine's.
-    pub fn describe(&self, this_host: Option<&str>) -> String {
-        let app = match self.app.as_str() {
-            "arko" => "arko in a terminal",
-            "arko-studio" => "another Arko Studio",
-            other => other,
-        };
-        match this_host {
-            Some(host) if host != self.host => {
-                format!("{app} (process {} on {})", self.pid, self.host)
-            }
-            _ => format!("{app} (process {})", self.pid),
-        }
-    }
-}
-
 /// A session as the list shows it, read without loading its conversation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionEntry {
@@ -81,7 +86,7 @@ pub struct SessionEntry {
     pub mode: Mode,
     /// The folder an agent works in. Chats have none.
     pub workspace: Option<PathBuf>,
-    /// The main agent's model, as arko names it.
+    /// The main agent's model, as arko describes it.
     pub model: String,
     pub created: SystemTime,
     /// When it was last worked in; `None` before its first message.
@@ -90,7 +95,8 @@ pub struct SessionEntry {
     /// Who has it open, when someone does.
     pub holder: Option<Holder>,
     /// Whether it has started workers, running now or finished: its
-    /// window then offers the workers panel.
+    /// window then offers the workers panel. (The listing doesn't know; an
+    /// open session's status says.)
     pub had_workers: bool,
 }
 
@@ -98,6 +104,29 @@ impl SessionEntry {
     /// When it was last worked in, or else made: what the list sorts by.
     pub fn activity(&self) -> SystemTime {
         self.last_active.unwrap_or(self.created)
+    }
+
+    fn from_arko(entry: arko::sessions::SessionEntry) -> Self {
+        Self {
+            id: SessionId(entry.id),
+            title: entry.title,
+            mode: entry.mode.into(),
+            workspace: entry.workspace,
+            model: entry.model,
+            created: entry.created.into(),
+            last_active: entry.last_active,
+            conversations: entry
+                .conversations
+                .into_iter()
+                .map(|conversation| ConversationEntry {
+                    number: u32::try_from(conversation.number).unwrap_or(u32::MAX),
+                    title: conversation.title,
+                    current: conversation.current,
+                })
+                .collect(),
+            holder: entry.holder,
+            had_workers: false,
+        }
     }
 }
 
@@ -115,32 +144,139 @@ pub enum BackendError {
 }
 
 impl BackendError {
-    pub fn message(&self, this_host: Option<&str>) -> String {
+    /// What went wrong, as a sentence or two for a notification.
+    pub fn message(&self) -> String {
         match self {
             BackendError::Locked {
                 holder: Some(holder),
-            } => {
-                format!("It’s open in {}.", holder.describe(this_host))
-            }
+            } => format!("It’s open in {}.", holder.describe()),
             BackendError::Locked { holder: None } => {
-                "It’s open in another copy of arko.".to_string()
+                "It’s open in another copy of Arko.".to_string()
             }
             BackendError::NotFound(id) => format!("There’s no session {id} any more."),
-            BackendError::Other(message) => message.clone(),
+            BackendError::Other(message) => sentence(message),
         }
     }
 }
 
-/// An open session. Holding it keeps the session's lock; dropping it closes
-/// the session.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SessionHandle {
-    pub entry: SessionEntry,
+/// `text` as a sentence: a capital first letter and a full stop.
+pub fn sentence(text: &str) -> String {
+    let text = text.trim();
+    let mut chars = text.chars();
+    let mut out: String = match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => return String::new(),
+    };
+    if !out.ends_with(['.', '!', '?']) {
+        out.push('.');
+    }
+    out
 }
 
-/// What Arko Studio needs from arko's engine to list and manage sessions.
+/// What deleting a session leaves: its workers' worktrees with changes
+/// that aren't committed stay, with their branches.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeletePlan {
+    /// Each with its branch, when it has one.
+    pub kept_worktrees: Vec<(PathBuf, Option<String>)>,
+}
+
+/// A new session, as the user set it up before its first message.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewSession {
+    pub mode: Mode,
+    /// The folder an agent session works in; chats have none.
+    pub folder: Option<PathBuf>,
+    /// The main agent's model as `/model` takes it; `None`: arko's default
+    /// (the last session's, else one the credentials allow).
+    pub model: Option<String>,
+    /// `None`: the model's default.
+    pub effort: Option<String>,
+}
+
+/// Which session to start.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Start {
+    Resume(SessionId),
+    New(NewSession),
+}
+
+/// A session starting.
+pub enum Launch {
+    /// It opens on its own threads: arko's engine.
+    Engine(arko::Running),
+    /// A sample session that shows but doesn't run ([`FakeBackend`]).
+    Sample(SessionEntry),
+    /// It can't start.
+    Refused(BackendError),
+}
+
+/// A way to reach some models: Claude Code, the Anthropic API, ...
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelGroup {
+    /// As the picker heads it: "Claude Code, on your Claude plan".
+    pub name: String,
+    /// What it needs that isn't there; its models can't be chosen.
+    pub needs: Option<String>,
+    pub models: Vec<ModelChoice>,
+}
+
+/// A model of a [`ModelGroup`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelChoice {
+    /// As `/model` takes it: `claude-opus-5-5`, `cc:claude-opus-5-5`.
+    pub name: String,
+    /// Its short name: `opus`.
+    pub alias: String,
+}
+
+/// The models a new session can start on.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ModelChoices {
+    pub groups: Vec<ModelGroup>,
+    /// What a new session starts on when none is chosen.
+    pub default: Option<String>,
+    /// Why the default isn't the last session's model (a credential it
+    /// needs is gone).
+    pub note: Option<String>,
+}
+
+impl ModelChoices {
+    pub fn from_arko(groups: Vec<arko::models::ModelGroup>, default: Option<String>) -> Self {
+        Self {
+            groups: groups
+                .into_iter()
+                .map(|group| ModelGroup {
+                    name: group.name,
+                    needs: group.needs,
+                    models: group
+                        .models
+                        .into_iter()
+                        .map(|(name, alias)| ModelChoice {
+                            name,
+                            alias: alias.to_string(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            default,
+            note: None,
+        }
+    }
+
+    /// Whether `name` can be chosen: its group needs nothing.
+    pub fn usable(&self, name: &str) -> bool {
+        self.groups.iter().any(|group| {
+            group.needs.is_none() && group.models.iter().any(|model| model.name == name)
+        })
+    }
+}
+
+/// What Arko Studio needs from arko's engine to list, manage and start
+/// sessions.
 ///
-/// Every method blocks: call them from a background task.
+/// Every method but [`Backend::start`] blocks: call them from a background
+/// task.
 pub trait Backend: Send + Sync + 'static {
     /// Arko's folder, shared with the terminal app.
     fn data_root(&self) -> &Path;
@@ -148,31 +284,32 @@ pub trait Backend: Send + Sync + 'static {
     /// Every session in Arko's folder, in no particular order.
     fn sessions(&self) -> Result<Vec<SessionEntry>, BackendError>;
 
-    /// Opens a session for this window. Fails with [`BackendError::Locked`]
-    /// while another app has it open.
-    fn open(&self, id: &SessionId) -> Result<SessionHandle, BackendError>;
-
-    /// Closes a session this app opened (the engine shuts it down and
-    /// releases its lock).
-    fn close(&self, handle: SessionHandle);
-
-    /// Renames a session. Works while it is open, here or elsewhere.
+    /// Renames a session that isn't open in this app (an open one is renamed
+    /// through its engine).
     fn rename(&self, id: &SessionId, title: &str) -> Result<(), BackendError>;
+
+    /// What deleting a session would leave behind, for its confirmation.
+    fn delete_plan(&self, id: &SessionId) -> Result<DeletePlan, BackendError>;
 
     /// Deletes a session's saved data (never the files in its folder).
     /// Refuses while the session is open anywhere, this app included.
     fn delete(&self, id: &SessionId) -> Result<(), BackendError>;
 
-    /// The model a new session starts on, as arko names it: the last
-    /// session's, as in the terminal app. `None` before any session.
-    fn default_model(&self) -> Option<String>;
+    /// The models a new session in `folder` (none: a chat) can start on,
+    /// and its default. May run `claude auth status`.
+    fn models(&self, folder: Option<&Path>) -> ModelChoices;
+
+    /// Starts a session, at once: it opens on threads of its own, asking
+    /// `prompter` for what it lacks.
+    fn start(&self, start: Start, prompter: Arc<dyn arko::Prompter>) -> Launch;
+
+    /// A sample session ([`Launch::Sample`]) closed. Engine sessions close
+    /// themselves.
+    fn closed(&self, _id: &SessionId) {}
 }
 
-/// The main model in Arko's `last-model.json`, which the terminal app
-/// writes for each new session: `{ "main": "claude-opus-5-5", ... }`.
-///
-/// Stands in for the engine's `providers::default_models` until the engine
-/// is a library, which also checks that the model's credentials are there.
+/// The main model in Arko's `last-model.json`, which every new session
+/// writes: `{ "main": "claude-opus-5-5", ... }`.
 pub fn last_model(arko_folder: &Path) -> Option<String> {
     #[derive(serde::Deserialize)]
     struct LastModels {
@@ -197,28 +334,141 @@ impl std::ops::Deref for SharedBackend {
     }
 }
 
-/// Sessions in memory, for tests and for building the interface before the
-/// engine is wired in.
+/// Changes the options of every session a backend starts.
+pub type Configure = Arc<dyn Fn(&mut arko::Options) + Send + Sync>;
+
+/// Arko's sessions in Arko's folder, run by its engine.
+pub struct ArkoBackend {
+    root: PathBuf,
+    configure: Option<Configure>,
+}
+
+impl ArkoBackend {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            configure: None,
+        }
+    }
+
+    /// Lets `configure` change the options of every session started (tests
+    /// give the sessions the mock model server's client).
+    pub fn with_configure(mut self, configure: Configure) -> Self {
+        self.configure = Some(configure);
+        self
+    }
+
+    /// The options a session starts with.
+    pub fn options(&self, start: Start) -> arko::Options {
+        let mut options = arko::Options {
+            root: Some(self.root.clone()),
+            ..arko::Options::default()
+        };
+        match start {
+            Start::Resume(id) => options.session = arko::SessionChoice::Resume(id.0),
+            Start::New(new) => {
+                options.session = arko::SessionChoice::New;
+                match new.mode {
+                    Mode::Agent => {
+                        options.mode = arko::sessions::Mode::Agent;
+                        options.workspace = new.folder;
+                    }
+                    // A chat works in no folder of the user's: Arko keeps it in
+                    // the session's own. Its custom instructions come with
+                    // Settings › Sessions (stage 4).
+                    Mode::Chat => options.mode = arko::sessions::Mode::Chat,
+                }
+                options.model = new.model;
+                if let Some(effort) = new.effort.and_then(|effort| effort.parse().ok()) {
+                    options.effort = effort;
+                }
+            }
+        }
+        if let Some(configure) = &self.configure {
+            configure(&mut options);
+        }
+        options
+    }
+}
+
+impl Backend for ArkoBackend {
+    fn data_root(&self) -> &Path {
+        &self.root
+    }
+
+    fn sessions(&self) -> Result<Vec<SessionEntry>, BackendError> {
+        Ok(arko::sessions::list(&self.root)
+            .into_iter()
+            .map(SessionEntry::from_arko)
+            .collect())
+    }
+
+    fn rename(&self, id: &SessionId, title: &str) -> Result<(), BackendError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(BackendError::Other(
+                "A session’s name can’t be empty.".into(),
+            ));
+        }
+        arko::sessions::rename(&self.root, id.as_str(), title).map_err(BackendError::Other)
+    }
+
+    fn delete_plan(&self, id: &SessionId) -> Result<DeletePlan, BackendError> {
+        arko::sessions::delete_plan(&self.root, id.as_str())
+            .map(|plan| DeletePlan {
+                kept_worktrees: plan.worktrees_dirty,
+            })
+            .map_err(delete_error)
+    }
+
+    fn delete(&self, id: &SessionId) -> Result<(), BackendError> {
+        arko::sessions::delete(&self.root, id.as_str())
+            .map(|_| ())
+            .map_err(delete_error)
+    }
+
+    fn models(&self, folder: Option<&Path>) -> ModelChoices {
+        let models = arko::models::for_new_session(&self.root, folder);
+        let mut choices = ModelChoices::from_arko(models.groups, models.main);
+        choices.note = models.note;
+        choices
+    }
+
+    fn start(&self, start: Start, prompter: Arc<dyn arko::Prompter>) -> Launch {
+        Launch::Engine(arko::spawn(self.options(start), prompter))
+    }
+}
+
+fn delete_error(error: arko::sessions::DeleteError) -> BackendError {
+    match error {
+        arko::sessions::DeleteError::Locked { holder } => BackendError::Locked { holder },
+        arko::sessions::DeleteError::Io(error) => BackendError::Other(error),
+    }
+}
+
+/// Sessions in memory, for tests whose sessions don't run.
 pub struct FakeBackend {
     root: PathBuf,
-    default_model: Option<String>,
+    models: ModelChoices,
     state: Mutex<FakeState>,
 }
 
 struct FakeState {
     sessions: Vec<SessionEntry>,
-    /// Sessions this app has open.
+    /// Sessions started, which the delete refuses.
     open: Vec<SessionId>,
+    created: u32,
 }
 
 impl FakeBackend {
     pub fn new(root: impl Into<PathBuf>, sessions: Vec<SessionEntry>) -> Self {
         Self {
             root: root.into(),
-            default_model: None,
+            models: ModelChoices::default(),
             state: Mutex::new(FakeState {
                 sessions,
                 open: Vec::new(),
+                created: 0,
             }),
         }
     }
@@ -292,14 +542,35 @@ impl FakeBackend {
         sessions[2].holder = Some(Holder {
             app: "arko".into(),
             pid: 4121,
-            host: "studio".into(),
+            host: String::new(),
+            since: chrono::DateTime::<chrono::Utc>::from(ago(60)),
         });
         Self::new(root, sessions).with_default_model(Some("claude-opus-5-5".into()))
     }
 
-    /// Starts new sessions on `model`.
+    /// Starts new sessions on `model`, from one group that needs nothing.
     pub fn with_default_model(mut self, model: Option<String>) -> Self {
-        self.default_model = model;
+        self.models = ModelChoices {
+            groups: vec![ModelGroup {
+                name: "Anthropic API, billed per token".into(),
+                needs: None,
+                models: [("claude-opus-5-5", "opus"), ("claude-sonnet-5-5", "sonnet")]
+                    .into_iter()
+                    .map(|(name, alias)| ModelChoice {
+                        name: name.into(),
+                        alias: alias.into(),
+                    })
+                    .collect(),
+            }],
+            default: model,
+            note: None,
+        };
+        self
+    }
+
+    /// Offers `models` to new sessions.
+    pub fn with_models(mut self, models: ModelChoices) -> Self {
+        self.models = models;
         self
     }
 
@@ -320,31 +591,6 @@ impl Backend for FakeBackend {
         Ok(self.with_state(|state| state.sessions.clone()))
     }
 
-    fn open(&self, id: &SessionId) -> Result<SessionHandle, BackendError> {
-        self.with_state(|state| {
-            let entry = state
-                .sessions
-                .iter()
-                .find(|entry| &entry.id == id)
-                .cloned()
-                .ok_or_else(|| BackendError::NotFound(id.clone()))?;
-            if let Some(holder) = &entry.holder {
-                return Err(BackendError::Locked {
-                    holder: Some(holder.clone()),
-                });
-            }
-            if !state.open.contains(id) {
-                state.open.push(id.clone());
-            }
-            Ok(SessionHandle { entry })
-        })
-    }
-
-    fn close(&self, handle: SessionHandle) {
-        let id = handle.entry.id;
-        self.with_state(|state| state.open.retain(|open| *open != id));
-    }
-
     fn rename(&self, id: &SessionId, title: &str) -> Result<(), BackendError> {
         let title = title.trim();
         if title.is_empty() {
@@ -360,6 +606,17 @@ impl Backend for FakeBackend {
                 .ok_or_else(|| BackendError::NotFound(id.clone()))?;
             entry.title = title.to_string();
             Ok(())
+        })
+    }
+
+    fn delete_plan(&self, id: &SessionId) -> Result<DeletePlan, BackendError> {
+        self.with_state(|state| {
+            state
+                .sessions
+                .iter()
+                .any(|entry| &entry.id == id)
+                .then(DeletePlan::default)
+                .ok_or_else(|| BackendError::NotFound(id.clone()))
         })
     }
 
@@ -381,6 +638,7 @@ impl Backend for FakeBackend {
                         app: "arko-studio".into(),
                         pid: std::process::id(),
                         host: String::new(),
+                        since: chrono::Utc::now(),
                     }),
                 });
             }
@@ -389,8 +647,53 @@ impl Backend for FakeBackend {
         })
     }
 
-    fn default_model(&self) -> Option<String> {
-        self.default_model.clone()
+    fn models(&self, _: Option<&Path>) -> ModelChoices {
+        self.models.clone()
+    }
+
+    fn start(&self, start: Start, _: Arc<dyn arko::Prompter>) -> Launch {
+        self.with_state(|state| match start {
+            Start::Resume(id) => {
+                let Some(entry) = state.sessions.iter().find(|entry| entry.id == id).cloned()
+                else {
+                    return Launch::Refused(BackendError::NotFound(id));
+                };
+                if let Some(holder) = &entry.holder {
+                    return Launch::Refused(BackendError::Locked {
+                        holder: Some(holder.clone()),
+                    });
+                }
+                if !state.open.contains(&id) {
+                    state.open.push(id);
+                }
+                Launch::Sample(entry)
+            }
+            Start::New(new) => {
+                state.created += 1;
+                let entry = SessionEntry {
+                    id: SessionId(format!("20261016-120000-new{}", state.created)),
+                    title: "New session".into(),
+                    mode: new.mode,
+                    workspace: new.folder.filter(|_| new.mode == Mode::Agent),
+                    model: new
+                        .model
+                        .or_else(|| self.models.default.clone())
+                        .unwrap_or_default(),
+                    created: SystemTime::now(),
+                    last_active: None,
+                    conversations: Vec::new(),
+                    holder: None,
+                    had_workers: false,
+                };
+                state.open.push(entry.id.clone());
+                state.sessions.push(entry.clone());
+                Launch::Sample(entry)
+            }
+        })
+    }
+
+    fn closed(&self, id: &SessionId) {
+        self.with_state(|state| state.open.retain(|open| open != id));
     }
 }
 
@@ -419,20 +722,34 @@ mod tests {
         FakeBackend::sample("/arko", SystemTime::now())
     }
 
+    fn prompter() -> Arc<dyn arko::Prompter> {
+        Arc::new(arko::NoPrompter)
+    }
+
     #[test]
     fn a_session_open_elsewhere_says_who_has_it() {
         let backend = backend();
-        let error = backend
-            .open(&SessionId("20261014-110500-e5f6".into()))
-            .unwrap_err();
-        assert_eq!(
-            error.message(Some("studio")),
-            "It’s open in arko in a terminal (process 4121)."
+        let Launch::Refused(error) = backend.start(
+            Start::Resume(SessionId("20261014-110500-e5f6".into())),
+            prompter(),
+        ) else {
+            panic!("started");
+        };
+        let message = error.message();
+        assert!(
+            message.starts_with("It’s open in Arko in a terminal (process 4121), since "),
+            "{message}"
         );
+    }
+
+    #[test]
+    fn errors_read_as_sentences() {
         assert_eq!(
-            error.message(Some("laptop")),
-            "It’s open in arko in a terminal (process 4121 on studio)."
+            BackendError::Other("could not create a session: disk full".into()).message(),
+            "Could not create a session: disk full."
         );
+        assert_eq!(sentence("Done!"), "Done!");
+        assert_eq!(sentence(""), "");
     }
 
     #[test]
@@ -449,15 +766,18 @@ mod tests {
     }
 
     #[test]
-    fn delete_refuses_an_open_session_and_removes_a_closed_one() {
+    fn delete_refuses_a_started_session_and_removes_a_closed_one() {
         let backend = backend();
         let id = SessionId("20261016-091200-a1b2".into());
-        let handle = backend.open(&id).unwrap();
+        assert!(matches!(
+            backend.start(Start::Resume(id.clone()), prompter()),
+            Launch::Sample(_)
+        ));
         assert!(matches!(
             backend.delete(&id),
             Err(BackendError::Locked { .. })
         ));
-        backend.close(handle);
+        backend.closed(&id);
         backend.delete(&id).unwrap();
         assert!(
             backend
@@ -467,5 +787,68 @@ mod tests {
                 .all(|entry| entry.id != id)
         );
         assert_eq!(backend.delete(&id), Err(BackendError::NotFound(id.clone())));
+    }
+
+    /// The real backend lists, renames and deletes the sessions in Arko's
+    /// folder, through arko's own functions.
+    #[test]
+    fn arko_sessions_are_listed_renamed_and_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let backend = ArkoBackend::new(&root);
+        assert!(backend.sessions().unwrap().is_empty());
+        let id = crate::testing::create_session(&root, temp.path(), "Count the pears.");
+        let sessions = backend.sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        let entry = &sessions[0];
+        assert_eq!(entry.id, id);
+        assert_eq!(entry.mode, Mode::Agent);
+        assert_eq!(entry.workspace.as_deref(), Some(temp.path()));
+        assert!(entry.holder.is_none());
+        backend.rename(&id, "Pears").unwrap();
+        assert_eq!(backend.sessions().unwrap()[0].title, "Pears");
+        assert_eq!(backend.delete_plan(&id).unwrap(), DeletePlan::default());
+        backend.delete(&id).unwrap();
+        assert!(backend.sessions().unwrap().is_empty());
+        assert!(temp.path().is_dir(), "the workspace stays");
+    }
+
+    #[test]
+    fn a_new_session_starts_in_its_folder_on_its_model() {
+        let backend = ArkoBackend::new("/arko");
+        let options = backend.options(Start::New(NewSession {
+            mode: Mode::Agent,
+            folder: Some(PathBuf::from("/home/ada/src/arko")),
+            model: Some("sonnet".into()),
+            effort: Some("high".into()),
+        }));
+        assert_eq!(options.root.as_deref(), Some(Path::new("/arko")));
+        assert_eq!(options.session, arko::SessionChoice::New);
+        assert_eq!(
+            options.workspace.as_deref(),
+            Some(Path::new("/home/ada/src/arko"))
+        );
+        assert_eq!(options.model.as_deref(), Some("sonnet"));
+        assert_eq!(options.effort, arko::Effort::High);
+        assert_eq!(options.app, "arko-studio");
+        assert_eq!(options.mode, arko::sessions::Mode::Agent);
+        let options = backend.options(Start::Resume(SessionId("s1".into())));
+        assert_eq!(options.session, arko::SessionChoice::Resume("s1".into()));
+    }
+
+    /// A chat is created in no folder of the user's, even when one was
+    /// chosen for an agent session before.
+    #[test]
+    fn a_new_chat_has_no_folder() {
+        let backend = ArkoBackend::new("/arko");
+        let options = backend.options(Start::New(NewSession {
+            mode: Mode::Chat,
+            folder: Some(PathBuf::from("/home/ada/src/arko")),
+            model: None,
+            effort: None,
+        }));
+        assert_eq!(options.mode, arko::sessions::Mode::Chat);
+        assert_eq!(options.workspace, None);
+        assert_eq!(options.model, None);
     }
 }

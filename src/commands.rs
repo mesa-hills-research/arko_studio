@@ -150,6 +150,7 @@ pub fn commands() -> Vec<Command> {
         Command::new(Sessions, "Branch from Here", BranchSession),
         Command::new(Sessions, "Hand Over Now", HandOverNow),
         Command::new(Sessions, "Export as Markdown…", ExportMarkdown),
+        Command::new(Sessions, "Close Session", CloseSession),
         Command::new(Sessions, "Delete Session…", DeleteSession),
         Command::new(Sessions, "Delete Session…", DeleteSession)
             .keys(&["delete", "backspace"])
@@ -197,6 +198,7 @@ pub fn commands() -> Vec<Command> {
             .not_in_palette(),
         Command::new(Composer, "Expand Composer", ExpandComposer).keys(&["secondary-shift-e"]),
         Command::new(Composer, "Stop", StopTurn).keys(&["secondary-."]),
+        // Esc stops a turn from the composer too (it handles that key itself).
         Command::new(Composer, "Move Command to Background", MoveToBackground).keys(&["ctrl-b"]),
         Command::new(Transcript, "Full Transcript", ViewFull),
         Command::new(Transcript, "Quiet Transcript", ViewQuiet),

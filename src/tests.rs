@@ -27,7 +27,7 @@ fn start(cx: &mut TestAppContext) -> Arc<FakeBackend> {
     backend
 }
 
-fn open(cx: &mut TestAppContext, width: f32) -> (AnyWindowHandle, Entity<Workspace>) {
+pub(crate) fn open(cx: &mut TestAppContext, width: f32) -> (AnyWindowHandle, Entity<Workspace>) {
     let opened = cx.update(|cx| {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -45,7 +45,11 @@ fn open(cx: &mut TestAppContext, width: f32) -> (AnyWindowHandle, Entity<Workspa
 
 /// Runs `act` in the window after drawing a frame, then lets the work it
 /// started finish.
-fn act(cx: &mut TestAppContext, window: AnyWindowHandle, act: impl FnOnce(&mut Window, &mut App)) {
+pub(crate) fn act(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    act: impl FnOnce(&mut Window, &mut App),
+) {
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         act(window, cx);
@@ -54,18 +58,18 @@ fn act(cx: &mut TestAppContext, window: AnyWindowHandle, act: impl FnOnce(&mut W
     cx.run_until_parked();
 }
 
-fn open_title(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> Option<String> {
+pub(crate) fn open_title(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> Option<String> {
     cx.read(|cx| {
         workspace
             .read(cx)
             .session_view()
             .read(cx)
-            .session()
-            .map(|session| session.title.clone())
+            .session(cx)
+            .map(|session| session.title)
     })
 }
 
-fn row_of(workspace: &Entity<Workspace>, title: &str, cx: &mut TestAppContext) -> usize {
+pub(crate) fn row_of(workspace: &Entity<Workspace>, title: &str, cx: &mut TestAppContext) -> usize {
     cx.read(|cx| {
         workspace
             .read(cx)
@@ -556,15 +560,15 @@ fn a_new_session_says_where_it_will_run_and_the_chip_switches_it(cx: &mut TestAp
     let (window, workspace) = open(cx, 1300.);
     let view = cx.read(|cx| workspace.read(cx).session_view().clone());
     let line = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).draft_line());
-    let chip = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).chip_label());
+    let chip = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).chip_label(cx));
     // The most recent agent session's folder, and the last session's model.
     assert_eq!(line(cx).as_deref(), Some("New agent session in ~/src/arko"));
-    assert_eq!(chip(cx), "Agent · claude-opus-5-5");
+    assert_eq!(chip(cx), "Agent · Opus 5.5");
 
     act(cx, window, |window, cx| window.click("mode-model", cx));
     act(cx, window, |window, cx| window.click("mode-chat", cx));
     assert_eq!(line(cx).as_deref(), Some("New chat"));
-    assert_eq!(chip(cx), "Chat · claude-opus-5-5");
+    assert_eq!(chip(cx), "Chat · Opus 5.5");
     act(cx, window, |window, cx| window.click("mode-agent", cx));
     act(cx, window, |window, cx| window.press("escape", cx));
 
@@ -694,6 +698,8 @@ fn the_composer_follows_smooth_typing_and_keybindings(cx: &mut TestAppContext) {
             .session_view()
             .read(cx)
             .composer()
+            .read(cx)
+            .textarea()
             .clone()
     });
     assert!(cx.read(|cx| composer.read(cx).has_smooth_caret()));

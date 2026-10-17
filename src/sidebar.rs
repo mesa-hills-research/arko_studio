@@ -19,6 +19,7 @@ use gpui_kit::*;
 
 use crate::backend::{BackendError, Mode, SessionEntry, SessionId, SharedBackend};
 use crate::layout::relative_time;
+use crate::live::{LiveEvent, LiveSessions};
 use crate::menus::{DeleteSession, NewSession, RenameSession};
 use crate::prefs;
 
@@ -230,6 +231,9 @@ pub struct Sidebar {
     collapsed: Vec<String>,
     scroll: UniformListScrollHandle,
     loaded: bool,
+    /// The sessions running in this app when the list was last read: one
+    /// more means a new session to list.
+    live_ids: Vec<SessionId>,
     _subscriptions: Vec<Subscription>,
     _refresh: Option<Task<()>>,
 }
@@ -250,6 +254,16 @@ impl Sidebar {
                     this.rebuild(cx)
                 }
             }),
+            // The running sessions' indicators; a session created here gets
+            // its row.
+            cx.observe_global::<LiveSessions>(|this, cx| {
+                let ids = LiveSessions::ids(cx);
+                if ids.iter().any(|id| !this.live_ids.contains(id)) {
+                    this.refresh(cx);
+                }
+                this.live_ids = ids;
+                cx.notify();
+            }),
         ];
         let mut this = Self {
             focus_handle: cx.focus_handle(),
@@ -263,6 +277,7 @@ impl Sidebar {
             collapsed: Vec::new(),
             scroll: UniformListScrollHandle::new(),
             loaded: false,
+            live_ids: Vec::new(),
             _subscriptions: subscriptions,
             _refresh: None,
         };
@@ -627,6 +642,15 @@ impl Sidebar {
             entry.title = title.clone();
         }
         self.rebuild(cx);
+        // A session running here is renamed by its engine, which tells its
+        // status too.
+        if let Some(session) = LiveSessions::find(id, cx)
+            .filter(|session| session.read(cx).link().is_some() && session.read(cx).is_running())
+        {
+            session.update(cx, |session, cx| session.rename(title.clone(), cx));
+            cx.emit(SidebarEvent::Renamed(id.clone(), title));
+            return;
+        }
         let backend = cx.global::<SharedBackend>().clone();
         let id = id.clone();
         let saving = cx.background_spawn({
@@ -654,19 +678,61 @@ impl Sidebar {
         }
     }
 
-    /// Asks before deleting a session's saved data.
+    /// Asks before deleting a session's saved data, naming what stays: the
+    /// folder's files, and its workers' worktrees with changes.
     pub fn confirm_delete(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.entry(&id).cloned() else {
             return;
         };
-        let description = match &entry.workspace {
+        // Git is asked about the worktrees off the UI thread.
+        let backend = cx.global::<SharedBackend>().clone();
+        let planning = cx.background_spawn({
+            let id = id.clone();
+            async move { backend.delete_plan(&id) }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let plan = planning.await.unwrap_or_default();
+            this.update_in(cx, |this, window, cx| {
+                this.ask_to_delete(entry, plan, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn ask_to_delete(
+        &mut self,
+        entry: SessionEntry,
+        plan: crate::backend::DeletePlan,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut description = match &entry.workspace {
             Some(folder) if entry.mode == Mode::Agent => format!(
                 "Its conversation and settings are removed from Arko’s folder. The files in {} stay as they are.",
                 folder.display()
             ),
             _ => "Its conversation and settings are removed from Arko’s folder.".to_string(),
         };
+        if !plan.kept_worktrees.is_empty() {
+            let kept: Vec<String> = plan
+                .kept_worktrees
+                .iter()
+                .map(|(path, branch)| match branch {
+                    Some(branch) => format!("{} ({branch})", path.display()),
+                    None => path.display().to_string(),
+                })
+                .collect();
+            description.push_str(&format!(
+                " Workers’ worktrees with uncommitted changes stay: {}.",
+                kept.join(", ")
+            ));
+        }
+        if LiveSessions::find(&entry.id, cx).is_some_and(|session| session.read(cx).is_running()) {
+            description.push_str(" It’s open here: it closes first.");
+        }
         let sidebar = cx.entity().downgrade();
+        let id = entry.id.clone();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let sidebar = sidebar.clone();
             let id = id.clone();
@@ -686,6 +752,23 @@ impl Sidebar {
     }
 
     fn delete(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        // A session running here closes first (asking about what runs), and
+        // is deleted once it has.
+        if let Some(session) =
+            LiveSessions::find(&id, cx).filter(|session| session.read(cx).is_running())
+        {
+            let subscription = cx.subscribe_in(&session, window, {
+                let id = id.clone();
+                move |this, _, event: &LiveEvent, window, cx| {
+                    if *event == LiveEvent::Ended {
+                        this.delete(id.clone(), window, cx);
+                    }
+                }
+            });
+            self._subscriptions.push(subscription);
+            crate::quit::close(vec![session], false, window, cx);
+            return;
+        }
         let backend = cx.global::<SharedBackend>().clone();
         let deleting = cx.background_spawn({
             let id = id.clone();
@@ -816,6 +899,13 @@ impl Sidebar {
                     });
                 let focus = self.focus_handle.clone();
                 let sidebar = cx.entity().downgrade();
+                // What the session does here, when it is unusual: working or
+                // asking while another is shown, a turn that ended unseen.
+                let indicator = LiveSessions::indicator(&id, cx);
+                let background = !is_active;
+                let working = background && indicator.working && !indicator.question;
+                let asking = background && indicator.question;
+                let unseen = indicator.unseen;
                 base.role(Role::TreeItem)
                     .aria_label(SharedString::from(title.clone()))
                     .aria_selected(is_active)
@@ -839,15 +929,59 @@ impl Sidebar {
                                 .child(Input::new(&input).xsmall()),
                         ),
                         None => this
-                            .child(div().flex_1().min_w_0().truncate().child(title.clone()))
                             .child(
                                 div()
-                                    .flex_none()
-                                    .text_xs()
-                                    .font_normal()
-                                    .text_color(theme.muted_foreground)
-                                    .child(time),
-                            ),
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .when(unseen, |this| this.font_semibold())
+                                    .child(title.clone()),
+                            )
+                            .when(working, |this| {
+                                this.child(
+                                    div()
+                                        .id(("row-working", index))
+                                        .test_support()
+                                        .flex_none()
+                                        .child(
+                                            gpui_kit::component::spinner::Spinner::new()
+                                                .xsmall()
+                                                .color(theme.muted_foreground),
+                                        )
+                                        .tooltip(|window, cx| {
+                                            Tooltip::new("Working").build(window, cx)
+                                        }),
+                                )
+                            })
+                            .when(asking, |this| {
+                                this.child(
+                                    div()
+                                        .id(("row-question", index))
+                                        .test_support()
+                                        .flex_none()
+                                        .child(
+                                            Icon::new(
+                                                gpui_kit::assets::IconName::MessageCircleQuestionMark,
+                                            )
+                                            .xsmall()
+                                            .text_color(theme.warning),
+                                        )
+                                        .tooltip(|window, cx| {
+                                            Tooltip::new("A question waits for you")
+                                                .build(window, cx)
+                                        }),
+                                )
+                            })
+                            .when(!working && !asking, |this| {
+                                this.child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .font_normal()
+                                        .text_color(theme.muted_foreground)
+                                        .child(time),
+                                )
+                            }),
                     })
                     .on_mouse_down(
                         MouseButton::Right,
@@ -937,11 +1071,10 @@ impl Sidebar {
 
 /// Tells the user why a backend call failed.
 fn show_error(what: &str, error: &BackendError, window: &mut Window, cx: &mut App) {
-    let host = std::env::var("HOSTNAME").ok();
     window.push_notification(
         gpui_kit::component::notification::Notification::error(format!(
             "{what} {}",
-            error.message(host.as_deref())
+            error.message()
         )),
         cx,
     );

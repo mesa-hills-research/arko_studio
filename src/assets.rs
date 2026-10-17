@@ -5,7 +5,7 @@ use std::borrow::Cow;
 
 use gpui_kit::{AssetSource, Result, SharedString};
 
-gpui_kit::assets::icon_assets!(pub ExtraIcons, [Paperclip, Maximize2, MessageSquare]);
+gpui_kit::assets::icon_assets!(pub ExtraIcons, [Paperclip, Maximize2, MessageSquare, MessageCircleQuestionMark]);
 
 /// The icons the app draws, for `Application::with_assets`.
 pub struct Assets;
