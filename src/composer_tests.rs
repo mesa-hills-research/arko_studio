@@ -669,6 +669,62 @@ fn an_at_mentions_files_are_ranked_off_the_ui_thread_latest_first(cx: &mut TestA
     assert_eq!(first(cx), Some(("src/parse.rs".to_string(), 4..7)));
 }
 
+/// An ordinary word after an "@" can hold a file's letters here and there
+/// ("@here" in heart-pulse.svg): Enter and Shift+Enter keep their usual
+/// meaning then, and Tab or a move in the list takes the file.
+#[gpui_kit::test]
+fn a_weak_file_match_leaves_enter_to_send(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    let root = folder.path().to_path_buf();
+    std::fs::create_dir_all(root.join("icons")).unwrap();
+    for file in ["icons/heart-pulse.svg", "README.md"] {
+        std::fs::write(root.join(file), "").unwrap();
+    }
+    let (_, window, workspace) = start(cx);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    cx.update(|cx| view.update(cx, |view, cx| view.set_draft_folder(root.clone(), cx)));
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    let sent: Rc<RefCell<Vec<String>>> = Rc::default();
+    let _subscription = cx.update(|cx| {
+        let sent = sent.clone();
+        cx.subscribe(&composer, move |_, event, _| {
+            if let ComposerEvent::Submit(outgoing) = event {
+                sent.borrow_mut().push(outgoing.text.clone());
+            }
+        })
+    });
+    let menu = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            composer
+                .read(cx)
+                .menu()
+                .map(|menu| (menu.items[0].insert.clone(), menu.takes_enter))
+        })
+    };
+    act(cx, window, |window, cx| window.input("Ping @here", cx));
+    crate::testing::wait_until(cx, "the files", |cx| menu(cx).is_some());
+    assert_eq!(menu(cx), Some(("icons/heart-pulse.svg".to_string(), false)));
+    // Shift+Enter breaks the line, as without the list.
+    act(cx, window, |window, cx| window.press("shift-enter", cx));
+    assert_eq!(composer_text(&workspace, cx), "Ping @here\n");
+    act(cx, window, |window, cx| window.press("backspace", cx));
+    crate::testing::wait_until(cx, "the files", |cx| menu(cx).is_some());
+    // Enter sends the words as typed.
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(*sent.borrow(), ["Ping @here"]);
+    // A move in the list, and Enter takes the file.
+    act(cx, window, |window, cx| window.input("Look at @here", cx));
+    crate::testing::wait_until(cx, "the files", |cx| menu(cx).is_some());
+    act(cx, window, |window, cx| window.press("down", cx));
+    act(cx, window, |window, cx| window.press("up", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(sent.borrow().len(), 1);
+    assert!(
+        cx.read(|cx| composer.read(cx).expanded_text(cx))
+            .contains("icons/heart-pulse.svg")
+    );
+}
+
 /// Branching needs the session to run: a session this app hasn't opened
 /// offers Branch from Here, but disabled.
 #[gpui_kit::test]

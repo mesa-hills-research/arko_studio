@@ -211,6 +211,11 @@ pub struct SlashMenu {
     /// What is typed is a whole command already (`/cost`, `/stop-workers
     /// r1` with r10 running too): Enter sends it as it is.
     pub complete: bool,
+    /// Enter takes the selected choice: always a command's, and a file
+    /// that matches strongly (its letters in a row, or each starting a
+    /// word) or that the user moved to. Otherwise Enter does what it does
+    /// without a menu. Tab always takes the choice.
+    pub takes_enter: bool,
 }
 
 /// The commands the menu offers: the session's, and the screen ones the
@@ -244,6 +249,7 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
             range: 0..text.len(),
             kind: MenuKind::Command,
             complete,
+            takes_enter: true,
         });
     };
     let name = &text[..space];
@@ -276,11 +282,15 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
         range: start..text.len(),
         kind: MenuKind::Command,
         complete,
+        takes_enter: true,
     })
 }
 
 /// The menu of the files `ranked` for an @-mention over `range`, if any.
 fn mention_list(ranked: Vec<crate::mentions::Ranked>, range: Range<usize>) -> Option<SlashMenu> {
+    // An ordinary word after an "@" ("@here") can hold a file's letters
+    // here and there: Enter sends it then, as typed.
+    let strong = ranked.first().is_some_and(|ranked| ranked.strong);
     let items: Vec<MenuItem> = ranked
         .into_iter()
         .map(|ranked| {
@@ -302,8 +312,8 @@ fn mention_list(ranked: Vec<crate::mentions::Ranked>, range: Range<usize>) -> Op
         selected: 0,
         range,
         kind: MenuKind::Mention,
-        // Enter takes the file, never sends.
         complete: false,
+        takes_enter: strong,
     })
 }
 
@@ -665,8 +675,14 @@ impl Composer {
                     return;
                 }
                 // Mod+Enter always sends the text as typed. The send key
-                // takes the menu's choice, unless what is typed is whole.
-                if !*secondary && self.menu.as_ref().is_some_and(|menu| !menu.complete) {
+                // takes the menu's choice, unless what is typed is whole or
+                // the choice is a file that only weakly matches.
+                if !*secondary
+                    && self
+                        .menu
+                        .as_ref()
+                        .is_some_and(|menu| !menu.complete && menu.takes_enter)
+                {
                     self.accept_menu(window, cx);
                 } else {
                     self.submit(cx);
@@ -946,6 +962,7 @@ impl Composer {
         if let Some(menu) = &mut self.menu {
             let count = menu.items.len() as isize;
             menu.selected = (menu.selected as isize + step).rem_euclid(count) as usize;
+            menu.takes_enter = true;
             cx.notify();
         }
     }
@@ -1049,7 +1066,8 @@ impl Composer {
         let Some(menu) = &self.menu else {
             return;
         };
-        if !sends {
+        // A file that only weakly matches leaves the line break to Enter.
+        if !sends && menu.takes_enter {
             if menu.complete {
                 self.menu = None;
                 self.dismissed = Some(self.text(cx));
@@ -1185,7 +1203,14 @@ impl Composer {
             .skip(first)
             .take(MENU_ROWS)
             .map(|(index, item)| {
+                // The choice Enter takes stands out. One only Tab takes
+                // shows quieter.
                 let selected = index == menu.selected;
+                let (background, foreground) = if menu.takes_enter {
+                    (theme.accent, theme.accent_foreground)
+                } else {
+                    (theme.secondary, theme.secondary_foreground)
+                };
                 div()
                     .id(("slash-item", index))
                     .test_support()
@@ -1196,9 +1221,7 @@ impl Composer {
                     .gap_2()
                     .rounded(theme.radius)
                     .text_sm()
-                    .when(selected, |this| {
-                        this.bg(theme.accent).text_color(theme.accent_foreground)
-                    })
+                    .when(selected, |this| this.bg(background).text_color(foreground))
                     .child(div().flex_none().code_font(theme).child(item.label.clone()))
                     .when(!item.hint.is_empty(), |this| {
                         this.child(
@@ -1217,7 +1240,7 @@ impl Composer {
                             .truncate()
                             .text_xs()
                             .text_color(if selected {
-                                theme.accent_foreground
+                                foreground
                             } else {
                                 theme.muted_foreground
                             })
