@@ -136,7 +136,7 @@ impl SessionDefaults {
                 let takes = main
                     .iter()
                     .chain(options.worker_model.as_ref())
-                    .any(|model| takes_cache_1h(model));
+                    .any(|model| arko::models::takes_cache_1h(model));
                 takes.then_some(true)
             }
             other => other,
@@ -176,21 +176,6 @@ pub fn take_free_port(remote: &mut Option<arko::remote::Bind>) -> Option<String>
     Some(format!(
         "Port {port}, set in Settings › Web page, is taken by another session’s page or another program. This session’s page is served on another port, which its links show."
     ))
-}
-
-/// Whether the model `name` (as `/model` takes it) keeps Anthropic's 1-hour
-/// prompt cache: Claude by API key, directly or on OpenRouter. Claude Code
-/// chooses its own.
-pub fn takes_cache_1h(name: &str) -> bool {
-    let name = name.trim().to_ascii_lowercase();
-    if name.starts_with("cc:") || name.starts_with("claude-code:") {
-        return false;
-    }
-    // A `~` asks OpenRouter for the latest of a family.
-    if let Some(slug) = name.strip_prefix("openrouter:") {
-        return slug.trim_start_matches('~').starts_with("anthropic/");
-    }
-    name.starts_with("claude-") || matches!(name.as_str(), "opus" | "sonnet" | "haiku" | "fable")
 }
 
 /// Where the web page is served, from the preferences: `None` when the
@@ -345,6 +330,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(cache(Some("gpt-6.1-sol"), None), None);
+        assert_eq!(cache(Some("claude-not-a-model"), None), None);
         assert_eq!(cache(None, Some("claude-opus-5-5")), Some(true));
         assert_eq!(cache(None, None), None);
         // Off is passed on, over ARKO_CACHE_1H.

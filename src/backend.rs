@@ -19,7 +19,7 @@ mod defaults;
 pub mod extensions;
 
 pub use accounts::{Accounts, key_named};
-pub use defaults::{SessionDefaults, takes_cache_1h, web_page_bind};
+pub use defaults::{SessionDefaults, web_page_bind};
 
 /// Reading accounts in words, for Settings.
 pub mod account_words {
