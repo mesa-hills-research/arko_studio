@@ -27,9 +27,11 @@ use crate::{fonts, menus, paths};
 mod accounts;
 mod fields;
 mod sessions;
+mod web;
 
 pub use accounts::AccountsPage;
 pub use sessions::SessionsPage;
+pub use web::WebPageSettings;
 
 actions!(settings_page, [CloseSettings]);
 
@@ -62,6 +64,7 @@ pub struct SettingsPage {
     code_font: Option<Entity<FontPickerState>>,
     accounts: Entity<AccountsPage>,
     sessions: Entity<SessionsPage>,
+    web_page: Entity<WebPageSettings>,
     /// The page to show, set from outside (the command palette), and how
     /// many times it was: the page list starts afresh on it each time.
     page: usize,
@@ -73,12 +76,14 @@ impl SettingsPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let accounts = cx.new(AccountsPage::new);
         let sessions = cx.new(|cx| SessionsPage::new(window, cx));
+        let web_page = cx.new(|cx| WebPageSettings::new(window, cx));
         // The fonts the pickers list are read in the background, the first
         // time: the pickers show once they're there.
         fonts::load_picker_catalog(cx);
         let subscriptions = vec![
             cx.observe(&accounts, |_, _, cx| cx.notify()),
             cx.observe(&sessions, |_, _, cx| cx.notify()),
+            cx.observe(&web_page, |_, _, cx| cx.notify()),
             cx.observe_global_in::<fonts::PickerCatalog>(window, |this, window, cx| {
                 this.make_font_pickers(window, cx)
             }),
@@ -94,6 +99,7 @@ impl SettingsPage {
             code_font: None,
             accounts,
             sessions,
+            web_page,
             page: 0,
             shown: 0,
             _subscriptions: subscriptions,
@@ -191,6 +197,10 @@ impl SettingsPage {
         &self.sessions
     }
 
+    pub fn web_page(&self) -> &Entity<WebPageSettings> {
+        &self.web_page
+    }
+
     /// Asks for a font file, copies it into Arko's folder and offers it in
     /// both font lists.
     fn add_font_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -276,17 +286,7 @@ impl SettingsPage {
             self.accounts.read(cx).page(&self.accounts, cx),
             self.sessions.read(cx).page(),
             notifications_page(),
-            planned_page(
-                PAGES[5],
-                IconName::Globe,
-                &[
-                    (
-                        "Share the web page",
-                        "Follow and steer a session from a browser: address and port.",
-                    ),
-                    ("Links and QR code", "Where the page is, and a new key."),
-                ],
-            ),
+            self.web_page.read(cx).page(cx),
             planned_page(
                 PAGES[6],
                 IconName::Frame,

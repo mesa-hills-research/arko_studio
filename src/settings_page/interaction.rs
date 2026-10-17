@@ -306,3 +306,36 @@ fn a_model_that_needs_a_key_opens_its_row(cx: &mut TestAppContext) {
     );
     assert_eq!(super::accounts::account_for("Somewhere else"), None);
 }
+
+/// The web page's address and port are checked as typed, and every
+/// session serves its page there from the start once that's on.
+#[gpui_kit::test]
+fn the_web_page_address_and_port_are_checked_and_used(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, 5, 2400.);
+    let page = cx.read(|cx| settings.read(cx).web_page().clone());
+    act(cx, window, |window, cx| {
+        window.click("web-page-address", cx)
+    });
+    act(cx, window, |window, cx| window.input("my-laptop", cx));
+    assert!(cx.read(|cx| page.read(cx).errors())[0].is_some());
+    act(cx, window, |window, cx| window.press("secondary-a", cx));
+    act(cx, window, |window, cx| window.input("0.0.0.0", cx));
+    assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
+    act(cx, window, |window, cx| window.click("web-page-port", cx));
+    act(cx, window, |window, cx| window.input("70000", cx));
+    assert!(cx.read(|cx| page.read(cx).errors())[1].is_some());
+    act(cx, window, |window, cx| window.press("secondary-a", cx));
+    act(cx, window, |window, cx| window.input("9000", cx));
+    cx.read(|cx| {
+        let web = &prefs::get(cx).web_page;
+        assert_eq!(web.address, "0.0.0.0");
+        assert_eq!(web.port, Some(9000));
+        assert_eq!(web.bind_argument(), "0.0.0.0:9000");
+    });
+    assert_eq!(backend.defaults().web_page, None, "not shared by default");
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.web_page.share_by_default = true));
+    let bind = backend.defaults().web_page.unwrap();
+    assert_eq!(bind.ip.to_string(), "0.0.0.0");
+    assert_eq!(bind.port, Some(9000));
+}
