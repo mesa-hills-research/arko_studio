@@ -220,7 +220,10 @@ fn a_match_in_a_folded_group_of_calls_opens_the_group(cx: &mut TestAppContext) {
     let status = find(cx, window, &view, "streaming.md");
     assert_eq!(status.total, 1);
     let listing = entry(cx, &view, "ls docs");
-    assert!(expanded(cx, &view, group), "the group opened");
+    assert!(
+        cx.read(|cx| view.read(cx).group_open(group)),
+        "the group opened"
+    );
     assert!(expanded(cx, &view, listing), "the call opened");
     assert!(rows(cx, &view).contains(&RowKey::Call(listing)));
 }
@@ -457,4 +460,49 @@ fn streamed_words_are_found_as_they_come(cx: &mut TestAppContext) {
     say(&feed, "dle here.");
     settle(cx, window);
     assert_eq!(cx.read(|cx| view.read(cx).find_status()).total, 6);
+}
+
+/// Each letter typed lands somewhere and opens what hides the match. What
+/// the find opened closes as it moves on: only the match on show keeps its
+/// row open once the find closes.
+#[gpui_kit::test]
+fn what_the_find_opened_closes_as_it_moves_on(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    feed.user("Go.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    command(&feed, "ls a", "pa.rs");
+    command(&feed, "ls b", "par.rs");
+    command(&feed, "ls c", "p.rs");
+    say(&feed, "Done.");
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open_feed(cx, &feed, View::Full, 900.);
+    let open = |cx: &mut TestAppContext| {
+        let mut open: Vec<u64> = cx.read(|cx| {
+            view.read(cx)
+                .ui
+                .iter()
+                .filter(|(_, ui)| ui.expanded == Some(true))
+                .map(|(id, _)| *id)
+                .collect()
+        });
+        open.sort_unstable();
+        open
+    };
+    let (a, b, c) = (
+        entry(cx, &view, "ls a"),
+        entry(cx, &view, "ls b"),
+        entry(cx, &view, "ls c"),
+    );
+    find(cx, window, &view, "p.");
+    assert_eq!(open(cx), [c]);
+    find(cx, window, &view, "pa");
+    assert_eq!(open(cx), [b]);
+    find(cx, window, &view, "pa.");
+    assert_eq!(open(cx), [a]);
+    // The reader opens b themselves: it stays.
+    view.update(cx, |view, cx| view.set_expanded(b, true, cx));
+    view.update(cx, |view, cx| view.clear_find(cx));
+    settle(cx, window);
+    assert_eq!(open(cx), [a, b]);
 }

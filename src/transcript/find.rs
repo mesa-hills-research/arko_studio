@@ -1,7 +1,8 @@
 //! Find in the transcript (Mod+F): where the reader's words are in what the
 //! rows show, collapsed rows included, highlighted, and moving between
-//! them. Landing on a match opens what hides it: a thinking, a call's
-//! details, a group of calls, a long code block.
+//! them. Landing on a match opens what hides it (a thinking, a call's
+//! details, a group of calls, a long code block), and closes it again when
+//! the find moves on.
 //!
 //! The find keeps each entry's matches apart, and each entry's texts
 //! lowercased for as long as it goes on. A change of the transcript
@@ -194,6 +195,24 @@ struct Found {
     count: usize,
 }
 
+/// Something landing opened for the reader to see a match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opening {
+    /// A call's details or a thinking's text.
+    Entry(u64),
+    /// A Quiet group of calls, by its first.
+    Group(u64),
+    /// A long code block, whole.
+    Code(u64, usize),
+}
+
+/// What landing opened, and how it was before.
+#[derive(Debug, Clone, Copy)]
+struct Opened {
+    what: Opening,
+    before: Option<bool>,
+}
+
 /// A find going on.
 #[derive(Default)]
 pub(crate) struct Find {
@@ -217,6 +236,8 @@ pub(crate) struct Find {
     /// The entry the find lands on once its rows are ready, and which of
     /// its matches.
     pending: Option<(u64, usize)>,
+    /// What landing opened, closed again as the find moves on.
+    opened: Vec<Opened>,
     /// Lowercases the texts off the UI thread (a long transcript's first
     /// search).
     lowering: Option<Task<()>>,
@@ -453,7 +474,8 @@ impl TranscriptView {
         }
     }
 
-    /// Ends the find: the highlights go.
+    /// Ends the find: the highlights go. What landing opened for the match
+    /// on show stays open, for the reader is at it.
     pub fn clear_find(&mut self, cx: &mut Context<Self>) {
         let Some(find) = self.find.take() else {
             return;
@@ -686,9 +708,37 @@ impl TranscriptView {
     }
 
     /// Opens what hides the current match, scrolls to it and highlights.
+    /// What the last landing opened closes again, unless this one needs it.
     fn land(&mut self, cx: &mut Context<Self>) {
-        if let Some(found) = self.current_match() {
-            self.open_for(&found, cx);
+        let found = self.current_match();
+        let needs = found
+            .as_ref()
+            .map(|found| self.openings_for(found, cx))
+            .unwrap_or_default();
+        let opened = self
+            .find
+            .as_mut()
+            .map(|find| std::mem::take(&mut find.opened))
+            .unwrap_or_default();
+        let mut kept = Vec::new();
+        for opened in opened {
+            if needs.contains(&opened.what) {
+                kept.push(opened);
+            } else {
+                self.close_opening(opened, cx);
+            }
+        }
+        for what in needs {
+            if !kept.iter().any(|opened| opened.what == what)
+                && let Some(opened) = self.open(what, cx)
+            {
+                kept.push(opened);
+            }
+        }
+        if let Some(find) = self.find.as_mut() {
+            find.opened = kept;
+        }
+        if let Some(found) = found {
             self.go_to(&found, cx);
         }
         self.highlight(cx);
@@ -772,68 +822,137 @@ impl TranscriptView {
         self.refresh_rows(cx);
     }
 
-    /// Opens a thinking, a call's details, a group of calls or a capped
-    /// code block that hides `found`.
-    fn open_for(&mut self, found: &Match, cx: &mut Context<Self>) {
+    /// What has to open for the reader to see `found`: a folded group of
+    /// calls, a thinking or a call's details, a long code block.
+    fn openings_for(&self, found: &Match, cx: &App) -> Vec<Opening> {
         let Some(entry) = self.model.entry(found.entry) else {
-            return;
+            return Vec::new();
         };
-        let kind = entry.item.kind;
+        let mut needs = Vec::new();
         // A folded group of calls (Quiet) opens first.
-        if self.settings.view == View::Quiet && self.row_of(found.entry).is_none() {
+        if self.settings.view == View::Quiet {
+            let position = self.model.position(found.entry).ok();
             let group = self.rows.iter().find_map(|row| match row.key {
-                RowKey::Group(first) => {
-                    let position = self.model.position(found.entry).ok()?;
-                    model::run_of(&self.model, first, View::Quiet)
-                        .contains(&position)
-                        .then_some(first)
-                }
+                RowKey::Group(first) => model::run_of(&self.model, first, View::Quiet)
+                    .contains(&position?)
+                    .then_some(first),
                 _ => None,
             });
-            if let Some(first) = group {
-                self.ui.entry(first).or_default().expanded = Some(true);
-                self.refresh_rows(cx);
+            if let Some(first) = group
+                && !self.group_open(first)
+            {
+                needs.push(Opening::Group(first));
             }
         }
-        match (kind, found.place) {
+        match (entry.item.kind, found.place) {
             (Kind::Thinking, _) | (Kind::Call, Place::Parameters | Place::Output) => {
-                self.set_expanded(found.entry, true, cx)
+                needs.push(Opening::Entry(found.entry))
             }
-            (_, Place::Block(block)) => self.uncap_for(found, block, cx),
+            (_, Place::Block(block)) if self.hides_in_code(found, block, cx) => {
+                needs.push(Opening::Code(found.entry, block))
+            }
             _ => {}
         }
+        needs
     }
 
-    /// Shows a long code block whole when `found` is past its first lines.
-    fn uncap_for(&mut self, found: &Match, block: usize, cx: &mut Context<Self>) {
+    /// Whether the long code block `block` hides `found`: it shows its
+    /// first [`CODE_LINES`] lines, and the match is past them.
+    fn hides_in_code(&self, found: &Match, block: usize, cx: &App) -> bool {
         let Some(doc) = self.ui.get(&found.entry).and_then(|ui| ui.doc.as_ref()) else {
-            return;
+            return false;
         };
         let Some(row) = doc.blocks.get(block) else {
-            return;
+            return false;
         };
         if !matches!(row.content, TextBlockContent::CodeBlock(_)) {
-            return;
+            return false;
         }
         let rendered = doc.state.read(cx).rendered_text();
         let Some(text) = row
             .range
             .clone()
             .and_then(|range| rendered.range_for_source(range))
-            .and_then(|range| rendered.as_str().get(range).map(str::to_string))
+            .and_then(|range| rendered.as_str().get(range))
         else {
-            return;
+            return false;
         };
         let line = text[..found.range.start.min(text.len())]
             .matches('\n')
             .count();
-        let capped = !doc.blocks.is_empty()
-            && !self
-                .ui
-                .get(&found.entry)
-                .is_some_and(|ui| ui.uncapped.contains(&block));
-        if capped && line >= CODE_LINES {
-            self.toggle_code(found.entry, block, cx);
+        line >= CODE_LINES
+    }
+
+    /// Opens `what`, if it isn't open. Returns what it opened.
+    fn open(&mut self, what: Opening, cx: &mut Context<Self>) -> Option<Opened> {
+        match what {
+            Opening::Group(first) => {
+                let before = self.ui.get(&first).and_then(|ui| ui.group_open);
+                self.ui.entry(first).or_default().group_open = Some(true);
+                self.refresh_rows(cx);
+                Some(Opened { what, before })
+            }
+            Opening::Entry(id) => {
+                let before = self.ui.get(&id).and_then(|ui| ui.expanded);
+                let default = self
+                    .model
+                    .entry(id)
+                    .is_some_and(|entry| entry.item.kind == Kind::Thinking)
+                    && self.thinking_open_by_default();
+                if before.unwrap_or(default) {
+                    return None;
+                }
+                self.set_expanded(id, true, cx);
+                Some(Opened { what, before })
+            }
+            Opening::Code(id, block) => {
+                if self
+                    .ui
+                    .get(&id)
+                    .is_some_and(|ui| ui.uncapped.contains(&block))
+                {
+                    return None;
+                }
+                self.toggle_code(id, block, cx);
+                Some(Opened { what, before: None })
+            }
+        }
+    }
+
+    /// Closes what landing opened, unless the reader changed it since.
+    fn close_opening(&mut self, opened: Opened, cx: &mut Context<Self>) {
+        match opened.what {
+            Opening::Group(first) => {
+                let Some(ui) = self.ui.get_mut(&first) else {
+                    return;
+                };
+                if ui.group_open == Some(true) {
+                    ui.group_open = opened.before;
+                    self.refresh_rows(cx);
+                }
+            }
+            Opening::Entry(id) => {
+                if self.ui.get(&id).and_then(|ui| ui.expanded) == Some(true) {
+                    if let Some(ix) = self.rows.iter().position(|row| {
+                        matches!(row.key, RowKey::Call(entry) | RowKey::Thinking(entry) if entry == id)
+                    }) {
+                        self.list.remeasure_row(ix);
+                    }
+                    if let Some(ui) = self.ui.get_mut(&id) {
+                        ui.expanded = opened.before;
+                    }
+                    self.refresh_rows(cx);
+                }
+            }
+            Opening::Code(id, block) => {
+                if self
+                    .ui
+                    .get(&id)
+                    .is_some_and(|ui| ui.uncapped.contains(&block))
+                {
+                    self.toggle_code(id, block, cx);
+                }
+            }
         }
     }
 
