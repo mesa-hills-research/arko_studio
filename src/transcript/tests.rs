@@ -2002,3 +2002,87 @@ fn the_bubble_is_the_background_a_step_toward_the_text(cx: &mut TestAppContext) 
         assert_ne!(super::row::bubble_color(theme), theme.background);
     });
 }
+
+/// A note typed while the agent's reply streams waits below the reply,
+/// marked as not read yet, and the reply goes on in one piece. Once the
+/// agent reads it, it moves to where the agent read it, the keyboard's
+/// place on it goes with the old one, and what the agent says next comes
+/// below.
+#[gpui_kit::test]
+fn a_note_waits_below_the_streaming_reply_until_the_agent_reads_it(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Rename the parser.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    say(&feed, "main", "It turned out to be a kit f");
+    let note = feed.note("Keep the old name.", Source::App, 1, Vec::new());
+    say(&feed, "main", "ix, so that went to the kit.");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let [message, _] = ids_of(&feed, Kind::User)[..] else {
+        panic!("a message and a note")
+    };
+    let reply = ids_of(&feed, Kind::Text)[0];
+    let text_of = |id: u64, cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            view.read(cx)
+                .model
+                .entry(id)
+                .map(|entry| entry.item.text.clone())
+        })
+    };
+    assert_eq!(
+        text_of(reply, cx).as_deref(),
+        Some("It turned out to be a kit fix, so that went to the kit.")
+    );
+    // The reply, then the note below it.
+    let rows = keys(&view, cx);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(rows[0], RowKey::User(message));
+    assert!(block(reply, 0)(&rows[1]), "{rows:?}");
+    assert_eq!(rows[2], RowKey::User(note));
+    let note_row = super::row::element_id(RowKey::User(note));
+    cx.update_window(window, |_, window, cx| {
+        assert_eq!(
+            window.find(note_row.clone()).label(),
+            Some("You, not read yet, Keep the old name.")
+        );
+        // The keyboard on it: the last row.
+        view.update(cx, |view, cx| view.focus_rows(window, cx));
+    })
+    .unwrap();
+    settle(cx, window);
+    let on = |cx: &mut TestAppContext| cx.read(|cx| (view.read(cx).hovered, view.read(cx).cursor));
+    assert_eq!(on(cx), (Some(note), Some(RowKey::User(note))));
+
+    feed.event(
+        &event(
+            "main",
+            AgentEvent::ContextInjected {
+                ids: vec!["note:1".into()],
+                bytes: 100,
+            },
+        ),
+        None,
+    );
+    say(&feed, "main", "Kept the old name.");
+    settle(cx, window);
+    let read = *ids_of(&feed, Kind::User).last().unwrap();
+    assert!(read > note, "a new id");
+    let next = *ids_of(&feed, Kind::Text).last().unwrap();
+    let rows = keys(&view, cx);
+    assert_eq!(rows.len(), 4, "{rows:?}");
+    assert!(block(reply, 0)(&rows[1]), "{rows:?}");
+    assert_eq!(rows[2], RowKey::User(read));
+    assert!(block(next, 0)(&rows[3]), "{rows:?}");
+    assert_eq!(on(cx), (None, None));
+    cx.update_window(window, |_, window, _| {
+        assert!(window.try_find(note_row.clone()).is_none());
+        assert_eq!(
+            window
+                .find(super::row::element_id(RowKey::User(read)))
+                .label(),
+            Some("You, Keep the old name.")
+        );
+    })
+    .unwrap();
+}

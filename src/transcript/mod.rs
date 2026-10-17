@@ -600,6 +600,15 @@ impl TranscriptView {
         } else {
             for id in &changes.removed {
                 self.ui.remove(id);
+                // An entry that went (a note the agent read comes again
+                // with a new id) takes the pointer's and the keyboard's
+                // place on it along.
+                if self.hovered == Some(*id) {
+                    self.hovered = None;
+                }
+                if self.cursor.is_some_and(|key| key.entry() == *id) {
+                    self.cursor = None;
+                }
             }
             for id in &changes.added {
                 self.add_ui(*id, cx);

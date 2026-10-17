@@ -252,7 +252,8 @@ impl Model {
                     !cut
                 });
             }
-            // Text a failed response streamed, which its retry streams again.
+            // Text a failed response streamed, which its retry streams again,
+            // or a note the agent read, which comes again where it read it.
             Update::Remove { id } => {
                 if let Ok(ix) = self.position(id) {
                     self.entries.remove(ix);
@@ -788,7 +789,8 @@ fn run(
         let item = &entries[ix].item;
         if member(item) {
             members.push(ix);
-        } else if show(filter, view, item) != Show::Hidden {
+        } else if show(filter, view, item) != Show::Hidden && !item.pending {
+            // (A note waiting below doesn't break the run it came in.)
             break;
         }
         ix += 1;
@@ -841,8 +843,18 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
     let mut ix = layout
         .first
         .map_or(0, |first| model.position(first).unwrap_or_else(|ix| ix));
+    // Notes the agent hasn't read wait at the end, below what it goes on
+    // with, until they come again where it read them.
+    let mut waiting = Vec::new();
     while ix < entries.len() {
         let entry = &entries[ix];
+        if entry.item.pending {
+            if show(filter, view, &entry.item) != Show::Hidden {
+                waiting.push(ix);
+            }
+            ix += 1;
+            continue;
+        }
         if is_refresh(&entry.item) {
             rows.push(RowKey::Refresh(entry.item.id), Class::Activity);
             ix = after_refresh(entries, ix);
@@ -887,6 +899,9 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
                 ix += 1;
             }
         }
+    }
+    for ix in waiting {
+        rows.entry(&entries[ix], view, worker_view);
     }
     rows.out
 }
@@ -1273,6 +1288,70 @@ mod tests {
         assert_eq!(
             keys_of(&folded),
             [RowKey::Thinking(1), block(2), RowKey::Actions(2)]
+        );
+    }
+
+    /// A note the agent hasn't read waits below what the agent goes on
+    /// with, and doesn't break a run of calls it came in. Read, it goes and
+    /// comes again with a new id where the agent read it.
+    #[test]
+    fn a_pending_note_waits_at_the_end_until_it_comes_again_read() {
+        let mut note = item(3, Kind::User, "main", "Keep the old name.");
+        note.delivery = Some(Delivery::Note);
+        note.pending = true;
+        let calls = (4..9).map(|id| item(id, Kind::Call, "main", "read a.rs"));
+        let mut model = model(
+            [
+                item(1, Kind::User, "main", "go"),
+                item(2, Kind::Text, "main", "Renaming it"),
+                note.clone(),
+            ]
+            .into_iter()
+            .chain(calls)
+            .collect(),
+        );
+        assert_eq!(
+            keys(&model, View::Full),
+            [
+                RowKey::User(1),
+                block(2),
+                RowKey::Call(4),
+                RowKey::Call(5),
+                RowKey::Call(6),
+                RowKey::Call(7),
+                RowKey::Call(8),
+                RowKey::User(3),
+            ]
+        );
+        assert_eq!(
+            keys(&model, View::Quiet),
+            [RowKey::User(1), block(2), RowKey::Group(4), RowKey::User(3)]
+        );
+        assert_eq!(
+            keys(&model, View::Messages),
+            [RowKey::User(1), block(2), RowKey::Count(4), RowKey::User(3)]
+        );
+
+        let mut changes = Changes::default();
+        model.apply(Update::Remove { id: 3 }, &mut changes);
+        note.id = 9;
+        note.pending = false;
+        model.apply(Update::Item(note), &mut changes);
+        model.apply(
+            Update::Item(item(10, Kind::Text, "main", "Kept it.")),
+            &mut changes,
+        );
+        assert_eq!(changes.removed, [3]);
+        assert_eq!(changes.added, [9, 10]);
+        assert_eq!(
+            keys(&model, View::Quiet),
+            [
+                RowKey::User(1),
+                block(2),
+                RowKey::Group(4),
+                RowKey::User(9),
+                block(10)
+            ]
         );
     }
 

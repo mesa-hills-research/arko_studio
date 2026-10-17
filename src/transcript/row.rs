@@ -328,7 +328,12 @@ fn user_tags(item: &Item) -> Vec<String> {
         tags.push(format!("To {}", item.agent));
     }
     match item.delivery {
-        Some(Delivery::Note) => tags.push("Note".into()),
+        Some(Delivery::Note) => {
+            tags.push("Note".into());
+            if item.pending {
+                tags.push("Not read yet".into());
+            }
+        }
         Some(Delivery::Answer) => tags.push("Answer".into()),
         Some(Delivery::Queued) => tags.push("Queued".into()),
         Some(Delivery::Command) => tags.push("Command".into()),
@@ -640,8 +645,15 @@ impl TranscriptView {
                                 .px_3()
                                 .py_2()
                                 .rounded(theme.radius)
-                                .bg(bubble_color(theme))
-                                .text_color(theme.foreground)
+                                .map(|this| {
+                                    // A note the agent hasn't read is an
+                                    // outline in muted text until it is.
+                                    if item.pending {
+                                        this.border_1().border_color(theme.border).text_color(muted)
+                                    } else {
+                                        this.bg(bubble_color(theme)).text_color(theme.foreground)
+                                    }
+                                })
                                 .when(!tags.is_empty(), |this| {
                                     this.child(
                                         div().text_xs().text_color(muted).child(tags.join(" · ")),

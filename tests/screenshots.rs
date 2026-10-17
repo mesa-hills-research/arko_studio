@@ -354,6 +354,33 @@ pub fn feed(&mut self, chunk: &str) -> Vec<Block> {
 The new test streams a document one byte at a time and compares the blocks with a \
 parse of the whole text.";
 
+    /// A reply still streaming, with a note the user typed meanwhile that
+    /// the agent hasn't read yet.
+    pub fn note_mid_reply() -> Feed {
+        let feed = Feed::new("main");
+        feed.user(
+            "Make the parser streaming, and add a test that feeds it a byte at a time.",
+            Source::App,
+            Delivery::Turn,
+        );
+        feed.turn_started();
+        say(
+            &feed,
+            "The parser now reads its input as it arrives. Each chunk go",
+        );
+        feed.note(
+            "Keep `parse` as a wrapper for now.",
+            Source::App,
+            1,
+            Vec::new(),
+        );
+        say(
+            &feed,
+            "es through `Parser::feed`, and a finished block is never parsed again.",
+        );
+        feed
+    }
+
     /// A finished turn with each kind of row, and a second one running with
     /// an image a tool returned.
     pub fn representative() -> Feed {
@@ -450,6 +477,49 @@ parse of the whole text.";
         );
         feed
     }
+}
+
+/// A note the agent hasn't read, outlined and muted below the reply that
+/// goes on streaming above it.
+fn pending_note_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let feed = feed::note_mid_reply();
+    let window = app
+        .open_window_with(size(px(900.), px(300.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| TranscriptView::new(&feed, AgentFilter::Main, window, cx))
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn transcript_pending_note_light() {
+    goldens().assert(
+        "transcript-pending-note-light",
+        &pending_note_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn transcript_pending_note_dark() {
+    goldens().assert(
+        "transcript-pending-note-dark",
+        &pending_note_window(ThemeMode::Dark),
+    );
 }
 
 /// The representative transcript alone in a window `width` wide, its

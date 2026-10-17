@@ -53,6 +53,9 @@ impl TranscriptView {
             return SharedString::default();
         };
         let label = match key {
+            RowKey::User(_) if item.pending => {
+                format!("You, not read yet, {}", first_line(&item.text))
+            }
             RowKey::User(_) => format!("You, {}", first_line(&item.text)),
             RowKey::Block { id, block, .. } => {
                 let text = self
