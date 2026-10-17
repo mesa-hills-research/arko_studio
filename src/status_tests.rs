@@ -612,7 +612,7 @@ fn sharing_the_web_page_serves_it_and_shows_its_links(cx: &mut TestAppContext) {
     let (window, workspace, session) = window_with_session(cx);
     cx.update(|cx| {
         crate::prefs::update(cx, |prefs| {
-            prefs.web_page.address = "0.0.0.0".into();
+            prefs.web_page.address = Some("0.0.0.0".into());
             prefs.web_page.port = Some(9000);
         })
     });
@@ -850,7 +850,11 @@ fn sharing_serves_where_settings_say_not_where_the_page_was(cx: &mut TestAppCont
     use crate::testing::wait_until;
 
     let app = OnEngine::start(cx, 1300.);
-    cx.update(|cx| crate::prefs::update(cx, |prefs| prefs.web_page.address = "127.0.0.1".into()));
+    cx.update(|cx| {
+        crate::prefs::update(cx, |prefs| {
+            prefs.web_page.address = Some("127.0.0.1".into())
+        })
+    });
     let session = app.first_turn(cx);
     app.command(cx, &session, "/remote 0.0.0.0");
     wait_until(cx, "the page on every network", |cx| {

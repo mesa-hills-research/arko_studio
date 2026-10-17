@@ -4,8 +4,6 @@
 //! The session's own live settings are in its info popover; these are the
 //! app's preferences and the defaults for new sessions.
 
-use std::borrow::Cow;
-
 use gpui_kit::component::font_picker::{
     FontPicker, FontPickerEvent, FontPickerState, FontSettings,
 };
@@ -64,6 +62,9 @@ pub struct SettingsPage {
     /// The font pickers, once the fonts they list are read.
     ui_font: Option<Entity<FontPickerState>>,
     code_font: Option<Entity<FontPickerState>>,
+    /// The catalog the font pickers list ([`fonts::picker_catalog_version`]).
+    fonts_version: u64,
+    _font_pickers: Vec<Subscription>,
     accounts: Entity<AccountsPage>,
     sessions: Entity<SessionsPage>,
     web_page: Entity<WebPageSettings>,
@@ -134,6 +135,8 @@ impl SettingsPage {
             dark_theme: cx.new(|cx| ThemePicker::new(true, window, cx)),
             ui_font: None,
             code_font: None,
+            fonts_version: 0,
+            _font_pickers: Vec::new(),
             accounts,
             sessions,
             web_page,
@@ -149,14 +152,17 @@ impl SettingsPage {
         this
     }
 
-    /// Makes the font pickers, once the fonts they list are read.
+    /// Makes the font pickers, once the fonts they list are read, and again
+    /// when they change (a font file added).
     fn make_font_pickers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ui_font.is_some() {
+        let version = fonts::picker_catalog_version(cx);
+        if self.ui_font.is_some() && self.fonts_version == version {
             return;
         }
         let Some(catalog) = fonts::picker_catalog(cx) else {
             return;
         };
+        self.fonts_version = version;
         let appearance = prefs::get(cx).appearance.clone();
         let mut picker = |choice: &prefs::FontChoice, monospace: bool| {
             let settings = FontSettings::new(choice.family.clone()).with_size(px(choice.size()));
@@ -170,7 +176,8 @@ impl SettingsPage {
         };
         let ui_font = picker(&appearance.ui_font, false);
         let code_font = picker(&appearance.code_font, true);
-        self._subscriptions.extend([
+        // The pickers made before, if any, go with what they sent.
+        self._font_pickers = vec![
             cx.subscribe(&ui_font, |_, _, event: &FontPickerEvent, cx| {
                 let FontPickerEvent::Change(font) = event else {
                     return;
@@ -185,7 +192,7 @@ impl SettingsPage {
                 let choice = prefs::FontChoice::new(font.family(), f32::from(font.size()));
                 prefs::update(cx, |prefs| prefs.appearance.code_font = choice);
             }),
-        ]);
+        ];
         self.ui_font = Some(ui_font);
         self.code_font = Some(code_font);
         cx.notify();
@@ -255,7 +262,6 @@ impl SettingsPage {
             multiple: false,
             prompt: Some("Add Font".into()),
         });
-        let folder = paths::fonts_folder(cx.global::<crate::backend::SharedBackend>().data_root());
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
                 return;
@@ -263,27 +269,41 @@ impl SettingsPage {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let imported = cx
-                .background_spawn(async move { fonts::import(&path, &folder) })
-                .await;
-            this.update_in(cx, |this, window, cx| match imported {
-                Ok(font) => {
-                    let data: Cow<'static, [u8]> = Cow::Owned(font.data);
-                    if !font.already_imported {
-                        fonts::note_added(data.clone(), cx);
+            this.update_in(cx, |this, window, cx| this.add_font_from(path, window, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Copies the font file at `path` into Arko's folder and offers it in
+    /// both font lists, saying how that went. The file is read, copied and
+    /// registered with the text system once, off the UI thread, and the
+    /// font lists hear of it as their catalog changes.
+    pub fn add_font_from(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let folder = paths::fonts_folder(cx.global::<crate::backend::SharedBackend>().data_root());
+        let text_system = cx.text_system().clone();
+        let importing = cx.background_spawn(async move {
+            let font = fonts::import(&path, &folder)?;
+            let data = fonts::keep(font.data);
+            // One the folder had is registered already.
+            if !font.already_imported {
+                text_system.add_fonts(vec![data.clone()])?;
+            }
+            anyhow::Ok((font.families, font.already_imported, data))
+        });
+        cx.spawn_in(window, async move |_, cx| {
+            let imported = importing.await;
+            cx.update(|window, cx| match imported {
+                Ok((families, already_imported, data)) => {
+                    if !already_imported {
+                        fonts::note_added(data, cx);
                     }
-                    for picker in [this.ui_font.clone(), this.code_font.clone()]
-                        .into_iter()
-                        .flatten()
-                    {
-                        picker
-                            .update(cx, |picker, cx| {
-                                picker.add_fonts(vec![data.clone()], window, cx)
-                            })
-                            .ok();
-                    }
-                    let names = font
-                        .families
+                    let names = families
                         .iter()
                         .map(|name| name.to_string())
                         .collect::<Vec<_>>()
@@ -315,13 +335,58 @@ impl SettingsPage {
             let Ok(Ok(Some(paths))) = paths.await else {
                 return;
             };
-            this.update(cx, |this, cx| this.add_mcp_configs(paths, cx))
-                .ok();
+            this.update_in(cx, |this, window, cx| {
+                this.add_checked_mcp_configs(paths, window, cx)
+            })
+            .ok();
         })
         .detach();
     }
 
-    /// Adds MCP config files every session reads, each once.
+    /// Adds the files of `files` that are MCP config files, read in the
+    /// background, and says why each other one isn't added.
+    pub fn add_checked_mcp_configs(
+        &mut self,
+        files: Vec<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let checking = cx.background_spawn(async move {
+            files
+                .into_iter()
+                .map(|file| {
+                    let checked = crate::backend::extensions::check_mcp_file(&file);
+                    (file, checked)
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let checked = checking.await;
+            this.update_in(cx, |this, window, cx| {
+                let mut added = Vec::new();
+                for (file, checked) in checked {
+                    match checked {
+                        Ok(()) => added.push(file),
+                        Err(why) => window.push_notification(
+                            gpui_kit::component::notification::Notification::error(format!(
+                                "{} isn’t added ({why}).",
+                                file.display()
+                            )),
+                            cx,
+                        ),
+                    }
+                }
+                if !added.is_empty() {
+                    this.add_mcp_configs(added, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Adds MCP config files every session reads, each once. Extensions
+    /// lists their servers as it hears of them.
     pub fn add_mcp_configs(&mut self, files: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
         prefs::update(cx, |prefs| {
             for file in files {
@@ -330,8 +395,6 @@ impl SettingsPage {
                 }
             }
         });
-        // Extensions lists the files' servers.
-        self.extensions.update(cx, |page, cx| page.refresh(cx));
     }
 
     fn confirm_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -356,15 +419,16 @@ impl SettingsPage {
     }
 
     fn pages(&self, cx: &mut Context<Self>) -> Vec<SettingPage> {
+        let this = cx.entity();
         vec![
             self.appearance_page(cx),
             input_page(),
             self.accounts.read(cx).page(&self.accounts, cx),
             self.sessions.read(cx).page(),
             notifications_page(),
-            self.web_page.read(cx).page(cx),
+            self.web_page.read(cx).page(),
             self.extensions.read(cx).page(&self.extensions),
-            advanced_page(&cx.entity(), cx),
+            advanced_page(&this, self.extensions.read(cx).extensions(), cx),
         ]
     }
 
@@ -384,7 +448,6 @@ impl SettingsPage {
             .collect();
         SettingPage::new(PAGES[0])
             .icon(IconName::Palette)
-            .default_open(true)
             .groups([
                 SettingGroup::new().title("Theme").items([
                     SettingItem::new(
@@ -467,7 +530,7 @@ impl SettingsPage {
                         )
                         .keywords(["ligatures", "font", "monospace"]),
                     ),
-                SettingGroup::new().title("Size").items([
+                SettingGroup::new().title("Font files").item(
                     SettingItem::new(
                         "Add font file…",
                         SettingField::render(move |_, _, _| {
@@ -482,6 +545,8 @@ impl SettingsPage {
                         }),
                     )
                     .description("Copies a .ttf or .otf file into Arko’s folder and lists it under both fonts."),
+                ),
+                SettingGroup::new().title("Zoom").item(
                     SettingItem::new(
                         "Zoom",
                         SettingField::dropdown(
@@ -495,8 +560,8 @@ impl SettingsPage {
                         )
                         .default_value(zoom_label(1.0)),
                     )
-                    .description(zoom_description()),
-                ]),
+                    .description("Scales the whole window, as View › Zoom In and Zoom Out do."),
+                ),
                 SettingGroup::new().title("Transcript").items([
                     switch(
                         "Render Markdown",
@@ -647,17 +712,6 @@ fn parse_zoom(label: &str) -> Option<f32> {
         .find(|step| ((step * 100.).round() - percent).abs() < 0.5)
 }
 
-fn zoom_description() -> String {
-    let modifier = if cfg!(target_os = "macos") {
-        "⌘"
-    } else {
-        "Ctrl+"
-    };
-    format!(
-        "Scales the whole window. {modifier}= and {modifier}- step it, {modifier}0 goes back to 100%."
-    )
-}
-
 fn send_key_options() -> &'static [(SendKey, &'static str)] {
     if cfg!(target_os = "macos") {
         &[
@@ -787,7 +841,7 @@ fn notifications_page() -> SettingPage {
             .keywords(["finished", "done", "notify", "unfocused"]),
             switch(
                 "When a question arrives",
-                "The agent waits for your answer: a notification from your system while Arko Studio is in the background.",
+                "A notification from your system while Arko Studio is in the background, or in the app while it shows another session.",
                 |prefs| prefs.notifications.question,
                 |prefs, on| prefs.notifications.question = on,
                 defaults.question,
@@ -812,18 +866,23 @@ fn notifications_page() -> SettingPage {
         ]))
 }
 
-fn advanced_page(this: &Entity<SettingsPage>, cx: &App) -> SettingPage {
+/// Settings › Advanced, with `read`, what Extensions last read of the MCP
+/// config files.
+fn advanced_page(
+    this: &Entity<SettingsPage>,
+    read: Option<&crate::backend::extensions::Extensions>,
+    cx: &App,
+) -> SettingPage {
     let home = cx.global::<crate::session_view::HomeFolder>().0.clone();
     // The folders as the user's home folder holds them, with `~`.
-    let in_home = |folder: &std::path::Path| {
-        crate::backend::account_words::tilde(
-            folder,
-            crate::session_view::home_from_env().as_deref(),
-        )
-    };
+    let in_home =
+        |folder: &std::path::Path| crate::backend::account_words::tilde(folder, home.as_deref());
     let data = in_home(cx.global::<crate::backend::SharedBackend>().data_root());
-    let logs = paths::logs_folder()
-        .map(|folder| in_home(&folder))
+    let logs = cx
+        .global::<paths::LogsFolder>()
+        .0
+        .as_deref()
+        .map(in_home)
         .unwrap_or_default();
     let mut groups = Vec::new();
     // Only Windows runs commands in a shell the user picks.
@@ -848,12 +907,29 @@ fn advanced_page(this: &Entity<SettingsPage>, cx: &App) -> SettingPage {
             ),
         );
     }
+    // What Extensions read of each file: one that isn't there, or can't be
+    // read, is left out of the sessions.
     let mut files: Vec<SettingItem> = prefs::get(cx)
         .advanced
         .mcp_config
         .iter()
         .enumerate()
         .map(|(ix, file)| {
+            let state = read
+                .and_then(|read| {
+                    read.files
+                        .iter()
+                        .find(|read| !read.arko && read.path == *file)
+                })
+                .map(|read| &read.servers);
+            let description = match state {
+                Some(None) => "It isn’t there, so sessions leave it out.".to_string(),
+                Some(Some(Err(why))) => {
+                    format!("It can’t be read ({why}), so sessions leave it out.")
+                }
+                _ => "Sessions opened from now on start the servers in it. Extensions lists them."
+                    .to_string(),
+            };
             let file = file.clone();
             SettingItem::new(
                 crate::backend::account_words::tilde(&file, home.as_deref()),
@@ -871,7 +947,7 @@ fn advanced_page(this: &Entity<SettingsPage>, cx: &App) -> SettingPage {
                         })
                 }),
             )
-            .description("Every session starts the servers in it. Extensions lists them.")
+            .description(description)
             .keywords(["mcp", "--mcp-config", "servers"])
         })
         .collect();
@@ -889,14 +965,10 @@ fn advanced_page(this: &Entity<SettingsPage>, cx: &App) -> SettingPage {
                         add.update(cx, |page, cx| page.add_mcp_config(window, cx))
                             .ok();
                     })
-            })
-            .on_reset(
-                |cx| !prefs::get(cx).advanced.mcp_config.is_empty(),
-                |_, cx| prefs::update(cx, |prefs| prefs.advanced.mcp_config.clear()),
-            ),
+            }),
         )
         .description(
-            "Servers every session starts, besides Arko’s mcp.json and a project’s .mcp.json, as arko --mcp-config does. In Claude Code’s format or arko’s.",
+            "Servers agent sessions start ahead of a project’s and Arko’s, as arko --mcp-config does. In Claude Code’s format or arko’s.",
         )
         .keywords(["mcp", "--mcp-config", "servers", "json"]),
     );

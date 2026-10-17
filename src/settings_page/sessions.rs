@@ -2,12 +2,12 @@
 //! what the app asks before it stops or removes something. An open
 //! session's own live settings are in its Session info.
 
-use gpui_kit::component::input::{Textarea, TextareaState};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _};
+use gpui_kit::component::{ActiveTheme as _, IconName};
 use gpui_kit::*;
 
-use super::fields::{TextKind, TextSetting, is_change};
+use super::fields::{self, TextKind, TextSetting};
 use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
@@ -28,6 +28,10 @@ pub struct SessionsPage {
     workers_handover: TextSetting<usize>,
     background_after: TextSetting<u64>,
     chat_instructions: Entity<TextareaState>,
+    /// The chat instructions the field last showed or saved.
+    instructions_seen: String,
+    /// Saves the chat instructions once the typing rests.
+    instructions_typed: Option<Task<()>>,
     /// The preferences as the page last showed them.
     seen: prefs::Prefs,
     _subscriptions: Vec<Subscription>,
@@ -84,29 +88,30 @@ impl SessionsPage {
             field.set_spell_checking(input.spell_check, cx)
         });
         let subscriptions = vec![
-            cx.subscribe(handover.input(), |this, _, event, cx| {
-                if is_change(event) {
-                    this.handover.changed(cx);
-                    cx.notify();
+            fields::subscribe(|page: &mut Self| &mut page.handover, handover.input(), cx),
+            fields::subscribe(
+                |page: &mut Self| &mut page.workers_handover,
+                workers_handover.input(),
+                cx,
+            ),
+            fields::subscribe(
+                |page: &mut Self| &mut page.background_after,
+                background_after.input(),
+                cx,
+            ),
+            // Saved once the typing rests, or as the field is left.
+            cx.subscribe(&chat_instructions, |this, _, event, cx| match event {
+                InputEvent::Change => {
+                    this.instructions_typed = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(fields::TYPING_REST).await;
+                        this.update(cx, |this, cx| this.save_instructions(cx)).ok();
+                    }));
                 }
-            }),
-            cx.subscribe(workers_handover.input(), |this, _, event, cx| {
-                if is_change(event) {
-                    this.workers_handover.changed(cx);
-                    cx.notify();
+                InputEvent::Blur if this.instructions_typed.is_some() => {
+                    this.instructions_typed = None;
+                    this.save_instructions(cx);
                 }
-            }),
-            cx.subscribe(background_after.input(), |this, _, event, cx| {
-                if is_change(event) {
-                    this.background_after.changed(cx);
-                    cx.notify();
-                }
-            }),
-            cx.subscribe(&chat_instructions, |_, field, event, cx| {
-                if is_change(event) {
-                    let text = field.read(cx).value().to_string();
-                    prefs::update(cx, |prefs| prefs.new_sessions.chat_instructions = text);
-                }
+                _ => {}
             }),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 if !super::shown_changed(&mut this.seen, cx) {
@@ -115,22 +120,78 @@ impl SessionsPage {
                 this.handover.follow(window, cx);
                 this.workers_handover.follow(window, cx);
                 this.background_after.follow(window, cx);
+                this.follow_input(cx);
+                // Instructions changed elsewhere (a reset) show, and what's
+                // typed but not saved yet stays.
                 let text = prefs::get(cx).new_sessions.chat_instructions.clone();
-                if this.chat_instructions.read(cx).value() != text {
-                    this.chat_instructions
-                        .update(cx, |field, cx| field.set_value(text, window, cx));
+                if text != this.instructions_seen {
+                    this.instructions_seen = text.clone();
+                    this.instructions_typed = None;
+                    if this.chat_instructions.read(cx).value() != text {
+                        this.chat_instructions
+                            .update(cx, |field, cx| field.set_value(text, window, cx));
+                    }
                 }
                 cx.notify();
             }),
         ];
+        // Settings closed while typing: what's typed is saved.
+        cx.on_release(|this, cx| {
+            this.handover.commit(cx);
+            this.workers_handover.commit(cx);
+            this.background_after.commit(cx);
+            if this.instructions_typed.take().is_some() {
+                this.save_instructions(cx);
+            }
+        })
+        .detach();
         Self {
             handover,
             workers_handover,
             background_after,
             chat_instructions,
+            instructions_seen: new.chat_instructions,
+            instructions_typed: None,
             seen: super::shown_prefs(prefs::get(cx)),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Types in the chat instructions as Settings › Input says, as it
+    /// changes: smooth typing, the keys, spell check.
+    fn follow_input(&mut self, cx: &mut Context<Self>) {
+        let input = prefs::get(cx).input.clone();
+        self.chat_instructions.update(cx, |field, cx| {
+            if field.has_smooth_caret() != input.smooth_typing {
+                field.set_smooth_caret(input.smooth_typing, cx);
+            }
+            let keymap = crate::composer::text_keymap(input.keymap);
+            if field.current_keymap() != keymap {
+                field.set_keymap(keymap, cx);
+            }
+            if field.is_spell_checking() != input.spell_check {
+                field.set_spell_checking(input.spell_check, cx);
+            }
+        });
+    }
+
+    /// Whether the chat instructions type with smooth typing, the keys and
+    /// spell check Settings › Input sets (tests).
+    #[cfg(test)]
+    pub fn instructions_input(&self, cx: &App) -> (bool, gpui_kit::component::input::Keymap, bool) {
+        let field = self.chat_instructions.read(cx);
+        (
+            field.has_smooth_caret(),
+            field.current_keymap(),
+            field.is_spell_checking(),
+        )
+    }
+
+    /// Saves the chat instructions typed.
+    fn save_instructions(&mut self, cx: &mut App) {
+        let text = self.chat_instructions.read(cx).value().to_string();
+        self.instructions_seen = text.clone();
+        prefs::update(cx, |prefs| prefs.new_sessions.chat_instructions = text);
     }
 
     /// Why each typed setting isn't saved, if one isn't: main agent's
@@ -169,7 +230,7 @@ impl SessionsPage {
             .items([
                 self.handover.item("Handover size", "handover-at")
                 .description(format!(
-                    "When the main agent’s context reaches it, the agent writes a report and goes on in a fresh conversation. Like 950k, at least {}k, and held under 95% of what its model takes.",
+                    "When the main agent’s context reaches it, the agent writes a report and goes on in a fresh conversation. Like 950k or 1.2M, at least {}k, and held under 95% of what its model takes.",
                     MIN_HANDOVER / 1000
                 ))
                 .keywords(["context", "tokens", "handover-at", "main agent"]),
@@ -258,7 +319,7 @@ impl SessionsPage {
                         .id("chat-instructions")
                         .test_support()
                         .w_full()
-                        .child(Textarea::new(&field).small())
+                        .child(Textarea::new(&field))
                 })
                 .on_reset(
                     |cx| !prefs::get(cx).new_sessions.chat_instructions.is_empty(),
@@ -321,35 +382,73 @@ fn confirmations_group() -> SettingGroup {
     ])
 }
 
-/// A handover size as arko's `/handover-at` reads it: `200000`, `200,000`,
-/// `200_000` or `200k`, at least [`MIN_HANDOVER`]. Empty: the model's own.
+/// A handover size: `200000`, `200,000`, `200_000`, `950k`, `250.5k`, `1M`
+/// or `1.2M`, at least [`MIN_HANDOVER`]. Empty: the model's own.
 pub fn parse_handover(text: &str) -> Result<Option<usize>, String> {
     let text = text.trim();
     if text.is_empty() {
         return Ok(None);
     }
-    let digits: String = text.chars().filter(|c| !matches!(c, ',' | '_')).collect();
-    let (digits, scale) = match digits.strip_suffix(['k', 'K']) {
-        Some(digits) => (digits.trim_end(), 1000),
-        None => (digits.as_str(), 1),
-    };
-    let tokens = digits
-        .parse::<usize>()
-        .ok()
-        .and_then(|tokens| tokens.checked_mul(scale))
-        .ok_or_else(|| "Give a number of tokens, such as 200000 or 200k.".to_string())?;
+    let tokens = parse_size(text)
+        .ok_or_else(|| "Give a number of tokens, such as 200000, 950k or 1.2M.".to_string())?;
     if tokens < MIN_HANDOVER {
         return Err(format!(
-            "At least {}k: a fresh conversation would start near it.",
+            "At least {}k, since a fresh conversation would start near it.",
             MIN_HANDOVER / 1000
         ));
     }
     Ok(Some(tokens))
 }
 
-/// A number of tokens as the field shows it: `950k`, or the number.
+/// A number of tokens with `k` or `M` for thousands or millions, and
+/// decimals with either, rounded to whole tokens ("1.2M" is 1,200,000).
+fn parse_size(text: &str) -> Option<usize> {
+    let text: String = text.chars().filter(|c| !matches!(c, ',' | '_')).collect();
+    let text = text.trim();
+    let (number, scale) = if let Some(number) = text.strip_suffix(['k', 'K']) {
+        (number, 1_000u128)
+    } else if let Some(number) = text.strip_suffix(['m', 'M']) {
+        (number, 1_000_000)
+    } else {
+        (text, 1)
+    };
+    let number = number.trim();
+    let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+    let digits = |part: &str| part.chars().all(|c| c.is_ascii_digit());
+    // Tokens are whole: decimals only with k or M.
+    if (whole.is_empty() && fraction.is_empty())
+        || !digits(whole)
+        || !digits(fraction)
+        || (scale == 1 && number.contains('.'))
+    {
+        return None;
+    }
+    let whole: u128 = if whole.is_empty() {
+        0
+    } else {
+        whole.parse().ok()?
+    };
+    // The fraction's digits past what a token can show round away.
+    let fraction = &fraction[..fraction.len().min(12)];
+    let part = if fraction.is_empty() {
+        0
+    } else {
+        let tenths = 10u128.pow(fraction.len() as u32);
+        (fraction.parse::<u128>().ok()? * scale * 2 + tenths) / (2 * tenths)
+    };
+    usize::try_from(whole.checked_mul(scale)?.checked_add(part)?).ok()
+}
+
+/// A number of tokens as the field shows it: `1.2M`, `950k`, or the
+/// number.
 pub fn shown_tokens(tokens: usize) -> String {
-    if tokens.is_multiple_of(1000) {
+    if tokens >= 1_000_000 && tokens.is_multiple_of(100_000) {
+        let tenths = tokens / 100_000;
+        match tenths % 10 {
+            0 => format!("{}M", tenths / 10),
+            rest => format!("{}.{rest}M", tenths / 10),
+        }
+    } else if tokens.is_multiple_of(1000) {
         format!("{}k", tokens / 1000)
     } else {
         tokens.to_string()
@@ -419,10 +518,30 @@ mod tests {
                 .unwrap_err()
                 .starts_with("At least 20k")
         );
+        assert!(parse_handover("0").unwrap_err().starts_with("At least 20k"));
         assert!(parse_handover("99999999999999999999999k").is_err());
-        for tokens in [20_000, 950_000, 123_456] {
+        for tokens in [20_000, 950_000, 123_456, 1_000_000, 1_200_000, 1_250_000] {
             assert_eq!(parse_handover(&shown_tokens(tokens)), Ok(Some(tokens)));
         }
+    }
+
+    /// Millions, and decimals with k or M, rounded to whole tokens.
+    #[test]
+    fn handover_sizes_take_millions_and_decimals() {
+        assert_eq!(parse_handover("1M"), Ok(Some(1_000_000)));
+        assert_eq!(parse_handover("1m"), Ok(Some(1_000_000)));
+        assert_eq!(parse_handover("1.2M"), Ok(Some(1_200_000)));
+        assert_eq!(parse_handover("0.95M"), Ok(Some(950_000)));
+        assert_eq!(parse_handover(".5M"), Ok(Some(500_000)));
+        assert_eq!(parse_handover("250.5k"), Ok(Some(250_500)));
+        assert_eq!(parse_handover("1.2345678M"), Ok(Some(1_234_568)));
+        assert!(parse_handover("200000.5").is_err(), "tokens are whole");
+        assert!(parse_handover("1.2.3M").is_err());
+        assert!(parse_handover("M").is_err());
+        assert_eq!(shown_tokens(1_200_000), "1.2M");
+        assert_eq!(shown_tokens(1_000_000), "1M");
+        assert_eq!(shown_tokens(1_250_000), "1250k");
+        assert_eq!(shown_tokens(950_000), "950k");
     }
 
     #[test]

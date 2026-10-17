@@ -719,7 +719,7 @@ impl Workspace {
                 window.push_notification(
                     Notification::warning(format!(
                         "“{}” in Settings › Web page isn’t an IP address, so the page is served on this computer only.",
-                        page.address.trim()
+                        page.address()
                     )),
                     cx,
                 );

@@ -18,8 +18,9 @@ use gpui_kit::*;
 
 use crate::live::LiveSession;
 
-/// What the page lets others do, for Settings › Web page.
-pub const WHAT_IT_ALLOWS: &str = "Anyone with a session’s link can follow it from a phone or another computer, and send it messages, answers and commands. Each link holds the session’s key, and New key ends the old links. The page isn’t encrypted: share it on networks you trust.";
+/// What a session's web page lets others do, wherever the app offers it
+/// (the status bar's popover, Settings › Web page).
+pub const WHAT_IT_ALLOWS: &str = "Anyone with a session’s link can follow the session and act in it, sending messages and commands, answering questions and stopping turns. Each link holds the session’s key, and New key ends the old links. The page isn’t encrypted, so share it only on networks you trust.";
 
 /// The command that serves the page on `bind` (`/remote`'s argument: an
 /// address, a port or both, empty for the default).
@@ -90,28 +91,21 @@ pub fn qr_link(page: &Page) -> Option<&Link> {
     page.links.iter().find(|link| !link.loopback)
 }
 
-/// What one of the page's links lets someone do.
-pub const ACT_IN_IT: &str = "follow this session and act in it, sending messages and commands, answering questions and stopping turns.";
-
 /// Who can open a page other devices reach.
-pub const ON_THIS_NETWORK: &str =
-    "Devices on this network can open the page with these links, which hold the session’s key.";
+pub const ON_THIS_NETWORK: &str = "Devices on this network can open the page with these links.";
 
-/// The page isn't encrypted.
-pub const NOT_ENCRYPTED: &str = "The page isn’t encrypted, so share it only on networks you trust.";
-
-/// What the panel says the page allows: who can open it, what a link lets
-/// them do, and, for a page other devices reach, that it isn't encrypted.
+/// What the panel says the page allows: for a page other devices reach,
+/// who can open it, then what the page lets others do.
 pub fn explanation(page: &Page) -> String {
     if qr_link(page).is_some() {
-        format!("{ON_THIS_NETWORK} Anyone with one can {ACT_IN_IT} {NOT_ENCRYPTED}")
+        format!("{ON_THIS_NETWORK} {WHAT_IT_ALLOWS}")
     } else {
-        format!("Anyone with one of these links can {ACT_IN_IT}")
+        WHAT_IT_ALLOWS.to_string()
     }
 }
 
 /// What the panel says when only this computer can open the page.
-pub const THIS_COMPUTER_ONLY: &str = "Only this computer can open these links. For a phone or another computer, share the page on your network in Settings › Web page (Tailscale’s too), or reach it through an SSH tunnel.";
+pub const HOW_TO_REACH_IT: &str = "Only this computer can open these links. For a phone or another computer, share the page on your network in Settings › Web page (Tailscale’s too), or reach it through an SSH tunnel.";
 
 /// A QR code's text and the device pixels of its modules.
 type QrKey = (String, u32);
@@ -298,7 +292,7 @@ impl RenderOnce for WebPagePanel {
                             div()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child(THIS_COMPUTER_ONLY),
+                                .child(HOW_TO_REACH_IT),
                         )
                         .when_some(self.on_settings.clone(), |this, open| {
                             this.child(
@@ -482,10 +476,13 @@ mod tests {
         // it isn't encrypted.
         let shared = super::explanation(&page(vec![local.clone(), lan.clone()]));
         assert!(shared.starts_with(super::ON_THIS_NETWORK), "{shared}");
-        assert!(shared.ends_with(super::NOT_ENCRYPTED), "{shared}");
-        let local = super::explanation(&page(vec![local]));
-        assert!(local.starts_with("Anyone with one of these links can follow"));
-        assert!(!local.contains(super::NOT_ENCRYPTED));
+        assert!(shared.ends_with(super::WHAT_IT_ALLOWS), "{shared}");
+        // Only this computer opens it: what it allows, the same text as
+        // Settings › Web page has.
+        assert_eq!(
+            super::explanation(&page(vec![local])),
+            super::WHAT_IT_ALLOWS
+        );
     }
 
     #[gpui_kit::test]

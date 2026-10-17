@@ -29,8 +29,9 @@ impl Accounts {
     /// `.env` files it reads (Arko's folder `root`'s last), the ChatGPT
     /// login, Claude Code. It runs `claude`: call it off the UI thread.
     pub fn read(root: &Path) -> Self {
+        let keys = key_states_in(root);
         Self {
-            keys: arko::accounts::key_states(),
+            keys,
             chatgpt: arko::accounts::chatgpt_login(None),
             claude_code: arko::accounts::claude_code(),
             cache_1h: arko::Env::for_folder_in(None, true, Some(root))
@@ -46,8 +47,8 @@ impl Accounts {
 
     /// A set-up for tests and screenshots, in `home` with Arko's folder
     /// `arko`: an Anthropic key saved in Arko's folder, an OpenAI key from
-    /// the environment, a Gemini key in a project's `.env`, no ChatGPT
-    /// login, and Claude Code signed in to a Claude plan.
+    /// the environment, a Gemini key in the `.env` beside the program, no
+    /// ChatGPT login, and Claude Code signed in to a Claude plan.
     pub fn sample(home: &Path, arko: &Path) -> Self {
         let state = |id: &str, masked: Option<&str>, source: Option<KeySource>| {
             let key = key_named(id).expect("arko takes this key");
@@ -70,7 +71,7 @@ impl Accounts {
                 state(
                     "gemini",
                     Some("AIza…k1Qe"),
-                    Some(KeySource::DotEnv(home.join("src/arko/.env"))),
+                    Some(KeySource::DotEnv(PathBuf::from("/opt/arko-studio/.env"))),
                 ),
                 state("openrouter", None, None),
                 state("voyage", None, None),
@@ -93,6 +94,15 @@ impl Accounts {
             cache_1h: None,
         }
     }
+}
+
+/// The API keys as arko finds them for Arko's folder `root`, reading the
+/// `.env` files as they are now: arko in the terminal, or the user, may
+/// have changed them since the app started. What sessions read before one
+/// is open (the ChatGPT login too) then comes from these files.
+pub fn key_states_in(root: &Path) -> Vec<KeyState> {
+    arko::accounts::use_env(arko::Env::for_folder_in(None, true, Some(root)));
+    arko::accounts::key_states()
 }
 
 /// The key arko takes for `provider`, as `/keys add` names it.
@@ -150,6 +160,39 @@ pub fn tilde(path: &Path, home: Option<&Path>) -> String {
     }
 }
 
+/// The variable that names the Codex auth file of the ChatGPT login.
+pub const CODEX_AUTH_VARIABLE: &str = "ARKO_CODEX_AUTH";
+
+/// Where [`CODEX_AUTH_VARIABLE`] is set ahead of Arko's folder's `.env`,
+/// in words ("from the environment"), if it is: a login chosen in the app
+/// is saved in Arko's folder, so that one comes first again in later runs.
+pub fn login_set_first() -> Option<String> {
+    // Without Arko's folder: the environment and the `.env` beside the
+    // program, what arko reads before it.
+    arko::Env::for_folder_in(None, true, None).var(CODEX_AUTH_VARIABLE)?;
+    let from_environment =
+        std::env::var(CODEX_AUTH_VARIABLE).is_ok_and(|value| !value.trim().is_empty());
+    Some(if from_environment {
+        "from the environment".to_string()
+    } else {
+        "from the .env beside Arko Studio".to_string()
+    })
+}
+
+/// What choosing a ChatGPT login did, when `first` (from
+/// [`login_set_first`]) sets one ahead of Arko's folder in later runs.
+pub fn login_chosen_words(first: Option<&str>) -> String {
+    match first {
+        None => {
+            "Arko uses this ChatGPT login from now on, in new sessions and in arko in the terminal."
+                .to_string()
+        }
+        Some(source) => format!(
+            "Arko uses this ChatGPT login until Arko Studio quits. After that, {CODEX_AUTH_VARIABLE} {source} comes first again, so change it there to replace it for good."
+        ),
+    }
+}
+
 /// The ChatGPT login after `path` was chosen, as arko keeps it.
 pub fn chosen_login(path: PathBuf) -> ChatGptLogin {
     ChatGptLogin {
@@ -192,6 +235,41 @@ mod tests {
             "from the environment"
         );
         assert_eq!(tilde(Path::new("/srv/x"), Some(home)), "/srv/x");
+    }
+
+    /// A key written to Arko's `.env` after the app started (by arko in the
+    /// terminal, or by hand) shows on its row.
+    #[test]
+    fn key_rows_read_the_env_files_as_they_are_now() {
+        if std::env::var_os("OPENROUTER_API_KEY").is_some() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let set = |root: &Path| {
+            key_states_in(root)
+                .into_iter()
+                .any(|state| state.key.id == "openrouter" && state.masked.is_some())
+        };
+        assert!(!set(root.path()));
+        std::fs::write(
+            root.path().join(".env"),
+            "OPENROUTER_API_KEY=sk-or-v1-notarealkey0000000000\n",
+        )
+        .unwrap();
+        assert!(set(root.path()));
+    }
+
+    /// A ChatGPT login chosen in the app is saved in Arko's folder, so one
+    /// set ahead of it wins again in later runs, and the app says so.
+    #[test]
+    fn a_chosen_login_says_for_how_long() {
+        assert!(login_chosen_words(None).contains("from now on"));
+        let words = login_chosen_words(Some("from the environment"));
+        assert!(words.contains("until Arko Studio quits"), "{words}");
+        assert!(
+            words.contains("ARKO_CODEX_AUTH from the environment comes first again"),
+            "{words}"
+        );
     }
 
     #[test]

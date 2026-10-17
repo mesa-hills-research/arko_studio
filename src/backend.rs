@@ -285,16 +285,6 @@ impl ModelChoices {
             group.needs.is_none() && group.models.iter().any(|model| model.name == name)
         })
     }
-
-    /// With `model` (the default set in Settings) as the default, when
-    /// there is one: a new session starts on it.
-    pub fn preferring(mut self, model: Option<&str>) -> Self {
-        if let Some(model) = model {
-            self.default = Some(model.to_string());
-            self.note = None;
-        }
-        self
-    }
 }
 
 /// What Arko Studio needs from arko's engine to list, manage and start
@@ -321,7 +311,8 @@ pub trait Backend: Send + Sync + 'static {
     fn delete(&self, id: &SessionId) -> Result<(), BackendError>;
 
     /// The models a new session in `folder` (none: a chat) can start on,
-    /// and its default. May run `claude auth status`.
+    /// and the one arko chooses when neither the composer nor Settings
+    /// chose one. May run `claude auth status`.
     fn models(&self, folder: Option<&Path>) -> ModelChoices;
 
     /// Starts a session, at once: it opens on threads of its own, asking
@@ -337,8 +328,9 @@ pub trait Backend: Send + Sync + 'static {
     /// was done, `Err` why not.
     fn add_key(&self, provider: &str, value: &str) -> Result<String, String>;
 
-    /// Uses the Codex auth file at `path` for the ChatGPT login.
-    fn set_chatgpt_login(&self, path: &Path) -> Result<(), String>;
+    /// Uses the Codex auth file at `path` for the ChatGPT login. `Ok` says
+    /// for how long, `Err` why not.
+    fn set_chatgpt_login(&self, path: &Path) -> Result<String, String>;
 
     /// Starts the sessions started from now on with `defaults`, the
     /// preferences as they are now. It doesn't block.
@@ -360,6 +352,28 @@ pub trait Backend: Send + Sync + 'static {
     /// Forgets the answer about the MCP servers of the project in `folder`:
     /// its next session asks again.
     fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String>;
+}
+
+/// The accounts as the app last read them. Observers hear when a reading
+/// differs from the one before (a key added or removed, a login chosen,
+/// Claude Code signed in): the models new sessions can use changed.
+#[derive(Default)]
+pub struct AccountsSeen {
+    last: Option<Accounts>,
+}
+
+impl gpui_kit::Global for AccountsSeen {}
+
+/// Records `accounts` as just read, telling the observers of
+/// [`AccountsSeen`] when they changed.
+pub fn accounts_read(accounts: &Accounts, cx: &mut gpui_kit::App) {
+    use gpui_kit::BorrowAppContext as _;
+    let seen = cx.default_global::<AccountsSeen>();
+    if seen.last.as_ref() == Some(accounts) {
+        return;
+    }
+    let accounts = accounts.clone();
+    cx.update_global::<AccountsSeen, _>(|seen, _| seen.last = Some(accounts));
 }
 
 /// Gives the backend the preferences sessions start with, now and whenever
@@ -429,42 +443,57 @@ impl ArkoBackend {
         self
     }
 
-    /// The options a session starts with.
+    /// The options a session starts with. It reads files: call it off the
+    /// UI thread.
     pub fn options(&self, start: Start) -> arko::Options {
-        let mut options = arko::Options {
-            root: Some(self.root.clone()),
-            ..arko::Options::default()
-        };
-        let defaults = self.defaults();
-        match start {
-            Start::Resume(id) => {
-                options.session = arko::SessionChoice::Resume(id.0);
-                defaults.apply(&mut options, None, || None);
-            }
-            Start::New(new) => {
-                options.session = arko::SessionChoice::New;
-                match new.mode {
-                    Mode::Agent => {
-                        options.mode = arko::sessions::Mode::Agent;
-                        options.workspace = new.folder;
-                    }
-                    // A chat works in no folder of the user's: Arko keeps it in
-                    // the session's own.
-                    Mode::Chat => options.mode = arko::sessions::Mode::Chat,
-                }
-                options.model = new.model;
-                let effort = new.effort.and_then(|effort| effort.parse().ok());
-                if let Some(effort) = effort.or(defaults.effort) {
-                    options.effort = effort;
-                }
-                defaults.apply(&mut options, Some(new.mode), || last_model(&self.root));
-            }
-        }
-        if let Some(configure) = &self.configure {
-            configure(&mut options);
-        }
-        options
+        prepare(&self.root, self.configure.as_ref(), &self.defaults(), start).0
     }
+}
+
+/// The options a session in Arko's folder `root` starts with, and notes
+/// for the user about what was left out of them. It reads files (the last
+/// session's model, the MCP config files) and tries the web page's port:
+/// it runs on the thread that starts the session.
+fn prepare(
+    root: &Path,
+    configure: Option<&Configure>,
+    defaults: &SessionDefaults,
+    start: Start,
+) -> (arko::Options, Vec<String>) {
+    let mut options = arko::Options {
+        root: Some(root.to_path_buf()),
+        ..arko::Options::default()
+    };
+    match start {
+        Start::Resume(id) => {
+            options.session = arko::SessionChoice::Resume(id.0);
+            defaults.apply(&mut options, None, || None);
+        }
+        Start::New(new) => {
+            options.session = arko::SessionChoice::New;
+            match new.mode {
+                Mode::Agent => {
+                    options.mode = arko::sessions::Mode::Agent;
+                    options.workspace = new.folder;
+                }
+                // A chat works in no folder of the user's: Arko keeps it in
+                // the session's own.
+                Mode::Chat => options.mode = arko::sessions::Mode::Chat,
+            }
+            options.model = new.model;
+            let effort = new.effort.and_then(|effort| effort.parse().ok());
+            if let Some(effort) = effort.or(defaults.effort) {
+                options.effort = effort;
+            }
+            defaults.apply(&mut options, Some(new.mode), || last_model(root));
+        }
+    }
+    let mut notes = defaults::keep_readable_mcp_config(&mut options.mcp_config);
+    notes.extend(defaults::take_free_port(&mut options.remote));
+    if let Some(configure) = configure {
+        configure(&mut options);
+    }
+    (options, notes)
 }
 
 impl Backend for ArkoBackend {
@@ -507,11 +536,45 @@ impl Backend for ArkoBackend {
         let models = arko::models::for_new_session(&self.root, folder);
         let mut choices = ModelChoices::from_arko(models.groups, models.main);
         choices.note = models.note;
-        choices.preferring(self.defaults().model.as_deref())
+        choices
     }
 
     fn start(&self, start: Start, prompter: Arc<dyn arko::Prompter>) -> Launch {
-        Launch::Engine(arko::spawn(self.options(start), prompter))
+        // The options are made on a thread of their own, since making them
+        // reads files, and that thread starts the session and hands it
+        // over as it opens, then as it ends.
+        let (opened_sender, opened) = tokio::sync::oneshot::channel();
+        let (ended_sender, ended) = tokio::sync::oneshot::channel();
+        let root = self.root.clone();
+        let configure = self.configure.clone();
+        let defaults = self.defaults();
+        let starting = std::thread::Builder::new()
+            .name("arko-studio-start".into())
+            .spawn(move || {
+                let (options, notes) = prepare(&root, configure.as_ref(), &defaults, start);
+                for note in &notes {
+                    prompter.note(arko::Level::Warn, note);
+                }
+                let running = arko::spawn(options, prompter);
+                // Without an answer, the session stopped as it opened, and
+                // so does the app's.
+                let Ok(open) = running.opened.blocking_recv() else {
+                    return;
+                };
+                let opened = open.is_ok();
+                if opened_sender.send(open).is_err() || !opened {
+                    return;
+                }
+                if let Ok(end) = running.ended.blocking_recv() {
+                    let _ = ended_sender.send(end);
+                }
+            });
+        match starting {
+            Ok(_) => Launch::Engine(arko::Running { opened, ended }),
+            Err(error) => Launch::Refused(BackendError::Other(format!(
+                "could not start the session: {error}"
+            ))),
+        }
     }
 
     fn add_key(&self, provider: &str, value: &str) -> Result<String, String> {
@@ -523,8 +586,10 @@ impl Backend for ArkoBackend {
         ))
     }
 
-    fn set_chatgpt_login(&self, path: &Path) -> Result<(), String> {
-        arko::accounts::set_chatgpt_login(&self.root, path).map(|_| ())
+    fn set_chatgpt_login(&self, path: &Path) -> Result<String, String> {
+        let first = accounts::login_set_first();
+        arko::accounts::set_chatgpt_login(&self.root, path)?;
+        Ok(accounts::login_chosen_words(first.as_deref()))
     }
 
     fn set_defaults(&self, defaults: SessionDefaults) {
@@ -579,6 +644,9 @@ fn delete_error(error: arko::sessions::DeleteError) -> BackendError {
 pub struct FakeBackend {
     root: PathBuf,
     models: ModelChoices,
+    /// A group of models needs nothing once the key of the provider it's
+    /// named after is set, as with arko.
+    groups_follow_keys: bool,
     state: Mutex<FakeState>,
     defaults: Mutex<SessionDefaults>,
 }
@@ -602,6 +670,7 @@ impl FakeBackend {
         Self {
             root: root.clone(),
             models: ModelChoices::default(),
+            groups_follow_keys: false,
             state: Mutex::new(FakeState {
                 sessions,
                 open: Vec::new(),
@@ -716,6 +785,14 @@ impl FakeBackend {
         self
     }
 
+    /// Lets a group of models need nothing once the key of the provider
+    /// it's named after is set ("OpenRouter, billed per token" and the
+    /// OpenRouter key), as arko's list does.
+    pub fn with_groups_following_keys(mut self) -> Self {
+        self.groups_follow_keys = true;
+        self
+    }
+
     fn with_state<R>(&self, f: impl FnOnce(&mut FakeState) -> R) -> R {
         f(&mut lock(&self.state))
     }
@@ -792,9 +869,20 @@ impl Backend for FakeBackend {
     }
 
     fn models(&self, _: Option<&Path>) -> ModelChoices {
-        self.models
-            .clone()
-            .preferring(self.defaults().model.as_deref())
+        let mut models = self.models.clone();
+        if self.groups_follow_keys {
+            self.with_state(|state| {
+                for group in &mut models.groups {
+                    let key_set = state.accounts.keys.iter().any(|row| {
+                        row.masked.is_some() && group.name.starts_with(row.key.provider)
+                    });
+                    if key_set {
+                        group.needs = None;
+                    }
+                }
+            });
+        }
+        models
     }
 
     fn start(&self, start: Start, _: Arc<dyn arko::Prompter>) -> Launch {
@@ -821,9 +909,12 @@ impl Backend for FakeBackend {
                     title: "New session".into(),
                     mode: new.mode,
                     workspace: new.folder.filter(|_| new.mode == Mode::Agent),
+                    // As arko starts one: the composer's model, else the
+                    // one Settings set, else its own choice.
                     model: new
                         .model
-                        .or_else(|| self.models(None).default)
+                        .or_else(|| self.defaults().model)
+                        .or_else(|| self.models.default.clone())
                         .unwrap_or_default(),
                     created: SystemTime::now(),
                     last_active: None,
@@ -860,7 +951,7 @@ impl Backend for FakeBackend {
         Ok(format!("Arko saved the {provider} key."))
     }
 
-    fn set_chatgpt_login(&self, path: &Path) -> Result<(), String> {
+    fn set_chatgpt_login(&self, path: &Path) -> Result<String, String> {
         if path.file_name().is_none_or(|name| name != "auth.json") {
             return Err(format!(
                 "Could not use {}: it holds no ChatGPT login.",
@@ -868,7 +959,7 @@ impl Backend for FakeBackend {
             ));
         }
         self.with_state(|state| state.accounts.chatgpt = accounts::chosen_login(path.into()));
-        Ok(())
+        Ok(accounts::login_chosen_words(None))
     }
 
     fn set_defaults(&self, defaults: SessionDefaults) {
@@ -900,8 +991,17 @@ impl Backend for FakeBackend {
         })
     }
 
-    fn extensions(&self, _: &[PathBuf], _: &[PathBuf]) -> extensions::Extensions {
-        self.with_state(|state| state.extensions.clone())
+    fn extensions(&self, _: &[PathBuf], mcp_config: &[PathBuf]) -> extensions::Extensions {
+        let mut found = self.with_state(|state| state.extensions.clone());
+        // The files set in Settings, none of them there, first as arko
+        // reads them.
+        let files = mcp_config.iter().map(|path| extensions::McpFile {
+            path: path.clone(),
+            arko: false,
+            servers: None,
+        });
+        found.files.splice(0..0, files);
+        found
     }
 
     fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String> {
@@ -1102,20 +1202,112 @@ mod tests {
         assert_eq!(options.handover_at, None);
     }
 
+    /// Starting a session returns at once, the files its options come from
+    /// read on another thread: here the last session's model, in a file
+    /// whose reading waits until something writes to it.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn the_default_model_set_in_settings_is_the_new_sessions() {
-        let backend = backend();
-        assert_eq!(
-            backend.models(None).default.as_deref(),
-            Some("claude-opus-5-5")
-        );
+    fn starting_a_session_reads_no_files_on_the_callers_thread() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        std::fs::create_dir_all(&root).unwrap();
+        let fifo = root.join("last-model.json");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        // A session that isn't there: it stops as it opens, quickly.
+        let backend = ArkoBackend::new(&root).with_configure(Arc::new(|options| {
+            options.session = arko::SessionChoice::Resume("none".into())
+        }));
+        // The 1-hour cache makes the options ask for the last model.
         let mut prefs = crate::prefs::Prefs::default();
-        prefs.new_sessions.model = Some("claude-sonnet-5-5".into());
+        prefs.new_sessions.cache_1h = Some(true);
         backend.set_defaults(SessionDefaults::from_prefs(&prefs));
-        assert_eq!(
-            backend.models(None).default.as_deref(),
-            Some("claude-sonnet-5-5")
-        );
+        let (started, returned) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let launch = backend.start(
+                Start::New(NewSession {
+                    mode: Mode::Chat,
+                    folder: None,
+                    model: None,
+                    effort: None,
+                }),
+                Arc::new(arko::NoPrompter),
+            );
+            started.send(matches!(launch, Launch::Engine(_))).ok();
+        });
+        let launched = returned.recv_timeout(Duration::from_secs(5));
+        // Lets the reading end, whatever happened, once it's waiting.
+        let waited = std::time::Instant::now();
+        loop {
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt as _;
+            // O_NONBLOCK: no reader yet is an error, not a wait.
+            let opened = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(0o4000)
+                .open(&fifo);
+            match opened {
+                Ok(mut file) => {
+                    file.write_all(b"{}").ok();
+                    break;
+                }
+                Err(_) if waited.elapsed() < Duration::from_secs(5) => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => break,
+            }
+        }
+        assert_eq!(launched, Ok(true), "start waited for the file");
+    }
+
+    /// MCP config files set in Settings that are gone, or aren't MCP config
+    /// files, are left out of a session's options with a note each, since
+    /// arko would refuse to open it.
+    #[test]
+    fn mcp_config_files_that_cant_be_read_are_left_out_with_a_note() {
+        let temp = tempfile::tempdir().unwrap();
+        let good = temp.path().join("servers.json");
+        let bad = temp.path().join("notes.json");
+        let gone = temp.path().join("gone.json");
+        std::fs::write(&good, r#"{"mcpServers": {}}"#).unwrap();
+        std::fs::write(&bad, "{}").unwrap();
+        let mut prefs = crate::prefs::Prefs::default();
+        prefs.advanced.mcp_config = vec![good.clone(), bad.clone(), gone.clone()];
+        let defaults = SessionDefaults::from_prefs(&prefs);
+        let resume = Start::Resume(SessionId("s1".into()));
+        let (options, notes) = prepare(Path::new("/arko"), None, &defaults, resume);
+        assert_eq!(options.mcp_config, [good]);
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(notes[0].contains(&bad.display().to_string()), "{notes:?}");
+        assert!(notes[0].contains("it has no mcpServers"), "{notes:?}");
+        assert!(notes[1].contains(&gone.display().to_string()), "{notes:?}");
+        assert!(notes[1].contains("it isn’t there"), "{notes:?}");
+    }
+
+    /// With a port set and every session sharing its page, a session finding
+    /// the port taken (by another session's page) serves on any free port,
+    /// and says so. One finding it free serves there.
+    #[test]
+    fn a_taken_web_page_port_goes_to_the_first_session_only() {
+        let taken = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let mut prefs = crate::prefs::Prefs::default();
+        prefs.web_page.share_by_default = true;
+        prefs.web_page.address = Some("127.0.0.1".into());
+        prefs.web_page.port = Some(port);
+        let defaults = SessionDefaults::from_prefs(&prefs);
+        let resume = || Start::Resume(SessionId("s1".into()));
+        let (options, notes) = prepare(Path::new("/arko"), None, &defaults, resume());
+        assert_eq!(options.remote.unwrap().port, None);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains(&format!("Port {port}")), "{notes:?}");
+        drop(taken);
+        let (options, notes) = prepare(Path::new("/arko"), None, &defaults, resume());
+        assert_eq!(options.remote.unwrap().port, Some(port));
+        assert!(notes.is_empty());
     }
 
     /// A chat is created in no folder of the user's, even when one was

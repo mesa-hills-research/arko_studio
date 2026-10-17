@@ -8,12 +8,16 @@ use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, Sett
 use gpui_kit::component::{ActiveTheme as _, IconName, StyledExt as _, v_flex};
 use gpui_kit::*;
 
-use super::fields::{TextKind, TextSetting, is_change};
+use super::fields::{self, TextKind, TextSetting};
 use crate::live::{LiveSession, LiveSessions};
-use crate::prefs::{self, DEFAULT_WEB_PAGE_ADDRESS};
+use crate::prefs::{self, DEFAULT_WEB_PAGE_ADDRESS, THIS_COMPUTER_ONLY};
 use crate::web_page::WebPagePanel;
 
 pub use crate::web_page::WHAT_IT_ALLOWS;
+
+/// A session sharing its web page, as the page lists it: the session, its
+/// title and its page.
+type Shared = (Entity<LiveSession>, SharedString, arko::remote::Page);
 
 /// The page's state: the address and port typed in, and the open sessions
 /// it hears from (their pages start and stop).
@@ -22,8 +26,23 @@ pub struct WebPageSettings {
     port: TextSetting<u16>,
     /// The preferences as the page last showed them.
     seen: prefs::Prefs,
+    /// The sessions sharing their page, as last shown.
+    shared: Vec<Shared>,
     _subscriptions: Vec<Subscription>,
     _sessions: Vec<Subscription>,
+}
+
+/// The open sessions sharing their web page now.
+fn shared_now(cx: &App) -> Vec<Shared> {
+    LiveSessions::all(cx)
+        .into_iter()
+        .filter_map(|session| {
+            let live = session.read(cx);
+            let page = live.reading().page.clone()?;
+            let title = live.title().clone();
+            Some((session, title, page))
+        })
+        .collect()
 }
 
 impl WebPageSettings {
@@ -31,14 +50,10 @@ impl WebPageSettings {
         let address = TextSetting::new(
             TextKind {
                 get: |prefs| {
-                    let address = prefs.web_page.address.trim();
-                    (!address.is_empty() && address != DEFAULT_WEB_PAGE_ADDRESS)
-                        .then(|| address.to_string())
+                    let address = prefs.web_page.address();
+                    (address != DEFAULT_WEB_PAGE_ADDRESS).then(|| address.to_string())
                 },
-                set: |prefs, address| {
-                    prefs.web_page.address =
-                        address.unwrap_or_else(|| DEFAULT_WEB_PAGE_ADDRESS.to_string())
-                },
+                set: |prefs, address| prefs.web_page.address = address,
                 parse: parse_address,
                 show: |address| address.clone(),
             },
@@ -58,18 +73,8 @@ impl WebPageSettings {
             cx,
         );
         let subscriptions = vec![
-            cx.subscribe(address.input(), |this, _, event, cx| {
-                if is_change(event) {
-                    this.address.changed(cx);
-                    cx.notify();
-                }
-            }),
-            cx.subscribe(port.input(), |this, _, event, cx| {
-                if is_change(event) {
-                    this.port.changed(cx);
-                    cx.notify();
-                }
-            }),
+            fields::subscribe(|page: &mut Self| &mut page.address, address.input(), cx),
+            fields::subscribe(|page: &mut Self| &mut page.port, port.input(), cx),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 if !super::shown_changed(&mut this.seen, cx) {
                     return;
@@ -80,13 +85,20 @@ impl WebPageSettings {
             }),
             cx.observe_global::<LiveSessions>(|this, cx| {
                 this.hear_sessions(cx);
-                cx.notify();
+                this.sync_shared(cx);
             }),
         ];
+        // Settings closed while typing: what's typed is saved.
+        cx.on_release(|this, cx| {
+            this.address.commit(cx);
+            this.port.commit(cx);
+        })
+        .detach();
         let mut this = Self {
             address,
             port,
             seen: super::shown_prefs(prefs::get(cx)),
+            shared: shared_now(cx),
             _subscriptions: subscriptions,
             _sessions: Vec::new(),
         };
@@ -98,8 +110,18 @@ impl WebPageSettings {
     fn hear_sessions(&mut self, cx: &mut Context<Self>) {
         self._sessions = LiveSessions::all(cx)
             .iter()
-            .map(|session| cx.observe(session, |_, _, cx| cx.notify()))
+            .map(|session| cx.observe(session, |this, _, cx| this.sync_shared(cx)))
             .collect();
+    }
+
+    /// Draws again when a session's page started or stopped, or changed:
+    /// not on the sessions' other changes (a reply streaming in).
+    fn sync_shared(&mut self, cx: &mut Context<Self>) {
+        let shared = shared_now(cx);
+        if shared != self.shared {
+            self.shared = shared;
+            cx.notify();
+        }
     }
 
     /// Why the address and the port typed aren't saved, if they aren't.
@@ -107,16 +129,9 @@ impl WebPageSettings {
         [self.address.error(), self.port.error()]
     }
 
-    pub fn page(&self, cx: &App) -> SettingPage {
+    pub fn page(&self) -> SettingPage {
         let defaults = prefs::WebPagePrefs::default();
-        let shared: Vec<(Entity<LiveSession>, arko::remote::Page)> = LiveSessions::all(cx)
-            .into_iter()
-            .filter_map(|session| {
-                let page = session.read(cx).reading().page.clone()?;
-                Some((session, page))
-            })
-            .collect();
-        let served = if shared.is_empty() {
+        let served = if self.shared.is_empty() {
             vec![
                 SettingItem::new(
                     "No session is shared",
@@ -128,11 +143,11 @@ impl WebPageSettings {
                 .keywords(["links", "qr code", "new key"]),
             ]
         } else {
-            shared
-                .into_iter()
+            self.shared
+                .iter()
+                .cloned()
                 .enumerate()
-                .map(|(ix, (session, page))| {
-                    let title = session.read(cx).title().clone();
+                .map(|(ix, (session, title, page))| {
                     SettingItem::render(move |_, _, cx| {
                         v_flex()
                             .id(("shared-session", ix))
@@ -165,14 +180,14 @@ impl WebPageSettings {
                     .keywords(["remote", "share", "phone", "browser"]),
                     self.address
                         .item("Address", "web-page-address")
-                        .description(
-                            "The IP address to serve on: 127.0.0.1 reaches this computer only, 0.0.0.0 every network it’s on (a VPN or Tailscale too).",
-                        )
+                        .description(format!(
+                            "Left empty, the page is served on every network this computer is on ({DEFAULT_WEB_PAGE_ADDRESS}), so a phone or another computer on the same network, a VPN or Tailscale too, can open a session’s page from its link. {THIS_COMPUTER_ONLY} keeps it to this computer.",
+                        ))
                         .keywords(["bind", "ip", "network", "remote"]),
                     self.port
                         .item("Port", "web-page-port")
                         .description(format!(
-                            "Empty: {}, or any free port when that one is taken.",
+                            "Left empty, it’s {}, or any free port when that one is taken. A port set here goes to the first session that shares its page, and the others take any free port.",
                             arko::remote::DEFAULT_PORT
                         ))
                         .keywords(["bind", "remote"]),
@@ -182,8 +197,8 @@ impl WebPageSettings {
     }
 }
 
-/// An IP address as the page is served on: empty for the default (this
-/// computer only).
+/// An IP address as the page is served on: empty, or the default's, for
+/// the default (every network this computer is on).
 pub fn parse_address(text: &str) -> Result<Option<String>, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -193,7 +208,7 @@ pub fn parse_address(text: &str) -> Result<Option<String>, String> {
         .trim_start_matches('[')
         .trim_end_matches(']')
         .parse()
-        .map_err(|_| "Give an IP address, such as 127.0.0.1 or 0.0.0.0.".to_string())?;
+        .map_err(|_| "Give an IP address, such as 0.0.0.0 or 127.0.0.1.".to_string())?;
     let ip = ip.to_string();
     Ok((ip != DEFAULT_WEB_PAGE_ADDRESS).then_some(ip))
 }
@@ -218,8 +233,8 @@ mod tests {
     #[test]
     fn addresses_are_ip_addresses() {
         assert_eq!(parse_address(""), Ok(None));
-        assert_eq!(parse_address("127.0.0.1"), Ok(None));
-        assert_eq!(parse_address(" 0.0.0.0 "), Ok(Some("0.0.0.0".into())));
+        assert_eq!(parse_address(" 0.0.0.0 "), Ok(None), "the default");
+        assert_eq!(parse_address("127.0.0.1"), Ok(Some("127.0.0.1".into())));
         assert_eq!(parse_address("[::1]"), Ok(Some("::1".into())));
         assert!(parse_address("my-laptop").is_err());
         assert!(parse_address("0.0.0.0:9000").is_err());

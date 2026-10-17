@@ -1,15 +1,20 @@
 //! Arko Studio's preferences, kept in `<arko folder>/studio.json`.
 //!
-//! Every field has a default and unknown fields are ignored, so an older
-//! file loads in a newer app and a newer file in an older one. Changes are
-//! written after a short pause, on a background thread, through a temporary
-//! file renamed over the old one, so a crash never leaves half a file.
+//! Every field has a default, so an older file loads in a newer app and a
+//! newer file in an older one. The file is read field by field: a value
+//! this version can't read (a choice a newer version added, a number typed
+//! by hand) keeps its own default, and the other settings load as they
+//! are. What the app doesn't read, values and fields alike, is written back
+//! as it was, unless its setting was changed here. Changes are written
+//! after a short pause, on a background thread, through a temporary file
+//! renamed over the old one, so a crash never leaves half a file.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::{App, BorrowAppContext as _, Global, Task};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 /// How long a change waits for the next one before the file is written.
 pub const SAVE_DELAY: Duration = Duration::from_millis(400);
@@ -52,48 +57,55 @@ impl Default for Prefs {
     }
 }
 
-/// The address the web page is served on when nothing else is chosen:
-/// this computer only.
-pub const DEFAULT_WEB_PAGE_ADDRESS: &str = "127.0.0.1";
+/// The address the web page is served on when none is chosen: every
+/// network this computer is on, so a phone or another computer on the same
+/// network can open it.
+pub const DEFAULT_WEB_PAGE_ADDRESS: &str = "0.0.0.0";
+
+/// The address that keeps the web page to this computer.
+pub const THIS_COMPUTER_ONLY: &str = "127.0.0.1";
 
 /// Where sessions serve their web page, and whether they do from the start.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WebPagePrefs {
     /// Every session serves its web page as it opens.
     pub share_by_default: bool,
-    /// The IP address to serve on: `127.0.0.1` reaches this computer only,
-    /// `0.0.0.0` every network it's on.
-    pub address: String,
+    /// The IP address to serve on, `None` for every network this computer
+    /// is on ([`DEFAULT_WEB_PAGE_ADDRESS`]). [`THIS_COMPUTER_ONLY`] reaches
+    /// this computer only. Kept as `ip`: earlier versions kept the address
+    /// as `address`, with this computer only as the default (see
+    /// [`migrate`]).
+    #[serde(rename = "ip", skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     /// `None`: arko's port (8765), or any free one when that's taken.
     pub port: Option<u16>,
 }
 
-impl Default for WebPagePrefs {
-    fn default() -> Self {
-        Self {
-            share_by_default: false,
-            address: DEFAULT_WEB_PAGE_ADDRESS.into(),
-            port: None,
-        }
-    }
-}
-
 impl WebPagePrefs {
-    /// The address to serve on, `None` when the one given isn't an IP
-    /// address. Empty is this computer only.
-    pub fn ip(&self) -> Option<std::net::IpAddr> {
-        let address = self.address.trim();
-        let address = match address.trim_start_matches('[').trim_end_matches(']') {
-            "" => DEFAULT_WEB_PAGE_ADDRESS,
-            address => address,
-        };
-        address.parse().ok()
+    /// The address to serve on: the one chosen, else the default.
+    pub fn address(&self) -> &str {
+        self.address
+            .as_deref()
+            .map(str::trim)
+            .filter(|address| !address.is_empty())
+            .unwrap_or(DEFAULT_WEB_PAGE_ADDRESS)
     }
 
-    /// The argument `/remote` takes to serve there, always with the address
-    /// (without one a session serves where it served last): `127.0.0.1`,
-    /// `0.0.0.0:9000`, `[::]:9000`. An address that isn't an IP address
+    /// The address to serve on as an IP address, `None` when the one chosen
+    /// isn't one (a hand-edited word or host name).
+    pub fn ip(&self) -> Option<std::net::IpAddr> {
+        self.address()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse()
+            .ok()
+    }
+
+    /// The argument `/remote` takes to serve there, the address always
+    /// given (arko's own default is this computer only, and without one a
+    /// session serves where it served last): `0.0.0.0`, `0.0.0.0:9000`,
+    /// `127.0.0.1` or `[::]:9000`. An address that isn't an IP address
     /// serves on this computer only.
     pub fn bind_argument(&self) -> String {
         let ip = self
@@ -103,6 +115,29 @@ impl WebPagePrefs {
             Some(port) => std::net::SocketAddr::new(ip, port).to_string(),
             None => ip.to_string(),
         }
+    }
+}
+
+/// Brings a preferences file of an earlier version up to this one's, in
+/// place: the web page's `address`, where this computer only was the
+/// default and saved as such (it couldn't be chosen apart from the
+/// default), becomes `ip` when it names another address, and the default
+/// otherwise.
+fn migrate(file: &mut Value) {
+    let Some(page) = file.get_mut("web_page").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(old) = page.remove("address") else {
+        return;
+    };
+    let chosen = old
+        .as_str()
+        .map(str::trim)
+        .filter(|address| !address.is_empty() && *address != THIS_COMPUTER_ONLY);
+    if let Some(address) = chosen
+        && !page.contains_key("ip")
+    {
+        page.insert("ip".into(), Value::String(address.to_string()));
     }
 }
 
@@ -551,21 +586,133 @@ impl Default for PanelPrefs {
 }
 
 impl Prefs {
-    /// Reads `path`. A missing file gives the defaults, and so does one that
-    /// can't be read, which is logged and left alone until the next save.
+    /// Reads `path`, field by field ([`PrefsStore::load`]).
     pub fn load(path: &Path) -> Self {
-        match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
-                tracing::warn!("ignored {}: {error}", path.display());
-                Self::default()
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
-            Err(error) => {
-                tracing::warn!("couldn't read {}: {error}", path.display());
-                Self::default()
+        PrefsStore::load(path).prefs
+    }
+}
+
+/// What a file held that this version doesn't read: fields it doesn't know
+/// and values it can't read, each where it was. They are written back on
+/// save where the setting is still as it was read.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Unread {
+    /// Each value, by its path of keys in the file.
+    values: Vec<(Vec<String>, Value)>,
+    /// The preferences as read, which tell whether a setting changed since.
+    read: Value,
+}
+
+impl Unread {
+    /// `value` (the preferences to save) with what wasn't read put back,
+    /// where its setting is as it was read.
+    fn restore(&self, mut value: Value) -> Value {
+        for (path, kept) in &self.values {
+            let pointer = pointer(path);
+            if value.pointer(&pointer) == self.read.pointer(&pointer) {
+                put(&mut value, path, kept.clone());
             }
         }
+        value
     }
+}
+
+/// Reads the preferences in `file`, field by field: a value that can't be
+/// read keeps its default, and goes in what isn't read, as do fields this
+/// version doesn't know.
+fn read_fields(file: &Value) -> (Prefs, Unread) {
+    let mut values = Vec::new();
+    let prefs = serde_json::from_value::<Prefs>(file.clone()).unwrap_or_else(|_| {
+        let mut accepted = serde_json::to_value(Prefs::default()).unwrap_or_default();
+        take_fields(&mut accepted, file, &mut Vec::new(), &mut values);
+        serde_json::from_value(accepted).unwrap_or_default()
+    });
+    let read = serde_json::to_value(&prefs).unwrap_or_default();
+    unknown_fields(file, &read, &mut Vec::new(), &mut values);
+    (prefs, Unread { values, read })
+}
+
+/// Puts each field of `file` (at `path` in it) into `accepted`, the
+/// preferences read so far, where the preferences still read with it.
+/// A value that doesn't goes in `unread` (a section is tried field by
+/// field). Fields no preference has are left to [`unknown_fields`].
+fn take_fields(
+    accepted: &mut Value,
+    file: &Value,
+    path: &mut Vec<String>,
+    unread: &mut Vec<(Vec<String>, Value)>,
+) {
+    let Value::Object(fields) = file else {
+        return;
+    };
+    for (key, value) in fields {
+        path.push(key.clone());
+        if let Some(before) = accepted.pointer(&pointer(path)).cloned() {
+            put(accepted, path, value.clone());
+            if serde_json::from_value::<Prefs>(accepted.clone()).is_err() {
+                put(accepted, path, before.clone());
+                if value.is_object() && before.is_object() {
+                    take_fields(accepted, value, path, unread);
+                } else {
+                    unread.push((path.clone(), value.clone()));
+                }
+            }
+        }
+        path.pop();
+    }
+}
+
+/// The fields of `file` (at `path` in it) that `known`, the preferences as
+/// read from it, doesn't have.
+fn unknown_fields(
+    file: &Value,
+    known: &Value,
+    path: &mut Vec<String>,
+    unread: &mut Vec<(Vec<String>, Value)>,
+) {
+    let (Value::Object(fields), Value::Object(known)) = (file, known) else {
+        return;
+    };
+    for (key, value) in fields {
+        path.push(key.clone());
+        match known.get(key) {
+            None => unread.push((path.clone(), value.clone())),
+            Some(known) => unknown_fields(value, known, path, unread),
+        }
+        path.pop();
+    }
+}
+
+/// The JSON pointer of `path`.
+fn pointer(path: &[String]) -> String {
+    path.iter()
+        .map(|key| format!("/{}", key.replace('~', "~0").replace('/', "~1")))
+        .collect()
+}
+
+/// Sets the value at `path` in `value`, making the objects on the way.
+fn put(value: &mut Value, path: &[String], new: Value) {
+    let Some((last, parents)) = path.split_last() else {
+        *value = new;
+        return;
+    };
+    let mut at = value;
+    for key in parents {
+        if !at.is_object() {
+            *at = Value::Object(Map::new());
+        }
+        at = at
+            .as_object_mut()
+            .expect("an object")
+            .entry(key.clone())
+            .or_insert(Value::Null);
+    }
+    if !at.is_object() {
+        *at = Value::Object(Map::new());
+    }
+    at.as_object_mut()
+        .expect("an object")
+        .insert(last.clone(), new);
 }
 
 /// Writes `text` to `path` through a temporary file in the same folder, so
@@ -587,17 +734,76 @@ pub struct PrefsStore {
     prefs: Prefs,
     /// `None` keeps them in memory only (tests, or no Arko folder).
     path: Option<PathBuf>,
+    /// What the file held that this version doesn't read.
+    unread: Unread,
 }
 
 impl Global for PrefsStore {}
 
 impl PrefsStore {
     pub fn new(prefs: Prefs, path: Option<PathBuf>) -> Self {
-        Self { prefs, path }
+        Self {
+            prefs,
+            path,
+            unread: Unread::default(),
+        }
+    }
+
+    /// The preferences in the file at `path`, saved there. Each value that
+    /// can't be read keeps its default alone ([`read_fields`]). A missing
+    /// file gives the defaults. A file that isn't JSON is copied beside it
+    /// as `studio.json.bad` before the first save replaces it, and one that
+    /// can't be read at all is left alone: this run's changes aren't saved.
+    pub fn load(path: &Path) -> Self {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Self::new(Prefs::default(), Some(path.to_path_buf()));
+            }
+            Err(error) => {
+                tracing::warn!("couldn't read {}: {error}", path.display());
+                return Self::new(Prefs::default(), None);
+            }
+        };
+        match serde_json::from_str::<Value>(&text) {
+            Ok(mut file) if file.is_object() => {
+                migrate(&mut file);
+                let (prefs, unread) = read_fields(&file);
+                for (keys, _) in &unread.values {
+                    tracing::warn!("{}: left {} as it is", path.display(), keys.join("."));
+                }
+                Self {
+                    prefs,
+                    path: Some(path.to_path_buf()),
+                    unread,
+                }
+            }
+            _ => {
+                let kept = path.with_extension("json.bad");
+                tracing::warn!(
+                    "{} isn't a preferences file: kept as {}",
+                    path.display(),
+                    kept.display()
+                );
+                match std::fs::write(&kept, &text) {
+                    Ok(()) => Self::new(Prefs::default(), Some(path.to_path_buf())),
+                    Err(error) => {
+                        tracing::warn!("couldn't keep it: {error}");
+                        Self::new(Prefs::default(), None)
+                    }
+                }
+            }
+        }
     }
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// The file's text for the preferences now.
+    fn text(&self) -> serde_json::Result<String> {
+        let value = self.unread.restore(serde_json::to_value(&self.prefs)?);
+        serde_json::to_string_pretty(&value)
     }
 }
 
@@ -621,7 +827,7 @@ fn unsaved(cx: &App) -> Option<(PathBuf, String, u64)> {
     if saver.saved == saver.changes {
         return None;
     }
-    match serde_json::to_string_pretty(&store.prefs) {
+    match store.text() {
         Ok(text) => Some((path, text, saver.changes)),
         Err(error) => {
             tracing::error!("couldn't write the preferences: {error}");
@@ -724,12 +930,82 @@ mod tests {
         assert_eq!(prefs.sidebar, SidebarPrefs::default());
     }
 
+    /// A file that isn't JSON gives the defaults, and is kept beside, since
+    /// the next save replaces it.
     #[test]
-    fn a_broken_file_gives_the_defaults() {
+    fn a_broken_file_gives_the_defaults_and_is_kept() {
         let folder = tempfile::tempdir().unwrap();
         let path = folder.path().join("studio.json");
         std::fs::write(&path, "{ not json").unwrap();
-        assert_eq!(Prefs::load(&path), Prefs::default());
+        let store = PrefsStore::load(&path);
+        assert_eq!(store.prefs, Prefs::default());
+        assert_eq!(store.path(), Some(path.as_path()));
+        assert_eq!(
+            std::fs::read_to_string(folder.path().join("studio.json.bad")).unwrap(),
+            "{ not json"
+        );
+    }
+
+    /// One value that doesn't read (a choice a newer version added, a
+    /// negative number typed by hand) keeps its own default: every other
+    /// setting loads as it is.
+    #[test]
+    fn a_value_that_doesnt_read_keeps_only_its_own_default() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("studio.json");
+        std::fs::write(
+            &path,
+            r#"{ "appearance": { "theme_mode": "dark", "light_theme": "Solarized Light" },
+                 "new_sessions": { "handover_at": 950000, "extra_rules": "medium" } }"#,
+        )
+        .unwrap();
+        let prefs = Prefs::load(&path);
+        assert_eq!(prefs.appearance.theme_mode, ThemeMode::Dark);
+        assert_eq!(prefs.appearance.light_theme, "Solarized Light");
+        assert_eq!(prefs.new_sessions.handover_at, Some(950_000));
+        assert_eq!(prefs.new_sessions.extra_rules, ExtraRules::Small);
+        std::fs::write(
+            &path,
+            r#"{ "appearance": { "theme_mode": "dark" },
+                 "new_sessions": { "handover_at": -5, "text_replies": false },
+                 "window": { "x": "left" } }"#,
+        )
+        .unwrap();
+        let prefs = Prefs::load(&path);
+        assert_eq!(prefs.appearance.theme_mode, ThemeMode::Dark);
+        assert_eq!(prefs.new_sessions.handover_at, None);
+        assert!(!prefs.new_sessions.text_replies);
+        assert_eq!(prefs.window, None);
+    }
+
+    /// What the app doesn't read, values and fields alike, is saved as it
+    /// was, until its setting is changed here.
+    #[gpui_kit::test]
+    async fn what_isnt_read_is_saved_as_it_was(cx: &mut gpui_kit::TestAppContext) {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("studio.json");
+        std::fs::write(
+            &path,
+            r#"{ "appearance": { "zoom": 1.25, "glow": true },
+                 "new_sessions": { "extra_rules": "medium", "project_instructions": "both" },
+                 "later": [1] }"#,
+        )
+        .unwrap();
+        cx.update(|cx| init(PrefsStore::load(&path), cx));
+        let saved = |cx: &mut gpui_kit::TestAppContext| {
+            cx.executor().advance_clock(SAVE_DELAY);
+            cx.run_until_parked();
+            serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap()
+        };
+        cx.update(|cx| update(cx, |prefs| prefs.appearance.zoom = 1.5));
+        let file = saved(cx);
+        assert_eq!(file["appearance"]["zoom"], 1.5);
+        assert_eq!(file["appearance"]["glow"], true);
+        assert_eq!(file["new_sessions"]["extra_rules"], "medium");
+        assert_eq!(file["new_sessions"]["project_instructions"], "both");
+        assert_eq!(file["later"], serde_json::json!([1]));
+        cx.update(|cx| update(cx, |prefs| prefs.new_sessions.extra_rules = ExtraRules::All));
+        assert_eq!(saved(cx)["new_sessions"]["extra_rules"], "all");
     }
 
     #[test]
@@ -751,16 +1027,14 @@ mod tests {
     fn the_web_page_address_becomes_the_remote_argument() {
         let page = |address: &str, port: Option<u16>| WebPagePrefs {
             share_by_default: false,
-            address: address.into(),
+            address: Some(address.into()),
             port,
         };
-        // Always with the address: without one, a session serves where it
-        // served last.
-        assert_eq!(
-            WebPagePrefs::default().bind_argument(),
-            DEFAULT_WEB_PAGE_ADDRESS
-        );
-        assert_eq!(page("", None).bind_argument(), DEFAULT_WEB_PAGE_ADDRESS);
+        // The default is every network, which arko's own default isn't:
+        // the address is always given.
+        assert_eq!(WebPagePrefs::default().bind_argument(), "0.0.0.0");
+        assert_eq!(page("", None).bind_argument(), "0.0.0.0");
+        assert_eq!(page("127.0.0.1", None).bind_argument(), "127.0.0.1");
         assert_eq!(
             page("127.0.0.1", Some(9000)).bind_argument(),
             "127.0.0.1:9000"
@@ -777,14 +1051,65 @@ mod tests {
         }
         // Each reads back as the same address and port.
         for (address, port) in [
-            ("127.0.0.1", None),
             ("0.0.0.0", Some(9000)),
+            ("127.0.0.1", None),
             ("::", Some(9000)),
             ("::1", None),
         ] {
             let bind = arko::remote::parse_bind(&page(address, port).bind_argument()).unwrap();
             assert_eq!(bind.ip, address.parse::<std::net::IpAddr>().unwrap());
             assert_eq!(bind.port, port);
+        }
+    }
+
+    /// Earlier versions saved this computer only as the web page's
+    /// address whether or not it was chosen: it becomes the default (every
+    /// network), and another address stays. One chosen since stays.
+    #[test]
+    fn an_earlier_web_page_address_moves_to_the_new_default() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("studio.json");
+        let read = |text: &str| {
+            std::fs::write(&path, text).unwrap();
+            Prefs::load(&path).web_page
+        };
+        let page = read(
+            r#"{"web_page": {"share_by_default": true, "address": "127.0.0.1", "port": 9000}}"#,
+        );
+        assert_eq!(page.address, None);
+        assert_eq!(page.address(), "0.0.0.0");
+        assert!(page.share_by_default);
+        assert_eq!(page.port, Some(9000));
+        assert_eq!(
+            read(r#"{"web_page": {"address": "192.168.1.5"}}"#)
+                .address
+                .as_deref(),
+            Some("192.168.1.5")
+        );
+        assert_eq!(read(r#"{"web_page": {"address": ""}}"#).address, None);
+        // This computer only, chosen in this version, is kept as chosen.
+        assert_eq!(
+            read(r#"{"web_page": {"ip": "127.0.0.1"}}"#)
+                .address
+                .as_deref(),
+            Some("127.0.0.1")
+        );
+    }
+
+    /// The default address isn't written, a chosen one is, and either
+    /// reads back as it was.
+    #[test]
+    fn web_page_addresses_round_trip() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("studio.json");
+        for address in [None, Some("127.0.0.1"), Some("0.0.0.0")] {
+            let mut prefs = Prefs::default();
+            prefs.web_page.address = address.map(str::to_string);
+            let text = serde_json::to_string_pretty(&prefs).unwrap();
+            assert_eq!(text.contains("\"ip\""), address.is_some(), "{text}");
+            assert!(!text.contains("\"address\""), "{text}");
+            write_atomically(&path, &text).unwrap();
+            assert_eq!(Prefs::load(&path).web_page.address.as_deref(), address);
         }
     }
 

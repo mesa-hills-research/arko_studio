@@ -24,15 +24,27 @@ use crate::session_view::{HomeFolder, recent_folders};
 pub struct ExtensionsPage {
     extensions: Option<Extensions>,
     home: Option<PathBuf>,
+    /// The MCP config files set in Settings, as last read.
+    config: Vec<PathBuf>,
     _load: Option<Task<()>>,
+    _prefs: Subscription,
 }
 
 impl ExtensionsPage {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // A file added or removed under Advanced, or by a reset: the page
+        // reads them again.
+        let prefs = cx.observe_global::<prefs::PrefsStore>(|this, cx| {
+            if prefs::get(cx).advanced.mcp_config != this.config {
+                this.refresh(cx);
+            }
+        });
         let mut this = Self {
             extensions: None,
             home: cx.global::<HomeFolder>().0.clone(),
+            config: Vec::new(),
             _load: None,
+            _prefs: prefs,
         };
         this.refresh(cx);
         this
@@ -47,6 +59,7 @@ impl ExtensionsPage {
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let backend = cx.global::<SharedBackend>().clone();
         let config = prefs::get(cx).advanced.mcp_config.clone();
+        self.config = config.clone();
         let reading = cx.background_spawn(async move {
             let folders = backend
                 .sessions()
@@ -139,7 +152,7 @@ impl ExtensionsPage {
             SettingGroup::new()
                 .title("MCP servers")
                 .description(
-                    "Programs that give the agents more tools. Every session starts the servers in these files. Servers over HTTP are skipped: Arko talks to servers over standard input and output.",
+                    "Programs that give the agents more tools. Agent sessions opened from now on start the servers in these files, and a server named in two is taken from the first. Servers over HTTP are skipped, because Arko talks to servers over standard input and output.",
                 )
                 .items(files),
         ];
@@ -157,7 +170,7 @@ impl ExtensionsPage {
             SettingGroup::new()
                 .title("Skills")
                 .description(
-                    "Instructions for particular kinds of work, which the agents load when a task calls for them. Arko reads a project’s .agents/skills, .claude/skills and .skills, then skills in Arko’s folder, ~/.agents/skills and ~/.claude/skills. A skill in more than one keeps the first.",
+                    "Instructions for particular kinds of work, which the agents load when a task calls for them. A skill is a folder with a SKILL.md, or a Markdown file, whose front matter gives its name and description. Arko reads a project’s .agents/skills, .claude/skills and .skills, then skills in Arko’s folder, ~/.agents/skills and ~/.claude/skills. A skill named as an earlier one gets a number (pdf-2), and the same skill twice is read once.",
                 )
                 .items(skills),
         );
@@ -168,19 +181,21 @@ impl ExtensionsPage {
     }
 }
 
-/// The servers a file sets up, in a line.
+/// The servers a file sets up, in a sentence: each one's name and the
+/// command it runs, or why arko skips it.
 fn servers_words(servers: &[McpServer]) -> String {
     if servers.is_empty() {
-        return "No servers.".into();
+        return "It sets up no servers.".into();
     }
     let names: Vec<String> = servers
         .iter()
         .map(|server| match &server.skipped {
-            Some(why) => format!("{} (skipped: {why})", server.name),
-            None => server.name.clone(),
+            Some(why) => format!("{} (skipped because {why})", server.name),
+            None if server.command.is_empty() => server.name.clone(),
+            None => format!("{} ({})", server.name, server.command),
         })
         .collect();
-    format!("{}.", names.join(", "))
+    format!("It sets up {}.", names.join(", "))
 }
 
 fn file_item(file: &McpFile, home: Option<&Path>) -> SettingItem {
@@ -192,11 +207,12 @@ fn file_item(file: &McpFile, home: Option<&Path>) -> SettingItem {
     };
     let description = match &file.servers {
         None if file.arko => {
-            format!("{path} isn’t there. Servers set up in it start in every session.")
+            format!("{path} isn’t there. Servers set up in it start in every agent session.")
         }
         None => format!("{path} isn’t there. Remove it under Advanced, or make it."),
-        Some(Err(why)) => format!("Can’t be read: {why}."),
-        Some(Ok(servers)) => format!("{path}: {}", servers_words(servers)),
+        Some(Err(why)) => format!("It can’t be read ({why})."),
+        Some(Ok(servers)) if file.arko => format!("{path}. {}", servers_words(servers)),
+        Some(Ok(servers)) => servers_words(servers),
     };
     SettingItem::new(title, SettingField::render(|_, _, _| div()))
         .description(description)
@@ -211,13 +227,13 @@ fn project_item(
 ) -> SettingItem {
     let servers = match &project.servers {
         Ok(servers) => servers_words(servers),
-        Err(why) => format!("Can’t be read: {why}."),
+        Err(why) => format!("It can’t be read ({why})."),
     };
     let answer = match project.approval {
-        Approval::Approved => "Approved: they start with its sessions.",
-        Approval::Refused => "Refused: they don’t start.",
-        Approval::NotAsked => "Not asked yet: its next session asks.",
-        Approval::Changed => "Changed since you answered: its next session asks again.",
+        Approval::Approved => "Approved, so they start with its sessions.",
+        Approval::Refused => "Refused, so they don’t start.",
+        Approval::NotAsked => "Not asked yet. Its next session asks.",
+        Approval::Changed => "Changed since you answered, so its next session asks again.",
     };
     let remembered = matches!(project.approval, Approval::Approved | Approval::Refused);
     let folder = project.folder.clone();
