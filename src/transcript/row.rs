@@ -197,7 +197,17 @@ pub(super) fn render(
         .into_any_element()
 }
 
-/// The id of a row's element: stable while the row keeps its key.
+/// One number for a block's row: its entry, its document's generation, its
+/// index and whether it shows as its source.
+fn block_number(id: u64, generation: u32, block: usize, source: bool) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    (id, generation, block, source).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The id of a row's element: stable while the row keeps its key. Made
+/// with each frame, so it is made of numbers, not formatted.
 pub(super) fn element_id(key: RowKey) -> ElementId {
     let (name, id): (&'static str, u64) = match key {
         RowKey::Separator(id) => ("separator", id),
@@ -208,11 +218,7 @@ pub(super) fn element_id(key: RowKey) -> ElementId {
             generation,
             block,
             source,
-        } => {
-            return ElementId::Name(
-                format!("block-{id}-{generation}-{block}-{}", u8::from(source)).into(),
-            );
-        }
+        } => ("block", block_number(id, generation, block, source)),
         RowKey::Actions(id) => ("actions", id),
         RowKey::Thinking(id) => ("thinking", id),
         RowKey::Call(id) => ("call", id),
@@ -435,7 +441,12 @@ impl TranscriptView {
             return div().into_any_element();
         };
         let tags = user_tags(item);
-        let text: SharedString = item.text.clone().into();
+        // Made when the message comes, not with each frame.
+        let text = self
+            .ui
+            .get(&id)
+            .and_then(|ui| ui.text.clone())
+            .unwrap_or_else(|| item.text.clone().into());
         let muted = theme.muted_foreground;
         let copy_view = view.downgrade();
         h_flex()
@@ -545,10 +556,7 @@ impl TranscriptView {
                 .when(ui.source, |this| {
                     this.code_font(theme).text_size(theme.mono_font_size)
                 })
-                .child(selectable(
-                    SharedString::from(format!("source-{id}-{block}")),
-                    text,
-                ))
+                .child(selectable(("source", id), text))
                 .into_any_element()
         } else {
             // The longest code block of the row, at the top level or inside
@@ -582,7 +590,7 @@ impl TranscriptView {
                 .when(!uncapped, |this| this.code_block_max_lines(CODE_LINES));
             let toggle = (lines > CODE_LINES).then(|| {
                 let view = view.downgrade();
-                Button::new(("show-all", block as u64))
+                Button::new("button")
                     .ghost()
                     .xsmall()
                     .label(if uncapped {
@@ -599,17 +607,13 @@ impl TranscriptView {
                 .w_full()
                 .child(text_view)
                 .children(toggle.map(|toggle| {
-                    h_flex().pt_1().child(
-                        div()
-                            .id(SharedString::from(format!("show-all-{id}-{block}")))
-                            .test_support()
-                            .child(toggle),
-                    )
+                    h_flex()
+                        .pt_1()
+                        .child(div().id("show-all").test_support().child(toggle))
                 }))
                 .into_any_element()
         };
         div()
-            .id(SharedString::from(format!("block-body-{id}-{block}")))
             .w_full()
             .when(thinking, |this| {
                 this.text_color(theme.muted_foreground).text_sm()
@@ -1061,7 +1065,7 @@ impl TranscriptView {
                     let view = view.downgrade();
                     let id = image.id;
                     Thumbnail {
-                        id: ElementId::Name(format!("image-{entry}-{id}").into()),
+                        id: ("image", id).into(),
                         image: self.image(id),
                         cache: self.image_cache.clone(),
                         caption: super::image_caption(&image.label, image.bytes).into(),

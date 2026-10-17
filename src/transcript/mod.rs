@@ -194,6 +194,8 @@ struct EntryUi {
     uncapped: HashSet<usize>,
     /// An edit's diff, made when its details first open.
     diff: Option<Entity<DiffViewState>>,
+    /// A user's message, as its row draws it.
+    text: Option<SharedString>,
 }
 
 /// Returns the current time in Unix milliseconds.
@@ -542,6 +544,7 @@ impl TranscriptView {
         let text = entry.item.text.clone();
         let mut ui = EntryUi {
             expanded: self.chosen.remove(&id),
+            text: (entry.item.kind == Kind::User).then(|| entry.item.text.clone().into()),
             ..EntryUi::default()
         };
         if ui.expanded == Some(true) {
@@ -587,6 +590,9 @@ impl TranscriptView {
         let Some(ui) = self.ui.get_mut(&id) else {
             return;
         };
+        if entry.item.kind == Kind::User && ui.text.as_deref() != Some(text.as_str()) {
+            ui.text = Some(text.clone().into());
+        }
         let Some(doc) = ui.doc.as_mut() else {
             if needs_doc {
                 let text = text.clone();

@@ -11,9 +11,9 @@ use arko_agents::AgentEvent;
 use arko_workflows::WorkflowEvent;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Context, Entity, IntoElement, ParentElement as _,
-    Point, Render, SharedString, Styled as _, TestAppContext, Window, WindowBounds, WindowOptions,
-    div, px, size,
+    AnyWindowHandle, AppContext as _, Bounds, Context, ElementId, Entity, IntoElement,
+    ParentElement as _, Point, Render, Styled as _, TestAppContext, Window, WindowBounds,
+    WindowOptions, div, px, size,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -588,7 +588,9 @@ fn showing_all_of_a_code_block_at_the_bottom_keeps_its_top(cx: &mut TestAppConte
     };
     let before = row_top(cx, window, key).expect("on screen");
     cx.update_window(window, |_, window, cx| {
-        window.click(SharedString::from(format!("show-all-{reply}-1")), cx)
+        window
+            .within(super::row::element_id(key))
+            .click("show-all", cx)
     })
     .unwrap();
     settle(cx, window);
@@ -618,7 +620,8 @@ fn a_long_code_block_in_a_list_item_is_capped_too(cx: &mut TestAppContext) {
                 .try_find(super::row::element_id(list))
                 .map(|row| f32::from(row.bounds().size.height));
             let show_all = window
-                .try_find(SharedString::from(format!("show-all-{reply}-1")))
+                .within(super::row::element_id(list))
+                .try_find("show-all")
                 .is_some();
             (height, show_all)
         })
@@ -750,7 +753,7 @@ fn tab_reaches_the_transcript_and_its_thumbnails_but_not_hidden_actions(cx: &mut
         )
     });
     settle(cx, window);
-    let thumbnail = SharedString::from("image-1-1");
+    let thumbnail: ElementId = ("image", 1u64).into();
     let focused = |cx: &mut TestAppContext| {
         cx.update_window(window, |_, window, _| {
             (
@@ -859,6 +862,35 @@ fn the_keyboard_scrolls_the_transcript(cx: &mut TestAppContext) {
     press(cx, "end");
     assert!(following(cx));
     assert_eq!(row_top(cx, window, last), Some(bottom));
+}
+
+#[gpui_kit::test]
+fn rows_draw_without_making_their_ids_or_the_users_text_again(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    // Long enough to be kept on the heap, not in the string itself.
+    let message = "A message of the user's. ".repeat(10);
+    feed.user(&message, Source::App, Delivery::Turn);
+    feed.reply("A reply.");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let user = ids_of(&feed, Kind::User)[0];
+    let block = keys(&view, cx)
+        .into_iter()
+        .find(|key| matches!(key, RowKey::Block { .. }))
+        .unwrap();
+    assert!(matches!(
+        super::row::element_id(block),
+        ElementId::NamedInteger(..)
+    ));
+    let text =
+        |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).ui[&user].text.clone().unwrap());
+    let first = text(cx);
+    for _ in 0..3 {
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+    assert_eq!(text(cx).as_ptr(), first.as_ptr());
+    assert_eq!(text(cx), message.trim());
 }
 
 /// How many times the transcript draws in a second of the test clock.
@@ -1094,13 +1126,13 @@ fn images_show_as_thumbnails_that_open_the_viewer(cx: &mut TestAppContext) {
         )
     });
     settle(cx, window);
-    let tile = |entry: u64, id: u64| SharedString::from(format!("image-{entry}-{id}"));
+    let tile = |id: u64| -> ElementId { ("image", id).into() };
     cx.update_window(window, |_, window, cx| {
-        for (entry, id) in [(1, 1), (2, 2), (2, 3)] {
-            assert!(window.try_find(tile(entry, id)).is_some(), "{entry} {id}");
+        for id in [1, 2, 3] {
+            assert!(window.try_find(tile(id)).is_some(), "{id}");
         }
         assert!(!window.has_active_image_viewer(cx));
-        window.click(tile(2, 2), cx);
+        window.click(tile(2), cx);
         assert!(window.has_active_image_viewer(cx));
     })
     .unwrap();
@@ -1159,7 +1191,7 @@ fn images_are_read_from_the_store_as_they_show(cx: &mut TestAppContext) {
     assert!(drawn.contains(&40));
     // The viewer, which can browse all 40, reads only the one it shows.
     cx.update_window(window, |_, window, cx| {
-        window.click(SharedString::from("image-40-40"), cx);
+        window.click(("image", 40u64), cx);
         assert!(window.has_active_image_viewer(cx));
     })
     .unwrap();
@@ -1520,8 +1552,16 @@ fn long_code_blocks_show_forty_lines_until_asked(cx: &mut TestAppContext) {
         assert_eq!(super::row::code_lines(&doc.text[code]), 60);
         assert!(!view.ui[&reply].uncapped.contains(&1));
     });
+    let code = RowKey::Block {
+        id: reply,
+        generation: 0,
+        block: 1,
+        source: false,
+    };
     cx.update_window(window, |_, window, cx| {
-        window.click(SharedString::from(format!("show-all-{reply}-1")), cx);
+        window
+            .within(super::row::element_id(code))
+            .click("show-all", cx);
     })
     .unwrap();
     cx.run_until_parked();
