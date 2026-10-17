@@ -443,42 +443,54 @@ impl ArkoBackend {
         self
     }
 
-    /// The options a session starts with.
+    /// The options a session starts with. It reads files: call it off the
+    /// UI thread.
     pub fn options(&self, start: Start) -> arko::Options {
-        let mut options = arko::Options {
-            root: Some(self.root.clone()),
-            ..arko::Options::default()
-        };
-        let defaults = self.defaults();
-        match start {
-            Start::Resume(id) => {
-                options.session = arko::SessionChoice::Resume(id.0);
-                defaults.apply(&mut options, None, || None);
-            }
-            Start::New(new) => {
-                options.session = arko::SessionChoice::New;
-                match new.mode {
-                    Mode::Agent => {
-                        options.mode = arko::sessions::Mode::Agent;
-                        options.workspace = new.folder;
-                    }
-                    // A chat works in no folder of the user's: Arko keeps it in
-                    // the session's own.
-                    Mode::Chat => options.mode = arko::sessions::Mode::Chat,
-                }
-                options.model = new.model;
-                let effort = new.effort.and_then(|effort| effort.parse().ok());
-                if let Some(effort) = effort.or(defaults.effort) {
-                    options.effort = effort;
-                }
-                defaults.apply(&mut options, Some(new.mode), || last_model(&self.root));
-            }
-        }
-        if let Some(configure) = &self.configure {
-            configure(&mut options);
-        }
-        options
+        prepare(&self.root, self.configure.as_ref(), &self.defaults(), start)
     }
+}
+
+/// The options a session in Arko's folder `root` starts with. It reads
+/// files (the last session's model): it runs on the thread that starts
+/// the session.
+fn prepare(
+    root: &Path,
+    configure: Option<&Configure>,
+    defaults: &SessionDefaults,
+    start: Start,
+) -> arko::Options {
+    let mut options = arko::Options {
+        root: Some(root.to_path_buf()),
+        ..arko::Options::default()
+    };
+    match start {
+        Start::Resume(id) => {
+            options.session = arko::SessionChoice::Resume(id.0);
+            defaults.apply(&mut options, None, || None);
+        }
+        Start::New(new) => {
+            options.session = arko::SessionChoice::New;
+            match new.mode {
+                Mode::Agent => {
+                    options.mode = arko::sessions::Mode::Agent;
+                    options.workspace = new.folder;
+                }
+                // A chat works in no folder of the user's: Arko keeps it in
+                // the session's own.
+                Mode::Chat => options.mode = arko::sessions::Mode::Chat,
+            }
+            options.model = new.model;
+            let effort = new.effort.and_then(|effort| effort.parse().ok());
+            if let Some(effort) = effort.or(defaults.effort) {
+                options.effort = effort;
+            }
+            defaults.apply(&mut options, Some(new.mode), || last_model(root));
+        }
+    }
+    if let Some(configure) = configure {
+        configure(&mut options);
+    }
+    options
 }
 
 impl Backend for ArkoBackend {
@@ -525,7 +537,38 @@ impl Backend for ArkoBackend {
     }
 
     fn start(&self, start: Start, prompter: Arc<dyn arko::Prompter>) -> Launch {
-        Launch::Engine(arko::spawn(self.options(start), prompter))
+        // The options are made on a thread of their own, since making them
+        // reads files, and that thread starts the session and hands it
+        // over as it opens, then as it ends.
+        let (opened_sender, opened) = tokio::sync::oneshot::channel();
+        let (ended_sender, ended) = tokio::sync::oneshot::channel();
+        let root = self.root.clone();
+        let configure = self.configure.clone();
+        let defaults = self.defaults();
+        let starting = std::thread::Builder::new()
+            .name("arko-studio-start".into())
+            .spawn(move || {
+                let options = prepare(&root, configure.as_ref(), &defaults, start);
+                let running = arko::spawn(options, prompter);
+                // Without an answer, the session stopped as it opened, and
+                // so does the app's.
+                let Ok(open) = running.opened.blocking_recv() else {
+                    return;
+                };
+                let opened = open.is_ok();
+                if opened_sender.send(open).is_err() || !opened {
+                    return;
+                }
+                if let Ok(end) = running.ended.blocking_recv() {
+                    let _ = ended_sender.send(end);
+                }
+            });
+        match starting {
+            Ok(_) => Launch::Engine(arko::Running { opened, ended }),
+            Err(error) => Launch::Refused(BackendError::Other(format!(
+                "could not start the session: {error}"
+            ))),
+        }
     }
 
     fn add_key(&self, provider: &str, value: &str) -> Result<String, String> {
@@ -1142,6 +1185,67 @@ mod tests {
         let options = backend.options(Start::Resume(SessionId("s1".into())));
         assert_eq!(options.model, None);
         assert_eq!(options.handover_at, None);
+    }
+
+    /// Starting a session returns at once, the files its options come from
+    /// read on another thread: here the last session's model, in a file
+    /// whose reading waits until something writes to it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn starting_a_session_reads_no_files_on_the_callers_thread() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        std::fs::create_dir_all(&root).unwrap();
+        let fifo = root.join("last-model.json");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        // A session that isn't there: it stops as it opens, quickly.
+        let backend = ArkoBackend::new(&root).with_configure(Arc::new(|options| {
+            options.session = arko::SessionChoice::Resume("none".into())
+        }));
+        // The 1-hour cache makes the options ask for the last model.
+        let mut prefs = crate::prefs::Prefs::default();
+        prefs.new_sessions.cache_1h = Some(true);
+        backend.set_defaults(SessionDefaults::from_prefs(&prefs));
+        let (started, returned) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let launch = backend.start(
+                Start::New(NewSession {
+                    mode: Mode::Chat,
+                    folder: None,
+                    model: None,
+                    effort: None,
+                }),
+                Arc::new(arko::NoPrompter),
+            );
+            started.send(matches!(launch, Launch::Engine(_))).ok();
+        });
+        let launched = returned.recv_timeout(Duration::from_secs(5));
+        // Lets the reading end, whatever happened, once it's waiting.
+        let waited = std::time::Instant::now();
+        loop {
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt as _;
+            // O_NONBLOCK: no reader yet is an error, not a wait.
+            let opened = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(0o4000)
+                .open(&fifo);
+            match opened {
+                Ok(mut file) => {
+                    file.write_all(b"{}").ok();
+                    break;
+                }
+                Err(_) if waited.elapsed() < Duration::from_secs(5) => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => break,
+            }
+        }
+        assert_eq!(launched, Ok(true), "start waited for the file");
     }
 
     /// A chat is created in no folder of the user's, even when one was
