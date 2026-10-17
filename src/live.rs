@@ -260,6 +260,15 @@ struct Drained {
     quit_asks: Vec<arko::QuitAsk>,
 }
 
+impl Drained {
+    fn is_empty(&self) -> bool {
+        self.reading.is_none()
+            && self.activity.is_none()
+            && self.workers.is_empty()
+            && self.quit_asks.is_empty()
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
@@ -292,6 +301,9 @@ pub struct LiveSession {
     quit_agreed: Option<arko::QuitAsk>,
     /// The question this app answered last.
     answered: Option<u64>,
+    /// How many times what was drained was applied (tests).
+    #[cfg(test)]
+    applied: usize,
     _tasks: Vec<Task<()>>,
 }
 
@@ -320,6 +332,8 @@ impl LiveSession {
             quit_ask: None,
             quit_agreed: None,
             answered: None,
+            #[cfg(test)]
+            applied: 0,
             _tasks: Vec::new(),
         }
     }
@@ -531,6 +545,10 @@ impl LiveSession {
             loop {
                 wake.notified().await;
                 let batch = std::mem::take(&mut *lock(&drained));
+                // A wake-up whose news an earlier frame took already.
+                if batch.is_empty() {
+                    continue;
+                }
                 if this.update(cx, |this, cx| this.apply(batch, cx)).is_err() {
                     break;
                 }
@@ -540,6 +558,10 @@ impl LiveSession {
     }
 
     fn apply(&mut self, drained: Drained, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        {
+            self.applied += 1;
+        }
         if let Some(reading) = drained.reading {
             self.reading = reading;
             self.apply_reading();
@@ -1015,6 +1037,53 @@ mod tests {
         assert!(indicator(cx).unseen, "no window showed it");
         session.update(cx, |session, cx| session.set_shown(true, cx));
         assert!(!indicator(cx).unseen);
+    }
+
+    /// What the engine says in a burst (here 4,000 changes of the turn's
+    /// state and 50 statuses, sent from another thread) reaches the
+    /// interface as one change a frame, whatever its size.
+    #[gpui_kit::test]
+    fn a_burst_from_the_engine_is_applied_once_a_frame(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        cx.update(super::init);
+        let feed = arko::remote::Feed::new("main");
+        let (status, statuses) =
+            tokio::sync::watch::channel(std::sync::Arc::new(arko::remote::Reading::default()));
+        let (_quit, quit_asks) = tokio::sync::mpsc::unbounded_channel();
+        let session = cx.new(|cx| {
+            let mut session = LiveSession::blank(cx);
+            let (_, batches) = feed.subscribe_batched();
+            session.drain(feed.clone(), batches, statuses, quit_asks, cx);
+            session
+        });
+        std::thread::spawn({
+            let feed = feed.clone();
+            move || {
+                for turn in 0..2000 {
+                    feed.turn_started();
+                    feed.turn_ended("", None);
+                    if turn % 40 == 0 {
+                        status.send_modify(|reading| {
+                            std::sync::Arc::make_mut(reading).title = format!("Turn {turn}")
+                        });
+                    }
+                }
+            }
+        })
+        .join()
+        .unwrap();
+        cx.run_until_parked();
+        let applied = cx.read(|cx| session.read(cx).applied);
+        assert_eq!(applied, 1, "one change for the whole burst");
+        assert_eq!(
+            cx.read(|cx| session.read(cx).title.to_string()),
+            "Turn 1960"
+        );
+        assert!(!cx.read(|cx| session.read(cx).is_working()));
+        // Nothing more comes: the next frame applies nothing.
+        cx.executor().advance_clock(super::FRAME);
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| session.read(cx).applied), 1);
     }
 
     #[test]
