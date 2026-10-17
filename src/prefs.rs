@@ -29,6 +29,9 @@ pub struct Prefs {
     pub sessions: SessionPrefs,
     /// Sharing sessions on the web page (Settings › Web page).
     pub web_page: WebPagePrefs,
+    /// What new sessions start with.
+    pub new_sessions: NewSessions,
+    pub advanced: AdvancedPrefs,
 }
 
 impl Default for Prefs {
@@ -43,6 +46,8 @@ impl Default for Prefs {
             view: TranscriptView::Full,
             sessions: SessionPrefs::default(),
             web_page: WebPagePrefs::default(),
+            new_sessions: NewSessions::default(),
+            advanced: AdvancedPrefs::default(),
         }
     }
 }
@@ -103,6 +108,9 @@ pub struct SessionPrefs {
     /// Switching an open session between Chat and Agent asks first, with
     /// what it costs.
     pub ask_before_switch: bool,
+    /// Editing or regenerating a message asks first, saying how many
+    /// messages after it go.
+    pub ask_before_edit: bool,
 }
 
 impl Default for SessionPrefs {
@@ -110,8 +118,129 @@ impl Default for SessionPrefs {
         Self {
             ask_before_quit: true,
             ask_before_switch: true,
+            ask_before_edit: true,
         }
     }
+}
+
+/// How a new session works, before the user picks in its composer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NewSessionMode {
+    Chat,
+    #[default]
+    Agent,
+}
+
+/// Which agents get the extra rules for small models in their
+/// instructions (arko's `--extra-rules`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtraRules {
+    /// The agents on small models (Haiku, luna).
+    #[default]
+    Small,
+    All,
+    Off,
+}
+
+/// Which of a project's AGENTS.md and CLAUDE.md the agents get (arko's
+/// `--project-instructions`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectInstructions {
+    /// AGENTS.md, else CLAUDE.md.
+    #[default]
+    One,
+    Both,
+    Off,
+}
+
+/// What new sessions start with (Settings › Models & accounts and
+/// Sessions). A session keeps what it started with: changing these leaves
+/// the sessions there are alone. `None` leaves the choice to arko, as the
+/// terminal app makes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NewSessions {
+    pub mode: NewSessionMode,
+    /// The main agent's model, as `/model` takes it. `None`: the last
+    /// session's, else one the credentials allow.
+    pub model: Option<String>,
+    /// As `/model` takes it (`high`). `None`: arko's default, xhigh.
+    pub effort: Option<String>,
+    /// The workers' model. `None`: the last session's workers' when the
+    /// main agent starts on the last session's model, else the main
+    /// agent's.
+    pub worker_model: Option<String>,
+    /// `None`: the main agent's effort.
+    pub worker_effort: Option<String>,
+    /// Anthropic's 1-hour prompt cache, for Claude by API key. `None`: as
+    /// `ARKO_CACHE_1H` in the environment or a `.env` file says, else off.
+    pub cache_1h: Option<bool>,
+    /// The main agent's handover size, in tokens. `None`: its model's own.
+    pub handover_at: Option<usize>,
+    /// The workers' handover size, in tokens. `None`: the main agent's.
+    pub workers_handover_at: Option<usize>,
+    /// After how many seconds a shell command still running moves to the
+    /// background, 0 for never. `None`: arko's 10 minutes.
+    pub background_after: Option<u64>,
+    /// The agents may change files outside the session's folder.
+    pub outside_access: bool,
+    /// The main agent ends its turns with a reply in text (else with
+    /// `complete_task`).
+    pub text_replies: bool,
+    /// Agents on `cc:` models let Claude Code compact their conversation at
+    /// the handover size (else they hand over).
+    pub cc_compact: bool,
+    pub extra_rules: ExtraRules,
+    pub project_instructions: ProjectInstructions,
+    /// Workers get the project's instructions too.
+    pub worker_project_instructions: bool,
+    /// What a new chat's model is told, on top of Arko's own instructions.
+    pub chat_instructions: String,
+}
+
+impl Default for NewSessions {
+    fn default() -> Self {
+        Self {
+            mode: NewSessionMode::Agent,
+            model: None,
+            effort: None,
+            worker_model: None,
+            worker_effort: None,
+            cache_1h: None,
+            handover_at: None,
+            workers_handover_at: None,
+            background_after: None,
+            outside_access: false,
+            text_replies: true,
+            cc_compact: true,
+            extra_rules: ExtraRules::Small,
+            project_instructions: ProjectInstructions::One,
+            worker_project_instructions: true,
+            chat_instructions: String::new(),
+        }
+    }
+}
+
+/// The shell new sessions run commands in on Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowsShell {
+    Cmd,
+    Powershell,
+}
+
+/// Settings › Advanced.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdvancedPrefs {
+    /// `None`: as `ARKO_SHELL` says, else cmd.exe.
+    pub windows_shell: Option<WindowsShell>,
+    /// MCP config files every session starts the servers of, besides the
+    /// project's `.mcp.json` and Arko's `mcp.json` (arko's `--mcp-config`).
+    pub mcp_config: Vec<PathBuf>,
 }
 
 /// The transcript's views (the terminal app's Ctrl+O).

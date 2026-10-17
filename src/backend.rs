@@ -14,6 +14,10 @@ use std::time::{Duration, SystemTime};
 
 pub use arko::Holder;
 
+mod defaults;
+
+pub use defaults::{SessionDefaults, takes_cache_1h, web_page_bind};
+
 /// A session's id: the name of its folder in `<arko>/sessions`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(pub String);
@@ -270,6 +274,16 @@ impl ModelChoices {
             group.needs.is_none() && group.models.iter().any(|model| model.name == name)
         })
     }
+
+    /// With `model` (the default set in Settings) as the default, when
+    /// there is one: a new session starts on it.
+    pub fn preferring(mut self, model: Option<&str>) -> Self {
+        if let Some(model) = model {
+            self.default = Some(model.to_string());
+            self.note = None;
+        }
+        self
+    }
 }
 
 /// What Arko Studio needs from arko's engine to list, manage and start
@@ -314,6 +328,21 @@ pub trait Backend: Send + Sync + 'static {
 
     /// Uses the Codex auth file at `path` for the ChatGPT login.
     fn set_chatgpt_login(&self, path: &Path) -> Result<(), String>;
+
+    /// Starts the sessions started from now on with `defaults`, the
+    /// preferences as they are now. It doesn't block.
+    fn set_defaults(&self, defaults: SessionDefaults);
+}
+
+/// Gives the backend the preferences sessions start with, now and whenever
+/// they change.
+pub fn follow_prefs(cx: &mut gpui_kit::App) {
+    fn give(cx: &mut gpui_kit::App) {
+        let defaults = SessionDefaults::from_prefs(crate::prefs::get(cx));
+        cx.global::<SharedBackend>().set_defaults(defaults);
+    }
+    give(cx);
+    cx.observe_global::<crate::prefs::PrefsStore>(give).detach();
 }
 
 /// The main model in Arko's `last-model.json`, which every new session
@@ -349,6 +378,7 @@ pub type Configure = Arc<dyn Fn(&mut arko::Options) + Send + Sync>;
 pub struct ArkoBackend {
     root: PathBuf,
     configure: Option<Configure>,
+    defaults: Mutex<SessionDefaults>,
 }
 
 impl ArkoBackend {
@@ -356,7 +386,12 @@ impl ArkoBackend {
         Self {
             root: root.into(),
             configure: None,
+            defaults: Mutex::new(SessionDefaults::default()),
         }
+    }
+
+    fn defaults(&self) -> SessionDefaults {
+        lock(&self.defaults).clone()
     }
 
     /// Lets `configure` change the options of every session started (tests
@@ -372,8 +407,12 @@ impl ArkoBackend {
             root: Some(self.root.clone()),
             ..arko::Options::default()
         };
+        let defaults = self.defaults();
         match start {
-            Start::Resume(id) => options.session = arko::SessionChoice::Resume(id.0),
+            Start::Resume(id) => {
+                options.session = arko::SessionChoice::Resume(id.0);
+                defaults.apply(&mut options, None, || None);
+            }
             Start::New(new) => {
                 options.session = arko::SessionChoice::New;
                 match new.mode {
@@ -383,13 +422,14 @@ impl ArkoBackend {
                     }
                     // A chat works in no folder of the user's: Arko keeps it in
                     // the session's own.
-                    // TODO: a chat's custom instructions, once Settings has them.
                     Mode::Chat => options.mode = arko::sessions::Mode::Chat,
                 }
                 options.model = new.model;
-                if let Some(effort) = new.effort.and_then(|effort| effort.parse().ok()) {
+                let effort = new.effort.and_then(|effort| effort.parse().ok());
+                if let Some(effort) = effort.or(defaults.effort) {
                     options.effort = effort;
                 }
+                defaults.apply(&mut options, Some(new.mode), || last_model(&self.root));
             }
         }
         if let Some(configure) = &self.configure {
@@ -439,7 +479,7 @@ impl Backend for ArkoBackend {
         let models = arko::models::for_new_session(&self.root, folder);
         let mut choices = ModelChoices::from_arko(models.groups, models.main);
         choices.note = models.note;
-        choices
+        choices.preferring(self.defaults().model.as_deref())
     }
 
     fn start(&self, start: Start, prompter: Arc<dyn arko::Prompter>) -> Launch {
@@ -460,6 +500,14 @@ impl Backend for ArkoBackend {
     fn set_chatgpt_login(&self, path: &Path) -> Result<(), String> {
         arko::accounts::set_chatgpt_login(path).map(|_| ())
     }
+
+    fn set_defaults(&self, defaults: SessionDefaults) {
+        *lock(&self.defaults) = defaults;
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
 fn delete_error(error: arko::sessions::DeleteError) -> BackendError {
@@ -474,6 +522,7 @@ pub struct FakeBackend {
     root: PathBuf,
     models: ModelChoices,
     state: Mutex<FakeState>,
+    defaults: Mutex<SessionDefaults>,
 }
 
 struct FakeState {
@@ -496,6 +545,7 @@ impl FakeBackend {
                 created: 0,
                 keys: Vec::new(),
             }),
+            defaults: Mutex::new(SessionDefaults::default()),
         }
     }
 
@@ -601,10 +651,12 @@ impl FakeBackend {
     }
 
     fn with_state<R>(&self, f: impl FnOnce(&mut FakeState) -> R) -> R {
-        f(&mut self
-            .state
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()))
+        f(&mut lock(&self.state))
+    }
+
+    /// The preferences sessions start with, as the app gave them last.
+    pub fn defaults(&self) -> SessionDefaults {
+        lock(&self.defaults).clone()
     }
 }
 
@@ -674,7 +726,9 @@ impl Backend for FakeBackend {
     }
 
     fn models(&self, _: Option<&Path>) -> ModelChoices {
-        self.models.clone()
+        self.models
+            .clone()
+            .preferring(self.defaults().model.as_deref())
     }
 
     fn start(&self, start: Start, _: Arc<dyn arko::Prompter>) -> Launch {
@@ -703,7 +757,7 @@ impl Backend for FakeBackend {
                     workspace: new.folder.filter(|_| new.mode == Mode::Agent),
                     model: new
                         .model
-                        .or_else(|| self.models.default.clone())
+                        .or_else(|| self.models(None).default)
                         .unwrap_or_default(),
                     created: SystemTime::now(),
                     last_active: None,
@@ -732,6 +786,10 @@ impl Backend for FakeBackend {
 
     fn set_chatgpt_login(&self, path: &Path) -> Result<(), String> {
         Err(format!("Could not use {}.", path.display()))
+    }
+
+    fn set_defaults(&self, defaults: SessionDefaults) {
+        *lock(&self.defaults) = defaults;
     }
 }
 
@@ -879,6 +937,52 @@ mod tests {
         assert_eq!(options.mode, arko::sessions::Mode::Agent);
         let options = backend.options(Start::Resume(SessionId("s1".into())));
         assert_eq!(options.session, arko::SessionChoice::Resume("s1".into()));
+    }
+
+    /// Settings choose a new session's model and effort when its composer
+    /// didn't, and a resumed session keeps its own.
+    #[test]
+    fn a_new_session_takes_the_models_set_in_settings() {
+        let backend = ArkoBackend::new("/arko");
+        let mut prefs = crate::prefs::Prefs::default();
+        prefs.new_sessions.model = Some("claude-sonnet-5-5".into());
+        prefs.new_sessions.effort = Some("low".into());
+        prefs.new_sessions.handover_at = Some(300_000);
+        backend.set_defaults(SessionDefaults::from_prefs(&prefs));
+        let new = |model: Option<&str>, effort: Option<&str>| {
+            backend.options(Start::New(NewSession {
+                mode: Mode::Agent,
+                folder: Some(PathBuf::from("/home/ada/src/arko")),
+                model: model.map(str::to_string),
+                effort: effort.map(str::to_string),
+            }))
+        };
+        let options = new(None, None);
+        assert_eq!(options.model.as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(options.effort, arko::Effort::Low);
+        assert_eq!(options.handover_at, Some(300_000));
+        let options = new(Some("opus"), Some("high"));
+        assert_eq!(options.model.as_deref(), Some("opus"));
+        assert_eq!(options.effort, arko::Effort::High);
+        let options = backend.options(Start::Resume(SessionId("s1".into())));
+        assert_eq!(options.model, None);
+        assert_eq!(options.handover_at, None);
+    }
+
+    #[test]
+    fn the_default_model_set_in_settings_is_the_new_sessions() {
+        let backend = backend();
+        assert_eq!(
+            backend.models(None).default.as_deref(),
+            Some("claude-opus-5-5")
+        );
+        let mut prefs = crate::prefs::Prefs::default();
+        prefs.new_sessions.model = Some("claude-sonnet-5-5".into());
+        backend.set_defaults(SessionDefaults::from_prefs(&prefs));
+        assert_eq!(
+            backend.models(None).default.as_deref(),
+            Some("claude-sonnet-5-5")
+        );
     }
 
     /// A chat is created in no folder of the user's, even when one was

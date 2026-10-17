@@ -864,6 +864,9 @@ impl Render for SettingsPage {
 }
 
 #[cfg(test)]
+mod interaction;
+
+#[cfg(test)]
 mod tests {
     use super::{parse_zoom, zoom_label};
     use crate::prefs;

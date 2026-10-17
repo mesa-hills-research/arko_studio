@@ -119,7 +119,10 @@ impl SessionView {
         ];
         let mut this = Self {
             session: None,
-            draft: Draft::default(),
+            draft: Draft {
+                mode: default_mode(cx),
+                ..Draft::default()
+            },
             recent_folders: Vec::new(),
             home: cx.global::<HomeFolder>().0.clone(),
             models: None,
@@ -644,6 +647,8 @@ impl SessionView {
         drafts::set(drafts::NEW_SESSION, "", cx);
         self.draft.model = None;
         self.draft.effort = None;
+        // The next new session starts as Settings say.
+        self.set_draft_mode(default_mode(cx), cx);
         cx.emit(SessionViewEvent::Created(session));
         Ok(())
     }
@@ -1459,6 +1464,15 @@ fn browse(view: WeakEntity<SessionView>, cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// How a new session works until the user picks: as Settings › Models &
+/// accounts says.
+fn default_mode(cx: &App) -> Mode {
+    match prefs::get(cx).new_sessions.mode {
+        prefs::NewSessionMode::Chat => Mode::Chat,
+        prefs::NewSessionMode::Agent => Mode::Agent,
+    }
 }
 
 /// The folders of `sessions` that ran agents, the most recently active
