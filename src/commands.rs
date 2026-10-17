@@ -209,6 +209,38 @@ pub fn commands() -> Vec<Command> {
             .keys(&["secondary-c"])
             .context(crate::transcript::CONTEXT)
             .not_in_palette(),
+        Command::new(
+            Transcript,
+            "Scroll Up a Page",
+            crate::transcript::ScrollPageUp,
+        )
+        .keys(&["pageup"])
+        .context(crate::transcript::CONTEXT)
+        .not_in_palette(),
+        Command::new(
+            Transcript,
+            "Scroll Down a Page",
+            crate::transcript::ScrollPageDown,
+        )
+        .keys(&["pagedown"])
+        .context(crate::transcript::CONTEXT)
+        .not_in_palette(),
+        Command::new(
+            Transcript,
+            "Scroll to the Start",
+            crate::transcript::ScrollToStart,
+        )
+        .keys(&["home", "secondary-home"])
+        .context(crate::transcript::CONTEXT)
+        .not_in_palette(),
+        Command::new(
+            Transcript,
+            "Jump to Latest",
+            crate::transcript::ScrollToLatest,
+        )
+        .keys(&["end", "secondary-end"])
+        .context(crate::transcript::CONTEXT)
+        .not_in_palette(),
         Command::new(View, "Toggle Sidebar", ToggleSidebar).keys(&["secondary-\\"]),
         Command::new(View, "Toggle Workers Panel", ToggleWorkersPanel)
             .keys(&["secondary-shift-\\"]),
