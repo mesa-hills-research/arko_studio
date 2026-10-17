@@ -381,7 +381,10 @@ impl LiveSession {
             this.launch(start, cx);
             this
         });
-        LiveSessions::add(session.clone(), cx);
+        // One the backend refused to start doesn't run.
+        if !matches!(session.read(cx).phase, Phase::Failed(_)) {
+            LiveSessions::add(session.clone(), cx);
+        }
         session.update(cx, |session, cx| session.update_indicator(cx));
         session
     }
@@ -1014,9 +1017,30 @@ pub fn init(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Drained, LiveEvent, LiveSession, first_line};
+    use super::{Drained, LiveEvent, LiveSession, LiveSessions, Phase, first_line};
     use arko::remote::{Activity, Question};
     use gpui_kit::{AppContext as _, TestAppContext};
+
+    /// A session the backend refuses (open in a terminal) says why, and
+    /// isn't counted among those running.
+    #[gpui_kit::test]
+    fn a_session_the_backend_refuses_isnt_kept_running(cx: &mut TestAppContext) {
+        let backend = crate::backend::FakeBackend::sample("/arko", std::time::SystemTime::now());
+        let held = crate::backend::Backend::sessions(&backend)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.holder.is_some())
+            .unwrap();
+        cx.update(|cx| {
+            super::init(cx);
+            cx.set_global(crate::backend::SharedBackend(std::sync::Arc::new(backend)));
+        });
+        let session = cx.update(|cx| LiveSession::resume(&held, cx));
+        cx.read(|cx| {
+            assert!(matches!(session.read(cx).phase(), Phase::Failed(_)));
+            assert!(LiveSessions::all(cx).is_empty());
+        });
+    }
 
     /// A turn that ends while no window shows the session leaves it
     /// unseen. A question that closes without this app's answer was
