@@ -67,11 +67,16 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
             }
             Kind::Message => {
                 section(&mut out, "Arko");
-                let from = match item.from.as_deref() {
-                    Some(arko::remote::MAIN_AGENT) | None => "the lead".to_string(),
-                    Some(worker) => worker.to_string(),
-                };
-                out.push_str(&format!("\n*From {from}:*\n\n{}\n", item.text.trim()));
+                // Arko's own words to the user carry no sender. A worker's
+                // say whose they are.
+                if let Some(from) = item.from.as_deref() {
+                    let from = match from {
+                        arko::remote::MAIN_AGENT => "the lead",
+                        worker => worker,
+                    };
+                    out.push_str(&format!("\n*From {from}*\n"));
+                }
+                out.push_str(&format!("\n{}\n", closed(trimmed(&item.text))));
             }
             Kind::Thinking => {
                 if item.text.trim().is_empty() {
@@ -449,6 +454,25 @@ Ends with &lt;/details> early.
 
 Thanks.
 "
+        );
+    }
+
+    /// Arko's own messages to the user, as it works, carry no sender. A
+    /// worker's say whose they are.
+    #[test]
+    fn arkos_own_messages_carry_no_sender() {
+        let header = Header {
+            title: "Messages".into(),
+            mode: "Agent".into(),
+            when: "now".into(),
+            ..Header::default()
+        };
+        let mut from_worker = item(Kind::Message, "Done with the parser.");
+        from_worker.from = Some("r1".into());
+        let text = markdown(&header, &[item(Kind::Message, "I'm on it."), from_worker]);
+        assert!(
+            text.ends_with("## Arko\n\nI'm on it.\n\n*From r1*\n\nDone with the parser.\n"),
+            "{text}"
         );
     }
 
