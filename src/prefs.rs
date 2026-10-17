@@ -756,8 +756,11 @@ mod tests {
         };
         // Always with the address: without one, a session serves where it
         // served last.
-        assert_eq!(WebPagePrefs::default().bind_argument(), "127.0.0.1");
-        assert_eq!(page("", None).bind_argument(), "127.0.0.1");
+        assert_eq!(
+            WebPagePrefs::default().bind_argument(),
+            DEFAULT_WEB_PAGE_ADDRESS
+        );
+        assert_eq!(page("", None).bind_argument(), DEFAULT_WEB_PAGE_ADDRESS);
         assert_eq!(
             page("127.0.0.1", Some(9000)).bind_argument(),
             "127.0.0.1:9000"

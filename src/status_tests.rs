@@ -830,13 +830,14 @@ fn page_addr(
     })
 }
 
-/// Share Web Page serves where Settings say, this computer only by default,
+/// Share Web Page serves where Settings say (here this computer only),
 /// even in a session that served on every network before.
 #[gpui_kit::test]
 fn sharing_serves_where_settings_say_not_where_the_page_was(cx: &mut TestAppContext) {
     use crate::testing::wait_until;
 
     let app = OnEngine::start(cx, 1300.);
+    cx.update(|cx| crate::prefs::update(cx, |prefs| prefs.web_page.address = "127.0.0.1".into()));
     let session = app.first_turn(cx);
     app.command(cx, &session, "/remote 0.0.0.0");
     wait_until(cx, "the page on every network", |cx| {
