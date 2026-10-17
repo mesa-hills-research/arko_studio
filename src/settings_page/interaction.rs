@@ -339,3 +339,25 @@ fn the_web_page_address_and_port_are_checked_and_used(cx: &mut TestAppContext) {
     assert_eq!(bind.ip.to_string(), "0.0.0.0");
     assert_eq!(bind.port, Some(9000));
 }
+
+/// A project's remembered answer about its MCP servers can be forgotten,
+/// so its next session asks again.
+#[gpui_kit::test]
+fn a_projects_mcp_answer_is_forgotten(cx: &mut TestAppContext) {
+    use crate::backend::extensions::Approval;
+    start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, 6, 2400.);
+    let page = cx.read(|cx| settings.read(cx).extensions().clone());
+    let approval = |cx: &mut TestAppContext| {
+        cx.read(|cx| page.read(cx).extensions().unwrap().projects[0].approval)
+    };
+    assert_eq!(approval(cx), Approval::Approved);
+    act(cx, window, |window, cx| {
+        window.click(("forget-approval", 0usize), cx)
+    });
+    assert_eq!(approval(cx), Approval::NotAsked);
+    act(cx, window, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1);
+        assert!(window.try_find(("forget-approval", 0usize)).is_none());
+    });
+}

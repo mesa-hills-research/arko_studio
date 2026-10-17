@@ -16,6 +16,7 @@ pub use arko::Holder;
 
 mod accounts;
 mod defaults;
+pub mod extensions;
 
 pub use accounts::{Accounts, key_named};
 pub use defaults::{SessionDefaults, takes_cache_1h, web_page_bind};
@@ -351,6 +352,14 @@ pub trait Backend: Send + Sync + 'static {
     /// Arko saved in its folder, from there and from every open session.
     /// `Ok` says what was done, `Err` why not.
     fn remove_key(&self, provider: &str) -> Result<String, String>;
+
+    /// The MCP servers and skills sessions get, for the projects in
+    /// `folders`, with the MCP config files `mcp_config` set in Settings.
+    fn extensions(&self, folders: &[PathBuf], mcp_config: &[PathBuf]) -> extensions::Extensions;
+
+    /// Forgets the answer about the MCP servers of the project in `folder`:
+    /// its next session asks again.
+    fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String>;
 }
 
 /// Gives the backend the preferences sessions start with, now and whenever
@@ -530,6 +539,17 @@ impl Backend for ArkoBackend {
         let key = key_named(provider).ok_or_else(|| format!("Arko takes no {provider} key."))?;
         outcome(arko::accounts::remove(&self.root, key))
     }
+
+    fn extensions(&self, folders: &[PathBuf], mcp_config: &[PathBuf]) -> extensions::Extensions {
+        let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from);
+        extensions::read(&self.root, folders, mcp_config, home.as_deref())
+    }
+
+    fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String> {
+        extensions::forget_approval(&self.root, folder)
+    }
 }
 
 /// What adding or removing a key did, in sentences: what was done and
@@ -573,6 +593,7 @@ struct FakeState {
     accounts: Accounts,
     /// How many times the accounts were read.
     accounts_read: usize,
+    extensions: extensions::Extensions,
 }
 
 impl FakeBackend {
@@ -588,6 +609,7 @@ impl FakeBackend {
                 keys: Vec::new(),
                 accounts: Accounts::sample(Path::new("/home/ada"), &root),
                 accounts_read: 0,
+                extensions: extensions::Extensions::sample(Path::new("/home/ada"), &root),
             }),
             defaults: Mutex::new(SessionDefaults::default()),
         }
@@ -876,6 +898,21 @@ impl Backend for FakeBackend {
             state.keys.retain(|(id, _)| id != provider);
             Ok(format!("Arko removed the {provider} key from its .env."))
         })
+    }
+
+    fn extensions(&self, _: &[PathBuf], _: &[PathBuf]) -> extensions::Extensions {
+        self.with_state(|state| state.extensions.clone())
+    }
+
+    fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String> {
+        self.with_state(|state| {
+            for project in &mut state.extensions.projects {
+                if project.folder == folder {
+                    project.approval = extensions::Approval::NotAsked;
+                }
+            }
+        });
+        Ok(())
     }
 }
 

@@ -25,11 +25,13 @@ use crate::theme_picker::ThemePicker;
 use crate::{fonts, menus, paths};
 
 mod accounts;
+mod extensions;
 mod fields;
 mod sessions;
 mod web;
 
 pub use accounts::AccountsPage;
+pub use extensions::ExtensionsPage;
 pub use sessions::SessionsPage;
 pub use web::WebPageSettings;
 
@@ -65,6 +67,7 @@ pub struct SettingsPage {
     accounts: Entity<AccountsPage>,
     sessions: Entity<SessionsPage>,
     web_page: Entity<WebPageSettings>,
+    extensions: Entity<ExtensionsPage>,
     /// The page to show, set from outside (the command palette), and how
     /// many times it was: the page list starts afresh on it each time.
     page: usize,
@@ -77,6 +80,7 @@ impl SettingsPage {
         let accounts = cx.new(AccountsPage::new);
         let sessions = cx.new(|cx| SessionsPage::new(window, cx));
         let web_page = cx.new(|cx| WebPageSettings::new(window, cx));
+        let extensions = cx.new(ExtensionsPage::new);
         // The fonts the pickers list are read in the background, the first
         // time: the pickers show once they're there.
         fonts::load_picker_catalog(cx);
@@ -84,6 +88,7 @@ impl SettingsPage {
             cx.observe(&accounts, |_, _, cx| cx.notify()),
             cx.observe(&sessions, |_, _, cx| cx.notify()),
             cx.observe(&web_page, |_, _, cx| cx.notify()),
+            cx.observe(&extensions, |_, _, cx| cx.notify()),
             cx.observe_global_in::<fonts::PickerCatalog>(window, |this, window, cx| {
                 this.make_font_pickers(window, cx)
             }),
@@ -100,6 +105,7 @@ impl SettingsPage {
             accounts,
             sessions,
             web_page,
+            extensions,
             page: 0,
             shown: 0,
             _subscriptions: subscriptions,
@@ -201,6 +207,10 @@ impl SettingsPage {
         &self.web_page
     }
 
+    pub fn extensions(&self) -> &Entity<ExtensionsPage> {
+        &self.extensions
+    }
+
     /// Asks for a font file, copies it into Arko's folder and offers it in
     /// both font lists.
     fn add_font_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -287,17 +297,7 @@ impl SettingsPage {
             self.sessions.read(cx).page(),
             notifications_page(),
             self.web_page.read(cx).page(cx),
-            planned_page(
-                PAGES[6],
-                IconName::Frame,
-                &[
-                    (
-                        "MCP servers",
-                        "From .mcp.json and --mcp-config, and their approvals.",
-                    ),
-                    ("Skills", "Where skills are read from."),
-                ],
-            ),
+            self.extensions.read(cx).page(&self.extensions),
             advanced_page(cx),
         ]
     }
@@ -724,24 +724,6 @@ fn notifications_page() -> SettingPage {
                 defaults.sound,
             ),
         ]))
-}
-
-/// A page whose settings come later: their names and what they'll do,
-/// without controls yet.
-fn planned_page(
-    title: &'static str,
-    icon: IconName,
-    items: &'static [(&'static str, &'static str)],
-) -> SettingPage {
-    SettingPage::new(title).icon(icon).resettable(false).group(
-        SettingGroup::new()
-            .description("These settings come with the engine.")
-            .items(items.iter().map(|(title, description)| {
-                SettingItem::new(*title, SettingField::render(|_, _, _| div()))
-                    .description(*description)
-                    .disabled(true)
-            })),
-    )
 }
 
 fn advanced_page(cx: &App) -> SettingPage {
