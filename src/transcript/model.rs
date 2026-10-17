@@ -6,6 +6,7 @@
 //! `/resume`) starts the transcript over. A call's result block goes under
 //! its call rather than in a row of its own.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -100,6 +101,12 @@ pub(crate) struct Model {
     /// The latest conversation marker: items before it are another
     /// conversation's.
     cut: Option<u64>,
+    /// [`Self::last_reply`], once worked out for the entries as they are:
+    /// each reply row asks for it as it draws.
+    last_reply: Cell<Option<Option<u64>>>,
+    /// How many times the latest reply was sought through the entries.
+    #[cfg(test)]
+    replies_sought: Cell<usize>,
 }
 
 impl Model {
@@ -110,6 +117,9 @@ impl Model {
             workers: Vec::new(),
             activity: Activity::default(),
             cut: None,
+            last_reply: Cell::new(None),
+            #[cfg(test)]
+            replies_sought: Cell::new(0),
         }
     }
 
@@ -141,6 +151,7 @@ impl Model {
 
     /// Starts over from `snapshot`.
     pub fn load(&mut self, snapshot: Snapshot, changes: &mut Changes) {
+        self.last_reply.set(None);
         self.entries.clear();
         self.cut = None;
         let mut kept = false;
@@ -166,6 +177,14 @@ impl Model {
     }
 
     pub fn apply(&mut self, update: Update, changes: &mut Changes) {
+        // Streamed text, workers and activity leave the replies where they
+        // are. The rest may move the latest.
+        if !matches!(
+            update,
+            Update::Append { .. } | Update::Worker(_) | Update::Activity
+        ) {
+            self.last_reply.set(None);
+        }
         match update {
             Update::Item(item) => {
                 if self.add(item, changes) {
@@ -331,6 +350,17 @@ impl Model {
     /// The main agent's latest reply, if a message of the user's that can
     /// be sent again comes before it: the reply Regenerate replaces.
     pub fn last_reply(&self) -> Option<u64> {
+        if let Some(known) = self.last_reply.get() {
+            return known;
+        }
+        let found = self.find_last_reply();
+        self.last_reply.set(Some(found));
+        found
+    }
+
+    fn find_last_reply(&self) -> Option<u64> {
+        #[cfg(test)]
+        self.replies_sought.set(self.replies_sought.get() + 1);
         let message = self.last_message()?;
         let start = self.position(message).ok()?;
         let mut last = None;
@@ -1378,6 +1408,42 @@ mod tests {
             "a refresh"
         );
         assert_eq!(model.busy_reason(), None);
+    }
+
+    /// The rows ask for the latest reply as they draw: it is sought once
+    /// for each change of the entries, and streamed text changes nothing.
+    #[test]
+    fn the_latest_reply_is_sought_once_for_each_change() {
+        let mut model = model(vec![
+            message(1, 1, 0, "Fix the parser."),
+            said(2, Kind::Reply, 1, "Fixed."),
+        ]);
+        for _ in 0..10 {
+            assert_eq!(model.last_reply(), Some(2));
+        }
+        assert_eq!(model.replies_sought.get(), 1);
+        let mut changes = Changes::default();
+        model.apply(
+            Update::Append {
+                id: 2,
+                text: " All of it.".into(),
+            },
+            &mut changes,
+        );
+        assert_eq!(model.last_reply(), Some(2));
+        assert_eq!(model.replies_sought.get(), 1);
+        // A new message: no reply after it yet.
+        model.apply(
+            Update::Item(message(3, 2, 2, "Now the docs.")),
+            &mut changes,
+        );
+        assert_eq!(model.last_reply(), None);
+        model.apply(Update::Item(said(4, Kind::Reply, 2, "Done.")), &mut changes);
+        assert_eq!(model.last_reply(), Some(4));
+        // Cut back to before the message: the first reply is the latest.
+        model.apply(Update::Truncate { from: 3 }, &mut changes);
+        assert_eq!(model.last_reply(), Some(2));
+        assert_eq!(model.replies_sought.get(), 4);
     }
 
     /// A restored history: its items carry no turn. The counts are the
