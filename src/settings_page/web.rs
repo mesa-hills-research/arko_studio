@@ -188,7 +188,7 @@ impl WebPageSettings {
                     self.port
                         .item("Port", "web-page-port")
                         .description(format!(
-                            "Empty: {}, or any free port when that one is taken.",
+                            "Empty: {}, or any free port when that one is taken. A port set here goes to the first session that shares its page, and the others take any free port.",
                             arko::remote::DEFAULT_PORT
                         ))
                         .keywords(["bind", "remote"]),

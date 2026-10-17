@@ -182,6 +182,23 @@ pub fn keep_readable_mcp_config(files: &mut Vec<PathBuf>) -> Vec<String> {
     notes
 }
 
+/// Leaves the web page's set port to the session that serves on it first:
+/// when `remote` names a port something serves on already (most often
+/// another session sharing its page), this session's page goes on any free
+/// port instead of not being served, and the note says so. It binds the
+/// port for a moment: call it off the UI thread.
+pub fn take_free_port(remote: &mut Option<arko::remote::Bind>) -> Option<String> {
+    let bind = remote.as_mut()?;
+    let port = bind.port?;
+    if std::net::TcpListener::bind((bind.ip, port)).is_ok() {
+        return None;
+    }
+    bind.port = None;
+    Some(format!(
+        "Port {port}, set in Settings › Web page, is taken, by another session’s page or another program. This session’s page is served on another port: its links show which."
+    ))
+}
+
 /// Whether the model `name` (as `/model` takes it) keeps Anthropic's 1-hour
 /// prompt cache: Claude by API key, directly or on OpenRouter. Claude Code
 /// chooses its own.

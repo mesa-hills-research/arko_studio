@@ -452,8 +452,8 @@ impl ArkoBackend {
 
 /// The options a session in Arko's folder `root` starts with, and notes
 /// for the user about what was left out of them. It reads files (the last
-/// session's model, the MCP config files): it runs on the thread that
-/// starts the session.
+/// session's model, the MCP config files) and tries the web page's port:
+/// it runs on the thread that starts the session.
 fn prepare(
     root: &Path,
     configure: Option<&Configure>,
@@ -488,7 +488,8 @@ fn prepare(
             defaults.apply(&mut options, Some(new.mode), || last_model(root));
         }
     }
-    let notes = defaults::keep_readable_mcp_config(&mut options.mcp_config);
+    let mut notes = defaults::keep_readable_mcp_config(&mut options.mcp_config);
+    notes.extend(defaults::take_free_port(&mut options.remote));
     if let Some(configure) = configure {
         configure(&mut options);
     }
@@ -1284,6 +1285,29 @@ mod tests {
         assert!(notes[0].contains("it has no mcpServers"), "{notes:?}");
         assert!(notes[1].contains(&gone.display().to_string()), "{notes:?}");
         assert!(notes[1].contains("it isn’t there"), "{notes:?}");
+    }
+
+    /// With a port set and every session sharing its page, a session finding
+    /// the port taken (by another session's page) serves on any free port,
+    /// and says so. One finding it free serves there.
+    #[test]
+    fn a_taken_web_page_port_goes_to_the_first_session_only() {
+        let taken = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let mut prefs = crate::prefs::Prefs::default();
+        prefs.web_page.share_by_default = true;
+        prefs.web_page.address = Some("127.0.0.1".into());
+        prefs.web_page.port = Some(port);
+        let defaults = SessionDefaults::from_prefs(&prefs);
+        let resume = || Start::Resume(SessionId("s1".into()));
+        let (options, notes) = prepare(Path::new("/arko"), None, &defaults, resume());
+        assert_eq!(options.remote.unwrap().port, None);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains(&format!("Port {port}")), "{notes:?}");
+        drop(taken);
+        let (options, notes) = prepare(Path::new("/arko"), None, &defaults, resume());
+        assert_eq!(options.remote.unwrap().port, Some(port));
+        assert!(notes.is_empty());
     }
 
     /// A chat is created in no folder of the user's, even when one was
