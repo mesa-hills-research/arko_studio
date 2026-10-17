@@ -649,7 +649,8 @@ fn input_page() -> SettingPage {
                 )
                 .description(format!(
                     "The key that sends a message, while the other one adds a line. {modifier}Enter always sends too."
-                )),
+                ))
+                .keywords(["enter", "shift", "newline", "submit"]),
             ),
             SettingGroup::new().title("Typing").items([
                 switch(
@@ -658,14 +659,16 @@ fn input_page() -> SettingPage {
                     |prefs| prefs.input.smooth_typing,
                     |prefs, on| prefs.input.smooth_typing = on,
                     defaults.smooth_typing,
-                ),
+                )
+                .keywords(["caret", "cursor", "animation"]),
                 switch(
                     "Spell check",
                     "Underlines misspelled words (English).",
                     |prefs| prefs.input.spell_check,
                     |prefs, on| prefs.input.spell_check = on,
                     defaults.spell_check,
-                ),
+                )
+                .keywords(["spelling", "dictionary", "typos"]),
                 choice(
                     "Word suggestions",
                     &[
@@ -679,7 +682,8 @@ fn input_page() -> SettingPage {
                 )
                 .description(
                     "Completes words from what you’ve typed in Arko Studio, never from pasted text or replies. Tab accepts.",
-                ),
+                )
+                .keywords(["autocomplete", "completion", "predictions"]),
                 choice(
                     "Keybindings",
                     &[
@@ -693,7 +697,8 @@ fn input_page() -> SettingPage {
                 )
                 .description(
                     "How the composer’s keys move and edit: your platform’s, Emacs’s or Vim’s.",
-                ),
+                )
+                .keywords(["keymap", "vim", "emacs", "shortcuts"]),
             ]),
             SettingGroup::new().title("Pasting").item(
                 SettingItem::new(
@@ -716,7 +721,8 @@ fn input_page() -> SettingPage {
                 )
                 .description(
                     "Pastes longer than this many lines (or 2 KB) become one token. Click it to open it into the text.",
-                ),
+                )
+                .keywords(["paste", "clipboard", "long text"]),
             ),
         ])
 }
@@ -728,32 +734,36 @@ fn notifications_page() -> SettingPage {
         .group(SettingGroup::new().items([
             switch(
                 "When a turn ends",
-                "While Arko Studio is in the background.",
+                "A notification from your system while Arko Studio is in the background.",
                 |prefs| prefs.notifications.turn_ended,
                 |prefs, on| prefs.notifications.turn_ended = on,
                 defaults.turn_ended,
-            ),
+            )
+            .keywords(["finished", "done", "notify", "unfocused"]),
             switch(
                 "When a question arrives",
-                "The agent waits for your answer.",
+                "The agent waits for your answer: a notification from your system while Arko Studio is in the background.",
                 |prefs| prefs.notifications.question,
                 |prefs, on| prefs.notifications.question = on,
                 defaults.question,
-            ),
+            )
+            .keywords(["ask_user", "answer", "notify", "unfocused"]),
             switch(
                 "Cache reminders",
-                "Before a session’s prompt cache expires, with a refresh button.",
+                "5 minutes before a session’s prompt cache expires (for an hour-long cache), and at 1 minute with a countdown and Refresh.",
                 |prefs| prefs.notifications.cache_reminders,
                 |prefs, on| prefs.notifications.cache_reminders = on,
                 defaults.cache_reminders,
-            ),
+            )
+            .keywords(["prompt cache", "expiry", "refresh", "timer"]),
             switch(
                 "Sound",
                 "Notifications make a sound.",
                 |prefs| prefs.notifications.sound,
                 |prefs, on| prefs.notifications.sound = on,
                 defaults.sound,
-            ),
+            )
+            .keywords(["audio", "chime", "alert"]),
         ]))
 }
 
