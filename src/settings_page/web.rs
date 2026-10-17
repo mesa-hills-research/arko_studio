@@ -8,7 +8,7 @@ use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, Sett
 use gpui_kit::component::{ActiveTheme as _, IconName, StyledExt as _, v_flex};
 use gpui_kit::*;
 
-use super::fields::{TextKind, TextSetting, is_change};
+use super::fields::{self, TextKind, TextSetting};
 use crate::live::{LiveSession, LiveSessions};
 use crate::prefs::{self, DEFAULT_WEB_PAGE_ADDRESS};
 use crate::web_page::WebPagePanel;
@@ -59,18 +59,8 @@ impl WebPageSettings {
             cx,
         );
         let subscriptions = vec![
-            cx.subscribe(address.input(), |this, _, event, cx| {
-                if is_change(event) {
-                    this.address.changed(cx);
-                    cx.notify();
-                }
-            }),
-            cx.subscribe(port.input(), |this, _, event, cx| {
-                if is_change(event) {
-                    this.port.changed(cx);
-                    cx.notify();
-                }
-            }),
+            fields::subscribe(|page: &mut Self| &mut page.address, address.input(), cx),
+            fields::subscribe(|page: &mut Self| &mut page.port, port.input(), cx),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 if !super::shown_changed(&mut this.seen, cx) {
                     return;
@@ -84,6 +74,12 @@ impl WebPageSettings {
                 cx.notify();
             }),
         ];
+        // Settings closed while typing: what's typed is saved.
+        cx.on_release(|this, cx| {
+            this.address.commit(cx);
+            this.port.commit(cx);
+        })
+        .detach();
         let mut this = Self {
             address,
             port,

@@ -2,12 +2,12 @@
 //! what the app asks before it stops or removes something. An open
 //! session's own live settings are in its Session info.
 
-use gpui_kit::component::input::{Textarea, TextareaState};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _};
 use gpui_kit::*;
 
-use super::fields::{TextKind, TextSetting, is_change};
+use super::fields::{self, TextKind, TextSetting};
 use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
@@ -28,6 +28,10 @@ pub struct SessionsPage {
     workers_handover: TextSetting<usize>,
     background_after: TextSetting<u64>,
     chat_instructions: Entity<TextareaState>,
+    /// The chat instructions the field last showed or saved.
+    instructions_seen: String,
+    /// Saves the chat instructions once the typing rests.
+    instructions_typed: Option<Task<()>>,
     /// The preferences as the page last showed them.
     seen: prefs::Prefs,
     _subscriptions: Vec<Subscription>,
@@ -84,29 +88,30 @@ impl SessionsPage {
             field.set_spell_checking(input.spell_check, cx)
         });
         let subscriptions = vec![
-            cx.subscribe(handover.input(), |this, _, event, cx| {
-                if is_change(event) {
-                    this.handover.changed(cx);
-                    cx.notify();
+            fields::subscribe(|page: &mut Self| &mut page.handover, handover.input(), cx),
+            fields::subscribe(
+                |page: &mut Self| &mut page.workers_handover,
+                workers_handover.input(),
+                cx,
+            ),
+            fields::subscribe(
+                |page: &mut Self| &mut page.background_after,
+                background_after.input(),
+                cx,
+            ),
+            // Saved once the typing rests, or as the field is left.
+            cx.subscribe(&chat_instructions, |this, _, event, cx| match event {
+                InputEvent::Change => {
+                    this.instructions_typed = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(fields::TYPING_REST).await;
+                        this.update(cx, |this, cx| this.save_instructions(cx)).ok();
+                    }));
                 }
-            }),
-            cx.subscribe(workers_handover.input(), |this, _, event, cx| {
-                if is_change(event) {
-                    this.workers_handover.changed(cx);
-                    cx.notify();
+                InputEvent::Blur if this.instructions_typed.is_some() => {
+                    this.instructions_typed = None;
+                    this.save_instructions(cx);
                 }
-            }),
-            cx.subscribe(background_after.input(), |this, _, event, cx| {
-                if is_change(event) {
-                    this.background_after.changed(cx);
-                    cx.notify();
-                }
-            }),
-            cx.subscribe(&chat_instructions, |_, field, event, cx| {
-                if is_change(event) {
-                    let text = field.read(cx).value().to_string();
-                    prefs::update(cx, |prefs| prefs.new_sessions.chat_instructions = text);
-                }
+                _ => {}
             }),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 if !super::shown_changed(&mut this.seen, cx) {
@@ -115,22 +120,47 @@ impl SessionsPage {
                 this.handover.follow(window, cx);
                 this.workers_handover.follow(window, cx);
                 this.background_after.follow(window, cx);
+                // Instructions changed elsewhere (a reset) show, and what's
+                // typed but not saved yet stays.
                 let text = prefs::get(cx).new_sessions.chat_instructions.clone();
-                if this.chat_instructions.read(cx).value() != text {
-                    this.chat_instructions
-                        .update(cx, |field, cx| field.set_value(text, window, cx));
+                if text != this.instructions_seen {
+                    this.instructions_seen = text.clone();
+                    this.instructions_typed = None;
+                    if this.chat_instructions.read(cx).value() != text {
+                        this.chat_instructions
+                            .update(cx, |field, cx| field.set_value(text, window, cx));
+                    }
                 }
                 cx.notify();
             }),
         ];
+        // Settings closed while typing: what's typed is saved.
+        cx.on_release(|this, cx| {
+            this.handover.commit(cx);
+            this.workers_handover.commit(cx);
+            this.background_after.commit(cx);
+            if this.instructions_typed.take().is_some() {
+                this.save_instructions(cx);
+            }
+        })
+        .detach();
         Self {
             handover,
             workers_handover,
             background_after,
             chat_instructions,
+            instructions_seen: new.chat_instructions,
+            instructions_typed: None,
             seen: super::shown_prefs(prefs::get(cx)),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Saves the chat instructions typed.
+    fn save_instructions(&mut self, cx: &mut App) {
+        let text = self.chat_instructions.read(cx).value().to_string();
+        self.instructions_seen = text.clone();
+        prefs::update(cx, |prefs| prefs.new_sessions.chat_instructions = text);
     }
 
     /// Why each typed setting isn't saved, if one isn't: main agent's

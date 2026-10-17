@@ -292,9 +292,15 @@ fn logins_are_checked_and_chosen(cx: &mut TestAppContext) {
     assert_eq!(state, LoginState::Ready);
 }
 
-/// Sizes and times are saved as soon as they read as arko reads them.
-/// Until then the field says why, and the setting stays. A reset empties
-/// the field.
+/// Lets the typing rest: what's typed in Settings is checked and saved.
+fn rest(cx: &mut TestAppContext) {
+    cx.executor().advance_clock(super::fields::TYPING_REST);
+    cx.run_until_parked();
+}
+
+/// Sizes and times are saved once they read as arko reads them and the
+/// typing rests. Until then the field says why, and the setting stays. A
+/// reset empties the field.
 #[gpui_kit::test]
 fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
@@ -302,6 +308,9 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     let page = cx.read(|cx| settings.read(cx).sessions().clone());
     act(cx, window, |window, cx| window.click("handover-at", cx));
     act(cx, window, |window, cx| window.input("5k", cx));
+    // Not while typing: it may go on to 50k.
+    assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
+    rest(cx);
     let errors = cx.read(|cx| page.read(cx).errors());
     assert!(errors[0].is_some());
     assert_eq!(cx.read(|cx| prefs::get(cx).new_sessions.handover_at), None);
@@ -310,20 +319,26 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     });
     act(cx, window, |window, cx| window.press("secondary-a", cx));
     act(cx, window, |window, cx| window.input("500k", cx));
+    // The reason goes as soon as what's typed reads, the saving waits.
+    assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
+    assert_eq!(cx.read(|cx| prefs::get(cx).new_sessions.handover_at), None);
+    rest(cx);
     assert_eq!(
         cx.read(|cx| prefs::get(cx).new_sessions.handover_at),
         Some(500_000)
     );
     assert_eq!(backend.defaults().handover_at, Some(500_000));
-    assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
 
     act(cx, window, |window, cx| {
         window.click("background-after", cx)
     });
     act(cx, window, |window, cx| window.input("2h", cx));
+    // Enter checks it at once.
+    act(cx, window, |window, cx| window.press("enter", cx));
     assert!(cx.read(|cx| page.read(cx).errors())[2].is_some());
     act(cx, window, |window, cx| window.press("secondary-a", cx));
     act(cx, window, |window, cx| window.input("off", cx));
+    rest(cx);
     assert_eq!(
         cx.read(|cx| prefs::get(cx).new_sessions.background_after),
         Some(0)
@@ -335,7 +350,24 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| window.input("Answer briefly.", cx));
     assert_eq!(
         cx.read(|cx| prefs::get(cx).new_sessions.chat_instructions.clone()),
+        ""
+    );
+    // Another setting changing meanwhile leaves what's typed alone.
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.render_markdown = false));
+    rest(cx);
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.chat_instructions.clone()),
         "Answer briefly."
+    );
+    // Leaving the field saves at once: the window's next frame tells the
+    // field, while the window is active.
+    act(cx, window, |window, _| window.activate_window());
+    act(cx, window, |window, cx| window.input(" Always.", cx));
+    act(cx, window, |window, cx| window.click("handover-at", cx));
+    act(cx, window, |_, _| {});
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.chat_instructions.clone()),
+        "Answer briefly. Always."
     );
 
     // Reset, as the page's reset does it: the fields follow.
@@ -451,16 +483,27 @@ fn the_web_page_address_and_port_are_checked_and_used(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| {
         window.click("web-page-address", cx)
     });
+    // On the way to 0.0.0.0, "0." is no error yet.
+    act(cx, window, |window, cx| window.input("0.", cx));
+    assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
+    act(cx, window, |window, cx| window.press("secondary-a", cx));
     act(cx, window, |window, cx| window.input("my-laptop", cx));
+    rest(cx);
     assert!(cx.read(|cx| page.read(cx).errors())[0].is_some());
     act(cx, window, |window, cx| window.press("secondary-a", cx));
     act(cx, window, |window, cx| window.input("0.0.0.0", cx));
     assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
     act(cx, window, |window, cx| window.click("web-page-port", cx));
     act(cx, window, |window, cx| window.input("70000", cx));
+    rest(cx);
     assert!(cx.read(|cx| page.read(cx).errors())[1].is_some());
     act(cx, window, |window, cx| window.press("secondary-a", cx));
-    act(cx, window, |window, cx| window.input("9000", cx));
+    // 9, 90 and 900 aren't saved on the way to 9000.
+    for key in ["9", "0", "0", "0"] {
+        act(cx, window, |window, cx| window.input(key, cx));
+        assert_eq!(cx.read(|cx| prefs::get(cx).web_page.port), None);
+    }
+    rest(cx);
     cx.read(|cx| {
         let web = &prefs::get(cx).web_page;
         assert_eq!(web.address, "0.0.0.0");
