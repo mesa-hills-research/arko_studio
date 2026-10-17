@@ -30,6 +30,33 @@ use crate::status_bar::run;
 /// Why some settings can't change any more.
 pub const FIXED: &str = "Fixed once the conversation started.";
 
+/// How long a switch or a segment shows the user's choice before the
+/// session's status does (the status comes about half a second after a
+/// change, and says why not when the session refused it).
+pub const HOLD: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// What a control (by its id) shows of `settings`: "on" or "off" for a
+/// switch, the choice's name for a segmented group.
+fn current(control: &str, settings: &arko::remote::LiveSettings) -> Option<String> {
+    let switch = |on: bool| Some(if on { "on" } else { "off" }.to_string());
+    match control {
+        "outside-access" => switch(settings.outside),
+        "text-replies" => switch(settings.text_replies),
+        "cc-compact" => switch(settings.cc_compact),
+        "project-workers" => switch(settings.worker_project_instructions),
+        "extra-rules" => Some(settings.extra_rules.name().to_string()),
+        "project-instructions" => Some(settings.project_instructions.name().to_string()),
+        _ => None,
+    }
+}
+
+/// A choice the user made that the session's status doesn't show yet.
+struct Held {
+    control: &'static str,
+    value: String,
+    _expires: Task<()>,
+}
+
 /// What the session's details say, read off the UI thread.
 #[derive(Debug, Clone)]
 pub struct Facts {
@@ -127,6 +154,8 @@ pub struct SessionInfo {
     facts_for: Option<(EntityId, u64)>,
     /// The info shows: its facts follow the session's openings.
     open: bool,
+    /// Choices shown until the session's status does.
+    held: Vec<Held>,
     fields: Vec<(Field, Entity<InputState>)>,
     _load: Option<Task<()>>,
     _session: Option<Subscription>,
@@ -171,6 +200,7 @@ impl SessionInfo {
             facts: None,
             facts_for: None,
             open: false,
+            held: Vec::new(),
             fields,
             _load: None,
             _session: None,
@@ -353,6 +383,34 @@ impl SessionInfo {
             run(session, &command, window, cx);
         }
     }
+
+    /// Sends `command`, which sets `control` to `value`, and shows that
+    /// value at once.
+    fn choose(
+        &mut self,
+        control: &'static str,
+        value: String,
+        command: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.held.retain(|held| held.control != control);
+        let expires = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(HOLD).await;
+            this.update(cx, |this, cx| {
+                this.held.retain(|held| held.control != control);
+                cx.notify();
+            })
+            .ok();
+        });
+        self.held.push(Held {
+            control,
+            value,
+            _expires: expires,
+        });
+        self.send(command, window, cx);
+        cx.notify();
+    }
 }
 
 /// A label and its value, in the info's two columns, or the label above
@@ -433,15 +491,33 @@ impl Render for SessionInfo {
         let agent = mode == Mode::Agent;
         let started = reading.models.started;
         let settings = reading.settings.clone();
+        // Choices the status now shows are held no more.
+        self.held
+            .retain(|held| current(held.control, &settings).as_ref() != Some(&held.value));
+        let held: Vec<(&'static str, String)> = self
+            .held
+            .iter()
+            .map(|held| (held.control, held.value.clone()))
+            .collect();
+        let shown = move |control: &'static str| {
+            held.iter()
+                .find(|(held, _)| *held == control)
+                .map(|(_, value)| value.clone())
+                .or_else(|| current(control, &settings))
+                .unwrap_or_default()
+        };
+        let settings = reading.settings.clone();
         let facts = self.facts.clone();
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let view = cx.entity().downgrade();
-        let send = move |command: String| {
-            let view = view.clone();
+        let choose = move |control: &'static str, value: &str, command: String| {
+            let (view, value) = (view.clone(), value.to_string());
             move |window: &mut Window, cx: &mut App| {
-                view.update(cx, |this, cx| this.send(command.clone(), window, cx))
-                    .ok();
+                view.update(cx, |this, cx| {
+                    this.choose(control, value.clone(), command.clone(), window, cx)
+                })
+                .ok();
             }
         };
         let input = |field: Field, this: &Self| {
@@ -468,12 +544,12 @@ impl Render for SessionInfo {
             .as_ref()
             .is_some_and(|facts| facts.session.handover.main_compacts);
 
-        let switch = |id: &'static str, on: bool, locked: bool, on_cmd: String, off_cmd: String| {
-            let apply_on = send(on_cmd);
-            let apply_off = send(off_cmd);
+        let switch = |id: &'static str, locked: bool, on_cmd: String, off_cmd: String| {
+            let apply_on = choose(id, "on", on_cmd);
+            let apply_off = choose(id, "off", off_cmd);
             Switch::new(id)
                 .small()
-                .checked(on)
+                .checked(shown(id) == "on")
                 .disabled(locked)
                 .when(locked, |this| this.tooltip(FIXED))
                 .on_click(move |checked, window, cx| {
@@ -486,9 +562,17 @@ impl Render for SessionInfo {
         };
 
         let extra_rules = {
-            let choose =
-                ExtraRules::ALL.map(|rules| send(format!("/extra-rules {}", rules.name())));
-            let current = settings.extra_rules;
+            let choose = ExtraRules::ALL.map(|rules| {
+                choose(
+                    "extra-rules",
+                    rules.name(),
+                    format!("/extra-rules {}", rules.name()),
+                )
+            });
+            let current = ExtraRules::ALL
+                .into_iter()
+                .find(|rules| rules.name() == shown("extra-rules"))
+                .unwrap_or(settings.extra_rules);
             ToggleGroup::new("extra-rules")
                 .segmented()
                 .small()
@@ -510,9 +594,17 @@ impl Render for SessionInfo {
                 })
         };
         let project = {
-            let choose = ProjectFiles::ALL
-                .map(|files| send(format!("/project-instructions {}", files.name())));
-            let current = settings.project_instructions;
+            let choose = ProjectFiles::ALL.map(|files| {
+                choose(
+                    "project-instructions",
+                    files.name(),
+                    format!("/project-instructions {}", files.name()),
+                )
+            });
+            let current = ProjectFiles::ALL
+                .into_iter()
+                .find(|files| files.name() == shown("project-instructions"))
+                .unwrap_or(settings.project_instructions);
             ToggleGroup::new("project-instructions")
                 .segmented()
                 .small()
@@ -596,38 +688,39 @@ impl Render for SessionInfo {
         if agent {
             body = body
                 .child(heading("Settings", cx))
-                .child(row(narrow,
+                .child(row(
+                    narrow,
                     "Outside access",
                     switch(
                         "outside-access",
-                        settings.outside,
                         false,
                         "/outside on".into(),
                         "/outside off".into(),
                     ),
                     cx,
                 ))
-                .child(row(narrow,
+                .child(row(
+                    narrow,
                     "Background after",
                     h_flex().children(input(Field::BackgroundAfter, self)),
                     cx,
                 ))
-                .child(row(narrow,
+                .child(row(
+                    narrow,
                     "Text replies",
                     switch(
                         "text-replies",
-                        settings.text_replies,
                         started,
                         "/text-replies on".into(),
                         "/text-replies off".into(),
                     ),
                     cx,
                 ))
-                .child(row(narrow,
+                .child(row(
+                    narrow,
                     "Claude Code compaction",
                     switch(
                         "cc-compact",
-                        settings.cc_compact,
                         started,
                         "/cc-compact on".into(),
                         "/cc-compact off".into(),
@@ -644,7 +737,8 @@ impl Render for SessionInfo {
                             .child("Text replies, Claude Code compaction and the extra rules are fixed once the conversation started."),
                     )
                 })
-                .child(row(narrow,
+                .child(row(
+                    narrow,
                     "Project instructions",
                     v_flex()
                         .gap_1()
@@ -666,7 +760,6 @@ impl Render for SessionInfo {
                                     .text_xs()
                                     .child(switch(
                                         "project-workers",
-                                        settings.worker_project_instructions,
                                         false,
                                         "/project-instructions workers on".into(),
                                         "/project-instructions workers off".into(),
@@ -758,10 +851,10 @@ impl Render for SessionInfo {
     }
 }
 
-/// Which toggle a click changed: the first whose state differs from
-/// `before`.
+/// Which toggle a click chose: the first checked now that wasn't before. A
+/// click on the one chosen already chooses nothing.
 fn clicked<const N: usize>(after: &[bool], before: [bool; N]) -> Option<usize> {
-    (0..N).find(|ix| after.get(*ix).copied().unwrap_or(false) != before[*ix])
+    (0..N).find(|ix| after.get(*ix).copied().unwrap_or(false) && !before[*ix])
 }
 
 /// The MCP servers, a line each: "files — 4 tools", "web — didn't start:
@@ -862,10 +955,8 @@ mod tests {
     #[test]
     fn a_click_in_a_group_is_the_toggle_that_changed() {
         assert_eq!(clicked(&[true, true, false], [false, true, false]), Some(0));
-        assert_eq!(
-            clicked(&[false, false, false], [false, true, false]),
-            Some(1)
-        );
+        // The chosen one clicked again: nothing changes.
+        assert_eq!(clicked(&[false, false, false], [false, true, false]), None);
         assert_eq!(clicked(&[false, true, false], [false, true, false]), None);
     }
 
@@ -1015,6 +1106,61 @@ mod view_tests {
                 })
                 .collect()
         })
+    }
+
+    /// A switch shows a click at once, before the session's status says
+    /// so, and for a while after if it never does. A click on the segment
+    /// chosen already sends nothing.
+    #[gpui_kit::test]
+    fn a_click_shows_at_once(cx: &mut TestAppContext) {
+        start(cx);
+        let (window, workspace) = open(cx, 1300.);
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        let reading = Reading {
+            models: Models {
+                has_workers: true,
+                ..Models::default()
+            },
+            ..Reading::default()
+        };
+        session.update(cx, |session, cx| {
+            session.set_status(reading, Activity::default(), cx)
+        });
+        let title_bar = cx.read(|cx| workspace.read(cx).title_bar().clone());
+        cx.update_window(window, |_, window, cx| {
+            title_bar.update(cx, |bar, cx| {
+                bar.set_live_session(Some(session.clone()), window, cx);
+                bar.toggle_info(cx);
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let checked = |cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .try_find("outside-access")
+                    .and_then(|found| found.checked())
+            })
+            .unwrap()
+        };
+        assert_eq!(checked(cx), Some(false));
+        act(cx, window, |window, cx| window.click("outside-access", cx));
+        assert_eq!(checked(cx), Some(true));
+        // Clicked again before the status came: off again.
+        act(cx, window, |window, cx| window.click("outside-access", cx));
+        assert_eq!(checked(cx), Some(false));
+        act(cx, window, |window, cx| window.click("outside-access", cx));
+        // One, as it is.
+        act(cx, window, |window, cx| window.click("one", cx));
+        assert_eq!(
+            sent(&session, cx),
+            ["/outside on", "/outside off", "/outside on"]
+        );
+        // The session never said so: its status shows again.
+        cx.executor().advance_clock(super::HOLD);
+        cx.run_until_parked();
+        assert_eq!(checked(cx), Some(false));
     }
 
     /// Live settings change through the terminal's commands. Those fixed
