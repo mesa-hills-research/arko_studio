@@ -444,7 +444,9 @@ mod engine_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{Header, STARTS_PARTWAY, code, file_name, free_path, markdown, why, with_saved, write};
+    use super::{
+        Header, STARTS_PARTWAY, code, file_name, free_path, markdown, why, with_saved, write,
+    };
     use arko::remote::{CallStatus, Item, Kind, Level};
 
     fn item(kind: Kind, text: &str) -> Item {
@@ -464,14 +466,19 @@ mod tests {
             images: Default::default(),
             reports: Vec::new(),
         };
-        let header = Header { starts_partway: true, ..Header::default() };
+        let header = Header {
+            starts_partway: true,
+            ..Header::default()
+        };
         let (text, partial) = with_saved(header.clone(), vec![next], Some(saved.clone()));
         assert!(!partial);
         assert!(text.contains("The start."));
         assert!(text.contains("A new turn."));
         assert!(!text.contains(STARTS_PARTWAY));
         let mut handed_over = saved;
-        handed_over.reports.push("The earlier work was summarized.".into());
+        handed_over
+            .reports
+            .push("The earlier work was summarized.".into());
         let (text, partial) = with_saved(header, Vec::new(), Some(handed_over));
         assert!(partial);
         assert!(text.contains(STARTS_PARTWAY));

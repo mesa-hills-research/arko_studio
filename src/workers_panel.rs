@@ -644,8 +644,7 @@ impl WorkersPanel {
             } else {
                 worker.title.clone()
             },
-            elapsed: workers::run_time_ms(worker, now)
-                .map(workers::elapsed_label),
+            elapsed: workers::run_time_ms(worker, now).map(workers::elapsed_label),
             last: workers::last_line(worker)
                 .unwrap_or_else(|| workers::state_label(worker.state).to_string()),
             context: self.context_label(&worker.id),

@@ -713,16 +713,14 @@ impl Workspace {
             return;
         };
         let page = prefs::get(cx).web_page.clone();
-        if session.read(cx).reading().page.is_none() {
-            if page.ip().is_none() {
-                window.push_notification(
-                    Notification::warning(format!(
-                        "“{}” in Settings › Web page isn’t an IP address, so the page is served on this computer only.",
-                        page.address()
-                    )),
-                    cx,
-                );
-            }
+        if session.read(cx).reading().page.is_none() && page.ip().is_none() {
+            window.push_notification(
+                Notification::warning(format!(
+                    "“{}” in Settings › Web page isn’t an IP address, so the page is served on this computer only.",
+                    page.address()
+                )),
+                cx,
+            );
         }
         let bind = (page.address.is_some() || page.port.is_some()).then(|| page.bind_argument());
         self.status_bar
@@ -834,9 +832,7 @@ impl Workspace {
         let branching = if let Some(session) = LiveSessions::find(&id, cx) {
             let entry = session.read(cx).branch_entry(id.clone());
             let answer = session.read(cx).branch(None, cx);
-            cx.background_spawn(async move {
-                answer.await.map(|id| SessionEntry { id, ..entry })
-            })
+            cx.background_spawn(async move { answer.await.map(|id| SessionEntry { id, ..entry }) })
         } else {
             let backend = cx.global::<SharedBackend>().clone();
             cx.background_spawn(async move { backend.branch(&id).map_err(|error| error.message()) })

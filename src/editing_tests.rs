@@ -370,21 +370,80 @@ fn branch_instead_goes_on_in_a_new_session_and_leaves_this_one(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+fn a_reopened_conversation_keeps_turns_for_the_edit_count(cx: &mut TestAppContext) {
+    let mock = answers();
+    let app = start(cx, &mock);
+    app.send(cx, "Count the pears.");
+    app.wait_for(cx, "Seven pears.");
+    app.wait_idle(cx);
+    app.send(cx, "And the plums?");
+    app.wait_for(cx, "Three plums.");
+    app.wait_idle(cx);
+    let id = cx.read(|cx| {
+        app.view
+            .read(cx)
+            .live_session()
+            .unwrap()
+            .read(cx)
+            .id()
+            .cloned()
+            .unwrap()
+    });
+    app.close_all(cx);
+    act(cx, app.window, |window, cx| {
+        app.workspace.update(cx, |workspace, cx| {
+            workspace.open_session(id.clone(), window, cx)
+        });
+    });
+    app.wait_for(cx, "Three plums.");
+    app.wait_idle(cx);
+    let first = app.message(cx, "Count the pears.");
+    let (turns, after) = cx.read(|cx| {
+        let transcript = app.view.read(cx).transcript(cx).unwrap().read(cx);
+        let turns = transcript
+            .export_items()
+            .iter()
+            .filter(|item| matches!(item.kind, Kind::User | Kind::Reply))
+            .all(|item| item.turn.is_some());
+        (turns, transcript.messages_after(first))
+    });
+    assert!(turns);
+    assert_eq!(after, 3);
+    app.close_all(cx);
+}
+
+#[gpui_kit::test]
 fn the_sidebar_branches_a_closed_session_without_opening_the_original(cx: &mut TestAppContext) {
     let mock = answers();
     let app = start(cx, &mock);
     app.send(cx, "Count the pears.");
     app.wait_for(cx, "Seven pears.");
     app.wait_idle(cx);
-    let original = cx.read(|cx| app.view.read(cx).live_session().unwrap().read(cx).id().cloned().unwrap());
+    let original = cx.read(|cx| {
+        app.view
+            .read(cx)
+            .live_session()
+            .unwrap()
+            .read(cx)
+            .id()
+            .cloned()
+            .unwrap()
+    });
     app.close_all(cx);
     let row = crate::tests::row_of(&app.workspace, "Count the pears.", cx);
-    act(cx, app.window, |window, cx| window.right_click(("row", row), cx));
-    act(cx, app.window, |window, cx| window.within("popup-menu").click(2usize, cx));
+    act(cx, app.window, |window, cx| {
+        window.right_click(("row", row), cx)
+    });
+    act(cx, app.window, |window, cx| {
+        window.within("popup-menu").click(2usize, cx)
+    });
     wait_until(cx, "the saved branch", |cx| {
-        cx.read(|cx| app.view.read(cx).live_session().is_some_and(|session| {
-            session.read(cx).title().starts_with("Branch of ")
-        }))
+        cx.read(|cx| {
+            app.view
+                .read(cx)
+                .live_session()
+                .is_some_and(|session| session.read(cx).title().starts_with("Branch of "))
+        })
     });
     app.wait_for(cx, "Seven pears.");
     assert!(cx.read(|cx| LiveSessions::find(&original, cx).is_none()));

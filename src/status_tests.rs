@@ -334,7 +334,13 @@ fn the_web_pages_popover_shows_its_links_and_stops_sharing(cx: &mut TestAppConte
         window.click("web-page-stop", cx)
     });
     let requests = bar.session.update(cx, |session, _| session.take_requests());
-    assert!(matches!(requests.as_slice(), [arko::Request::NewWebPageKey { .. }, arko::Request::StopWebPage { .. }]));
+    assert!(matches!(
+        requests.as_slice(),
+        [
+            arko::Request::NewWebPageKey { .. },
+            arko::Request::StopWebPage { .. }
+        ]
+    ));
 }
 
 /// In a short window, the web page's popover fits: its links and QR code
@@ -377,7 +383,10 @@ fn the_web_pages_popover_fits_a_short_window(cx: &mut TestAppContext) {
         window.click("web-page-stop", cx)
     });
     let requests = bar.session.update(cx, |session, _| session.take_requests());
-    assert!(matches!(requests.as_slice(), [arko::Request::StopWebPage { .. }]));
+    assert!(matches!(
+        requests.as_slice(),
+        [arko::Request::StopWebPage { .. }]
+    ));
 }
 
 /// A page only this computer can open has no QR code: the popover says how
@@ -621,7 +630,10 @@ fn sharing_the_web_page_serves_it_and_shows_its_links(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| {
         window.dispatch_action(Box::new(crate::menus::ShareWebPage), cx)
     });
-    let request = session.update(cx, |session, _| session.take_requests()).pop().unwrap();
+    let request = session
+        .update(cx, |session, _| session.take_requests())
+        .pop()
+        .unwrap();
     let arko::Request::ShareWebPage { bind, reply } = request else {
         panic!("expected a share request");
     };
@@ -644,7 +656,10 @@ fn sharing_the_web_page_serves_it_and_shows_its_links(cx: &mut TestAppContext) {
         window.dispatch_action(Box::new(crate::menus::StopSharingWebPage), cx)
     });
     let requests = session.update(cx, |session, _| session.take_requests());
-    assert!(matches!(requests.as_slice(), [arko::Request::StopWebPage { .. }]));
+    assert!(matches!(
+        requests.as_slice(),
+        [arko::Request::StopWebPage { .. }]
+    ));
 }
 
 #[gpui_kit::test]
@@ -655,7 +670,10 @@ fn page_requests_report_errors_without_waiting_for_a_timeout(cx: &mut TestAppCon
     act(cx, window, |window, cx| {
         window.dispatch_action(Box::new(crate::menus::ShareWebPage), cx)
     });
-    let request = session.update(cx, |session, _| session.take_requests()).pop().unwrap();
+    let request = session
+        .update(cx, |session, _| session.take_requests())
+        .pop()
+        .unwrap();
     let arko::Request::ShareWebPage { bind, reply } = request else {
         panic!("expected a share request");
     };
@@ -665,7 +683,9 @@ fn page_requests_report_errors_without_waiting_for_a_timeout(cx: &mut TestAppCon
     act(cx, window, |window, cx| {
         assert_eq!(window.notifications(cx).len(), 1);
     });
-    session.update(cx, |session, cx| session.set_status(busy(), Activity::default(), cx));
+    session.update(cx, |session, cx| {
+        session.set_status(busy(), Activity::default(), cx)
+    });
     act(cx, window, |_, _| {});
     assert!(!cx.read(|cx| workspace.read(cx).status_bar().read(cx).is_web_page_open()));
 }

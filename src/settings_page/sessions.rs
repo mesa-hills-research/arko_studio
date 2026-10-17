@@ -438,7 +438,10 @@ mod tests {
         assert!(parse_handover("lots").is_err());
         assert!(parse_handover("-5").is_err());
         for text in ["5k", "0", "1,2k", "1.2345678M"] {
-            assert_eq!(parse_handover(text), arko::commands::parse_handover_size(text).map(Some));
+            assert_eq!(
+                parse_handover(text),
+                arko::commands::parse_handover_size(text).map(Some)
+            );
         }
         assert!(parse_handover("99999999999999999999999k").is_err());
         for tokens in [20_000, 950_000, 123_456, 1_000_000, 1_200_000, 1_250_000] {
@@ -475,7 +478,10 @@ mod tests {
         assert!(parse_background_after("2h").is_err());
         assert!(parse_background_after("0s").is_err());
         for text in ["ten", "é", "2h"] {
-            assert_eq!(parse_background_after(text), arko::commands::parse_background_after(text).map(Some));
+            assert_eq!(
+                parse_background_after(text),
+                arko::commands::parse_background_after(text).map(Some)
+            );
         }
         for seconds in [0, 90, 600, 3_600] {
             assert_eq!(

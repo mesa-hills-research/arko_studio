@@ -800,7 +800,8 @@ pub(crate) fn is_refresh(item: &Item) -> bool {
         && item.kind == Kind::User
         && (item.delivery == Some(Delivery::Refresh)
             || item.text == arko::remote::REFRESH_MESSAGE
-            || item.text == "(Arko: this message only keeps the prompt cache warm. Reply with \"Acknowledged\" and nothing else.)")
+            || item.text
+                == "(Arko: this message only keeps the prompt cache warm. Reply with \"Acknowledged\" and nothing else.)")
 }
 
 /// Where the transcript goes on after the cache refresh at `ix`: past the

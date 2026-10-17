@@ -71,7 +71,11 @@ impl Tool {
             && !server.is_empty()
             && (arguments.trim().is_empty() || arguments.trim_start().starts_with('{'))
         {
-            return if is_web(server) || is_web(name) { Tool::Web } else { Tool::Mcp };
+            return if is_web(server) || is_web(name) {
+                Tool::Web
+            } else {
+                Tool::Mcp
+            };
         }
         let mut words = line.split_whitespace();
         let first = words.next().unwrap_or_default();

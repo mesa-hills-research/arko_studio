@@ -647,9 +647,10 @@ impl AccountsPage {
         };
         let (choose, check) = (this.clone(), this.clone());
         let clear = this.clone();
-        let chosen = self.accounts.as_ref().is_some_and(|accounts| {
-            accounts.chatgpt.source != LoginSource::Default
-        });
+        let chosen = self
+            .accounts
+            .as_ref()
+            .is_some_and(|accounts| accounts.chatgpt.source != LoginSource::Default);
         let (login_page, claude_page) = (this.clone(), this.clone());
         let checking = self.checking || self.accounts.is_none();
         SettingGroup::new().title("Logins").items([
@@ -667,9 +668,7 @@ impl AccountsPage {
                                     .ghost()
                                     .small()
                                     .label("Use Codex’s own login")
-                                    .on_click(move |_, window, cx| {
-                                        clear_login(&clear, window, cx)
-                                    }),
+                                    .on_click(move |_, window, cx| clear_login(&clear, window, cx)),
                             )
                         })
                         .child(

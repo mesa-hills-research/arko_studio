@@ -939,13 +939,24 @@ fn a_session_opens_without_the_mcp_config_files_it_cant_read(cx: &mut TestAppCon
     assert_eq!(cx.read(|cx| session.read(cx).phase().clone()), Phase::Open);
     assert!(mock.was_sent("Say hello."));
     let notes = cx.read(|cx| {
-        session.read(cx).feed().unwrap().subscribe().0.items.into_iter()
+        session
+            .read(cx)
+            .feed()
+            .unwrap()
+            .subscribe()
+            .0
+            .items
+            .into_iter()
             .filter(|item| item.kind == arko::remote::Kind::Notice)
             .map(|item| item.text)
             .collect::<Vec<_>>()
     });
     for file in ["gone.json", "notes.json"] {
-        assert_eq!(notes.iter().filter(|note| note.contains(file)).count(), 1, "{notes:?}");
+        assert_eq!(
+            notes.iter().filter(|note| note.contains(file)).count(),
+            1,
+            "{notes:?}"
+        );
     }
     app.close_all(cx);
 }

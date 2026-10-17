@@ -849,10 +849,14 @@ impl SessionView {
             when: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
             starts_partway,
         };
-        let root = cx.global::<crate::backend::SharedBackend>().data_root().to_path_buf();
+        let root = cx
+            .global::<crate::backend::SharedBackend>()
+            .data_root()
+            .to_path_buf();
         let id = session.id().cloned();
         let exporting = cx.background_spawn(async move {
-            let saved = id.and_then(|id| arko::sessions::conversation(&root, id.as_str(), None).ok());
+            let saved =
+                id.and_then(|id| arko::sessions::conversation(&root, id.as_str(), None).ok());
             crate::export::with_saved(header, items, saved)
         });
         let folder = crate::export::folder(
@@ -863,7 +867,10 @@ impl SessionView {
         let chosen = cx.prompt_for_new_path(&folder, Some(&name));
         cx.spawn_in(window, async move |this, cx| {
             let (text, starts_partway) = exporting.await;
-            let export = Export { text, starts_partway };
+            let export = Export {
+                text,
+                starts_partway,
+            };
             let answer = chosen
                 .await
                 .map_err(|_| "it closed without an answer".to_string());
@@ -872,9 +879,9 @@ impl SessionView {
                 // Cancelled.
                 Ok(None) => return,
                 Err(why) => {
-                    let instead = cx.background_spawn(async move {
-                        crate::export::free_path(&folder, &name)
-                    }).await;
+                    let instead = cx
+                        .background_spawn(async move { crate::export::free_path(&folder, &name) })
+                        .await;
                     this.update_in(cx, |this, window, cx| {
                         this.offer_export_to(export, instead, why, window, cx)
                     })
@@ -1295,9 +1302,9 @@ impl SessionView {
             self.finish_edit(Choice::Change, item, message, window, cx);
             return;
         }
-        let after = self.transcript(cx).map_or(0, |transcript| {
-            transcript.read(cx).messages_after(item)
-        });
+        let after = self
+            .transcript(cx)
+            .map_or(0, |transcript| transcript.read(cx).messages_after(item));
         let agent = self.mode(cx) == Mode::Agent;
         let view = cx.entity().downgrade();
         editing::confirm(

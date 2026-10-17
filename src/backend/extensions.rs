@@ -166,33 +166,59 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
             });
         }
         for skill in listed.skills {
-            if found.skills.iter().any(|folder| folder.skills.iter().any(|seen| seen.path == skill.path)) {
+            if found
+                .skills
+                .iter()
+                .any(|folder| folder.skills.iter().any(|seen| seen.path == skill.path))
+            {
                 continue;
             }
             let path = skill.path.parent().unwrap_or(&skill.path).to_path_buf();
-            let of = projects.iter().find(|project| {
-                PROJECT_SKILL_FOLDERS.iter().any(|name| path.starts_with(project.join(name)))
-            }).map(|project| SkillsOf::Project(project.clone())).unwrap_or_else(|| {
-                if path.starts_with(root.join("skills")) { SkillsOf::Arko } else { SkillsOf::Home }
-            });
+            let of = projects
+                .iter()
+                .find(|project| {
+                    PROJECT_SKILL_FOLDERS
+                        .iter()
+                        .any(|name| path.starts_with(project.join(name)))
+                })
+                .map(|project| SkillsOf::Project(project.clone()))
+                .unwrap_or_else(|| {
+                    if path.starts_with(root.join("skills")) {
+                        SkillsOf::Arko
+                    } else {
+                        SkillsOf::Home
+                    }
+                });
             if let Some(folder) = found.skills.iter_mut().find(|folder| folder.path == path) {
                 folder.skills.push(skill);
             } else {
-                found.skills.push(SkillFolder { path, of, skills: vec![skill] });
+                found.skills.push(SkillFolder {
+                    path,
+                    of,
+                    skills: vec![skill],
+                });
             }
         }
     }
     found
 }
 
-fn servers_in(listed: &arko::extensions::Extensions, path: &Path) -> Result<Vec<McpServer>, String> {
+fn servers_in(
+    listed: &arko::extensions::Extensions,
+    path: &Path,
+) -> Result<Vec<McpServer>, String> {
     check_mcp_file(path)?;
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    Ok(listed.servers.iter().filter(|server| server.file == absolute).map(|server| McpServer {
-        name: server.name.clone(),
-        command: server.command.clone(),
-        skipped: server.skipped.clone(),
-    }).collect())
+    Ok(listed
+        .servers
+        .iter()
+        .filter(|server| server.file == absolute)
+        .map(|server| McpServer {
+            name: server.name.clone(),
+            command: server.command.clone(),
+            skipped: server.skipped.clone(),
+        })
+        .collect())
 }
 
 /// A shallow file check for Add file and approval comparison. Entries are
@@ -221,7 +247,9 @@ pub fn forget_approval(root: &Path, folder: &Path) -> Result<(), String> {
     };
     let mut value: Value = serde_json::from_str(&text)
         .map_err(|error| format!("Could not read {} ({error}).", path.display()))?;
-    let removed = value.get_mut("projects").and_then(Value::as_object_mut)
+    let removed = value
+        .get_mut("projects")
+        .and_then(Value::as_object_mut)
         .and_then(|projects| projects.remove(&folder.display().to_string()));
     if removed.is_none() {
         return Ok(());
@@ -234,7 +262,8 @@ pub fn forget_approval(root: &Path, folder: &Path) -> Result<(), String> {
 }
 
 fn approvals(root: &Path) -> serde_json::Map<String, Value> {
-    std::fs::read_to_string(root.join(APPROVALS_FILE)).ok()
+    std::fs::read_to_string(root.join(APPROVALS_FILE))
+        .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .and_then(|value| value.get("projects").and_then(Value::as_object).cloned())
         .unwrap_or_default()
@@ -255,20 +284,55 @@ mod tests {
         let root = temp.path().join("arko");
         let project = temp.path().join("project");
         let config = temp.path().join("servers.json");
-        write(&config, r#"{"mcpServers": {"off": {"command": "x", "disabled": true}, "same": {"command": "first"}}}"#);
-        write(&root.join(USER_MCP_FILE), r#"{"mcpServers": {"same": {"command": "second"}}}"#);
+        write(
+            &config,
+            r#"{"mcpServers": {"off": {"command": "x", "disabled": true}, "same": {"command": "first"}}}"#,
+        );
+        write(
+            &root.join(USER_MCP_FILE),
+            r#"{"mcpServers": {"same": {"command": "second"}}}"#,
+        );
         write(&project.join(".skills/bad/SKILL.md"), "No front matter");
-        write(&project.join(".skills/flat.md"), "---\nname: flat\ndescription: A skill\n---\nInstructions");
+        write(
+            &project.join(".skills/flat.md"),
+            "---\nname: flat\ndescription: A skill\n---\nInstructions",
+        );
         let missing = temp.path().join("missing.json");
         let found = read(&root, std::slice::from_ref(&project), &[config, missing]);
         let servers = found.files[0].servers.as_ref().unwrap().as_ref().unwrap();
-        assert!(servers.iter().any(|server| server.name == "off" && server.skipped.as_deref().is_some_and(|why| why.contains("disabled"))));
-        let user = found.files.last().unwrap().servers.as_ref().unwrap().as_ref().unwrap();
+        assert!(servers.iter().any(|server| {
+            server.name == "off"
+                && server
+                    .skipped
+                    .as_deref()
+                    .is_some_and(|why| why.contains("disabled"))
+        }));
+        let user = found
+            .files
+            .last()
+            .unwrap()
+            .servers
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap();
         assert!(user[0].skipped.as_deref().unwrap().contains("servers.json"));
         assert!(found.notes.iter().any(|note| note.contains("missing.json")));
-        let ours = found.skills.iter().find(|folder| folder.path == project.join(".skills")).unwrap();
-        assert!(ours.skills.iter().any(|skill| skill.name == "bad" && skill.skipped.is_some()));
-        assert!(ours.skills.iter().any(|skill| skill.name == "flat" && skill.skipped.is_none()));
+        let ours = found
+            .skills
+            .iter()
+            .find(|folder| folder.path == project.join(".skills"))
+            .unwrap();
+        assert!(
+            ours.skills
+                .iter()
+                .any(|skill| skill.name == "bad" && skill.skipped.is_some())
+        );
+        assert!(
+            ours.skills
+                .iter()
+                .any(|skill| skill.name == "flat" && skill.skipped.is_none())
+        );
     }
 
     #[test]
@@ -277,13 +341,20 @@ mod tests {
         let root = temp.path().join("arko");
         let project = temp.path().join("project");
         let servers = serde_json::json!({"github": {"command": "npx"}});
-        write(&project.join(PROJECT_MCP_FILE), &serde_json::json!({"mcpServers": servers}).to_string());
+        write(
+            &project.join(PROJECT_MCP_FILE),
+            &serde_json::json!({"mcpServers": servers}).to_string(),
+        );
         write(&root.join(APPROVALS_FILE), &serde_json::json!({"projects": {project.display().to_string(): {"start": true, "mcpServers": servers}}}).to_string());
         let found = read(&root, &[], &[]);
         assert_eq!(found.projects[0].approval, Approval::Approved);
         forget_approval(&root, &project).unwrap();
         let found = read(&root, std::slice::from_ref(&project), &[]);
         assert_eq!(found.projects[0].approval, Approval::NotAsked);
-        assert!(found.projects[0].servers.as_ref().unwrap()[0].skipped.is_some());
+        assert!(
+            found.projects[0].servers.as_ref().unwrap()[0]
+                .skipped
+                .is_some()
+        );
     }
 }

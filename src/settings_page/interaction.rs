@@ -292,7 +292,10 @@ fn logins_are_checked_and_chosen(cx: &mut TestAppContext) {
     assert_eq!(state, LoginState::Ready);
     act(cx, window, |window, cx| window.click("clear-login", cx));
     let login = cx.read(|cx| page.read(cx).accounts().unwrap().chatgpt.clone());
-    assert_eq!(login.source, crate::backend::account_words::LoginSource::Default);
+    assert_eq!(
+        login.source,
+        crate::backend::account_words::LoginSource::Default
+    );
     assert_eq!(login.state, LoginState::Missing);
     act(cx, window, |window, _| {
         assert!(window.try_find("clear-login").is_none());

@@ -158,10 +158,13 @@ impl ExtensionsPage {
         ];
         if let Some(extensions) = &self.extensions {
             for note in &extensions.notes {
-                groups.push(SettingGroup::new().items([
-                    SettingItem::new("MCP file", SettingField::render(|_, _, _| div()))
-                        .description(note.clone()),
-                ]));
+                groups.push(
+                    SettingGroup::new().items([SettingItem::new(
+                        "MCP file",
+                        SettingField::render(|_, _, _| div()),
+                    )
+                    .description(note.clone())]),
+                );
             }
         }
         if !projects.is_empty() {

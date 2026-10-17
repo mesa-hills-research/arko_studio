@@ -1218,7 +1218,10 @@ fn open_error(error: &arko::OpenError) -> String {
     match error {
         arko::OpenError::Locked {
             holder: Some(holder),
-        } => format!("It’s open in {}, so close it there first.", holder.describe()),
+        } => format!(
+            "It’s open in {}, so close it there first.",
+            holder.describe()
+        ),
         arko::OpenError::Locked { holder: None } => {
             "It’s open in another copy of Arko, so close it there first.".to_string()
         }

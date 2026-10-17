@@ -164,7 +164,10 @@ impl BackendError {
         match self {
             BackendError::Locked {
                 holder: Some(holder),
-            } => format!("It’s open in {}, so close it there first.", holder.describe()),
+            } => format!(
+                "It’s open in {}, so close it there first.",
+                holder.describe()
+            ),
             BackendError::Locked { holder: None } => {
                 "It’s open in another copy of Arko, so close it there first.".to_string()
             }
@@ -497,7 +500,9 @@ fn prepare(
             defaults.apply(&mut options, Some(new.mode), || last_model(root));
         }
     }
-    let notes = defaults::take_free_port(&mut options.remote).into_iter().collect();
+    let notes = defaults::take_free_port(&mut options.remote)
+        .into_iter()
+        .collect();
     if let Some(configure) = configure {
         configure(&mut options);
     }
@@ -543,8 +548,10 @@ impl Backend for ArkoBackend {
     fn branch(&self, id: &SessionId) -> Result<SessionEntry, BackendError> {
         let branch = arko::sessions::branch(&self.root, id.as_str())
             .map_err(|error| BackendError::Other(error.to_string()))?;
-        self.sessions()?.into_iter().find(|entry| entry.id.as_str() == branch)
-            .ok_or_else(|| BackendError::NotFound(SessionId(branch)))
+        self.sessions()?
+            .into_iter()
+            .find(|entry| entry.id.as_str() == branch)
+            .ok_or(BackendError::NotFound(SessionId(branch)))
     }
 
     fn models(&self, folder: Option<&Path>) -> ModelChoices {
@@ -886,11 +893,16 @@ impl Backend for FakeBackend {
 
     fn branch(&self, id: &SessionId) -> Result<SessionEntry, BackendError> {
         self.with_state(|state| {
-            let mut entry = state.sessions.iter().find(|entry| &entry.id == id)
-                .cloned().ok_or_else(|| BackendError::NotFound(id.clone()))?;
+            let mut entry = state
+                .sessions
+                .iter()
+                .find(|entry| &entry.id == id)
+                .cloned()
+                .ok_or_else(|| BackendError::NotFound(id.clone()))?;
             if let Some(holder) = &entry.holder {
                 return Err(BackendError::Other(format!(
-                    "The session is open in {}, so branch it there.", holder.describe()
+                    "The session is open in {}, so branch it there.",
+                    holder.describe()
                 )));
             }
             entry.id = SessionId(format!("branch-{}", state.sessions.len()));
@@ -1136,8 +1148,15 @@ mod tests {
     #[test]
     fn a_delete_refusal_keeps_the_engines_recovery_hint() {
         let error = arko::sessions::DeleteError::Locked { holder: None };
-        assert_eq!(delete_error(error.clone()).message(), sentence(&error.to_string()));
-        assert!(delete_error(error).message().contains("so close it there first"));
+        assert_eq!(
+            delete_error(error.clone()).message(),
+            sentence(&error.to_string())
+        );
+        assert!(
+            delete_error(error)
+                .message()
+                .contains("so close it there first")
+        );
     }
 
     #[test]

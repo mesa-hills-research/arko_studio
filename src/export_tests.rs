@@ -47,6 +47,51 @@ fn export_writes_the_conversation_where_the_user_chooses(cx: &mut TestAppContext
             })
         })
     });
+    act(cx, window, |window, cx| window.input("And the plums?", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    wait_until(cx, "the second reply", |cx| {
+        cx.read(|cx| {
+            let session = view.read(cx).live_session().unwrap().read(cx);
+            !session.is_working()
+                && session
+                    .feed()
+                    .unwrap()
+                    .subscribe()
+                    .0
+                    .items
+                    .iter()
+                    .filter(|item| item.kind == arko::remote::Kind::Reply)
+                    .count()
+                    == 2
+        })
+    });
+    // The UI has only a late part, as it does when a long feed was trimmed.
+    let feed = cx.read(|cx| {
+        view.read(cx)
+            .live_session()
+            .unwrap()
+            .read(cx)
+            .feed()
+            .unwrap()
+            .clone()
+    });
+    let items = feed.subscribe().0.items;
+    let start = items
+        .iter()
+        .position(|item| item.text == "And the plums?")
+        .unwrap();
+    let tail = items[start..].to_vec();
+    feed.conversation("The retained part");
+    feed.restore(tail);
+    wait_until(cx, "the trimmed transcript", |cx| {
+        cx.read(|cx| {
+            view.read(cx)
+                .transcript(cx)
+                .unwrap()
+                .read(cx)
+                .starts_partway()
+        })
+    });
     act(cx, window, |window, cx| {
         window.dispatch_action(Box::new(crate::menus::ExportMarkdown), cx)
     });
@@ -60,6 +105,8 @@ fn export_writes_the_conversation_where_the_user_chooses(cx: &mut TestAppContext
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.starts_with("# Count the pears.\n"), "{text}");
     assert!(text.contains("\n## You\n\nCount the pears.\n"), "{text}");
+    assert!(text.contains("And the plums?"), "{text}");
+    assert!(!text.contains(crate::export::STARTS_PARTWAY), "{text}");
     assert!(text.contains("\n## Arko\n\nSeven **pears**.\n"), "{text}");
     act(cx, window, |window, cx| {
         let sessions = crate::live::LiveSessions::all(cx);
