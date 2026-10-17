@@ -139,8 +139,10 @@ pub fn source_words(source: &KeySource, home: Option<&Path>) -> String {
     }
 }
 
-/// `path` with `~` for `home`.
+/// `path` with `~` for `home`, as macOS and Linux write it (Windows shows
+/// it whole).
 pub fn tilde(path: &Path, home: Option<&Path>) -> String {
+    let home = home.filter(|_| !cfg!(windows));
     match home.and_then(|home| path.strip_prefix(home).ok()) {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
         Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),

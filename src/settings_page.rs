@@ -768,15 +768,18 @@ fn notifications_page() -> SettingPage {
 }
 
 fn advanced_page(this: &Entity<SettingsPage>, cx: &App) -> SettingPage {
-    let data = cx
-        .global::<crate::backend::SharedBackend>()
-        .data_root()
-        .display()
-        .to_string();
-    let logs = paths::logs_folder()
-        .map(|folder| folder.display().to_string())
-        .unwrap_or_default();
     let home = cx.global::<crate::session_view::HomeFolder>().0.clone();
+    // The folders as the user's home folder holds them, with `~`.
+    let in_home = |folder: &std::path::Path| {
+        crate::backend::account_words::tilde(
+            folder,
+            crate::session_view::home_from_env().as_deref(),
+        )
+    };
+    let data = in_home(cx.global::<crate::backend::SharedBackend>().data_root());
+    let logs = paths::logs_folder()
+        .map(|folder| in_home(&folder))
+        .unwrap_or_default();
     let mut groups = Vec::new();
     // Only Windows runs commands in a shell the user picks.
     if cfg!(windows) {
