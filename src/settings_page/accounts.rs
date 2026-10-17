@@ -527,7 +527,7 @@ impl AccountsPage {
             .find(|group| group.models.iter().any(|model| model.name == chosen))?;
         let needs = group.needs.as_ref()?;
         Some(format!(
-            "{} needs {needs}. Sessions ask for it as they start, or add it below.",
+            "{} needs {needs}. Sessions ask for it as they start, or add it above.",
             arko::models::display_name(chosen)
         ))
     }
@@ -632,12 +632,12 @@ impl AccountsPage {
                 };
                 match &login.state {
                     LoginState::Ready => format!(
-                        "Signed in: {path} ({whose}). OpenAI models run on your ChatGPT plan."
+                        "Signed in with {path} ({whose}). OpenAI models run on your ChatGPT plan."
                     ),
                     LoginState::Missing => format!(
-                        "No login at {path}. Sign in with `codex login`, or choose the auth.json Codex keeps it in."
+                        "No login at {path}. Sign in with “codex login”, or choose the auth.json Codex keeps it in."
                     ),
-                    LoginState::Invalid(why) => format!("{path} ({whose}) can’t be used: {why}."),
+                    LoginState::Invalid(why) => format!("{path} ({whose}) can’t be used ({why})."),
                 }
             }
         };
@@ -764,9 +764,15 @@ fn effort_options(
 /// and sign in.
 pub fn claude_code_words(status: &ClaudeCodeStatus, home: Option<&std::path::Path>) -> String {
     let Some(path) = &status.path else {
-        return "Not installed. Install it with `npm install -g @anthropic-ai/claude-code` or Anthropic’s installer, sign in with `claude auth login`, then check again. Arko reaches Claude models on your Claude plan through it.".into();
+        return "Not installed. Install it with “npm install -g @anthropic-ai/claude-code” or Anthropic’s installer, sign in with “claude auth login”, then check again. Arko reaches Claude models on your Claude plan through it.".into();
     };
-    let found = match &status.version {
+    // `claude --version` says "2.1.42 (Claude Code)": the number is enough.
+    let version = status
+        .version
+        .as_deref()
+        .map(|version| version.trim().trim_end_matches("(Claude Code)").trim())
+        .filter(|version| !version.is_empty());
+    let found = match version {
         Some(version) => format!("{} ({version})", tilde(path, home)),
         None => tilde(path, home),
     };
@@ -774,7 +780,7 @@ pub fn claude_code_words(status: &ClaudeCodeStatus, home: Option<&std::path::Pat
         Ok(ready) => {
             let how = match (&ready.method, &ready.plan) {
                 (Some(method), Some(plan)) if method == "claude.ai" => {
-                    format!("signed in to your Claude {plan} plan")
+                    format!("signed in to your Claude {} plan", capitalized(plan))
                 }
                 (Some(method), _) => format!("signed in with {method}"),
                 (None, _) => "signed in".to_string(),
@@ -787,12 +793,21 @@ pub fn claude_code_words(status: &ClaudeCodeStatus, home: Option<&std::path::Pat
             text
         }
         Err(Problem::SignedOut(_)) => format!(
-            "{found}, not signed in. Run `claude auth login` in a terminal, then check again."
+            "{found}, not signed in. Run “claude auth login” in a terminal, then check again."
         ),
         Err(Problem::Missing) => {
             format!("{found} doesn’t run. Install it again, then check again.")
         }
     }
+}
+
+/// `word` with a capital first letter: a plan's name ("max" is "Max").
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 fn remove_key(
@@ -1017,7 +1032,7 @@ mod tests {
         };
         assert_eq!(
             claude_code_words(&status(Some(path), Ok(ready)), home),
-            "~/.local/bin/claude (2.1.42 (Claude Code)), signed in to your Claude max plan."
+            "~/.local/bin/claude (2.1.42), signed in to your Claude Max plan."
         );
         let words = claude_code_words(
             &status(Some(path), Err(Problem::SignedOut(path.into()))),
@@ -1025,7 +1040,7 @@ mod tests {
         );
         assert!(
             words.ends_with(
-                "not signed in. Run `claude auth login` in a terminal, then check again."
+                "not signed in. Run “claude auth login” in a terminal, then check again."
             ),
             "{words}"
         );
