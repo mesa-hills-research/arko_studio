@@ -552,7 +552,15 @@ impl SessionView {
     ) {
         match event {
             ComposerEvent::Submit(outgoing) => self.send(outgoing.clone(), window, cx),
-            ComposerEvent::Stop => self.stop(window, cx),
+            ComposerEvent::Stop => match self.question(cx) {
+                // Esc backs out of the question card first, as Later does.
+                Some((id, _)) if self.later != Some(id) => {
+                    self.later = Some(id);
+                    self.sync_composer(window, cx);
+                    cx.notify();
+                }
+                _ => self.stop(window, cx),
+            },
             ComposerEvent::Edited => {
                 let composer = self.composer.read(cx);
                 let empty =
@@ -591,9 +599,15 @@ impl SessionView {
             text: text.clone(),
             images,
         };
+        // As in the terminal, a command runs while a question waits, and the
+        // question stays open. Other text answers it.
+        let command = arko::commands::find(&text).is_some();
         let result = match &self.session {
             None => self.start_session(message, attached, cx),
             Some(session) => match session.read(cx).question() {
+                Some(_) if command => session.update(cx, |session, cx| {
+                    session.send(arko::Input::Message(message), cx)
+                }),
                 Some(_) if !message.images.is_empty() => Err(
                     "An answer takes text only. Send the images once the question is answered."
                         .to_string(),

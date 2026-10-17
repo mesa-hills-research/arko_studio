@@ -302,6 +302,47 @@ fn the_agents_question_is_answered_from_the_composer(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_command_typed_while_a_question_waits_runs_and_the_question_stays(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, body| {
+        if body.contains("Two spaces.") {
+            answer("Indented with two spaces.", Duration::ZERO)
+        } else {
+            let call = arko::testing::tool_call(
+                "q1",
+                "ask_user",
+                serde_json::json!({ "questions": "Tabs or spaces?" }),
+            );
+            Box::pin(async move { call })
+        }
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Indent the file.");
+    let session = app.shown(cx).unwrap();
+    wait_until(cx, "the question", |cx| {
+        cx.read(|cx| session.read(cx).question().is_some())
+    });
+    app.send(cx, "/cost");
+    wait_until(cx, "the cost", |cx| {
+        app.feed(cx).iter().any(|item| item.contains('$'))
+    });
+    assert!(
+        cx.read(|cx| session.read(cx).question().is_some()),
+        "still asked"
+    );
+    assert!(!mock.was_sent("/cost"), "not an answer");
+    // Esc folds the question card, and the turn goes on.
+    act(cx, app.window, |window, cx| window.press("escape", cx));
+    act(cx, app.window, |window, _| {
+        assert!(window.try_find("question-card").is_none());
+        assert!(window.try_find("question-chip").is_some());
+    });
+    assert!(cx.read(|cx| session.read(cx).is_working()));
+    app.send(cx, "Two spaces.");
+    app.wait_for_text(cx, "Indented with two spaces.");
+    app.close_all(cx);
+}
+
+#[gpui_kit::test]
 fn a_slash_command_is_completed_from_the_menu_and_runs(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, _| answer("Hello.", Duration::ZERO));
     let app = start(cx, &mock);
