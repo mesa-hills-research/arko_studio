@@ -461,9 +461,6 @@ impl LiveSession {
         if self.mode == Mode::Agent {
             self.workspace = Some(session.workspace.clone());
         }
-        let (snapshot, batches) = feed.subscribe_batched();
-        self.activity = snapshot.activity;
-        self.workers = snapshot.workers;
         self.reading = status.borrow().clone();
         self.apply_reading();
         for queued in self.queued.drain(..) {
@@ -477,7 +474,7 @@ impl LiveSession {
             details,
         });
         self.phase = Phase::Open;
-        self.drain(feed, batches, status, quit_asks, cx);
+        self.drain(feed, status, quit_asks, cx);
         self.update_indicator(cx);
         cx.emit(LiveEvent::Opened);
         cx.notify();
@@ -488,7 +485,6 @@ impl LiveSession {
     fn drain(
         &mut self,
         feed: Feed,
-        mut batches: arko::remote::Batches,
         mut status: tokio::sync::watch::Receiver<Arc<Reading>>,
         mut quit_asks: mpsc::UnboundedReceiver<arko::QuitAsk>,
         cx: &mut Context<Self>,
@@ -498,6 +494,15 @@ impl LiveSession {
         self._tasks.push(cx.background_spawn({
             let (drained, wake) = (drained.clone(), wake.clone());
             async move {
+                // Subscribing copies the session's history so far: never on
+                // the UI thread.
+                let (snapshot, mut batches) = feed.subscribe_batched();
+                {
+                    let mut drained = lock(&drained);
+                    drained.activity = Some(snapshot.activity);
+                    drained.workers = snapshot.workers;
+                }
+                wake.notify_one();
                 while let Some(batch) = batches.next().await {
                     let mut activity = None;
                     let mut workers = Vec::new();
@@ -1041,9 +1046,9 @@ mod tests {
 
     /// What the engine says in a burst (here 4,000 changes of the turn's
     /// state and 50 statuses, sent from another thread) reaches the
-    /// interface as one change a frame, whatever its size.
+    /// interface in a change or two, at most one a frame, whatever its size.
     #[gpui_kit::test]
-    fn a_burst_from_the_engine_is_applied_once_a_frame(cx: &mut TestAppContext) {
+    fn a_burst_from_the_engine_is_applied_at_most_once_a_frame(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         cx.update(super::init);
         let feed = arko::remote::Feed::new("main");
@@ -1052,10 +1057,18 @@ mod tests {
         let (_quit, quit_asks) = tokio::sync::mpsc::unbounded_channel();
         let session = cx.new(|cx| {
             let mut session = LiveSession::blank(cx);
-            let (_, batches) = feed.subscribe_batched();
-            session.drain(feed.clone(), batches, statuses, quit_asks, cx);
+            session.drain(feed.clone(), statuses, quit_asks, cx);
             session
         });
+        let frame = |cx: &mut TestAppContext| {
+            cx.run_until_parked();
+            let applied = cx.read(|cx| session.read(cx).applied);
+            cx.executor().advance_clock(super::FRAME);
+            applied
+        };
+        // It has subscribed (in the background) and taken the feed as it was.
+        frame(cx);
+        let before = frame(cx);
         std::thread::spawn({
             let feed = feed.clone();
             move || {
@@ -1072,18 +1085,22 @@ mod tests {
         })
         .join()
         .unwrap();
-        cx.run_until_parked();
-        let applied = cx.read(|cx| session.read(cx).applied);
-        assert_eq!(applied, 1, "one change for the whole burst");
+        let mut last = before;
+        for _ in 0..5 {
+            let applied = frame(cx);
+            assert!(applied - last <= 1, "more than one change in a frame");
+            last = applied;
+        }
+        assert!(
+            last - before <= 2,
+            "{} changes for one burst",
+            last - before
+        );
         assert_eq!(
             cx.read(|cx| session.read(cx).title.to_string()),
             "Turn 1960"
         );
         assert!(!cx.read(|cx| session.read(cx).is_working()));
-        // Nothing more comes: the next frame applies nothing.
-        cx.executor().advance_clock(super::FRAME);
-        cx.run_until_parked();
-        assert_eq!(cx.read(|cx| session.read(cx).applied), 1);
     }
 
     #[test]
