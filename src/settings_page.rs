@@ -156,6 +156,20 @@ impl SettingsPage {
         cx.notify();
     }
 
+    /// On Models & accounts, points at what the group of models `way`
+    /// needs ("OpenAI, with your API key"): its row is marked and has the
+    /// keyboard focus.
+    pub fn point_at_account(
+        &mut self,
+        way: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let account = way.and_then(accounts::account_for);
+        self.accounts
+            .update(cx, |accounts, cx| accounts.point_at(account, window, cx));
+    }
+
     /// The page last asked for with [`Self::show_page`].
     pub fn page(&self) -> usize {
         self.page

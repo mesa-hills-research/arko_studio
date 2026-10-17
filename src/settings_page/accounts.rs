@@ -24,6 +24,43 @@ use crate::backend::{Accounts, ModelChoices, SharedBackend, last_model};
 use crate::prefs::{self, NewSessionMode};
 use crate::session_view::HomeFolder;
 
+/// The accounts the page has a row for, by the name the page points at
+/// them with: each provider's key as `/keys` names it, the ChatGPT login and
+/// Claude Code.
+pub const ACCOUNTS: [&str; 7] = [
+    "anthropic",
+    "openai",
+    "gemini",
+    "openrouter",
+    "voyage",
+    CHATGPT,
+    CLAUDE_CODE,
+];
+pub const CHATGPT: &str = "chatgpt";
+pub const CLAUDE_CODE: &str = "claude-code";
+
+/// The account a group of models needs, by the group's name as arko's
+/// model list heads it: "OpenAI, with your API key" needs the OpenAI key,
+/// "Claude Code, on your Claude plan" Claude Code.
+pub fn account_for(way: &str) -> Option<&'static str> {
+    let way = way.trim();
+    Some(if way.starts_with("Claude Code") {
+        CLAUDE_CODE
+    } else if way.starts_with("Anthropic") {
+        "anthropic"
+    } else if way.starts_with("OpenAI") && way.contains("ChatGPT") {
+        CHATGPT
+    } else if way.starts_with("OpenAI") {
+        "openai"
+    } else if way.starts_with("Google") || way.starts_with("Gemini") {
+        "gemini"
+    } else if way.starts_with("OpenRouter") {
+        "openrouter"
+    } else {
+        return None;
+    })
+}
+
 /// The page's state: the accounts and models as last read.
 pub struct AccountsPage {
     accounts: Option<Accounts>,
@@ -33,6 +70,11 @@ pub struct AccountsPage {
     /// Claude Code is being checked again.
     checking: bool,
     home: Option<PathBuf>,
+    /// The account the page was opened for (a model that needs it): its
+    /// row is marked, and has the keyboard focus.
+    target: Option<&'static str>,
+    /// Each account row's focus, by [`ACCOUNTS`] name.
+    focus: Vec<(&'static str, FocusHandle)>,
     _load: Option<Task<()>>,
 }
 
@@ -44,10 +86,61 @@ impl AccountsPage {
             last_model: None,
             checking: false,
             home: cx.global::<HomeFolder>().0.clone(),
+            target: None,
+            focus: ACCOUNTS
+                .iter()
+                .map(|account| (*account, cx.focus_handle()))
+                .collect(),
             _load: None,
         };
         this.refresh(cx);
         this
+    }
+
+    /// Marks `account`'s row (or none) and moves the keyboard to it.
+    pub fn point_at(
+        &mut self,
+        account: Option<&'static str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.target = account;
+        if let Some(focus) = account.and_then(|account| self.focus_of(account)) {
+            // After the page is drawn with the row in it.
+            window.defer(cx, move |window, cx| focus.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// The account the page points at, if any.
+    pub fn target(&self) -> Option<&'static str> {
+        self.target
+    }
+
+    /// The focus of `account`'s row.
+    pub fn focus_of(&self, account: &str) -> Option<FocusHandle> {
+        self.focus
+            .iter()
+            .find(|(name, _)| *name == account)
+            .map(|(_, focus)| focus.clone())
+    }
+
+    /// The row's controls of `account`, focusable, and marked when the page
+    /// points at it.
+    fn row_field(&self, account: &'static str, controls: AnyElement, cx: &App) -> AnyElement {
+        let focus = self.focus_of(account);
+        let marked = self.target == Some(account);
+        let theme = cx.theme();
+        let (ring, radius) = (theme.ring, theme.radius);
+        h_flex()
+            .id(SharedString::from(format!("account-{account}")))
+            .test_support()
+            .when_some(focus, |this, focus| this.track_focus(&focus))
+            .rounded(radius)
+            .p_0p5()
+            .when(marked, |this| this.border_1().border_color(ring))
+            .child(controls)
+            .into_any_element()
     }
 
     /// Reads the accounts and the models again, in the background.
@@ -191,12 +284,14 @@ impl AccountsPage {
 
     /// The page, as the accounts and the preferences are now.
     pub fn page(&self, this: &Entity<Self>, cx: &App) -> SettingPage {
+        // What reaches the models comes first: a model that needs a key
+        // opens the page there.
         SettingPage::new(super::PAGES[2])
             .icon(IconName::Bot)
             .groups([
-                self.new_sessions_group(cx),
                 self.keys_group(this),
                 self.logins_group(this),
+                self.new_sessions_group(cx),
             ])
     }
 
@@ -453,12 +548,12 @@ impl AccountsPage {
         };
         let set = state.masked.is_some();
         let removable = matches!(state.source, Some(KeySource::Arko(_)));
-        let (add, remove) = (this.clone(), this.clone());
+        let (add, remove, page) = (this.clone(), this.clone(), this.clone());
         SettingItem::new(
             key.provider,
-            SettingField::render(move |_, _, _| {
+            SettingField::render(move |_, _, cx| {
                 let (add, remove) = (add.clone(), remove.clone());
-                h_flex()
+                let controls = h_flex()
                     .gap_1()
                     .when(removable, |this| {
                         this.child(
@@ -480,6 +575,8 @@ impl AccountsPage {
                                 AccountsPage::ask_for_key(&add, provider, window, cx)
                             }),
                     )
+                    .into_any_element();
+                page.read(cx).row_field(provider, controls, cx)
             }),
         )
         .description(description)
@@ -518,28 +615,31 @@ impl AccountsPage {
             Some(accounts) => claude_code_words(&accounts.claude_code, home),
         };
         let (choose, check) = (this.clone(), this.clone());
+        let (login_page, claude_page) = (this.clone(), this.clone());
         let checking = self.checking || self.accounts.is_none();
         SettingGroup::new().title("Logins").items([
             SettingItem::new(
                 "ChatGPT login",
-                SettingField::render(move |_, _, _| {
+                SettingField::render(move |_, _, cx| {
                     let choose = choose.clone();
-                    Button::new("choose-login")
+                    let button = Button::new("choose-login")
                         .outline()
                         .small()
                         .label("Choose file…")
                         .on_click(move |_, window, cx| {
                             AccountsPage::choose_login(&choose, window, cx)
                         })
+                        .into_any_element();
+                    login_page.read(cx).row_field(CHATGPT, button, cx)
                 }),
             )
             .description(login)
             .keywords(["openai", "codex", "auth.json", "plan", "sign in"]),
             SettingItem::new(
                 "Claude Code",
-                SettingField::render(move |_, _, _| {
+                SettingField::render(move |_, _, cx| {
                     let check = check.clone();
-                    Button::new("check-claude-code")
+                    let button = Button::new("check-claude-code")
                         .outline()
                         .small()
                         .label("Check again")
@@ -547,6 +647,8 @@ impl AccountsPage {
                         .on_click(move |_, _, cx| {
                             check.update(cx, |page, cx| page.check_again(cx));
                         })
+                        .into_any_element();
+                    claude_page.read(cx).row_field(CLAUDE_CODE, button, cx)
                 }),
             )
             .description(claude)

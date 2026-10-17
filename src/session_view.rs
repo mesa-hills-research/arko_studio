@@ -56,8 +56,9 @@ pub struct Draft {
 pub enum SessionViewEvent {
     /// A new session started with its first message: the window shows it.
     Created(Entity<LiveSession>),
-    /// Open Settings › Models & accounts.
-    OpenAccounts,
+    /// Open Settings › Models & accounts, on what the group of models named
+    /// here needs ("OpenAI, with your API key"), if one is.
+    OpenAccounts(Option<SharedString>),
     /// Show the session's waiting prompt again.
     ShowPrompt,
     /// The reader opened a worker's card in the transcript.
@@ -859,6 +860,7 @@ impl SessionView {
                                 .child(group.name.clone()),
                         )
                         .when_some(needs.clone(), |this, needs| {
+                            let way = SharedString::from(group.name.clone());
                             this.child(
                                 Button::new(("model-needs", group_ix))
                                     .link()
@@ -868,8 +870,9 @@ impl SessionView {
                                     .on_click({
                                         let view = view.clone();
                                         move |_, _, cx| {
+                                            let way = way.clone();
                                             view.update(cx, |_, cx| {
-                                                cx.emit(SessionViewEvent::OpenAccounts)
+                                                cx.emit(SessionViewEvent::OpenAccounts(Some(way)))
                                             })
                                             .ok();
                                         }

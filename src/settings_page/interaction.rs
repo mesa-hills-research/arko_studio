@@ -261,3 +261,48 @@ fn opening_settings_leaves_the_reading_to_the_background(cx: &mut TestAppContext
     let settings = cx.read(|cx| workspace.read(cx).settings().unwrap().clone());
     assert!(cx.read(|cx| settings.read(cx).font_pickers().is_some()));
 }
+
+/// "Needs an OpenAI key" in the composer's model list opens Models &
+/// accounts on the OpenAI key's row, with the keyboard there.
+#[gpui_kit::test]
+fn a_model_that_needs_a_key_opens_its_row(cx: &mut TestAppContext) {
+    start_with(cx, prefs::Prefs::default());
+    let (window, workspace) = open(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    cx.update(|cx| {
+        view.update(cx, |_, cx| {
+            cx.emit(crate::session_view::SessionViewEvent::OpenAccounts(Some(
+                "OpenAI, with your API key".into(),
+            )))
+        })
+    });
+    act(cx, window, |_, _| {});
+    let settings = cx.read(|cx| workspace.read(cx).settings().unwrap().clone());
+    let (page, target, focus) = cx.read(|cx| {
+        let accounts = settings.read(cx).accounts().read(cx);
+        (
+            settings.read(cx).page(),
+            accounts.target(),
+            accounts.focus_of("openai").unwrap(),
+        )
+    });
+    assert_eq!(page, 2);
+    assert_eq!(target, Some("openai"));
+    act(cx, window, |window, _| {
+        assert!(focus.is_focused(window));
+        assert!(window.try_find("account-openai").is_some());
+    });
+    assert_eq!(
+        super::accounts::account_for("Claude Code, on your Claude plan"),
+        Some("claude-code")
+    );
+    assert_eq!(
+        super::accounts::account_for("OpenAI, on your ChatGPT plan"),
+        Some("chatgpt")
+    );
+    assert_eq!(
+        super::accounts::account_for("Google Gemini, billed per token"),
+        Some("gemini")
+    );
+    assert_eq!(super::accounts::account_for("Somewhere else"), None);
+}
