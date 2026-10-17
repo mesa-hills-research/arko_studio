@@ -273,6 +273,8 @@ struct Opened {
 #[derive(Default)]
 pub(crate) struct Find {
     pub query: String,
+    /// Identifies the scope snapshot sent to the background task.
+    generation: u64,
     /// The words lowercased.
     needle: String,
     /// The entries with matches, in the transcript's order (their ids).
@@ -598,7 +600,9 @@ impl TranscriptView {
         };
         let anchor = find.current_at();
         find.texts.clear();
-        if find.lowering.is_none() && !self.lower_in_background(&mut find, cx) {
+        find.generation += 1;
+        find.lowering = None;
+        if !self.lower_in_background(&mut find, cx) {
             self.search_all(&mut find, cx);
         }
         find.settle_current(anchor);
@@ -628,6 +632,13 @@ impl TranscriptView {
 
     /// Searches the entry `id`: its texts kept, else made now.
     fn search_entry(&self, find: &mut Find, id: u64, cx: &App) {
+        if !self
+            .model
+            .entry(id)
+            .is_some_and(|entry| self.finds_in(entry))
+        {
+            find.texts.insert(id, Vec::new());
+        }
         find.texts.entry(id).or_insert_with(|| {
             self.model
                 .entry(id)
@@ -678,15 +689,29 @@ impl TranscriptView {
                 .map(|(id, gathered)| (id, gathered.lowered()))
                 .collect::<Vec<_>>()
         });
+        let generation = find.generation;
         find.lowering = Some(cx.spawn(async move |this, cx| {
             let lowered = lowering.await;
-            this.update(cx, |this, cx| this.lowered(lowered, cx)).ok();
+            this.update(cx, |this, cx| this.lowered(generation, lowered, cx))
+                .ok();
         }));
         true
     }
 
     /// The texts lowercased off the UI thread are ready: the find searches.
-    fn lowered(&mut self, lowered: Vec<(u64, Vec<(Place, Lowered)>)>, cx: &mut Context<Self>) {
+    fn lowered(
+        &mut self,
+        generation: u64,
+        lowered: Vec<(u64, Vec<(Place, Lowered)>)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .find
+            .as_ref()
+            .is_none_or(|find| find.generation != generation)
+        {
+            return;
+        }
         let Some(mut find) = self.find.take() else {
             return;
         };
@@ -986,9 +1011,7 @@ impl TranscriptView {
                     .then_some(first),
                 _ => None,
             });
-            if let Some(first) = group
-                && !self.group_open(first)
-            {
+            if let Some(first) = group {
                 needs.push(Opening::Group(first));
             }
         }
@@ -996,10 +1019,12 @@ impl TranscriptView {
             (Kind::Thinking, _) | (Kind::Call, Place::Parameters | Place::Output) => {
                 needs.push(Opening::Entry(found.entry))
             }
-            (_, Place::Block(block)) if self.hides_in_code(found, block, cx) => {
-                needs.push(Opening::Code(found.entry, block))
-            }
             _ => {}
+        }
+        if let Place::Block(block) = found.place
+            && self.hides_in_code(found, block, cx)
+        {
+            needs.push(Opening::Code(found.entry, block));
         }
         needs
     }
@@ -1046,6 +1071,9 @@ impl TranscriptView {
     fn open(&mut self, what: Opening, cx: &mut Context<Self>) -> Option<Opened> {
         match what {
             Opening::Group(first) => {
+                if self.group_open(first) {
+                    return None;
+                }
                 let before = self.ui.get(&first).and_then(|ui| ui.group_open);
                 self.ui.entry(first).or_default().group_open = Some(true);
                 self.refresh_rows(cx);
