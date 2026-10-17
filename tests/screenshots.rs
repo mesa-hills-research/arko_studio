@@ -509,6 +509,134 @@ fn transcript_narrow_dark() {
     );
 }
 
+/// The representative transcript with a find going on: its matches marked,
+/// the current one stronger, and the keyboard's ring on a row.
+fn transcript_find_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::AppContext as _;
+    use gpui_kit::test::TestWindowExt as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let feed = feed::representative();
+    let now = chrono::Utc::now().timestamp_millis() + 12_000;
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(1300.), px(1500.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
+                    view.set_clock(move || now, cx);
+                    view.set_image_lookup(|_| Some((PNG.into(), "image/png".into())), cx);
+                    view
+                })
+            })
+            .map(|(window, view)| {
+                opened = Some(view);
+                window
+            })
+        })
+        .unwrap();
+    let view = opened.unwrap();
+    app.run_until_parked();
+    app.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.find("parse", cx);
+            view.focus_rows(window, cx);
+        });
+        // From the keyboard: its ring shows.
+        window.press("up", cx);
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn transcript_find_light() {
+    goldens().assert(
+        "transcript-find-light",
+        &transcript_find_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn transcript_find_dark() {
+    goldens().assert(
+        "transcript-find-dark",
+        &transcript_find_window(ThemeMode::Dark),
+    );
+}
+
+/// The composer of an agent's new session, with the files an "@" mentions
+/// listed above it.
+fn mention_window(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+
+    // A folder of a fixed name: the window shows it.
+    let root = std::env::temp_dir().join("arko-mention-list");
+    let _ = std::fs::remove_dir_all(&root);
+    for dir in ["src/parser", "docs"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    for file in [
+        "README.md",
+        "src/parse.rs",
+        "src/parser/mod.rs",
+        "src/main.rs",
+        "docs/parsing.md",
+    ] {
+        std::fs::write(root.join(file), "").unwrap();
+    }
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(900.), px(600.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, window, cx| {
+        let view = workspace.read(cx).session_view().clone();
+        view.update(cx, |view, cx| {
+            view.set_draft_folder(root.clone(), cx);
+            view.focus_composer(window, cx);
+        });
+        window.input("Look at the @pars", cx);
+    })
+    .unwrap();
+    // The folder is listed and ranked off the UI thread.
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn mention_list_light() {
+    goldens().assert("mention-list-light", &mention_window(ThemeMode::Light));
+}
+
+#[test]
+fn mention_list_dark() {
+    goldens().assert("mention-list-dark", &mention_window(ThemeMode::Dark));
+}
+
 /// The workers panel with workers in each state: two running (one past an
 /// hour), one waiting, one that finished and one that failed a moment ago,
 /// and one finished long ago in the collapsed "Finished" group.
