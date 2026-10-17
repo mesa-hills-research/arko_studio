@@ -2480,13 +2480,13 @@ impl SessionView {
                 .bg(theme.secondary)
                 .text_color(theme.secondary_foreground)
                 .child(Icon::new(gpui_kit::assets::IconName::SquarePen).xsmall())
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .child("Editing message — Esc cancels"),
-                )
+                .child(div().flex_1().min_w_0().truncate().child(
+                    if crate::prefs::get(cx).input.keymap == crate::prefs::Keymap::Vim {
+                        "Editing message — Esc in normal mode cancels"
+                    } else {
+                        "Editing message — Esc cancels"
+                    },
+                ))
                 .children(lost.map(|lost| {
                     div()
                         .id("edit-lost-images")

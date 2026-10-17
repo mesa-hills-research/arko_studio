@@ -1034,7 +1034,8 @@ impl Composer {
             return;
         }
         let textarea = self.textarea.read(cx);
-        // Vim's Escape is its own, and a suggestion on show closes first.
+        // Vim's Escape is its own (see `on_vim_escape`), and a suggestion on
+        // show closes first.
         let vim = textarea.current_keymap() == Keymap::Vim;
         if self.cancellable && !vim && textarea.suggestions().is_empty() {
             cx.emit(ComposerEvent::Cancel);
@@ -1043,6 +1044,19 @@ impl Composer {
         }
         if self.working && !vim && textarea.suggestions().is_empty() {
             cx.emit(ComposerEvent::Stop);
+            cx.stop_propagation();
+        }
+    }
+
+    /// Escape with the Vim keymap, once Vim let it through: in normal mode
+    /// with nothing pending (Vim keeps the others, out of insert mode or
+    /// of a half-typed command). It ends what the strip or the chip above
+    /// says Esc ends. It doesn't stop a turn: Vim's users press Escape out
+    /// of habit.
+    fn on_vim_escape(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let escape = event.keystroke.key == "escape" && !event.keystroke.modifiers.modified();
+        if escape && self.cancellable && self.textarea.read(cx).current_keymap() == Keymap::Vim {
+            cx.emit(ComposerEvent::Cancel);
             cx.stop_propagation();
         }
     }
@@ -1216,6 +1230,7 @@ impl Render for Composer {
             .capture_action(cx.listener(Self::on_tab))
             .capture_action(cx.listener(Self::on_enter))
             .capture_action(cx.listener(Self::on_escape))
+            .on_key_down(cx.listener(Self::on_vim_escape))
             // Files dropped on the composer: images go with the message.
             .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_target))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {

@@ -488,3 +488,31 @@ fn a_closed_panel_leaves_the_sessions_workers_alone(cx: &mut TestAppContext) {
         cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
     });
 }
+
+/// With the Vim keymap, Escape leaves insert mode first. Escape in normal
+/// mode then writes to Arko again, as the strip and the chip say.
+#[gpui_kit::test]
+fn with_vim_escape_in_normal_mode_writes_to_arko_again(cx: &mut TestAppContext) {
+    use crate::tests::{act, open};
+
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    cx.update(|cx| {
+        crate::prefs::update(cx, |prefs| prefs.input.keymap = crate::prefs::Keymap::Vim)
+    });
+    let (window, workspace) = open(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let target = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).target().cloned());
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_target(Some("r1".into()), window, cx);
+            view.focus_composer(window, cx);
+        })
+    });
+    act(cx, window, |window, cx| window.press("i", cx));
+    act(cx, window, |window, cx| window.input("Check the tests", cx));
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert_eq!(target(cx).as_deref(), Some("r1"), "out of insert mode");
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert_eq!(target(cx), None);
+}
