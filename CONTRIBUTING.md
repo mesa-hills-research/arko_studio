@@ -1,86 +1,91 @@
 # Contributing to Arko Studio
 
+Follow the [build instructions](README.md#build-and-install) to clone Arko and arko_framework
+beside this repository and install the platform dependencies.
+
+## Tests
+
+```sh
+cargo test --locked
+cargo clippy --all-targets --locked -- --deny warnings
+cargo fmt --check
+```
+
+Interaction tests drive windows on GPUI's test platform by element ID, with `TestWindowExt`
+from GPUI Kit. Elements a test looks up opt in with `.test_support()`, called before
+`.track_focus()`. Tests use `FakeBackend` for session fixtures or Arko's engine with local mock
+provider servers.
+
+Changes in behavior should include a test.
+
+### Screenshots
+
+On Linux, `tests/screenshots.rs` renders windows headlessly with Mesa's software Vulkan driver
+(lavapipe, from `mesa-vulkan-drivers` on Ubuntu). It compares the result with PNG goldens in
+`tests/screenshots`. `tests/fonts.rs` checks font loading and rendering.
+
+A mismatch writes the actual image and a diff to `tests/screenshots/failures`. After an
+intentional visual change, inspect those images, then update the goldens.
+
+```sh
+UPDATE_GOLDENS=1 cargo test --locked --test screenshots
+```
+
+Look at the updated images in light and dark themes. The commit body should name the goldens
+that changed and explain why.
+
 ## Building against a local GPUI Kit
 
-`Cargo.toml` takes GPUI Kit from GitHub at a fixed commit, and the GPUI fork through
-`[patch.crates-io]`. To try a change to the kit before it's pushed, point Cargo at your checkout
-in `.cargo/config.toml`, which git ignores:
+`Cargo.toml` pins GPUI Kit to a Git commit and selects the matching GPUI fork through
+`[patch.crates-io]`. To try a change in a local kit checkout, add this override to the ignored
+`.cargo/config.toml`.
 
 ```toml
 [patch."https://github.com/mesa-hills-research/gpui_kit"]
 gpui-kit = { path = "../gpui_kit/crates/kit" }
 ```
 
-The checkout has to build against the same GPUI commit as `Cargo.toml`. Once the kit change is
-pushed, move the `rev` in `Cargo.toml` to it (both entries, the dependency and the
-dev-dependency) and delete the override.
+The kit checkout must use the same GPUI commit as the app. When updating the published kit
+revision, change both `gpui-kit` entries in `Cargo.toml`, the GPUI patches and the screenshot
+harness revision to match the kit, then regenerate `Cargo.lock` without the local override.
 
-## Tests
-
-```sh
-cargo test
-cargo clippy --all-targets -- --deny warnings
-cargo fmt --check
-```
-
-The interaction tests in `src/tests.rs` open windows on GPUI's test platform and drive them by
-element id, with `TestWindowExt` from GPUI Kit. An element a test looks up opts in with
-`.test_support()`, called before `.track_focus()`. The tests run on a fake backend, `FakeBackend`
-in `src/backend.rs`, with a fixed set of sessions.
-
-Every change in behaviour comes with a test.
-
-### Screenshots
-
-On Linux, `tests/screenshots.rs` renders whole windows headlessly with Mesa's software Vulkan
-driver (lavapipe, `mesa-vulkan-drivers` on Ubuntu) in Work Sans and JetBrains Mono, and compares
-them with the PNG goldens in `tests/screenshots`. On a mismatch, the actual image and a diff go to
-`tests/screenshots/failures`. After a change that is meant to look different, check those images,
-then write the new goldens:
-
-```sh
-UPDATE_GOLDENS=1 cargo test --test screenshots
-```
-
-A commit that changes goldens says so in a `Goldens:` paragraph, with what changed in them.
-
-## How the source is laid out
+## Source layout
 
 | Path | What it holds |
 |---|---|
-| `src/main.rs` | Logging and startup |
-| `src/lib.rs` | What startup loads, and `init`, which sets up the app's globals |
-| `src/backend.rs` | `Backend`, the app's boundary with Arko's sessions, and `FakeBackend` |
-| `src/workspace.rs` | A window: its panes for each width, sheets, resizing, and the actions that act on the window |
-| `src/sidebar.rs` | The sessions list: grouping, filtering, keyboard use, renaming, deleting |
-| `src/session_view.rs` | The main column: the transcript and the composer |
-| `src/settings_page.rs` | Settings, shown in the main column |
-| `src/theme_picker.rs` | The theme lists in Settings, with previews |
-| `src/appearance.rs` | Themes, fonts, zoom and motion, applied from the settings |
-| `src/prefs.rs` | `studio.json`: the settings and their saving |
-| `src/fonts.rs` | Bundled fonts and the font files a user adds |
-| `src/menus.rs` | Actions, key bindings and the menus |
-| `src/chrome.rs`, `src/title_bar.rs` | Window options, closing, and the title bar |
-| `src/paths.rs` | Arko's folder, the logs folder |
-| `themes/` | The bundled color themes, built into the binary |
-| `packaging/linux/` | The desktop entry and icon for Linux |
-| `assets/`, `build.rs` | The app icon, embedded in Windows builds |
+| `src/main.rs`, `src/lib.rs` | Logging, startup and app globals |
+| `src/backend.rs`, `src/backend/` | Session storage, credentials and defaults |
+| `src/live.rs` | Running sessions and engine events |
+| `src/workspace.rs` | Window panes, sheets, resizing and actions |
+| `src/sidebar.rs` | Session grouping, filtering, renaming and deleting |
+| `src/session_view.rs`, `src/composer.rs` | Session controls, message input and attachments |
+| `src/transcript/` | Transcript rows, selection, navigation and find |
+| `src/status_bar.rs`, `src/workers_panel.rs` | Session figures and worker transcripts |
+| `src/settings_page.rs`, `src/settings_page/` | Settings pages and fields |
+| `src/theme_picker.rs`, `src/appearance.rs` | Themes, previews, fonts, zoom and motion |
+| `src/prefs.rs`, `src/drafts.rs` | Saved preferences and message drafts |
+| `src/commands.rs`, `src/menus.rs` | Commands, keyboard shortcuts and menus |
+| `src/paths.rs` | Data and log folders |
+| `themes/` | Color themes bundled into the binary |
+| `packaging/linux/` | The desktop entry and icon |
+| `assets/`, `build.rs` | The app icon and Windows resources |
 
-## The window on each platform
+## Platform windows
 
-- **macOS:** the content fills the window under a transparent title bar, with the traffic lights
-  in the app's bar. The menus are in the system menu bar. Closing the last window leaves the app
-  running, and clicking the Dock icon opens a new window.
-- **Windows:** the app draws the title bar with its menus and the window buttons. Windows still
-  handles dragging, snapping, snap layouts on the maximize button and Alt+F4. Release builds
-  start without a console.
-- **Linux:** the app draws its own frame, title bar, menus and window buttons, with a shadow and
-  resize edges when the window floats.
+On macOS, the content fills the window under a transparent title bar, with the traffic lights in
+the app's bar. Menus are in the system menu bar. Closing the last window leaves the app running,
+and clicking the Dock icon opens a window.
 
-Buttons and menus in the title bar sit inside `title_bar_item`, which keeps a click on them from
+On Windows, the app draws the title bar, menus and window buttons. Windows handles dragging,
+snapping, snap layouts on the maximize button and Alt+F4. Release builds start without a console.
+
+On Linux, the app draws its frame, title bar, menus and window buttons, with a shadow and resize
+edges when the window floats.
+
+Buttons and menus in the title bar sit inside `title_bar_item`, which keeps clicks on them from
 starting a window drag.
 
 ## Commit messages
 
-A subject names the area and says what changes, as a sentence: `sidebar: Enter opens the first
-match of the filter`. The body explains what changes for the user and why.
+Use an area followed by a sentence in the subject, such as `sidebar: Enter opens the first match
+of the filter`. Explain what changes for the user and why in the body.

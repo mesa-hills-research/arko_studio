@@ -1,72 +1,70 @@
 # Arko Studio
 
-Arko Studio is a desktop app for [Arko](https://github.com/mesa-hills-research/arko), the
-general-purpose agent, on macOS, Windows and Linux. It works with the same saved sessions as Arko in
-the terminal, in a native window built in Rust on [GPUI](https://www.gpui.rs) and
+Arko Studio is a desktop app for [Arko](https://github.com/mesa-hills-research/arko), an AI agent
+harness. It shares sessions with Arko in the terminal and runs on macOS, Windows and Linux.
+The native interface is written in Rust with [GPUI](https://www.gpui.rs) and
 [GPUI Kit](https://github.com/mesa-hills-research/gpui_kit).
 
-- A sidebar of sessions, chats first and then by folder, with a filter, renaming and deleting, all
-  of it from the keyboard too
-- Layouts for wide, half-screen and narrow windows, where the sidebar and the workers panel slide
-  in over the session
-- 41 color themes in a light and a dark choice that follow the system, with previews as you move
-  through the list
-- Your own interface and code fonts, font files you add, zoom, and motion that follows the system
-  or your choice
-- Your own themes in GPUI Kit's format, shared with Arko
+![Arko Studio showing a conversation and tool calls in a dark theme](tests/screenshots/transcript-wide-dark.png)
 
-## Status
+- Chat with a model, or work in a folder with tools and background workers.
+- Read streamed replies, Markdown, highlighted code, diffs and images in one transcript.
+- Find, edit, regenerate, branch and export conversations, with keyboard shortcuts and a command
+  palette.
+- See context use, costs and cache expiry, and share a session through its web page.
+- Choose light and dark themes, fonts, input keys, spell checking and word suggestions.
 
-Arko Studio is early in its development. The window, the sidebar and Settings work, on a set of
-sample sessions. Opening real sessions, the transcript and the composer come next, once Arko's
-engine is a library. Until then, menu items that need the engine say so when you choose them.
+## Build and install
 
-## Building
+Install a current stable [Rust toolchain](https://rustup.rs). The app's minimum Rust version is
+1.89. Platform build tools are also needed.
 
-Arko Studio needs Rust 1.89 or later and the tools GPUI builds with: Xcode on macOS, the Visual
-Studio C++ build tools on Windows, and on Linux a C compiler with the fontconfig, Wayland,
-xkbcommon and X11 development packages (`libfontconfig-dev libwayland-dev libxkbcommon-x11-dev
-libx11-xcb-dev` on Ubuntu).
+- On macOS, install Xcode and its command-line tools. With Xcode 26, install the Metal toolchain
+  using `xcodebuild -downloadComponent MetalToolchain` if it is missing.
+- On Windows, install the Visual Studio C++ build tools and use Rust's MSVC toolchain.
+- On Debian or Ubuntu, install the compiler, development libraries and Vulkan driver below.
+  Other Linux distributions have equivalent packages.
 
 ```sh
+sudo apt install build-essential pkg-config cmake libfontconfig-dev libwayland-dev \
+  libxkbcommon-x11-dev libx11-xcb-dev libvulkan1 mesa-vulkan-drivers
+```
+
+Clone all three repositories into the same parent directory. Arko Studio depends on `../arko`,
+and Arko depends on crates in `../arko_framework`. Cargo fetches the pinned GPUI Kit and GPUI
+commits from GitHub.
+
+```sh
+git clone https://github.com/mesa-hills-research/arko_framework.git
+git clone https://github.com/mesa-hills-research/arko.git
 git clone https://github.com/mesa-hills-research/arko_studio.git
 cd arko_studio
-cargo run --release
+cargo build --release --locked
 ```
 
-The binary is `arko-studio`. On Linux, install it with its desktop entry and icon so launchers and
-window lists show its name and icon:
+The executable is `target/release/arko-studio` (`arko-studio.exe` on Windows). On Linux,
+[install the desktop entry and icon](packaging/linux/README.md) to add it to your launcher.
 
-```sh
-install -Dm755 target/release/arko-studio ~/.local/bin/arko-studio
-install -Dm644 packaging/linux/com.mesahillsresearch.ArkoStudio.desktop ~/.local/share/applications/com.mesahillsresearch.ArkoStudio.desktop
-install -Dm644 packaging/linux/com.mesahillsresearch.ArkoStudio.png ~/.local/share/icons/hicolor/256x256/apps/com.mesahillsresearch.ArkoStudio.png
-```
+## Start a session
 
-## Where it keeps things
+Open the app and choose **New session**. The chip below the message field selects Chat or Agent
+and the model. Agent mode asks for a folder to work in. Add credentials in **Settings › Models &
+accounts**, or use an existing ChatGPT or Claude Code login. Type a message and press Enter to
+send it. **Settings › Input** changes the send key.
 
-Arko Studio shares Arko's folder: `ARKO_HOME` when it's set, otherwise `arko` in the platform's
-data folder (`~/.local/share/arko` on Linux, `~/Library/Application Support/arko` on macOS and
-`%LOCALAPPDATA%\arko` on Windows).
+The sidebar lists saved sessions. Click a session's title to open **Session info**, or use
+**Help › Keyboard Shortcuts** to find an action's keys.
 
-| Path | What it holds |
-|---|---|
-| `studio.json` | Arko Studio's settings, and the window's and sidebar's sizes |
-| `themes/` | Your own color themes, which Arko's terminal view lists too |
-| `fonts/` | Font files added in Settings |
+## More
 
-Release builds write a log, `arko-studio.log`, to `com.mesahillsresearch.ArkoStudio` in the
-platform's log folder: `~/.local/state` on Linux, `~/Library/Logs` on macOS and `%LOCALAPPDATA%` on
-Windows. Help > Open Logs Folder opens it.
-
-## Contributing
-
-[CONTRIBUTING.md](CONTRIBUTING.md) covers building against a local GPUI Kit, the tests and how the
-source is laid out.
+- [Configuration and data](docs/configuration.md) covers shared sessions, preferences and logs.
+- [Themes](themes/README.md) explains how to add a color scheme.
+- [Contributing](CONTRIBUTING.md) covers tests and the source layout.
+- [Arko](https://github.com/mesa-hills-research/arko) documents the engine, providers and commands.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT), at your option.
+Licensed under either the [Apache License, Version 2.0](LICENSE-APACHE) or the
+[MIT License](LICENSE-MIT), at your option.
 
-The bundled fonts, color themes and icons keep their own licenses, listed in [NOTICE](NOTICE).
+Bundled fonts, color themes and icons keep their own licenses, listed in [NOTICE](NOTICE).
