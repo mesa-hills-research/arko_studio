@@ -218,8 +218,15 @@ fn scrolling_a_3000_item_transcript() {
     app.update_window(empty, |_, window, _| window.remove_window())
         .unwrap();
     let feed = long_feed(500);
-    let items = feed.subscribe().0.items.len();
+    // What subscribing costs: the history copied under the feed's lock (the
+    // view does it on a background thread).
+    let start = Instant::now();
+    let items = feed.subscribe_batched().0.items.len();
+    let copied = start.elapsed();
     let (window, view, opened) = open(&mut app, &feed);
+    // The history comes with the next frame.
+    app.run_until_parked();
+    let shown = frame(&mut app, window);
     let ready = app.update(|cx| view.read(cx).row_count());
     // The older entries are made ready a chunk a frame.
     let mut loading = Vec::new();
@@ -233,8 +240,10 @@ fn scrolling_a_3000_item_transcript() {
     }
     let rows = app.update(|cx| view.read(cx).row_count());
     println!(
-        "{items} items: the view made in {:.1} ms with {ready} rows ready, then {rows} rows in {} frames",
+        "{items} items: the history copied in {:.1} ms off the UI thread; the view made in {:.1} ms, the history shown in a {:.1} ms frame with {ready} rows ready, then {rows} rows in {} frames",
+        copied.as_secs_f64() * 1000.,
         opened.as_secs_f64() * 1000.,
+        shown.as_secs_f64() * 1000.,
         loading.len(),
     );
     report("  frames while the older entries are made ready", &loading);

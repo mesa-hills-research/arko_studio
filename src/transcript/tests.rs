@@ -391,14 +391,21 @@ fn a_long_transcript_shows_its_end_first_and_the_rest_a_chunk_a_frame(cx: &mut T
         })
         .unwrap();
     let rows = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).row_count());
-    // The latest 200 at once (and a hundred more with each frame drawn
-    // since: opening the window drew one).
+    // The history comes off the UI thread, with the next frame: then the
+    // latest 200 at once (and a hundred more with each frame drawn since).
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| window.render_frame(cx))
+        .unwrap();
     let first = rows(cx);
     assert!((200..450).contains(&first), "{first}");
     assert_eq!((first - 200) % 100, 0);
     cx.update_window(window, |_, window, cx| window.render_frame(cx))
         .unwrap();
-    assert_eq!(rows(cx), first + 100, "a hundred more each frame");
+    assert_eq!(
+        rows(cx),
+        (first + 100).min(450),
+        "a hundred more each frame"
+    );
     settle(cx, window);
     assert_eq!(rows(cx), 450);
     // The reader stayed at the latest message all along.
@@ -932,4 +939,50 @@ fn a_keystroke_beside_the_transcript_does_not_draw_it(cx: &mut TestAppContext) {
     feed.user("More", Source::App, Delivery::Turn);
     draw(cx);
     assert!(cx.read(|cx| transcript.read(cx).render_count()) > before);
+}
+
+/// Subscribing copies the session's history under the feed's lock: the
+/// view takes it on a background thread and shows it with the next frame.
+/// A row opened before then (as a window opening a call does) opens once
+/// its entry comes.
+#[gpui_kit::test]
+fn the_history_comes_off_the_ui_thread_and_rows_opened_before_stay_open(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Read the notes.", Source::App, Delivery::Turn);
+    let id = call(
+        &feed,
+        "main",
+        "read_file",
+        &[("path", Value::from("notes.md"))],
+    );
+    result(&feed, "main", id, "read_file", "Some notes.");
+    let call_item = item_ids(&feed)
+        .into_iter()
+        .find(|(_, kind)| *kind == Kind::Call)
+        .unwrap()
+        .0;
+    let opened = feed.clone();
+    let (window, view) = cx
+        .update(|cx| {
+            gpui_kit::open_window(options(800., 600.), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut view = TranscriptView::new(&opened, AgentFilter::Main, window, cx);
+                    // Made with nothing yet: the history comes later.
+                    assert!(view.model.entries().is_empty());
+                    view.set_expanded(call_item, true, cx);
+                    view
+                })
+            })
+        })
+        .unwrap();
+    settle(cx, window);
+    cx.read(|cx| {
+        let view = view.read(cx);
+        assert_eq!(view.model.entries().len(), 2);
+        assert_eq!(
+            view.ui.get(&call_item).and_then(|ui| ui.expanded),
+            Some(true)
+        );
+    });
 }

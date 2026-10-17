@@ -142,6 +142,9 @@ pub struct TranscriptView {
     model: Model,
     inbox: inbox::Inbox,
     ui: HashMap<u64, EntryUi>,
+    /// Whether the reader opened or closed an entry that isn't made ready
+    /// yet, by its item.
+    chosen: HashMap<u64, bool>,
     rows: Vec<Row>,
     scroller: Entity<MessageScrollerState>,
     focus_handle: FocusHandle,
@@ -180,7 +183,7 @@ impl TranscriptView {
     /// The transcript of `feed`'s session, as `filter` says whose.
     pub fn new(feed: &Feed, filter: AgentFilter, _: &mut Window, cx: &mut Context<Self>) -> Self {
         warm_up_languages(cx);
-        let (snapshot, inbox) = inbox::Inbox::subscribe(feed, cx);
+        let inbox = inbox::Inbox::subscribe(feed, cx);
         let settings = Settings::of(prefs::get(cx));
         let observe_prefs = cx.observe_global::<prefs::PrefsStore>(|this, cx| {
             let settings = Settings::of(prefs::get(cx));
@@ -195,10 +198,11 @@ impl TranscriptView {
                 cx.notify();
             }
         });
-        let mut this = Self {
+        let this = Self {
             model: Model::new(filter),
             inbox,
             ui: HashMap::new(),
+            chosen: HashMap::new(),
             rows: Vec::new(),
             scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
             focus_handle: cx.focus_handle(),
@@ -215,9 +219,7 @@ impl TranscriptView {
             renders: 0,
             _prefs: observe_prefs,
         };
-        let mut changes = Changes::default();
-        this.model.load(snapshot, &mut changes);
-        this.follow(changes, cx);
+        // The history so far comes with the next frame.
         this
     }
 
@@ -258,6 +260,11 @@ impl TranscriptView {
     /// parameters and output, a thinking's text, a group of calls. (Find
     /// opens the row it lands on.)
     pub fn set_expanded(&mut self, item: u64, open: bool, cx: &mut Context<Self>) {
+        // An entry not made ready yet opens or closes as it is.
+        if !self.ui.contains_key(&item) {
+            self.chosen.insert(item, open);
+            return;
+        }
         let current = self.ui.get(&item).and_then(|ui| ui.expanded);
         let default = self
             .model
@@ -306,10 +313,13 @@ impl TranscriptView {
     /// Applies what came from the feed since the last frame.
     pub fn apply_pending(&mut self, cx: &mut Context<Self>) {
         let pending = self.inbox.take();
-        if pending.updates.is_empty() && pending.activity.is_none() {
+        if pending.snapshot.is_none() && pending.updates.is_empty() && pending.activity.is_none() {
             return;
         }
         let mut changes = Changes::default();
+        if let Some(snapshot) = pending.snapshot {
+            self.model.load(snapshot, &mut changes);
+        }
         for update in pending.updates {
             self.model.apply(update, &mut changes);
         }
@@ -325,7 +335,15 @@ impl TranscriptView {
             return;
         }
         if changes.reset {
-            self.ui.clear();
+            // What the reader chose to open stays open (also before the
+            // history came: a row opened from elsewhere as the view opens).
+            for (id, ui) in self.ui.drain() {
+                if let Some(expanded) = ui.expanded {
+                    self.chosen.insert(id, expanded);
+                }
+            }
+            let model = &self.model;
+            self.chosen.retain(|id, _| model.entry(*id).is_some());
             self.hovered = None;
             let ids: Vec<u64> = self.model.entries().iter().map(|e| e.item.id).collect();
             let start = ids.len().saturating_sub(FIRST_ENTRIES);
@@ -392,7 +410,14 @@ impl TranscriptView {
             Kind::Text | Kind::Reply | Kind::Message | Kind::Question | Kind::Thinking
         );
         let text = entry.item.text.clone();
-        let mut ui = EntryUi::default();
+        let mut ui = EntryUi {
+            expanded: self.chosen.remove(&id),
+            ..EntryUi::default()
+        };
+        if ui.expanded == Some(true) {
+            ui.diff =
+                row::edit_diff(&entry.item).map(|diff| cx.new(|cx| DiffViewState::new(diff, cx)));
+        }
         if has_doc {
             ui.doc = Some(self.new_doc(id, text, cx));
         }
