@@ -17,7 +17,7 @@ use gpui_kit::{
 use super::{PanelRow, PanelSource, WorkersPanel, WorkersPanelEvent};
 use crate::Startup;
 use crate::backend::FakeBackend;
-use crate::workers::{ENDED_SHOWS_FOR_MS, WorkerTimes};
+use crate::workers::ENDED_SHOWS_FOR_MS;
 
 struct Panel {
     window: AnyWindowHandle,
@@ -70,13 +70,8 @@ fn feed() -> Feed {
 
 fn source(feed: &Feed, key: gpui_kit::EntityId) -> PanelSource {
     let workers: Vec<WorkerSummary> = feed.subscribe().0.workers;
-    let mut times = WorkerTimes::default();
-    for worker in &workers {
-        times.observe(worker);
-    }
     PanelSource {
         workers,
-        times,
         agents: Vec::new(),
         feed: Some(feed.clone()),
         images: None,

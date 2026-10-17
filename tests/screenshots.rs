@@ -642,7 +642,6 @@ fn mention_list_dark() {
 /// and one finished long ago in the collapsed "Finished" group.
 fn workers_window(mode: ThemeMode) -> Screenshot {
     use arko::remote::{AgentStatus, WorkerState, WorkerSummary};
-    use arko_studio::workers::WorkerTimes;
     use arko_studio::workers_panel::{PanelSource, WorkersPanel};
     use gpui_kit::AppContext as _;
 
@@ -665,6 +664,8 @@ fn workers_window(mode: ThemeMode) -> Screenshot {
             tool_calls: calls,
             started_at: started,
             ended_at: ended,
+            ran_ms: started.zip(ended).map_or(0, |(s, e)| (e - s).max(0) as u64),
+            running_since: started.filter(|_| state == WorkerState::Running),
             last: last.map(Into::into),
             report: None,
         };
@@ -726,10 +727,6 @@ fn workers_window(mode: ThemeMode) -> Screenshot {
             None,
         ),
     ];
-    let mut times = WorkerTimes::default();
-    for worker in &workers {
-        times.observe(worker);
-    }
     let agent = |id: &str, tokens, window| AgentStatus {
         id: id.into(),
         context_tokens: Some(tokens),
@@ -739,7 +736,6 @@ fn workers_window(mode: ThemeMode) -> Screenshot {
     };
     let source = PanelSource {
         workers,
-        times,
         agents: vec![
             agent("r1", 88_000, 200_000),
             agent("r2", 152_000, 1_000_000),

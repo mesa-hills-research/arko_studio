@@ -31,7 +31,7 @@ use gpui_kit::*;
 use crate::live::LiveSession;
 use crate::menus;
 use crate::transcript::{AgentFilter, TranscriptView};
-use crate::workers::{self, Section, WorkerTimes};
+use crate::workers::{self, Section};
 
 /// The key contexts of the list and of a worker's view.
 pub const LIST_CONTEXT: &str = "WorkersList";
@@ -75,7 +75,6 @@ pub enum WorkersPanelEvent {
 #[derive(Clone, Default)]
 pub struct PanelSource {
     pub workers: Vec<WorkerSummary>,
-    pub times: WorkerTimes,
     pub agents: Vec<AgentStatus>,
     pub feed: Option<Feed>,
     pub images: Option<arko::images::Images>,
@@ -88,7 +87,6 @@ impl PanelSource {
     fn of(session: &LiveSession, id: EntityId) -> Self {
         Self {
             workers: session.workers().to_vec(),
-            times: session.worker_times().clone(),
             agents: session.reading().agents.clone(),
             feed: session.feed().cloned(),
             images: session.link().map(|link| link.images.clone()),
@@ -232,7 +230,6 @@ impl WorkersPanel {
             self.row_views.clear();
         }
         let same = source.workers == self.source.workers
-            && source.times == self.source.times
             && source.agents == self.source.agents
             && source.key == self.source.key;
         self.source = source;
@@ -647,7 +644,7 @@ impl WorkersPanel {
             } else {
                 worker.title.clone()
             },
-            elapsed: workers::run_time_ms(worker, &self.source.times, now)
+            elapsed: workers::run_time_ms(worker, now)
                 .map(workers::elapsed_label),
             last: workers::last_line(worker)
                 .unwrap_or_else(|| workers::state_label(worker.state).to_string()),
@@ -726,7 +723,7 @@ impl WorkersPanel {
         let mut facts: Vec<String> = Vec::new();
         if let Some(worker) = self.worker(id) {
             facts.push(workers::state_label(worker.state).to_string());
-            if let Some(total) = workers::run_time_ms(worker, &self.source.times, now) {
+            if let Some(total) = workers::run_time_ms(worker, now) {
                 facts.push(workers::elapsed_label(total));
             }
             facts.push(match worker.tool_calls {

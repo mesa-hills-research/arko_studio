@@ -1545,6 +1545,8 @@ mod tests {
                 tool_calls: 0,
                 started_at: Some(0),
                 ended_at: None,
+                ran_ms: 0,
+                running_since: Some(0),
                 last: None,
                 report: None,
             }),

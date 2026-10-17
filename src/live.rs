@@ -20,7 +20,6 @@ use gpui_kit::*;
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::backend::{Launch, Mode, NewSession, SessionEntry, SessionId, SharedBackend, Start};
-use crate::workers::WorkerTimes;
 
 /// How often at most what a session's engine says reaches the interface:
 /// once a frame.
@@ -298,7 +297,6 @@ pub struct LiveSession {
     activity: Activity,
     workers: Vec<WorkerSummary>,
     /// Each worker's runs, for its time over all of them.
-    worker_times: WorkerTimes,
     unseen: bool,
     /// How many windows show it.
     shown: usize,
@@ -352,7 +350,6 @@ impl LiveSession {
             reading: Arc::default(),
             activity: Activity::default(),
             workers: Vec::new(),
-            worker_times: WorkerTimes::default(),
             unseen: false,
             shown: 0,
             queued: Vec::new(),
@@ -657,7 +654,6 @@ impl LiveSession {
             }
         }
         for worker in drained.workers {
-            self.worker_times.observe(&worker);
             match self.workers.iter_mut().find(|known| known.id == worker.id) {
                 Some(known) => *known = worker,
                 None => self.workers.push(worker),
@@ -927,11 +923,6 @@ impl LiveSession {
 
     pub fn workers(&self) -> &[WorkerSummary] {
         &self.workers
-    }
-
-    /// The time each worker worked, over all its runs.
-    pub fn worker_times(&self) -> &WorkerTimes {
-        &self.worker_times
     }
 
     /// Whether the conversation has started: the main agent keeps its

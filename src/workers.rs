@@ -1,13 +1,4 @@
-//! What the app knows of a session's workers beyond the engine's latest
-//! summary of each: the time each worked over all its runs, where a list
-//! shows it, and how its figures read.
-//!
-//! The engine's summary gives the latest run's start and end only, so the
-//! total of a worker that was continued is the sum of the runs this app saw.
-//! A worker from before the session opened (a resumed session) counts from
-//! when it was restored.
-
-use std::collections::{BTreeMap, HashMap};
+//! Where a list shows each worker and how its figures read.
 
 use arko::remote::{WorkerState, WorkerSummary};
 
@@ -15,53 +6,11 @@ use arko::remote::{WorkerState, WorkerSummary};
 /// "Finished" group at the bottom of the list.
 pub const ENDED_SHOWS_FOR_MS: i64 = 5 * 60 * 1000;
 
-/// Each worker's runs, as the app saw them.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct WorkerTimes {
-    /// By worker: when each run started (Unix milliseconds), and when it
-    /// ended (`None` while it runs).
-    runs: HashMap<String, BTreeMap<i64, Option<i64>>>,
-}
-
-impl WorkerTimes {
-    /// Takes in a worker's latest summary.
-    pub fn observe(&mut self, worker: &WorkerSummary) {
-        let Some(started) = worker.started_at else {
-            return;
-        };
-        let ended = if worker.state.is_active() {
-            None
-        } else {
-            Some(worker.ended_at.unwrap_or(started))
-        };
-        let runs = self.runs.entry(worker.id.clone()).or_default();
-        // A run seen still running, whose end never came (the summaries in
-        // between were merged), ended when the next one started.
-        for (_, end) in runs.range_mut(..started) {
-            if end.is_none() {
-                *end = Some(started);
-            }
-        }
-        runs.insert(started, ended);
-    }
-
-    /// How long the worker `id` has worked, in milliseconds, over all its
-    /// runs: the one going on counts up to `now`. `None` before it started.
-    pub fn total_ms(&self, id: &str, now: i64) -> Option<i64> {
-        let runs = self.runs.get(id).filter(|runs| !runs.is_empty())?;
-        Some(
-            runs.iter()
-                .map(|(start, end)| (end.unwrap_or(now) - start).max(0))
-                .sum(),
-        )
-    }
-}
-
-/// How long `worker` has worked at `now`, in milliseconds, over all its
-/// runs: what the lists and the worker's view show. `None` before it
-/// started.
-pub fn run_time_ms(worker: &WorkerSummary, times: &WorkerTimes, now: i64) -> Option<i64> {
-    times.total_ms(&worker.id, now)
+/// How long the worker has worked, including runs before the session
+/// reopened. A worker waiting for its first run has no time yet.
+pub fn run_time_ms(worker: &WorkerSummary, now: i64) -> Option<i64> {
+    (worker.state != WorkerState::Queued || worker.ran_ms > 0)
+        .then(|| i64::try_from(worker.run_time_ms(now)).unwrap_or(i64::MAX))
 }
 
 /// Where a list of workers shows a worker.
@@ -170,41 +119,28 @@ mod tests {
             tool_calls: 3,
             started_at: started,
             ended_at: ended,
+            ran_ms: started.zip(ended).map_or(0, |(s, e)| (e - s).max(0) as u64),
+            running_since: started.filter(|_| state == WorkerState::Running),
             last: None,
             report: None,
         }
     }
 
     #[test]
-    fn a_continued_workers_time_adds_up_its_runs() {
-        let mut times = WorkerTimes::default();
-        times.observe(&worker("r1", WorkerState::Queued, None, None));
-        assert_eq!(times.total_ms("r1", 5_000), None);
-        times.observe(&worker("r1", WorkerState::Running, Some(1_000), None));
-        assert_eq!(times.total_ms("r1", 4_000), Some(3_000));
-        times.observe(&worker(
-            "r1",
-            WorkerState::Finished,
-            Some(1_000),
-            Some(61_000),
-        ));
-        assert_eq!(times.total_ms("r1", 100_000), Some(60_000));
-        // Its lead continues it later: the time goes on from its total.
-        times.observe(&worker("r1", WorkerState::Running, Some(200_000), None));
-        assert_eq!(times.total_ms("r1", 230_000), Some(90_000));
-        // The same summary again changes nothing.
-        times.observe(&worker("r1", WorkerState::Running, Some(200_000), None));
-        assert_eq!(times.total_ms("r1", 230_000), Some(90_000));
-        assert_eq!(times.total_ms("r2", 230_000), None);
-    }
-
-    #[test]
-    fn a_run_whose_end_was_missed_ends_where_the_next_begins() {
-        let mut times = WorkerTimes::default();
-        times.observe(&worker("r1", WorkerState::Running, Some(0), None));
-        // Its "finished" and the next start came in one merged batch.
-        times.observe(&worker("r1", WorkerState::Running, Some(10_000), None));
-        assert_eq!(times.total_ms("r1", 15_000), Some(15_000));
+    fn times_include_runs_before_the_session_reopened() {
+        let queued = worker("r1", WorkerState::Queued, None, None);
+        assert_eq!(run_time_ms(&queued, 5_000), None);
+        let mut restored = worker("r1", WorkerState::Finished, None, None);
+        restored.ran_ms = 60_000;
+        assert_eq!(run_time_ms(&restored, 100_000), Some(60_000));
+        restored.state = WorkerState::Running;
+        restored.running_since = Some(200_000);
+        assert_eq!(run_time_ms(&restored, 230_000), Some(90_000));
+        // The clock may move backwards, but the earlier runs remain.
+        assert_eq!(run_time_ms(&restored, 190_000), Some(60_000));
+        restored.state = WorkerState::Queued;
+        restored.running_since = None;
+        assert_eq!(run_time_ms(&restored, 300_000), Some(60_000));
     }
 
     #[test]
