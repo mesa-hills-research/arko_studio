@@ -849,7 +849,7 @@ impl WorkersPanel {
                                 .ghost()
                                 .xsmall()
                                 .label("Stop")
-                                .tooltip("Stop this worker (its lead can resume it)")
+                                .tooltip("Stop this worker (Arko can resume it)")
                                 .on_click(
                                     cx.listener(move |this, _, _, cx| this.stop(&stop_id, cx)),
                                 ),

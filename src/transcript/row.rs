@@ -514,9 +514,16 @@ impl TranscriptView {
         let changes = self.is_editable(id).then(|| {
             let busy = self.busy_reason();
             // The engine branches from after the first message at the
-            // earliest: before it there is nothing to copy.
-            let first = item.message_index == Some(0);
-            (busy, first, view.downgrade(), view.downgrade())
+            // earliest: before it there is nothing to copy, or after a
+            // handover only the summary, which a branch doesn't take.
+            let no_branch = (item.message_index == Some(0)).then(|| {
+                if self.model.branch_loses_context(id) {
+                    "A branch from here would start without the summary of the work before it"
+                } else {
+                    "Nothing comes before the first message to branch from"
+                }
+            });
+            (busy, no_branch, view.downgrade(), view.downgrade())
         });
         // A turn that ended with no reply (stopped, or failed after its
         // retries): its message offers to go again.
@@ -558,7 +565,7 @@ impl TranscriptView {
                             .tab_stop(shown)
                     };
                     h_flex()
-                        .when_some(changes, |this, (busy, first, edit_view, branch_view)| {
+                        .when_some(changes, |this, (busy, no_branch, edit_view, branch_view)| {
                             this.child(
                                 action("edit-message", Lucide::SquarePen)
                                     .disabled(busy.is_some())
@@ -574,14 +581,10 @@ impl TranscriptView {
                             )
                             .child(
                                 action("branch-message", Lucide::GitBranch)
-                                    .disabled(busy.is_some() || first)
-                                    .tooltip(match busy {
-                                        Some(busy) => busy,
-                                        None if first => "Branch from a later message",
-                                        None => {
-                                            "Branch: a new session with the conversation before this message"
-                                        }
-                                    })
+                                    .disabled(busy.is_some() || no_branch.is_some())
+                                    .tooltip(busy.or(no_branch).unwrap_or(
+                                        "Branch: a new session with the conversation before this message",
+                                    ))
                                     .accessibility_label("Branch")
                                     .on_click(move |_, _, cx| {
                                         branch_view
