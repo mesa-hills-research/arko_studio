@@ -1316,6 +1316,16 @@ mod tests {
     }
 
     #[test]
+    fn web_command_replies_preserve_both_origin_prefixes() {
+        for origin in ["Changed from the web page.", "From the web page."] {
+            let text = format!("{origin} The main agent keeps text replies on for this session.");
+            let model = model(vec![item(1, Kind::Notice, "main", &text)]);
+            assert_eq!(keys(&model, View::Full), [RowKey::Notice(1)]);
+            assert_eq!(model.entry(1).unwrap().item.text, text);
+        }
+    }
+
+    #[test]
     fn old_and_new_refresh_messages_are_one_quiet_row() {
         for text in [
             arko::remote::REFRESH_MESSAGE,
