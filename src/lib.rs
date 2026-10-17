@@ -14,10 +14,13 @@ pub mod chrome;
 pub mod commands;
 pub mod composer;
 pub mod drafts;
+pub mod editing;
+pub mod export;
 pub mod fonts;
 pub mod history;
 pub mod layout;
 pub mod live;
+pub mod mentions;
 pub mod menus;
 pub mod palette;
 pub mod paths;
@@ -32,6 +35,7 @@ pub mod status_bar;
 pub mod theme_picker;
 pub mod title_bar;
 pub mod transcript;
+pub mod workers;
 pub mod workers_panel;
 pub mod workspace;
 pub mod writing;
@@ -116,12 +120,16 @@ impl Startup {
         }
     }
 
-    /// An app on `backend` with the default preferences, kept in memory,
-    /// the bundled themes and no fonts of its own, for `/home/ada`: for
-    /// tests, which then read the same on every machine.
+    /// An app on `backend` with the default preferences but motion off,
+    /// kept in memory, the bundled themes and no fonts of its own, for
+    /// `/home/ada`: for tests, which then read the same on every machine.
     pub fn for_tests(backend: Arc<dyn Backend>) -> Self {
+        // Animations play in real time. With motion off they rest on their
+        // first frame, so a test clicks where the last frame drew a dialog.
+        let mut prefs = Prefs::default();
+        prefs.appearance.motion = prefs::Motion::Off;
         Self {
-            prefs: PrefsStore::new(Prefs::default(), None),
+            prefs: PrefsStore::new(prefs, None),
             themes: Themes::Ready(appearance::parse_bundled()),
             bundled_fonts: Vec::new(),
             added_fonts: Vec::new(),

@@ -20,6 +20,7 @@ use gpui_kit::*;
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::backend::{Launch, Mode, NewSession, SessionEntry, SessionId, SharedBackend, Start};
+use crate::workers::WorkerTimes;
 
 /// How often at most what a session's engine says reaches the interface:
 /// once a frame.
@@ -293,6 +294,8 @@ pub struct LiveSession {
     reading: Arc<Reading>,
     activity: Activity,
     workers: Vec<WorkerSummary>,
+    /// Each worker's runs, for its time over all of them.
+    worker_times: WorkerTimes,
     unseen: bool,
     /// How many windows show it.
     shown: usize,
@@ -333,6 +336,7 @@ impl LiveSession {
             reading: Arc::default(),
             activity: Activity::default(),
             workers: Vec::new(),
+            worker_times: WorkerTimes::default(),
             unseen: false,
             shown: 0,
             queued: Vec::new(),
@@ -614,6 +618,7 @@ impl LiveSession {
             }
         }
         for worker in drained.workers {
+            self.worker_times.observe(&worker);
             match self.workers.iter_mut().find(|known| known.id == worker.id) {
                 Some(known) => *known = worker,
                 None => self.workers.push(worker),
@@ -790,6 +795,11 @@ impl LiveSession {
         &self.workers
     }
 
+    /// The time each worker worked, over all its runs.
+    pub fn worker_times(&self) -> &WorkerTimes {
+        &self.worker_times
+    }
+
     /// Whether the conversation has started: the main agent keeps its
     /// model from then on.
     pub fn has_started(&self) -> bool {
@@ -858,6 +868,69 @@ impl LiveSession {
                     .ok();
             }
         }));
+    }
+
+    /// Asks the engine `request`, made with its reply's sender. The task
+    /// gives the answer, or why there is none.
+    fn request<T: Send + 'static>(
+        &self,
+        request: impl FnOnce(oneshot::Sender<Result<T, String>>) -> arko::Request,
+        cx: &App,
+    ) -> Task<Result<T, String>> {
+        let Some(link) = &self.link else {
+            return Task::ready(Err("The session isn’t open.".to_string()));
+        };
+        let (reply, answer) = oneshot::channel();
+        if link.requests.send(request(reply)).is_err() {
+            return Task::ready(Err("The session has closed.".to_string()));
+        }
+        cx.background_spawn(async move {
+            answer
+                .await
+                .unwrap_or_else(|_| Err("The session has closed.".to_string()))
+        })
+    }
+
+    /// Cuts the conversation back to just before the user's message `item`
+    /// and sends `message` in its place (between turns, no worker running).
+    pub fn edit(&self, item: u64, message: arko::Message, cx: &App) -> Task<Result<(), String>> {
+        self.request(
+            |reply| arko::Request::Edit {
+                item,
+                message,
+                reply,
+            },
+            cx,
+        )
+    }
+
+    /// Sends the user's latest message again, for a new reply.
+    pub fn regenerate(&self, cx: &App) -> Task<Result<(), String>> {
+        self.request(|reply| arko::Request::Regenerate { reply }, cx)
+    }
+
+    /// Copies the conversation up to the user's message `before` (left
+    /// out), or all of it, into a new session: the task gives its id.
+    pub fn branch(&self, before: Option<u64>, cx: &App) -> Task<Result<SessionId, String>> {
+        let branching = self.request(|reply| arko::Request::Branch { before, reply }, cx);
+        cx.background_spawn(async move { branching.await.map(SessionId) })
+    }
+
+    /// The entry a branch of this session lists with until the list is read
+    /// again: the same mode, folder and model, as the engine copies them.
+    pub fn branch_entry(&self, id: SessionId) -> SessionEntry {
+        SessionEntry {
+            id,
+            title: format!("Branch of {}", self.title),
+            mode: self.mode,
+            workspace: self.workspace.clone(),
+            model: self.reading.models.main.clone(),
+            created: std::time::SystemTime::now(),
+            last_active: None,
+            conversations: Vec::new(),
+            holder: None,
+            had_workers: false,
+        }
     }
 
     /// How many tasks drain its feeds (tests): one feed's worth.

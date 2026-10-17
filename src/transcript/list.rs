@@ -94,6 +94,50 @@ impl RowList {
         self.state.viewport_bounds().size.height
     }
 
+    /// The rows on screen, wholly or in part, top to bottom, as last laid
+    /// out.
+    pub fn on_screen(&self) -> Vec<usize> {
+        let viewport = self.state.viewport_bounds();
+        let mut rows = Vec::new();
+        let mut ix = self.state.logical_scroll_top().item_ix;
+        while let Some(bounds) = self.state.bounds_for_item(ix) {
+            if bounds.top() >= viewport.bottom() {
+                break;
+            }
+            if bounds.bottom() > viewport.top() {
+                rows.push(ix);
+            }
+            ix += 1;
+        }
+        rows
+    }
+
+    /// Whether row `ix` is wholly on screen, as last laid out.
+    pub fn shows_whole(&self, ix: usize) -> bool {
+        let viewport = self.state.viewport_bounds();
+        self.state.bounds_for_item(ix).is_some_and(|bounds| {
+            bounds.top() >= viewport.top() && bounds.bottom() <= viewport.bottom()
+        })
+    }
+
+    /// Scrolls row `ix` into view, by as little as it takes: to the top of
+    /// the screen when it is above, its bottom to the screen's bottom when
+    /// it is below (its top, if it's taller than the screen).
+    pub fn reveal(&self, ix: usize) {
+        let viewport = self.state.viewport_bounds();
+        match self.state.bounds_for_item(ix) {
+            Some(bounds) if bounds.top() < viewport.top() => {
+                self.state.scroll_by(bounds.top() - viewport.top())
+            }
+            Some(bounds) if bounds.bottom() > viewport.bottom() => {
+                let down = (bounds.bottom() - viewport.bottom()).min(bounds.top() - viewport.top());
+                self.state.scroll_by(down);
+            }
+            Some(_) => {}
+            None => self.scroll_to(ix, px(0.)),
+        }
+    }
+
     /// Stops following the latest row where the screen is now, until the
     /// reader comes back to the bottom: a row the reader opens grows
     /// downward instead of pushing itself up off the screen.

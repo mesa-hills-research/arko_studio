@@ -1,0 +1,356 @@
+//! The workers panel in a window of its own, on a real feed's workers.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use arko::remote::{Feed, WorkerChange, WorkerSummary};
+use arko_agents::AgentEvent;
+use arko_workflows::WorkflowEvent;
+use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::{
+    AnyWindowHandle, AppContext as _, Bounds, Entity, Point, SharedString, TestAppContext,
+    WindowBounds, WindowOptions, px, size,
+};
+
+use super::{PanelRow, PanelSource, WorkersPanel, WorkersPanelEvent};
+use crate::Startup;
+use crate::backend::FakeBackend;
+use crate::workers::{ENDED_SHOWS_FOR_MS, WorkerTimes};
+
+struct Panel {
+    window: AnyWindowHandle,
+    panel: Entity<WorkersPanel>,
+    feed: Feed,
+    events: Rc<RefCell<Vec<WorkersPanelEvent>>>,
+    /// The panel's clock, in Unix milliseconds.
+    now: Rc<RefCell<i64>>,
+}
+
+/// A worker's text, as the workflow streams it.
+fn say(feed: &Feed, agent: &str, text: &str) {
+    feed.event(
+        &WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: agent.into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event: AgentEvent::AssistantResponseChunk(text.into()),
+        },
+        Some(agent),
+    );
+}
+
+/// A feed whose turn started r1 (running), r2 (which finished) and r3
+/// (which failed).
+fn feed() -> Feed {
+    let feed = Feed::new("main");
+    feed.turn_started();
+    feed.worker("r1", "Fix the flaky parser test", WorkerChange::Started);
+    say(&feed, "r1", "Reading the parser first.");
+    feed.worker("r2", "Write the changelog", WorkerChange::Started);
+    feed.worker(
+        "r2",
+        "Write the changelog",
+        WorkerChange::Finished {
+            report: "Wrote the changelog for 0.4.",
+        },
+    );
+    feed.worker("r3", "Profile the renderer", WorkerChange::Started);
+    feed.worker(
+        "r3",
+        "Profile the renderer",
+        WorkerChange::Failed {
+            error: "the model failed",
+        },
+    );
+    feed
+}
+
+fn source(feed: &Feed, key: gpui_kit::EntityId) -> PanelSource {
+    let workers: Vec<WorkerSummary> = feed.subscribe().0.workers;
+    let mut times = WorkerTimes::default();
+    for worker in &workers {
+        times.observe(worker);
+    }
+    PanelSource {
+        workers,
+        times,
+        agents: Vec::new(),
+        feed: Some(feed.clone()),
+        images: None,
+        key: Some((key, 0)),
+    }
+}
+
+fn open(cx: &mut TestAppContext) -> Panel {
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    let feed = feed();
+    let now = Rc::new(RefCell::new(chrono::Utc::now().timestamp_millis() + 1_000));
+    let events: Rc<RefCell<Vec<WorkersPanelEvent>>> = Rc::default();
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: Point::default(),
+            size: size(px(400.), px(700.)),
+        })),
+        ..Default::default()
+    };
+    let (window, panel) = cx
+        .update(|cx| {
+            let feed = feed.clone();
+            let now = now.clone();
+            gpui_kit::open_window(options, cx, move |window, cx| {
+                cx.new(|cx| {
+                    let mut panel = WorkersPanel::new(window, cx);
+                    let key = cx.entity_id();
+                    panel.set_source(source(&feed, key), cx);
+                    panel.set_clock(move || *now.borrow(), cx);
+                    panel
+                })
+            })
+        })
+        .unwrap();
+    cx.update(|cx| {
+        let events = events.clone();
+        cx.subscribe(&panel, move |_, event: &WorkersPanelEvent, _| {
+            events.borrow_mut().push(event.clone())
+        })
+        .detach();
+    });
+    cx.update_window(window, |_, window, _| window.activate_window())
+        .unwrap();
+    let panel = Panel {
+        window,
+        panel,
+        feed,
+        events,
+        now,
+    };
+    panel.draw(cx);
+    panel
+}
+
+impl Panel {
+    fn draw(&self, cx: &mut TestAppContext) {
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update_window(self.window, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+        }
+        cx.run_until_parked();
+    }
+
+    fn rows(&self, cx: &mut TestAppContext) -> Vec<PanelRow> {
+        let now = *self.now.borrow();
+        cx.read(|cx| self.panel.read(cx).rows(now))
+    }
+
+    fn press(&self, cx: &mut TestAppContext, key: &str) {
+        cx.update_window(self.window, |_, window, cx| window.press(key, cx))
+            .unwrap();
+        self.draw(cx);
+    }
+
+    fn click(&self, cx: &mut TestAppContext, id: impl Into<gpui_kit::ElementId>) {
+        let id = id.into();
+        cx.update_window(self.window, |_, window, cx| window.click(id, cx))
+            .unwrap();
+        self.draw(cx);
+    }
+
+    fn open_worker(&self, cx: &mut TestAppContext) -> Option<SharedString> {
+        cx.read(|cx| self.panel.read(cx).open_worker().cloned())
+    }
+}
+
+fn worker(id: &str) -> PanelRow {
+    PanelRow::Worker(id.into())
+}
+
+#[gpui_kit::test]
+fn ended_workers_stay_five_minutes_then_fold_into_finished(cx: &mut TestAppContext) {
+    let panel = open(cx);
+    assert_eq!(
+        panel.rows(cx),
+        [worker("r1"), worker("r2"), worker("r3")],
+        "the ended ones stay for now"
+    );
+    cx.update_window(panel.window, |_, window, _| {
+        assert!(window.try_find(("worker", 0usize)).is_some());
+        assert!(window.try_find("workers-finished").is_none());
+    })
+    .unwrap();
+    // Five minutes on, they move to the collapsed group at the bottom.
+    *panel.now.borrow_mut() += ENDED_SHOWS_FOR_MS;
+    panel.draw(cx);
+    assert_eq!(panel.rows(cx), [worker("r1"), PanelRow::Finished(2)]);
+    // Opening the group lists them, still there to read.
+    panel.click(cx, "workers-finished");
+    let rows = panel.rows(cx);
+    assert_eq!(rows[..2], [worker("r1"), PanelRow::Finished(2)]);
+    assert_eq!(rows.len(), 4);
+    assert!(rows.contains(&worker("r2")) && rows.contains(&worker("r3")));
+}
+
+#[gpui_kit::test]
+fn the_keyboard_moves_through_the_list_and_opens_a_worker(cx: &mut TestAppContext) {
+    let panel = open(cx);
+    let entity = panel.panel.clone();
+    cx.update_window(panel.window, |_, window, cx| {
+        entity.update(cx, |panel, cx| panel.focus(window, cx))
+    })
+    .unwrap();
+    panel.draw(cx);
+    // The focus lands on the first worker. ↓ and Tab move on, ↑ back.
+    panel.press(cx, "down");
+    panel.press(cx, "tab");
+    panel.press(cx, "up");
+    let cursor = cx.read(|cx| panel.panel.read(cx).cursor.clone());
+    assert_eq!(cursor, Some(worker("r2")));
+    panel.press(cx, "enter");
+    assert_eq!(panel.open_worker(cx).as_deref(), Some("r2"));
+    // Its own transcript shows, ending with its report.
+    let transcript = cx.read(|cx| panel.panel.read(cx).transcript().cloned());
+    assert!(transcript.is_some());
+    // Esc goes back to the list, and from the list to the composer.
+    panel.press(cx, "escape");
+    assert_eq!(panel.open_worker(cx), None);
+    panel.press(cx, "escape");
+    assert_eq!(
+        panel.events.borrow().last(),
+        Some(&WorkersPanelEvent::Leave)
+    );
+}
+
+#[gpui_kit::test]
+fn a_workers_view_has_the_composer_write_to_it_and_stops_it(cx: &mut TestAppContext) {
+    let panel = open(cx);
+    panel.click(cx, ("worker", 0usize));
+    assert_eq!(panel.open_worker(cx).as_deref(), Some("r1"));
+    // Opening it with a click gives it the focus: the composer writes to r1.
+    assert!(
+        panel
+            .events
+            .borrow()
+            .contains(&WorkersPanelEvent::Target(Some("r1".into())))
+    );
+    let facts = cx.read(|cx| panel.panel.read(cx).facts("r1", *panel.now.borrow()));
+    assert!(facts.starts_with("Running · 1 s · 0 calls"), "{facts}");
+    panel.click(cx, "worker-stop");
+    panel.click(cx, "worker-message");
+    {
+        let events = panel.events.borrow();
+        assert!(events.contains(&WorkersPanelEvent::Command("/stop-workers r1".into())));
+        assert_eq!(
+            events.last(),
+            Some(&WorkersPanelEvent::Message("r1".into()))
+        );
+    }
+    // Back to the list: the composer writes to the main agent again.
+    panel.click(cx, "workers-back");
+    assert_eq!(
+        panel.events.borrow().last(),
+        Some(&WorkersPanelEvent::Target(None))
+    );
+    // A finished worker has no Stop.
+    panel.click(cx, ("worker", 1usize));
+    cx.update_window(panel.window, |_, window, _| {
+        assert!(window.try_find("worker-stop").is_none());
+        assert!(window.try_find("worker-message").is_some());
+    })
+    .unwrap();
+    let _ = &panel.feed;
+}
+
+#[gpui_kit::test]
+fn stop_all_workers_is_in_the_headers_menu(cx: &mut TestAppContext) {
+    let panel = open(cx);
+    panel.click(cx, "workers-menu");
+    cx.update_window(panel.window, |_, window, cx| {
+        window.within("popup-menu").click(0usize, cx)
+    })
+    .unwrap();
+    panel.draw(cx);
+    assert!(
+        panel
+            .events
+            .borrow()
+            .contains(&WorkersPanelEvent::Command("/stop-workers".into()))
+    );
+}
+
+/// On the real engine: while the composer writes to a worker, what is sent
+/// goes as `/message r1 …`, and Esc goes back to the main agent.
+#[gpui_kit::test]
+fn the_composer_writes_to_the_worker_the_panel_shows(cx: &mut TestAppContext) {
+    use crate::backend::ArkoBackend;
+    use crate::testing::{Mock, reply, wait_until};
+    use crate::tests::{act, open};
+
+    let mock = Mock::start(|_, _| reply("a1", "Done."));
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("arko");
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    cx.executor().allow_parking();
+    let backend = Arc::new(ArkoBackend::new(&root).with_configure(mock.configure()));
+    cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    let (window, workspace) = open(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    cx.update(|cx| view.update(cx, |view, cx| view.set_draft_folder(work.clone(), cx)));
+    let feed_has = |cx: &mut TestAppContext, text: &str| {
+        cx.read(|cx| {
+            view.read(cx)
+                .live_session()
+                .and_then(|session| session.read(cx).feed().cloned())
+                .is_some_and(|feed| {
+                    feed.subscribe()
+                        .0
+                        .items
+                        .iter()
+                        .any(|item| item.text.contains(text))
+                })
+        })
+    };
+    act(cx, window, |window, cx| window.input("Hello.", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    wait_until(cx, "the reply", |cx| feed_has(cx, "Done."));
+
+    // The panel shows r1 with the focus: the composer writes to it.
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_target(Some("r1".into()), window, cx)
+        })
+    });
+    assert_eq!(cx.read(|cx| view.read(cx).placeholder(cx)), "Message r1");
+    act(cx, window, |window, _| {
+        assert!(window.try_find("composer-target").is_some());
+    });
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx));
+        window.input("Check the tests too.", cx)
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    // This session has no worker r1: the engine says the message didn't
+    // reach it, so it went as `/message r1 …`.
+    wait_until(cx, "the message to r1", |cx| {
+        feed_has(cx, "didn't reach r1")
+    });
+    assert!(
+        !mock.was_sent("Check the tests too."),
+        "not to the main agent"
+    );
+    // Esc in the composer writes to the main agent again.
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert_eq!(cx.read(|cx| view.read(cx).target().cloned()), None);
+    assert_eq!(cx.read(|cx| view.read(cx).placeholder(cx)), "Message Arko");
+    act(cx, window, |window, cx| {
+        let sessions = crate::live::LiveSessions::all(cx);
+        crate::quit::close(sessions, false, window, cx);
+    });
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
+    });
+}

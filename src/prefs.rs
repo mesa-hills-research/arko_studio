@@ -54,6 +54,9 @@ pub struct SessionPrefs {
     /// Switching an open session between Chat and Agent asks first, with
     /// what it costs.
     pub ask_before_switch: bool,
+    /// Editing or regenerating a message asks first, saying how many
+    /// messages after it go.
+    pub ask_before_edit: bool,
 }
 
 impl Default for SessionPrefs {
@@ -61,6 +64,7 @@ impl Default for SessionPrefs {
         Self {
             ask_before_quit: true,
             ask_before_switch: true,
+            ask_before_edit: true,
         }
     }
 }

@@ -582,3 +582,48 @@ fn image_files_are_known_by_their_extension() {
     assert_eq!(image_format(Path::new("notes.md")), None);
     assert_eq!(image_format(Path::new("Makefile")), None);
 }
+
+#[gpui_kit::test]
+fn at_mentions_a_file_of_the_agents_folder_as_a_token(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    let root = folder.path().to_path_buf();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/parse.rs"), "").unwrap();
+    std::fs::write(root.join("src/main.rs"), "").unwrap();
+    std::fs::write(root.join("README.md"), "").unwrap();
+    let (_, window, workspace) = start(cx);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    cx.update(|cx| view.update(cx, |view, cx| view.set_draft_folder(root.clone(), cx)));
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    act(cx, window, |window, cx| window.input("Look at @par", cx));
+    // The folder is listed off the UI thread, then the menu offers it.
+    crate::testing::wait_until(cx, "the files", |cx| {
+        cx.read(|cx| composer.read(cx).menu().is_some())
+    });
+    let (kind, first) = cx.read(|cx| {
+        let menu = composer.read(cx).menu().unwrap();
+        (menu.kind, menu.items[0].insert.clone())
+    });
+    assert_eq!(kind, crate::composer::MenuKind::Mention);
+    assert_eq!(first, "src/parse.rs");
+    act(cx, window, |window, cx| window.press("enter", cx));
+    // A token showing the file's name, which sends as its path.
+    let (tokens, text) = cx.read(|cx| {
+        let composer = composer.read(cx);
+        (
+            composer.textarea().read(cx).tokens().len(),
+            composer.expanded_text(cx),
+        )
+    });
+    assert_eq!(tokens, 1);
+    assert_eq!(text, "Look at src/parse.rs ");
+    // A chat mentions nothing.
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.set_draft_mode(crate::backend::Mode::Chat, cx)
+        })
+    });
+    act(cx, window, |window, cx| window.input("and @mai", cx));
+    cx.run_until_parked();
+    assert!(cx.read(|cx| composer.read(cx).menu().is_none()));
+}

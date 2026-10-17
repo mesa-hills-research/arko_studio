@@ -337,3 +337,176 @@ fn transcript_narrow_dark() {
         &transcript_window(ThemeMode::Dark, 600.),
     );
 }
+
+/// The workers panel with workers in each state: two running (one past an
+/// hour), one waiting, one that finished and one that failed a moment ago,
+/// and one finished long ago in the collapsed "Finished" group.
+fn workers_window(mode: ThemeMode) -> Screenshot {
+    use arko::remote::{AgentStatus, WorkerState, WorkerSummary};
+    use arko_studio::workers::WorkerTimes;
+    use arko_studio::workers_panel::{PanelSource, WorkersPanel};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    const NOW: i64 = 1_760_000_000_000;
+    const MINUTE: i64 = 60_000;
+    let worker =
+        |id: &str, title: &str, state, calls, started, ended, last: Option<&str>| WorkerSummary {
+            id: id.into(),
+            title: title.into(),
+            state,
+            tool_calls: calls,
+            started_at: started,
+            ended_at: ended,
+            last: last.map(Into::into),
+            report: None,
+        };
+    let mut finished = worker(
+        "r4",
+        "Update the changelog",
+        WorkerState::Finished,
+        7,
+        Some(NOW - 6 * MINUTE),
+        Some(NOW - 2 * MINUTE),
+        None,
+    );
+    finished.report = Some("Wrote the changelog for 0.4.".into());
+    let workers = vec![
+        worker(
+            "r1",
+            "Fix the flaky parser test",
+            WorkerState::Running,
+            18,
+            Some(NOW - 4 * MINUTE - 12_000),
+            None,
+            Some("$ cargo test -p parse"),
+        ),
+        worker(
+            "r2",
+            "Profile the renderer under load",
+            WorkerState::Running,
+            142,
+            Some(NOW - 65 * MINUTE),
+            None,
+            Some("read src/render/scene.rs:120-180"),
+        ),
+        worker(
+            "r3",
+            "Write the migration guide",
+            WorkerState::Queued,
+            0,
+            None,
+            None,
+            None,
+        ),
+        finished,
+        worker(
+            "r5",
+            "Bisect the slowdown",
+            WorkerState::Failed,
+            3,
+            Some(NOW - 3 * MINUTE),
+            Some(NOW - MINUTE),
+            Some("the model failed: overloaded"),
+        ),
+        worker(
+            "r6",
+            "Rename the config keys",
+            WorkerState::Finished,
+            11,
+            Some(NOW - 40 * MINUTE),
+            Some(NOW - 20 * MINUTE),
+            None,
+        ),
+    ];
+    let mut times = WorkerTimes::default();
+    for worker in &workers {
+        times.observe(worker);
+    }
+    let agent = |id: &str, tokens, window| AgentStatus {
+        id: id.into(),
+        context_tokens: Some(tokens),
+        context_window: Some(window),
+        handover_at: None,
+        compacts: false,
+    };
+    let source = PanelSource {
+        workers,
+        times,
+        agents: vec![
+            agent("r1", 88_000, 200_000),
+            agent("r2", 152_000, 1_000_000),
+        ],
+        feed: None,
+        images: None,
+        key: None,
+    };
+    let window = app
+        .open_window_with(size(px(352.), px(420.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut panel = WorkersPanel::new(window, cx);
+                    panel.set_source(source, cx);
+                    panel.set_clock(|| NOW, cx);
+                    panel
+                })
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn workers_light() {
+    goldens().assert("workers-light", &workers_window(ThemeMode::Light));
+}
+
+#[test]
+fn workers_dark() {
+    goldens().assert("workers-dark", &workers_window(ThemeMode::Dark));
+}
+
+/// The dialog that asks before an edit in an agent session removes the
+/// messages after the message, over a new window.
+fn edit_dialog_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::editing::{self, Change};
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(900.), px(560.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, _)| window)
+        })
+        .unwrap();
+    app.update_window(window, |_, window, cx| {
+        editing::confirm(Change::Edit, 3, true, window, cx, |_, _, _| {})
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn edit_dialog_light() {
+    goldens().assert("edit-dialog-light", &edit_dialog_window(ThemeMode::Light));
+}
+
+#[test]
+fn edit_dialog_dark() {
+    goldens().assert("edit-dialog-dark", &edit_dialog_window(ThemeMode::Dark));
+}

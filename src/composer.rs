@@ -47,6 +47,13 @@ pub const PASTE_TOKEN_BYTES: usize = 2048;
 /// The most rows the slash menu lists at once.
 const MENU_ROWS: usize = 8;
 
+/// The most files an @-mention offers.
+const MENTION_ROWS: usize = 50;
+
+/// How long a folder's files listed for @-mentions are used before they
+/// are listed again (the agent may make files meanwhile).
+const FILES_FRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The screen commands the app runs itself. The rest of them belong to the
 /// terminal's full-screen view.
 const APP_COMMANDS: &[&str] = &["/view", "/settings"];
@@ -117,6 +124,11 @@ pub enum ComposerEvent {
     Submit(Outgoing),
     /// Esc while a turn runs: stop it.
     Stop,
+    /// Esc while the composer is in a mode Esc ends (editing a message,
+    /// writing to a worker).
+    Cancel,
+    /// ↑ in the empty composer while the latest message can be edited.
+    EditLast,
     /// The text changed.
     Edited,
 }
@@ -178,14 +190,24 @@ pub struct MenuItem {
     pub more: bool,
 }
 
+/// What a menu above the field offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuKind {
+    /// Arko's commands, and their words.
+    Command,
+    /// The session folder's files, for an @-mention.
+    Mention,
+}
+
 /// The slash menu: arko's commands while the first word is typed, then the
-/// words an argument may be.
+/// words an argument may be. Also the files an "@" mentions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlashMenu {
     pub items: Vec<MenuItem>,
     pub selected: usize,
     /// The bytes a choice replaces.
     pub range: Range<usize>,
+    pub kind: MenuKind,
     /// What is typed is a whole command already (`/cost`, `/stop-workers
     /// r1` with r10 running too): Enter sends it as it is.
     pub complete: bool,
@@ -220,6 +242,7 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
             items,
             selected: 0,
             range: 0..text.len(),
+            kind: MenuKind::Command,
             complete,
         });
     };
@@ -251,9 +274,13 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
         items,
         selected: 0,
         range: start..text.len(),
+        kind: MenuKind::Command,
         complete,
     })
 }
+
+/// Whether ↑ in the empty composer edits the latest message.
+type EditsLast = Rc<dyn Fn(&App) -> bool>;
 
 /// The composer's field.
 pub struct Composer {
@@ -276,6 +303,17 @@ pub struct Composer {
     reading: Arc<Reading>,
     /// A turn runs: Esc stops it.
     working: bool,
+    /// Esc ends a mode first ([`ComposerEvent::Cancel`]).
+    cancellable: bool,
+    /// Whether ↑ in the empty composer edits the latest message now.
+    edits_last: Option<EditsLast>,
+    /// The folder whose files "@" mentions: an agent session's.
+    mention_folder: Option<PathBuf>,
+    /// The files listed there, and when.
+    files: Option<(PathBuf, std::time::Instant, Arc<Vec<String>>)>,
+    listing: Option<Task<()>>,
+    /// Mentions inserted so far, for their tokens' ids.
+    mentioned: u32,
     /// The model the images go to, which says which it can't take.
     image_model: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -320,6 +358,12 @@ impl Composer {
             dismissed: None,
             reading: Arc::default(),
             working: false,
+            cancellable: false,
+            edits_last: None,
+            mention_folder: None,
+            files: None,
+            listing: None,
+            mentioned: 0,
             image_model: None,
             _subscriptions: subscriptions,
         }
@@ -412,6 +456,27 @@ impl Composer {
         self.agent = agent;
     }
 
+    /// Lets "@" mention the files of `folder` (an agent session's), or
+    /// nothing (`None`: a chat).
+    pub fn set_mention_folder(&mut self, folder: Option<PathBuf>) {
+        if self.mention_folder != folder {
+            self.mention_folder = folder;
+            self.files = None;
+            self.listing = None;
+        }
+    }
+
+    /// Whether Esc ends a mode of the composer before anything else.
+    pub fn set_cancellable(&mut self, cancellable: bool) {
+        self.cancellable = cancellable;
+    }
+
+    /// Tells whether ↑ in the empty composer edits the latest message (else
+    /// it walks the input history), asked as the key comes.
+    pub fn set_edits_last(&mut self, edits_last: impl Fn(&App) -> bool + 'static) {
+        self.edits_last = Some(Rc::new(edits_last));
+    }
+
     /// Gives the model the images go to: the main agent's.
     pub fn set_image_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
         if self.image_model != model {
@@ -434,6 +499,13 @@ impl Composer {
     /// The images the message takes along.
     pub fn images(&self) -> &[Attached] {
         &self.images
+    }
+
+    /// Replaces the images the message takes along.
+    pub fn set_images(&mut self, images: Vec<Attached>, cx: &mut Context<Self>) {
+        self.images = images;
+        cx.emit(ComposerEvent::Edited);
+        cx.notify();
     }
 
     /// Adds an image to the message.
@@ -571,7 +643,7 @@ impl Composer {
                         self.walk = None;
                     }
                 }
-                self.update_menu(&text);
+                self.refresh_menu(&text, cx);
                 cx.emit(ComposerEvent::Edited);
                 cx.notify();
             }
@@ -610,12 +682,106 @@ impl Composer {
         });
     }
 
+    /// The menu for the text as it stands: a command's, else the files an
+    /// "@" before the caret mentions.
+    fn refresh_menu(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.update_menu(text);
+        if self.menu.is_none() && self.dismissed.as_deref() != Some(text) {
+            self.menu = self.mention_menu(text, cx);
+        }
+    }
+
+    /// The files an "@" before the caret mentions, best first, once the
+    /// session's folder is listed (in the background, the first time).
+    fn mention_menu(&mut self, text: &str, cx: &mut Context<Self>) -> Option<SlashMenu> {
+        let folder = self.mention_folder.clone()?;
+        let caret = self.textarea.read(cx).selected_range();
+        if !caret.is_empty() {
+            return None;
+        }
+        let (range, typed) = crate::mentions::typed(text, caret.end)?;
+        let listed = self
+            .files
+            .as_ref()
+            .filter(|(listed, _, _)| *listed == folder)
+            .map(|(_, at, files)| (at.elapsed() > FILES_FRESH, files.clone()));
+        let files = match listed {
+            Some((stale, files)) => {
+                // Shown while the folder is listed again.
+                if stale {
+                    self.list_files(folder, cx);
+                }
+                files
+            }
+            None => {
+                self.list_files(folder, cx);
+                return None;
+            }
+        };
+        let items: Vec<MenuItem> = crate::mentions::rank(&files, typed, MENTION_ROWS)
+            .into_iter()
+            .map(|ranked| {
+                let (folder, name) = match ranked.path.rsplit_once('/') {
+                    Some((folder, name)) => (folder.to_string(), name.to_string()),
+                    None => (String::new(), ranked.path.clone()),
+                };
+                MenuItem {
+                    insert: ranked.path,
+                    label: name.into(),
+                    hint: SharedString::default(),
+                    about: folder.into(),
+                    more: true,
+                }
+            })
+            .collect();
+        (!items.is_empty()).then_some(SlashMenu {
+            items,
+            selected: 0,
+            range,
+            kind: MenuKind::Mention,
+            // Enter takes the file, never sends.
+            complete: false,
+        })
+    }
+
+    /// Lists the files of `folder` off the UI thread, then shows the menu
+    /// for what is typed.
+    fn list_files(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        if self.listing.is_some() {
+            return;
+        }
+        let listing = cx.background_spawn({
+            let folder = folder.clone();
+            async move { crate::mentions::list(&folder) }
+        });
+        self.listing = Some(cx.spawn(async move |this, cx| {
+            let files = listing.await;
+            this.update(cx, |this, cx| {
+                this.listing = None;
+                if this.mention_folder.as_ref() != Some(&folder) {
+                    return;
+                }
+                this.files = Some((folder, std::time::Instant::now(), Arc::new(files)));
+                let text = this.text(cx);
+                if this.menu.is_none() && this.dismissed.as_deref() != Some(text.as_str()) {
+                    this.menu = this.mention_menu(&text, cx);
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
     /// Puts the menu's selected choice in the field.
     pub fn accept_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(menu) = self.menu.take() else {
             return;
         };
         let item = &menu.items[menu.selected];
+        if menu.kind == MenuKind::Mention {
+            self.insert_mention(menu.range.clone(), item.insert.clone(), window, cx);
+            return;
+        }
         let mut text = self.text(cx);
         let mut insert = item.insert.clone();
         if item.more {
@@ -630,6 +796,33 @@ impl Composer {
         });
         // The words after a command come next.
         self.update_menu(&text);
+        cx.notify();
+    }
+
+    /// Puts the file `path` (relative to the session's folder) in place of
+    /// `range` as a token showing its name, which sends as the path.
+    fn insert_mention(
+        &mut self,
+        range: Range<usize>,
+        path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.mentioned += 1;
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        let token =
+            InlineToken::new(format!("file-{}", self.mentioned), path.clone()).with_label(name);
+        self.textarea.update(cx, |textarea, cx| {
+            match textarea.replace_range_with_token(range.clone(), token, window, cx) {
+                Ok(()) => textarea.insert(" ".to_string(), window, cx),
+                // A token can't go here (an input method is composing): the
+                // path itself.
+                Err(_) => {
+                    textarea.set_selected_range(range, cx);
+                    textarea.replace(format!("{path} "), window, cx);
+                }
+            }
+        });
         cx.notify();
     }
 
@@ -712,6 +905,13 @@ impl Composer {
         if self.menu.is_some() {
             self.move_menu(-1, cx);
             cx.stop_propagation();
+        } else if self.edits_last.as_ref().is_some_and(|edits| edits(cx))
+            && self.walk.is_none()
+            && self.images.is_empty()
+            && self.textarea.read(cx).value().is_empty()
+        {
+            cx.emit(ComposerEvent::EditLast);
+            cx.stop_propagation();
         } else if self.at_edge(true, cx) && self.walk_history(true, window, cx) {
             cx.stop_propagation();
         }
@@ -766,6 +966,11 @@ impl Composer {
         let textarea = self.textarea.read(cx);
         // Vim's Escape is its own, and a suggestion on show closes first.
         let vim = textarea.current_keymap() == Keymap::Vim;
+        if self.cancellable && !vim && textarea.suggestions().is_empty() {
+            cx.emit(ComposerEvent::Cancel);
+            cx.stop_propagation();
+            return;
+        }
         if self.working && !vim && textarea.suggestions().is_empty() {
             cx.emit(ComposerEvent::Stop);
             cx.stop_propagation();

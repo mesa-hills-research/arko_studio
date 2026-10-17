@@ -13,9 +13,11 @@
 //! Mount it with [`TranscriptView::cached`], so that what happens around it
 //! (a keystroke in the composer) doesn't draw it again.
 
+mod find;
 mod inbox;
 mod list;
 mod model;
+mod nav;
 mod row;
 #[cfg(test)]
 mod tests;
@@ -40,8 +42,10 @@ use gpui_kit::*;
 
 use crate::prefs;
 
+pub use find::FindStatus;
 pub use model::AgentFilter;
 use model::{Changes, Layout, Model, Row, RowKey};
+pub use nav::{FocusTranscript, Leave, SelectNext, SelectPrevious, ToggleRow};
 
 /// The key context of the transcript, for its key bindings.
 pub const CONTEXT: &str = "Transcript";
@@ -99,9 +103,17 @@ pub enum TranscriptEvent {
     /// The reader opened a worker's card: show that worker in the workers
     /// panel.
     OpenWorker(SharedString),
-    // TODO: Edit, Regenerate and Branch of a message (by its item), once
-    // the app can edit a conversation. The hover actions of user messages
-    // and replies have room for them.
+    /// Edit the user's message, by its item.
+    Edit(u64),
+    /// Send the user's last message again for a new reply.
+    Regenerate,
+    /// Branch: a new session with the conversation before the user's
+    /// message, by its item.
+    Branch(u64),
+    /// Where the find is now: the find bar shows it.
+    FindStatus(FindStatus),
+    /// Esc on the rows: the keyboard goes back to the composer.
+    Leave,
 }
 
 /// The transcript's copy of the preferences it follows.
@@ -289,6 +301,10 @@ pub struct TranscriptView {
     images: Option<ImageLookup>,
     /// The images read from the store last, ready for the image cache.
     image_copies: Rc<RefCell<ImageCopies>>,
+    /// The find going on (Mod+F).
+    find: Option<find::Find>,
+    /// The row the keyboard is on.
+    cursor: Option<RowKey>,
     renders: usize,
     /// Block views made since the last look for views to let go.
     views_made: usize,
@@ -352,6 +368,8 @@ impl TranscriptView {
             image_cache: LruImageCache::new(IMAGE_BUDGET, cx),
             images: None,
             image_copies: Rc::default(),
+            find: None,
+            cursor: None,
             renders: 0,
             views_made: 0,
             #[cfg(test)]
@@ -393,6 +411,70 @@ impl TranscriptView {
     /// How many times the view has drawn (for tests and measurements).
     pub fn render_count(&self) -> usize {
         self.renders
+    }
+
+    /// The user's latest message that can be edited (↑ in the empty
+    /// composer edits it).
+    pub fn last_message(&self) -> Option<u64> {
+        self.model.last_message()
+    }
+
+    /// The conversation as an export takes it: the main agent's items in
+    /// order and what the user wrote to its workers, without the messages
+    /// that only kept the prompt cache warm and their answers.
+    pub fn export_items(&self) -> Vec<arko::remote::Item> {
+        let entries = self.model.entries();
+        let refreshed: Vec<Option<u64>> = entries
+            .iter()
+            .filter(|entry| model::is_refresh(&entry.item))
+            .map(|entry| entry.item.turn)
+            .collect();
+        entries
+            .iter()
+            .map(|entry| &entry.item)
+            .filter(|item| item.is_main() || item.kind == Kind::User)
+            .filter(|item| {
+                !(item.is_main() && item.turn.is_some() && refreshed.contains(&item.turn))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The reply Regenerate replaces: the main agent's latest, after the
+    /// user's last message.
+    pub fn last_reply(&self) -> Option<u64> {
+        self.model.last_reply()
+    }
+
+    /// Where the user's message `id` is in the conversation.
+    pub fn message_index(&self, id: u64) -> Option<usize> {
+        self.model.entry(id)?.item.message_index
+    }
+
+    /// The text and the images of the user's message `id`.
+    pub fn message(&self, id: u64) -> Option<(String, Vec<arko::images::ImageRef>)> {
+        let item = &self.model.entry(id)?.item;
+        Some((item.text.clone(), item.images.clone()))
+    }
+
+    /// How many messages after the user's message `id` an edit of it
+    /// removes: the user's, and a reply per turn.
+    pub fn messages_after(&self, id: u64) -> usize {
+        self.model.messages_after(id)
+    }
+
+    /// Why the conversation can't be edited, sent again or branched now, if
+    /// it can't.
+    pub fn busy_reason(&self) -> Option<&'static str> {
+        self.model.busy_reason()
+    }
+
+    /// Whether the user's message `id` can be edited (or branched from).
+    pub fn is_editable(&self, id: u64) -> bool {
+        self.model
+            .entry(id)
+            .is_some_and(|entry| Model::is_changeable(&entry.item))
+            && matches!(self.model.filter(), AgentFilter::Main)
     }
 
     /// Opens or closes the details of the feed item `item`: a call's
@@ -489,6 +571,7 @@ impl TranscriptView {
             self.chosen.retain(|id, _| model.entry(*id).is_some());
             self.hovered = None;
             self.hovered_rows.clear();
+            self.cursor = None;
             let ids: Vec<u64> = self.model.entries().iter().map(|e| e.item.id).collect();
             let start = ids.len().saturating_sub(FIRST_ENTRIES);
             for id in &ids[start..] {
@@ -511,6 +594,7 @@ impl TranscriptView {
         }
         self.refresh_rows(cx);
         self.tick_while_running(cx);
+        self.find_changed(cx);
         cx.notify();
     }
 
@@ -565,6 +649,7 @@ impl TranscriptView {
         let observe = cx.observe(&state, move |this, _, cx| {
             if this.sync_blocks(id, cx) {
                 this.refresh_rows(cx);
+                this.find_changed(cx);
                 cx.notify();
             }
         });
@@ -680,16 +765,15 @@ impl TranscriptView {
         let state = doc.state.clone();
         let row = doc.blocks.get_mut(block)?;
         row.drawn = frame;
-        if row.view.is_none() {
-            self.views_made += 1;
+        if let Some(view) = &row.view {
+            return Some(view.clone());
         }
-        Some(
-            row.view
-                .get_or_insert_with(|| {
-                    cx.new(|cx| TextViewState::block_range(&state, block..block + 1, cx))
-                })
-                .clone(),
-        )
+        self.views_made += 1;
+        let view = cx.new(|cx| TextViewState::block_range(&state, block..block + 1, cx));
+        row.view = Some(view.clone());
+        // Drawn for the first time while a find goes on: its matches show.
+        self.highlight_block(id, block, &view, cx);
+        Some(view)
     }
 
     /// Lets go of the views of the blocks drawn longest ago, past
@@ -1030,6 +1114,11 @@ impl TranscriptView {
         cx.emit(TranscriptEvent::OpenWorker(worker));
     }
 
+    /// Asks to edit, send again or branch (a hover action).
+    fn change(&mut self, event: TranscriptEvent, cx: &mut Context<Self>) {
+        cx.emit(event);
+    }
+
     /// The row an entry's first row is at.
     fn row_of(&self, id: u64) -> Option<usize> {
         self.rows.iter().position(|row| row.key.entry() == id)
@@ -1168,9 +1257,12 @@ impl Render for TranscriptView {
         self.animated = self.latest_running();
         let new = self.new_while_away;
         // Reached by Tab, the transcript shows that it has the focus, with a
-        // ring laid over its edge (a border would move the rows).
-        let ring = (self.focus_handle.is_focused(window) && window.last_input_was_keyboard())
-            .then(|| cx.theme().ring);
+        // ring laid over its edge (a border would move the rows). A row the
+        // keyboard is on shows its own ring instead.
+        let ring = (self.focus_handle.is_focused(window)
+            && window.last_input_was_keyboard()
+            && self.cursor_index().is_none())
+        .then(|| cx.theme().ring);
         let view = cx.entity().downgrade();
         let rows = list::render(
             "transcript-rows",
@@ -1180,13 +1272,14 @@ impl Render for TranscriptView {
             window,
             cx,
         );
+        let root = div()
+            .id("transcript")
+            .test_support()
+            .key_context(CONTEXT)
+            .track_focus(&self.focus_handle);
+        let root = Self::on_row_keys(root, cx);
         image_cache(self.image_cache.clone()).size_full().child(
-            div()
-                .id("transcript")
-                .test_support()
-                .key_context(CONTEXT)
-                .track_focus(&self.focus_handle)
-                .relative()
+            root.relative()
                 .size_full()
                 .on_action(cx.listener(Self::copy))
                 .on_action(cx.listener(|this, _: &ScrollPageUp, _, cx| {

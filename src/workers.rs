@@ -1,0 +1,270 @@
+//! What the app knows of a session's workers beyond the engine's latest
+//! summary of each: the time each worked over all its runs, where a list
+//! shows it, and how its figures read.
+//!
+//! The engine's summary gives the latest run's start and end only, so the
+//! total of a worker that was continued is the sum of the runs this app saw.
+//! A worker from before the session opened (a resumed session) counts from
+//! when it was restored.
+
+use std::collections::{BTreeMap, HashMap};
+
+use arko::remote::{WorkerState, WorkerSummary};
+
+/// A worker that ended stays among the others this long, then moves to the
+/// "Finished" group at the bottom of the list.
+pub const ENDED_SHOWS_FOR_MS: i64 = 5 * 60 * 1000;
+
+/// Compact lists of workers (a popover, a summary) show this many rows, and
+/// a "… N more" row for the rest.
+pub const COMPACT_ROWS: usize = 5;
+
+/// Each worker's runs, as the app saw them.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct WorkerTimes {
+    /// By worker: when each run started (Unix milliseconds), and when it
+    /// ended (`None` while it runs).
+    runs: HashMap<String, BTreeMap<i64, Option<i64>>>,
+}
+
+impl WorkerTimes {
+    /// Takes in a worker's latest summary.
+    pub fn observe(&mut self, worker: &WorkerSummary) {
+        let Some(started) = worker.started_at else {
+            return;
+        };
+        let ended = if worker.state.is_active() {
+            None
+        } else {
+            Some(worker.ended_at.unwrap_or(started))
+        };
+        let runs = self.runs.entry(worker.id.clone()).or_default();
+        // A run seen still running, whose end never came (the summaries in
+        // between were merged), ended when the next one started.
+        for (_, end) in runs.range_mut(..started) {
+            if end.is_none() {
+                *end = Some(started);
+            }
+        }
+        runs.insert(started, ended);
+    }
+
+    /// How long the worker `id` has worked, in milliseconds, over all its
+    /// runs: the one going on counts up to `now`. `None` before it started.
+    pub fn total_ms(&self, id: &str, now: i64) -> Option<i64> {
+        let runs = self.runs.get(id).filter(|runs| !runs.is_empty())?;
+        Some(
+            runs.iter()
+                .map(|(start, end)| (end.unwrap_or(now) - start).max(0))
+                .sum(),
+        )
+    }
+}
+
+/// Where a list of workers shows a worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    /// Running or waiting, or ended less than [`ENDED_SHOWS_FOR_MS`] ago.
+    Current,
+    /// Ended a while ago, or before the session opened: in the collapsed
+    /// "Finished" group.
+    Finished,
+}
+
+/// Where `worker` shows at `now`.
+pub fn section(worker: &WorkerSummary, now: i64) -> Section {
+    if worker.state.is_active() {
+        return Section::Current;
+    }
+    // A worker restored with the session has no start: it ended before.
+    match (worker.started_at, worker.ended_at) {
+        (Some(_), Some(ended)) if now - ended < ENDED_SHOWS_FOR_MS => Section::Current,
+        _ => Section::Finished,
+    }
+}
+
+/// When the next worker of `workers` moves to the "Finished" group, after
+/// `now`, if one will.
+pub fn next_move(workers: &[WorkerSummary], now: i64) -> Option<i64> {
+    workers
+        .iter()
+        .filter(|worker| section(worker, now) == Section::Current && !worker.state.is_active())
+        .filter_map(|worker| worker.ended_at)
+        .map(|ended| ended + ENDED_SHOWS_FOR_MS)
+        .min()
+}
+
+/// A worker's time as a list shows it: "12 s", "4 m", "1 h 05 m". The
+/// minutes take two figures once there are hours, so right-aligned times
+/// line up in tabular figures.
+pub fn elapsed_label(ms: i64) -> String {
+    let seconds = ms.max(0) / 1000;
+    match seconds {
+        0..60 => format!("{seconds} s"),
+        60..3600 => format!("{} m", seconds / 60),
+        _ => format!("{} h {:02} m", seconds / 3600, seconds % 3600 / 60),
+    }
+}
+
+/// A context size as the status figures show it: "8.2k", "142k", "1.02M",
+/// "1M".
+pub fn tokens_label(tokens: usize) -> String {
+    match tokens {
+        0..1_000 => tokens.to_string(),
+        // Cut, not rounded: 9,990 reads "9.9k", never "10.0k".
+        1_000..10_000 => format!("{:.1}k", (tokens / 100) as f64 / 10.),
+        10_000..1_000_000 => format!("{}k", tokens / 1_000),
+        _ => {
+            let millions = format!("{:.2}", (tokens / 10_000) as f64 / 100.);
+            format!("{}M", millions.trim_end_matches('0').trim_end_matches('.'))
+        }
+    }
+}
+
+/// The state as a word, for tooltips and the panel's header.
+pub fn state_label(state: WorkerState) -> &'static str {
+    match state {
+        WorkerState::Queued => "Waiting",
+        WorkerState::Running => "Running",
+        WorkerState::Finished => "Finished",
+        WorkerState::Failed => "Failed",
+        WorkerState::Stopped => "Stopped",
+    }
+}
+
+/// The rows a compact list shows of `items`, and how many more there are.
+pub fn compact<T>(items: &[T]) -> (&[T], usize) {
+    let shown = items.len().min(COMPACT_ROWS);
+    (&items[..shown], items.len() - shown)
+}
+
+/// What a worker did last, in a line: its report's first line once it
+/// finished, else its latest call or why it stopped.
+pub fn last_line(worker: &WorkerSummary) -> Option<String> {
+    let report = (worker.state == WorkerState::Finished)
+        .then_some(worker.report.as_deref())
+        .flatten()
+        .and_then(|report| report.lines().find(|line| !line.trim().is_empty()));
+    report
+        .or(worker.last.as_deref())
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn worker(
+        id: &str,
+        state: WorkerState,
+        started: Option<i64>,
+        ended: Option<i64>,
+    ) -> WorkerSummary {
+        WorkerSummary {
+            id: id.into(),
+            title: format!("Task of {id}"),
+            state,
+            tool_calls: 3,
+            started_at: started,
+            ended_at: ended,
+            last: None,
+            report: None,
+        }
+    }
+
+    #[test]
+    fn a_continued_workers_time_adds_up_its_runs() {
+        let mut times = WorkerTimes::default();
+        times.observe(&worker("r1", WorkerState::Queued, None, None));
+        assert_eq!(times.total_ms("r1", 5_000), None);
+        times.observe(&worker("r1", WorkerState::Running, Some(1_000), None));
+        assert_eq!(times.total_ms("r1", 4_000), Some(3_000));
+        times.observe(&worker(
+            "r1",
+            WorkerState::Finished,
+            Some(1_000),
+            Some(61_000),
+        ));
+        assert_eq!(times.total_ms("r1", 100_000), Some(60_000));
+        // Its lead continues it later: the time goes on from its total.
+        times.observe(&worker("r1", WorkerState::Running, Some(200_000), None));
+        assert_eq!(times.total_ms("r1", 230_000), Some(90_000));
+        // The same summary again changes nothing.
+        times.observe(&worker("r1", WorkerState::Running, Some(200_000), None));
+        assert_eq!(times.total_ms("r1", 230_000), Some(90_000));
+        assert_eq!(times.total_ms("r2", 230_000), None);
+    }
+
+    #[test]
+    fn a_run_whose_end_was_missed_ends_where_the_next_begins() {
+        let mut times = WorkerTimes::default();
+        times.observe(&worker("r1", WorkerState::Running, Some(0), None));
+        // Its "finished" and the next start came in one merged batch.
+        times.observe(&worker("r1", WorkerState::Running, Some(10_000), None));
+        assert_eq!(times.total_ms("r1", 15_000), Some(15_000));
+    }
+
+    #[test]
+    fn ended_workers_stay_five_minutes_then_go_to_finished() {
+        let now = 1_000_000;
+        let running = worker("r1", WorkerState::Running, Some(0), None);
+        let just_done = worker("r2", WorkerState::Finished, Some(0), Some(now - 60_000));
+        let long_done = worker(
+            "r3",
+            WorkerState::Failed,
+            Some(0),
+            Some(now - ENDED_SHOWS_FOR_MS),
+        );
+        let restored = worker("r4", WorkerState::Finished, None, Some(now));
+        assert_eq!(section(&running, now), Section::Current);
+        assert_eq!(section(&just_done, now), Section::Current);
+        assert_eq!(section(&long_done, now), Section::Finished);
+        assert_eq!(section(&restored, now), Section::Finished);
+        let all = [running, just_done, long_done, restored];
+        assert_eq!(
+            next_move(&all, now),
+            Some(now - 60_000 + ENDED_SHOWS_FOR_MS)
+        );
+        assert_eq!(next_move(&all[..1], now), None);
+    }
+
+    #[test]
+    fn times_read_short_and_line_up_right_aligned() {
+        assert_eq!(elapsed_label(12_400), "12 s");
+        assert_eq!(elapsed_label(4 * 60_000 + 59_000), "4 m");
+        assert_eq!(elapsed_label(59 * 60_000), "59 m");
+        assert_eq!(elapsed_label(3_600_000 + 5 * 60_000), "1 h 05 m");
+        assert_eq!(elapsed_label(9 * 3_600_000 + 59 * 60_000), "9 h 59 m");
+        assert_eq!(elapsed_label(-5), "0 s");
+        assert_eq!(tokens_label(820), "820");
+        assert_eq!(tokens_label(8_240), "8.2k");
+        assert_eq!(tokens_label(9_990), "9.9k");
+        assert_eq!(tokens_label(88_000), "88k");
+        assert_eq!(tokens_label(1_020_000), "1.02M");
+        assert_eq!(tokens_label(1_000_000), "1M");
+        assert_eq!(tokens_label(1_500_000), "1.5M");
+    }
+
+    #[test]
+    fn compact_lists_show_five_and_count_the_rest() {
+        let items: Vec<u32> = (0..8).collect();
+        assert_eq!(compact(&items), (&items[..5], 3));
+        assert_eq!(compact(&items[..4]), (&items[..4], 0));
+    }
+
+    #[test]
+    fn the_last_line_is_the_reports_once_finished() {
+        let mut done = worker("r1", WorkerState::Finished, Some(0), Some(1));
+        done.last = Some("read src/a.rs".into());
+        done.report = Some("\nFixed the race in setup.\nMore.".into());
+        assert_eq!(
+            last_line(&done).as_deref(),
+            Some("Fixed the race in setup.")
+        );
+        let mut running = worker("r2", WorkerState::Running, Some(0), None);
+        assert_eq!(last_line(&running), None);
+        running.last = Some("$ cargo test".into());
+        assert_eq!(last_line(&running).as_deref(), Some("$ cargo test"));
+    }
+}

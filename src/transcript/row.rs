@@ -10,7 +10,7 @@ use gpui_kit::base::Easing;
 use gpui_kit::base::image_cache::LruImageCache;
 use gpui_kit::base::text::{TextView, TextViewMotion, TextViewStyle};
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     clipboard::Clipboard,
     diff_view::{Diff, DiffView},
@@ -22,11 +22,12 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::find::Place;
 use crate::fonts::CodeFont as _;
 
 use super::model::{Gap, RowKey};
 use super::tool::{self, Tool};
-use super::{AgentFilter, CODE_LINES, TranscriptView, selectable};
+use super::{AgentFilter, CODE_LINES, TranscriptEvent, TranscriptView, selectable};
 
 /// How often the running indicator turns, in frames a second.
 const SPINNER_FPS: f32 = 12.;
@@ -34,7 +35,7 @@ const SPINNER_FPS: f32 = 12.;
 /// The reading column's widest.
 const COLUMN: f32 = 46.;
 /// Lines of a call's output shown before "Show all N lines".
-const OUTPUT_LINES: usize = 40;
+pub(super) const OUTPUT_LINES: usize = 40;
 /// Rows of an edit's diff shown before it scrolls inside.
 const DIFF_ROWS: usize = 24;
 
@@ -98,6 +99,45 @@ fn from_line(diff: Diff, by: usize) -> Diff {
     Diff::parse(&unified)
 }
 
+/// The parameters a call's details show: none where its line says them
+/// all or its diff does, else its parameters (or, from before the feed kept
+/// them, the line's long part: a multi-line command, a worker's task).
+pub(super) fn shown_parameters(item: &Item) -> Option<Arc<str>> {
+    let line = item.text.trim();
+    if parameters_shown_by_line(item) {
+        None
+    } else if let Some(patch) = apply_diff_patch(item) {
+        // An edit from a session saved before edit_file: its patch.
+        Some(patch.into())
+    } else if let Some(parameters) = item.parameters.clone() {
+        Some(parameters)
+    } else if line.contains('\n') || item.detail.is_some() {
+        Some(item.detail.clone().unwrap_or(line.to_string()).into())
+    } else {
+        None
+    }
+}
+
+/// What a call's details show came back: its command's output block, or
+/// its tool's result. An edit's diff stands for its result.
+pub(super) fn shown_output(entry: &super::model::Entry) -> Option<Arc<str>> {
+    let item = &entry.item;
+    match (&entry.result, item.output.clone()) {
+        (Some(result), _) => result
+            .whole
+            .clone()
+            .or_else(|| result.detail.clone().map(Arc::from)),
+        (None, Some(_)) if shows_diff(item) && item.status == Some(CallStatus::Ok) => None,
+        (None, Some(output)) if !output.trim().is_empty() => Some(output),
+        _ => None,
+    }
+}
+
+/// Whether a call's details show a diff: an edit's or a write's.
+fn shows_diff(item: &Item) -> bool {
+    matches!(item.tool.as_deref(), Some("edit_file" | "write_file")) && item.parameters.is_some()
+}
+
 /// The patch an `apply_diff` call applied (sessions saved before
 /// `edit_file` edit with it), from its parameters.
 fn apply_diff_patch(item: &Item) -> Option<String> {
@@ -114,7 +154,7 @@ const PREVIEW_LINE_CHARS: usize = 500;
 
 /// The first lines of `text` for a preview, each at most
 /// [`PREVIEW_LINE_CHARS`] long, and how many lines it has.
-fn preview(text: &str) -> (String, usize) {
+pub(super) fn preview(text: &str) -> (String, usize) {
     let total = text.lines().count();
     let shown = text
         .lines()
@@ -142,7 +182,7 @@ fn parameters_shown_by_line(item: &Item) -> bool {
 pub(super) fn render(
     view: &WeakEntity<TranscriptView>,
     ix: usize,
-    _: &mut Window,
+    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let Some(view) = view.upgrade() else {
@@ -177,6 +217,19 @@ pub(super) fn render(
         Gap::Section => 1.,
         Gap::Turn => 1.75,
     };
+    // The row the keyboard is on shows a ring, laid over it: nothing moves.
+    let ring = this.is_cursor(row.key, window, cx).then(|| {
+        let theme = cx.theme();
+        div()
+            .absolute()
+            .top(px(-2.))
+            .bottom(px(-2.))
+            .left_2()
+            .right_2()
+            .border_2()
+            .border_color(theme.ring)
+            .rounded(theme.radius)
+    });
     // The reading column: centred and at most ~46 rem wide, with the side
     // padding inside it, so narrow windows read edge to edge.
     div()
@@ -193,7 +246,15 @@ pub(super) fn render(
                     .ok();
             })
         })
-        .child(div().w_full().max_w(rems(COLUMN)).px_4().child(content))
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .max_w(rems(COLUMN))
+                .px_4()
+                .child(content)
+                .children(ring),
+        )
         .into_any_element()
 }
 
@@ -449,6 +510,14 @@ impl TranscriptView {
             .unwrap_or_else(|| item.text.clone().into());
         let muted = theme.muted_foreground;
         let copy_view = view.downgrade();
+        // Edit and Branch, for a message the conversation still has.
+        let changes = self.is_editable(id).then(|| {
+            let busy = self.busy_reason();
+            // The engine branches from after the first message at the
+            // earliest: before it there is nothing to copy.
+            let first = item.message_index == Some(0);
+            (busy, first, view.downgrade(), view.downgrade())
+        });
         h_flex()
             .id(("user-message", id))
             .w_full()
@@ -469,30 +538,72 @@ impl TranscriptView {
                         this.child(div().text_xs().text_color(muted).child(tags.join(" · ")))
                     })
                     .children(self.thumbnails(item, view, cx))
-                    .child(selectable(("user-text", id), text)),
+                    .child(self.marked(("user-text", id), id, Place::Text, text, cx)),
             )
-            // Copy shows on hover, in a column of its own beside the text.
-            // TODO: Edit and Branch join it.
+            // Edit, Branch and Copy show on hover, in a column of their own
+            // beside the text.
             .child(div().flex_none().child(HoverActions {
                 id: ("user-actions", id).into(),
                 shown: self.hovered == Some(id),
                 build: Box::new(move |shown| {
-                    div()
-                        .id(("copy-user", id))
-                        .test_support()
+                    let action = |name: &'static str, icon: Lucide| {
+                        Button::new((name, id))
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(icon))
+                            .text_color(muted)
+                            .tab_stop(shown)
+                    };
+                    h_flex()
+                        .when_some(changes, |this, (busy, first, edit_view, branch_view)| {
+                            this.child(
+                                action("edit-message", Lucide::SquarePen)
+                                    .disabled(busy.is_some())
+                                    .tooltip(busy.unwrap_or("Edit"))
+                                    .accessibility_label("Edit")
+                                    .on_click(move |_, _, cx| {
+                                        edit_view
+                                            .update(cx, |this, cx| {
+                                                this.change(TranscriptEvent::Edit(id), cx)
+                                            })
+                                            .ok();
+                                    }),
+                            )
+                            .child(
+                                action("branch-message", Lucide::GitBranch)
+                                    .disabled(busy.is_some() || first)
+                                    .tooltip(match busy {
+                                        Some(busy) => busy,
+                                        None if first => "Branch from a later message",
+                                        None => {
+                                            "Branch: a new session with the conversation before this message"
+                                        }
+                                    })
+                                    .accessibility_label("Branch")
+                                    .on_click(move |_, _, cx| {
+                                        branch_view
+                                            .update(cx, |this, cx| {
+                                                this.change(TranscriptEvent::Branch(id), cx)
+                                            })
+                                            .ok();
+                                    }),
+                            )
+                        })
                         .child(
-                            Button::new("button")
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Copy)
-                                .tooltip("Copy")
-                                .text_color(muted)
-                                .tab_stop(shown)
-                                .on_click(move |_, _, cx| {
-                                    copy_view
-                                        .update(cx, |this, cx| this.copy_entry(id, true, cx))
-                                        .ok();
-                                }),
+                            div().id(("copy-user", id)).test_support().child(
+                                Button::new("button")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Copy)
+                                    .tooltip("Copy")
+                                    .text_color(muted)
+                                    .tab_stop(shown)
+                                    .on_click(move |_, _, cx| {
+                                        copy_view
+                                            .update(cx, |this, cx| this.copy_entry(id, true, cx))
+                                            .ok();
+                                    }),
+                            ),
                         )
                         .into_any_element()
                 }),
@@ -556,7 +667,7 @@ impl TranscriptView {
                 .when(ui.source, |this| {
                     this.code_font(theme).text_size(theme.mono_font_size)
                 })
-                .child(selectable(("source", id), text))
+                .child(self.marked(("source", id), id, Place::Source(block), text, cx))
                 .into_any_element()
         } else {
             // The longest code block of the row, at the top level or inside
@@ -632,6 +743,10 @@ impl TranscriptView {
         let render_markdown = self.settings.render_markdown;
         let muted = theme.muted_foreground;
         let view = view.downgrade();
+        // Regenerate, under the latest reply, while nothing runs.
+        let last =
+            self.model.last_reply() == Some(id) && matches!(self.model.filter(), AgentFilter::Main);
+        let busy = self.busy_reason();
         HoverActions {
             id: ("reply-actions", id).into(),
             shown: self.hovered == Some(id),
@@ -672,7 +787,31 @@ impl TranscriptView {
                             |this, id, cx| this.toggle_source(id, cx),
                         ))
                     })
-                    // TODO: Regenerate (the last reply) and Branch.
+                    .when(last, |this| {
+                        let view = view.clone();
+                        this.child(
+                            div().id(("regenerate", id)).test_support().child(
+                                Button::new("button")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Regenerate")
+                                    .text_color(muted)
+                                    .tab_stop(shown)
+                                    .disabled(busy.is_some())
+                                    .tooltip(
+                                        busy.unwrap_or(
+                                            "Send your last message again for a new reply",
+                                        ),
+                                    )
+                                    .on_click(move |_, _, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.change(TranscriptEvent::Regenerate, cx)
+                                        })
+                                        .ok();
+                                    }),
+                            ),
+                        )
+                    })
                     .into_any_element()
             }),
         }
@@ -823,7 +962,14 @@ impl TranscriptView {
                     )
                 })
                 .child(Icon::new(tool.icon()).xsmall().flex_none())
-                .child(div().flex_1().min_w_0().truncate().text_left().child(line))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_left()
+                        .child(self.marked_plain(id, Place::Text, line.clone(), cx)),
+                )
                 .children(trailing)
                 .into_any_element(),
             on_toggle: Rc::new(move |_, cx| {
@@ -845,12 +991,13 @@ impl TranscriptView {
 
     /// A call's details: its parameters in full, its output, its diff.
     fn call_details(&self, id: u64, cx: &App) -> AnyElement {
+        use super::find::Place;
         let theme = cx.theme();
         let Some(entry) = self.model.entry(id) else {
             return div().into_any_element();
         };
         let item = &entry.item;
-        let mono = |text: String, key: &'static str| {
+        let mono = |text: String, key: &'static str, place: Place| {
             div()
                 .w_full()
                 .px_2()
@@ -859,7 +1006,7 @@ impl TranscriptView {
                 .bg(theme.muted)
                 .code_font(theme)
                 .text_size(theme.mono_font_size)
-                .child(selectable((key, id), text))
+                .child(self.marked((key, id), id, place, text, cx))
         };
         let caption = |text: String| {
             div()
@@ -868,13 +1015,13 @@ impl TranscriptView {
                 .child(text)
         };
         // The first lines of a long text, and a button that shows it all.
-        let lines = |text: Arc<str>, key: &'static str, title: String| {
+        let lines = |text: Arc<str>, key: &'static str, place: Place, title: String| {
             let (shown, total) = preview(&text);
             let title: SharedString = title.into();
             v_flex()
                 .w_full()
                 .gap_1()
-                .child(mono(shown, key))
+                .child(mono(shown, key, place))
                 .when(total > OUTPUT_LINES, |this| {
                     this.child(
                         Button::new((key, id))
@@ -894,24 +1041,14 @@ impl TranscriptView {
         // part: a multi-line command, a worker's task).
         let diff = self.ui.get(&id).and_then(|ui| ui.diff.clone());
         let has_diff = diff.is_some();
-        let parameters: Option<Arc<str>> = if parameters_shown_by_line(item) {
-            None
-        } else if let Some(patch) = apply_diff_patch(item) {
-            // An edit from a session saved before edit_file: its patch.
-            Some(patch.into())
-        } else if let Some(parameters) = item.parameters.clone() {
-            Some(parameters)
-        } else if line.contains('\n') || item.detail.is_some() {
-            Some(item.detail.clone().unwrap_or(line.clone()).into())
-        } else {
-            None
-        };
+        let parameters = shown_parameters(item);
         if let Some(diff) = diff {
             details = details.child(DiffView::new(&diff).max_rows(DIFF_ROWS));
         } else if let Some(parameters) = parameters {
             details = details.child(caption("Parameters".into())).child(lines(
                 parameters,
                 "parameters",
+                Place::Parameters,
                 format!("Parameters of {line}"),
             ));
         }
@@ -919,12 +1056,13 @@ impl TranscriptView {
         match (&entry.result, item.output.clone()) {
             (Some(result), _) => {
                 details = details.child(caption(result.text.clone()));
-                if let Some(body) = result
-                    .whole
-                    .clone()
-                    .or_else(|| result.detail.clone().map(Arc::from))
-                {
-                    details = details.child(lines(body, "output", format!("Output of {line}")));
+                if let Some(body) = shown_output(entry) {
+                    details = details.child(lines(
+                        body,
+                        "output",
+                        Place::Output,
+                        format!("Output of {line}"),
+                    ));
                 }
             }
             // An edit's diff says what its result would.
@@ -933,6 +1071,7 @@ impl TranscriptView {
                 details = details.child(caption("Result".into())).child(lines(
                     output,
                     "output",
+                    Place::Output,
                     format!("Result of {line}"),
                 ));
             }
@@ -1114,12 +1253,13 @@ impl TranscriptView {
                     .pt_0p5()
                     .child(Icon::new(icon).xsmall().text_color(color)),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(selectable(("notice-text", id), item.text.clone())),
-            )
+            .child(div().flex_1().min_w_0().child(self.marked(
+                ("notice-text", id),
+                id,
+                Place::Text,
+                item.text.clone(),
+                cx,
+            )))
             .into_any_element()
     }
 
@@ -1140,7 +1280,7 @@ impl TranscriptView {
             .border_color(border)
             .code_font(theme)
             .text_size(theme.mono_font_size)
-            .child(selectable(("output-text", id), item.text.clone()))
+            .child(self.marked(("output-text", id), id, Place::Text, item.text.clone(), cx))
             .into_any_element()
     }
 

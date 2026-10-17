@@ -13,11 +13,11 @@ use crate::backend::{SessionEntry, SessionId};
 use crate::layout::WidthClass;
 use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase};
 use crate::prefs::{self, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
-use crate::session_view::{SessionView, SessionViewEvent, not_yet, recent_folders};
+use crate::session_view::{Branched, SessionView, SessionViewEvent, not_yet, recent_folders};
 use crate::settings_page::{CloseRequested, SettingsPage};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::title_bar::AppTitleBar;
-use crate::workers_panel::WorkersPanel;
+use crate::workers_panel::{WorkersPanel, WorkersPanelEvent};
 use crate::{about, chrome, menus, palette, prompts, quit, shortcuts, status_bar};
 
 /// The Settings page of models and accounts.
@@ -110,7 +110,7 @@ impl Workspace {
         let title_bar = cx.new(AppTitleBar::new);
         let sidebar = cx.new(|cx| Sidebar::new(window, cx));
         let session_view = cx.new(|cx| SessionView::new(window, cx));
-        let workers = cx.new(|_| WorkersPanel::new());
+        let workers = cx.new(|cx| WorkersPanel::new(window, cx));
         let sidebar_prefs = prefs::get(cx).sidebar.clone();
         let panel_width = prefs::get(cx).workers_panel.width;
 
@@ -131,6 +131,7 @@ impl Workspace {
             }),
             cx.subscribe_in(&sidebar, window, Self::on_sidebar_event),
             cx.subscribe_in(&session_view, window, Self::on_session_view_event),
+            cx.subscribe_in(&workers, window, Self::on_workers_event),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 this.prefs_changed(window, cx)
             }),
@@ -379,6 +380,9 @@ impl Workspace {
                             this.sheet = None;
                             this.sync_chrome(window, cx);
                         }
+                        if edge == Edge::Panel {
+                            this.workers.update(cx, |panel, cx| panel.hidden(cx));
+                        }
                     })
                     .ok();
                 })
@@ -413,6 +417,8 @@ impl Workspace {
         self.session = session.clone();
         self.session_view
             .update(cx, |view, cx| view.set_session(session.clone(), window, cx));
+        self.workers
+            .update(cx, |panel, cx| panel.set_session(session.clone(), cx));
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_active(id, cx));
         self.sync_chrome(window, cx);
@@ -536,8 +542,19 @@ impl Workspace {
                     prompts::show(session, window, cx);
                 }
             }
-            // TODO: the panel shows that worker's own transcript.
-            SessionViewEvent::OpenWorker(_) => self.show_workers(window, cx),
+            SessionViewEvent::OpenBranch(branched) => {
+                let Branched {
+                    entry,
+                    first,
+                    draft,
+                } = (**branched).clone();
+                self.open_branch(entry, first, draft, window, cx)
+            }
+            SessionViewEvent::OpenWorker(id) => {
+                self.show_workers(window, cx);
+                self.workers
+                    .update(cx, |panel, cx| panel.show_worker(id.clone(), window, cx));
+            }
         }
     }
 
@@ -551,6 +568,83 @@ impl Workspace {
             }
         } else if self.sheet != Some(Edge::Panel) {
             self.open_sheet(Edge::Panel, window, cx);
+        }
+    }
+
+    /// Opens a branch of the shown session (it keeps running): it sends
+    /// `first` as its first message, or shows `draft` in its composer.
+    fn open_branch(
+        &mut self,
+        entry: SessionEntry,
+        first: Option<arko::Message>,
+        draft: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(draft) = &draft {
+            crate::drafts::set(&entry.id.0, draft, cx);
+        }
+        let session =
+            LiveSessions::find(&entry.id, cx).unwrap_or_else(|| LiveSession::resume(&entry, cx));
+        if let Phase::Failed(why) = session.read(cx).phase() {
+            window.push_notification(
+                Notification::error(format!("Couldn’t open the branch. {why}")),
+                cx,
+            );
+            return;
+        }
+        if let Some(first) = first {
+            let input = arko::Input::Message(first);
+            if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
+                window.push_notification(why, cx);
+            }
+        }
+        self.show(Some(session), window, cx);
+        self.sidebar.update(cx, |sidebar, cx| sidebar.refresh(cx));
+        self.after_choosing(window, cx);
+    }
+
+    /// What the workers panel asks.
+    fn on_workers_event(
+        &mut self,
+        _: &Entity<WorkersPanel>,
+        event: &WorkersPanelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            WorkersPanelEvent::Command(command) => {
+                if let Some(session) = self.session.clone() {
+                    let input = arko::Input::Message(arko::Message {
+                        text: command.clone(),
+                        images: Vec::new(),
+                    });
+                    if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
+                        window.push_notification(why, cx);
+                    }
+                }
+            }
+            WorkersPanelEvent::Target(target) => {
+                let target = target.clone();
+                self.session_view
+                    .update(cx, |view, cx| view.set_target(target, window, cx));
+            }
+            WorkersPanelEvent::Message(id) => {
+                let target = Some(id.clone());
+                self.session_view
+                    .update(cx, |view, cx| view.set_target(target, window, cx));
+                // A sheet gives way to the composer it covers.
+                if self.sheet == Some(Edge::Panel) {
+                    self.close_sheet(window, cx);
+                }
+                self.focus_composer(window, cx);
+            }
+            WorkersPanelEvent::Leave => {
+                if self.sheet == Some(Edge::Panel) {
+                    self.close_sheet(window, cx);
+                }
+                self.focus_composer(window, cx);
+            }
         }
     }
 
@@ -698,14 +792,31 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.width.docks_panel() {
+        let had_focus = self.workers.read(cx).contains_focus(window, cx);
+        let open = if self.width.docks_panel() {
             self.workers_open = !self.workers_open;
             self.sync_chrome(window, cx);
             cx.notify();
+            self.workers_open
         } else if self.sheet == Some(Edge::Panel) {
             self.close_sheet(window, cx);
+            false
         } else {
             self.open_sheet(Edge::Panel, window, cx);
+            true
+        };
+        // The keyboard goes with the panel: into it as it opens, back to the
+        // composer when it closes with the focus in it.
+        if open {
+            let workers = self.workers.clone();
+            window.defer(cx, move |window, cx| {
+                workers.update(cx, |panel, cx| panel.focus(window, cx));
+            });
+        } else {
+            self.workers.update(cx, |panel, cx| panel.hidden(cx));
+            if had_focus {
+                self.focus_composer(window, cx);
+            }
         }
     }
 
@@ -948,9 +1059,9 @@ impl Render for Workspace {
                 // TODO: the session info popover.
                 not_yet("Session info", window, cx)
             }))
-            .on_action(cx.listener(|_, _: &menus::BranchSession, window, cx| {
-                // TODO: branching, once the engine branches sessions.
-                not_yet("Branching", window, cx)
+            .on_action(cx.listener(|this, _: &menus::BranchSession, window, cx| {
+                this.session_view
+                    .update(cx, |view, cx| view.branch_from(None, window, cx));
             }))
             .on_action(cx.listener(|this, _: &menus::StopTurn, window, cx| {
                 this.session_view
@@ -977,12 +1088,24 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &menus::OpenAccounts, window, cx| {
                 this.open_accounts(window, cx)
             }))
+            .on_action(cx.listener(|this, _: &menus::ExportMarkdown, window, cx| {
+                this.session_view
+                    .update(cx, |view, cx| view.export(window, cx));
+            }))
             .on_action(
-                cx.listener(|_, _: &menus::ExportMarkdown, window, cx| {
-                    not_yet("Export", window, cx)
+                cx.listener(|this, _: &crate::transcript::FocusTranscript, window, cx| {
+                    if this.settings.is_none() {
+                        this.session_view
+                            .update(cx, |view, cx| view.focus_transcript(window, cx));
+                    }
                 }),
             )
-            .on_action(cx.listener(|_, _: &menus::Find, window, cx| not_yet("Find", window, cx)))
+            .on_action(cx.listener(|this, _: &menus::Find, window, cx| {
+                if this.settings.is_none() {
+                    this.session_view
+                        .update(cx, |view, cx| view.open_find(window, cx));
+                }
+            }))
             .on_action(cx.listener(|_, _: &menus::KeyboardShortcuts, window, cx| {
                 shortcuts::open(window, cx)
             }))

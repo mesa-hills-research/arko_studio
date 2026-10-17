@@ -309,6 +309,98 @@ impl Model {
         }
     }
 
+    /// Whether the user's message `item` can be edited, sent again or
+    /// branched from: one of the main agent's conversation that started a
+    /// turn, as the engine marks them.
+    pub fn is_changeable(item: &Item) -> bool {
+        item.kind == Kind::User
+            && item.is_main()
+            && item.message_index.is_some()
+            && !is_refresh(item)
+    }
+
+    /// The latest message of the user's that can be edited.
+    pub fn last_message(&self) -> Option<u64> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|entry| Self::is_changeable(&entry.item))
+            .map(|entry| entry.item.id)
+    }
+
+    /// The main agent's latest reply, if a message of the user's that can
+    /// be sent again comes before it: the reply Regenerate replaces.
+    pub fn last_reply(&self) -> Option<u64> {
+        let message = self.last_message()?;
+        let after = || {
+            self.entries
+                .iter()
+                .rev()
+                .take_while(move |entry| entry.item.id > message)
+        };
+        // A cache refresh's answer ("Acknowledged") isn't a reply to send
+        // again: the engine sends the user's last message.
+        let refreshed: Vec<Option<u64>> = after()
+            .filter(|entry| is_refresh(&entry.item))
+            .map(|entry| entry.item.turn)
+            .collect();
+        after()
+            .find(|entry| {
+                entry.item.is_main()
+                    && entry.item.kind == Kind::Reply
+                    && !refreshed.contains(&entry.item.turn)
+            })
+            .map(|entry| entry.item.id)
+    }
+
+    /// How many messages come after the user's message `id`: the user's,
+    /// and the agent's replies, one per turn (cache refreshes left out).
+    pub fn messages_after(&self, id: u64) -> usize {
+        let Ok(start) = self.position(id) else {
+            return 0;
+        };
+        let after = &self.entries[start + 1..];
+        let refreshed: Vec<Option<u64>> = after
+            .iter()
+            .filter(|entry| is_refresh(&entry.item))
+            .map(|entry| entry.item.turn)
+            .collect();
+        let users = after
+            .iter()
+            .filter(|entry| {
+                let item = &entry.item;
+                item.kind == Kind::User && item.is_main() && !is_refresh(item)
+            })
+            .count();
+        let mut turns: Vec<Option<u64>> = after
+            .iter()
+            .filter(|entry| {
+                let item = &entry.item;
+                item.is_main()
+                    && matches!(
+                        item.kind,
+                        Kind::Text | Kind::Reply | Kind::Message | Kind::Question
+                    )
+                    && !refreshed.contains(&item.turn)
+            })
+            .map(|entry| entry.item.turn)
+            .collect();
+        turns.dedup();
+        users + turns.len()
+    }
+
+    /// Why the conversation can't be changed now: a turn runs, or workers
+    /// do.
+    pub fn busy_reason(&self) -> Option<&'static str> {
+        if self.activity.working {
+            Some("Wait for the turn to end")
+        } else if self.workers.iter().any(|worker| worker.state.is_active()) {
+            Some("Wait for the workers to finish, or stop them")
+        } else {
+            None
+        }
+    }
+
     /// Whether the agent of `entry` still writes it: the latest of that
     /// agent's entries while the agent works. For thinking, which shows
     /// "Thinking…" until then.
@@ -345,14 +437,14 @@ impl Model {
 
 /// How a view shows an entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Show {
+pub(crate) enum Show {
     Hidden,
     Item,
     /// Counted in its run's line of tool activity (the Messages view).
     Count,
 }
 
-fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
+pub(crate) fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
     if let AgentFilter::Worker(_) = filter {
         return match item.kind {
             Kind::Result | Kind::Turn => Show::Hidden,
@@ -648,7 +740,7 @@ fn run(
 }
 
 /// Whether `item` is a message that only kept the prompt cache warm.
-fn is_refresh(item: &Item) -> bool {
+pub(crate) fn is_refresh(item: &Item) -> bool {
     item.is_main() && item.kind == Kind::User && item.delivery == Some(Delivery::Refresh)
 }
 
@@ -1204,6 +1296,92 @@ mod tests {
         model.apply(Update::Item(text), &mut changes);
         assert!(!model.is_streaming(0));
         assert_eq!(model.thought_for(0), Some(12_000));
+    }
+
+    /// A user's message of turn `turn` that started it, at `index` of the
+    /// conversation.
+    fn message(id: u64, turn: u64, index: usize, text: &str) -> Item {
+        let mut item = item(id, Kind::User, "main", text);
+        item.turn = Some(turn);
+        item.message_index = Some(index);
+        item.delivery = Some(Delivery::Turn);
+        item
+    }
+
+    fn said(id: u64, kind: Kind, turn: u64, text: &str) -> Item {
+        let mut item = item(id, kind, "main", text);
+        item.turn = Some(turn);
+        item
+    }
+
+    #[test]
+    fn edits_count_the_messages_after_them_and_regenerate_the_last_reply() {
+        let mut refresh = message(9, 4, 6, "(keep the cache warm)");
+        refresh.delivery = Some(Delivery::Refresh);
+        let mut note = item(5, Kind::User, "main", "and the tests");
+        note.turn = Some(2);
+        note.delivery = Some(Delivery::Note);
+        let model = model(vec![
+            message(1, 1, 0, "Fix the parser."),
+            said(2, Kind::Text, 1, "Reading it."),
+            said(3, Kind::Reply, 1, "Fixed."),
+            message(4, 2, 2, "Now the docs."),
+            note,
+            said(6, Kind::Reply, 2, "Done."),
+            message(7, 3, 4, "Thanks."),
+            said(8, Kind::Reply, 3, "You're welcome."),
+            refresh,
+            said(10, Kind::Reply, 4, "Acknowledged"),
+        ]);
+        // After the first: its reply, two messages and a note, two replies.
+        assert_eq!(model.messages_after(1), 6);
+        assert_eq!(model.messages_after(7), 1);
+        assert_eq!(model.last_message(), Some(7));
+        assert_eq!(model.last_reply(), Some(8));
+        assert!(Model::is_changeable(&model.entry(4).unwrap().item));
+        assert!(
+            !Model::is_changeable(&model.entry(5).unwrap().item),
+            "a note"
+        );
+        assert!(
+            !Model::is_changeable(&model.entry(9).unwrap().item),
+            "a refresh"
+        );
+        assert_eq!(model.busy_reason(), None);
+    }
+
+    #[test]
+    fn a_turn_or_a_worker_running_keeps_the_conversation_as_it_is() {
+        let mut model = model(vec![message(1, 1, 0, "Go.")]);
+        let mut changes = Changes::default();
+        model.set_activity(
+            Activity {
+                working: true,
+                ..Activity::default()
+            },
+            &mut changes,
+        );
+        assert_eq!(model.busy_reason(), Some("Wait for the turn to end"));
+        model.set_activity(Activity::default(), &mut changes);
+        model.apply(
+            Update::Worker(WorkerSummary {
+                id: "r1".into(),
+                title: "Fix it".into(),
+                state: arko::remote::WorkerState::Running,
+                tool_calls: 0,
+                started_at: Some(0),
+                ended_at: None,
+                last: None,
+                report: None,
+            }),
+            &mut changes,
+        );
+        assert_eq!(
+            model.busy_reason(),
+            Some("Wait for the workers to finish, or stop them")
+        );
+        // No reply yet: nothing to regenerate.
+        assert_eq!(model.last_reply(), None);
     }
 
     #[test]

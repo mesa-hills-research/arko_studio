@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{self, Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::tooltip::Tooltip;
@@ -29,9 +29,10 @@ use gpui_kit::*;
 
 use crate::backend::{Mode, ModelChoices, NewSession, SessionEntry, SharedBackend};
 use crate::composer::{Attached, Composer, ComposerEvent, Outgoing};
+use crate::editing::{self, Change, Choice};
 use crate::layout::WidthClass;
 use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase, PromptKind};
-use crate::transcript::{AgentFilter, TranscriptEvent, TranscriptView};
+use crate::transcript::{AgentFilter, FindStatus, TranscriptEvent, TranscriptView};
 use crate::{drafts, menus, prefs};
 
 /// How many recent folders Change… offers.
@@ -65,6 +66,40 @@ pub enum SessionViewEvent {
     ShowPrompt,
     /// The reader opened a worker's card in the transcript.
     OpenWorker(SharedString),
+    /// A branch of the session was made: the window opens it.
+    OpenBranch(Box<Branched>),
+}
+
+/// A branch of a session, to open.
+#[derive(Debug, Clone)]
+pub struct Branched {
+    /// It lists with this until the list is read again.
+    pub entry: SessionEntry,
+    /// Its first message, sent as it opens.
+    pub first: Option<arko::Message>,
+    /// What its composer shows.
+    pub draft: Option<String>,
+}
+
+/// The find bar at the top of the transcript (Mod+F).
+struct FindBar {
+    input: Entity<InputState>,
+    /// Where the keyboard was: it goes back there when the bar closes.
+    before: Option<FocusHandle>,
+    status: FindStatus,
+    _input: Subscription,
+}
+
+/// The key context of the find bar.
+pub const FIND_CONTEXT: &str = "FindBar";
+
+/// A message of the user's being edited in the composer.
+struct Editing {
+    /// The message, by its item.
+    item: u64,
+    /// What the composer held before, given back when the edit ends.
+    draft: String,
+    images: Vec<Attached>,
 }
 
 /// How many sessions' transcripts the window keeps ready: switching back to
@@ -99,6 +134,12 @@ pub struct SessionView {
     later: Option<u64>,
     /// The composer's rows while expanded.
     expanded_rows: Option<usize>,
+    /// The worker the composer writes to (`/message r1 …`), chosen in the
+    /// workers panel.
+    target: Option<SharedString>,
+    /// The message the composer edits.
+    editing: Option<Editing>,
+    find: Option<FindBar>,
     model_filter: Entity<InputState>,
     /// The Chat | Agent switch in a new session's empty transcript, and the
     /// one in the chip's popover.
@@ -139,6 +180,14 @@ impl SessionView {
             cx.observe(&model_filter, |_, _, cx| cx.notify()),
             cx.on_release(|this, cx| this.window_closed(cx)),
         ];
+        // ↑ in the empty composer edits the latest message, when it can.
+        let view = cx.entity().downgrade();
+        composer.update(cx, |composer, _| {
+            composer.set_edits_last(move |cx| {
+                view.upgrade()
+                    .is_some_and(|view| view.read(cx).edits_last(cx))
+            })
+        });
         let view = cx.entity().downgrade();
         let window_id = window.window_handle().window_id();
         subscriptions.push(cx.on_window_closed({
@@ -166,6 +215,9 @@ impl SessionView {
             width: WidthClass::Wide,
             later: None,
             expanded_rows: None,
+            target: None,
+            editing: None,
+            find: None,
             model_filter,
             mode_focus: cx.focus_handle().tab_stop(true),
             mode_menu_focus: cx.focus_handle().tab_stop(true),
@@ -194,6 +246,7 @@ impl SessionView {
         if self.draft.mode != mode {
             self.draft.mode = mode;
             self.list_models(cx);
+            self.sync_mentions(cx);
             cx.notify();
         }
     }
@@ -202,6 +255,7 @@ impl SessionView {
     pub fn set_draft_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
         self.draft.folder = Some(folder);
         self.list_models(cx);
+        self.sync_mentions(cx);
         cx.notify();
     }
 
@@ -243,6 +297,7 @@ impl SessionView {
             self.recent_folders = folders;
             if self.draft_folder() != before {
                 self.list_models(cx);
+                self.sync_mentions(cx);
             }
             cx.notify();
         }
@@ -403,12 +458,17 @@ impl SessionView {
         if self.session.as_ref().map(Entity::entity_id) == session.as_ref().map(Entity::entity_id) {
             return;
         }
+        // The draft kept for the session left is what was there before
+        // an edit.
+        self.end_edit(window, cx);
+        self.close_find(window, cx);
         self.keep_draft(cx);
         if let Some(old) = self.session.take() {
             old.update(cx, |old, cx| old.set_shown(false, cx));
         }
         self._session.clear();
         self.later = None;
+        self.target = None;
         self.session = session;
         if let Some(session) = &self.session {
             session.update(cx, |session, cx| session.set_shown(true, cx));
@@ -459,10 +519,7 @@ impl SessionView {
                     view.set_images(link.images.clone(), cx);
                     view
                 });
-                let events = cx.subscribe(&view, |_, _, event: &TranscriptEvent, cx| {
-                    let TranscriptEvent::OpenWorker(id) = event;
-                    cx.emit(SessionViewEvent::OpenWorker(id.clone()));
-                });
+                let events = cx.subscribe_in(&view, window, Self::on_transcript_event);
                 KeptTranscript {
                     session: session.entity_id(),
                     opening,
@@ -520,21 +577,44 @@ impl SessionView {
     }
 
     /// What the composer says while empty.
-    pub fn placeholder(&self, cx: &App) -> &'static str {
+    pub fn placeholder(&self, cx: &App) -> SharedString {
         let Some(session) = &self.session else {
-            return "Message Arko";
+            return "Message Arko".into();
         };
+        if let Some(target) = &self.target {
+            return format!("Message {target}").into();
+        }
         let session = session.read(cx);
         if let Some(question) = session.question() {
             if self.later == Some(question.id) {
-                "Answer Arko’s question"
+                "Answer Arko’s question".into()
             } else {
-                "Answer the question above"
+                "Answer the question above".into()
             }
         } else if session.is_working() {
-            "Add to the task — Arko is working"
+            "Add to the task — Arko is working".into()
         } else {
-            "Message Arko"
+            "Message Arko".into()
+        }
+    }
+
+    /// The worker the composer writes to, if any.
+    pub fn target(&self) -> Option<&SharedString> {
+        self.target.as_ref()
+    }
+
+    /// Makes the composer write to the worker `target` (`/message r1 …`),
+    /// or to the main agent again (`None`).
+    pub fn set_target(
+        &mut self,
+        target: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.target != target {
+            self.target = target;
+            self.sync_composer(window, cx);
+            cx.notify();
         }
     }
 
@@ -550,11 +630,28 @@ impl SessionView {
             None => (Arc::default(), false),
         };
         let agent = self.mode(cx) == Mode::Agent;
+        let cancellable = self.target.is_some() || self.editing.is_some();
         self.composer.update(cx, |composer, cx| {
-            composer.set_placeholder(placeholder, window, cx);
+            composer.set_placeholder(&placeholder, window, cx);
             composer.set_session_state(reading, working, agent);
+            composer.set_cancellable(cancellable);
         });
         self.sync_image_model(cx);
+        self.sync_mentions(cx);
+    }
+
+    /// "@" in the composer mentions the files of the folder an agent works
+    /// in (the session's, or the new session's), and nothing in a chat.
+    fn sync_mentions(&mut self, cx: &mut Context<Self>) {
+        let folder = match self.mode(cx) {
+            Mode::Chat => None,
+            Mode::Agent => match &self.session {
+                Some(session) => session.read(cx).workspace().cloned(),
+                None => self.draft_folder(),
+            },
+        };
+        self.composer
+            .update(cx, |composer, _| composer.set_mention_folder(folder));
     }
 
     /// The composer's height follows the Expand setting: about 45% of the
@@ -591,6 +688,15 @@ impl SessionView {
                 }
                 _ => self.stop(window, cx),
             },
+            ComposerEvent::Cancel => self.cancel(window, cx),
+            ComposerEvent::EditLast => {
+                if let Some(last) = self
+                    .transcript(cx)
+                    .and_then(|transcript| transcript.read(cx).last_message())
+                {
+                    self.edit_message(last, window, cx);
+                }
+            }
             ComposerEvent::Edited => {
                 let composer = self.composer.read(cx);
                 let empty =
@@ -608,6 +714,643 @@ impl SessionView {
         }
     }
 
+    /// Esc in the composer, in a mode Esc ends: the edit ends, or the
+    /// composer writes to the main agent again.
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            self.end_edit(window, cx);
+        } else {
+            self.set_target(None, window, cx);
+        }
+    }
+
+    fn on_transcript_event(
+        &mut self,
+        _: &Entity<TranscriptView>,
+        event: &TranscriptEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            TranscriptEvent::OpenWorker(id) => cx.emit(SessionViewEvent::OpenWorker(id.clone())),
+            TranscriptEvent::Edit(item) => self.edit_message(*item, window, cx),
+            TranscriptEvent::Regenerate => self.regenerate(window, cx),
+            TranscriptEvent::Branch(item) => self.branch_from(Some(*item), window, cx),
+            TranscriptEvent::Leave => self.focus_composer(window, cx),
+            TranscriptEvent::FindStatus(status) => {
+                if let Some(find) = &mut self.find {
+                    find.status = *status;
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    /// Exports the conversation shown as Markdown, to a file the user
+    /// chooses (Export as Markdown…).
+    pub fn export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let items = self
+            .transcript(cx)
+            .map(|transcript| transcript.read(cx).export_items())
+            .unwrap_or_default();
+        let Some(session) = self.session.as_ref().filter(|_| !items.is_empty()) else {
+            window.push_notification("There is no conversation to export yet.", cx);
+            return;
+        };
+        let session = session.read(cx);
+        let header = crate::export::Header {
+            title: session.title().to_string(),
+            mode: session.mode().label().to_string(),
+            model: session.model().to_string(),
+            folder: session
+                .workspace()
+                .map(|folder| shown_folder(folder, self.home.as_deref())),
+            when: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+        };
+        let text = crate::export::markdown(&header, &items);
+        let folder = crate::export::folder(
+            session.workspace().map(PathBuf::as_path),
+            self.home.as_deref(),
+        );
+        let chosen =
+            cx.prompt_for_new_path(&folder, Some(&crate::export::file_name(session.title())));
+        cx.spawn_in(window, async move |_, cx| {
+            let Ok(Ok(Some(path))) = chosen.await else {
+                return;
+            };
+            // Written off the UI thread.
+            let written = cx
+                .background_spawn({
+                    let path = path.clone();
+                    async move { std::fs::write(&path, text) }
+                })
+                .await;
+            cx.update(|window, cx| match written {
+                Ok(()) => window.push_notification(format!("Exported to {}.", path.display()), cx),
+                Err(error) => window.push_notification(
+                    gpui_kit::component::notification::Notification::error(format!(
+                        "Couldn’t export to {}: {error}.",
+                        path.display()
+                    )),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The keyboard goes to the transcript's rows, or from them back to the
+    /// composer (F6).
+    pub fn focus_transcript(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(transcript) = self.transcript(cx).cloned() else {
+            return;
+        };
+        if transcript
+            .read(cx)
+            .focus_handle(cx)
+            .contains_focused(window, cx)
+        {
+            self.focus_composer(window, cx);
+        } else {
+            transcript.update(cx, |transcript, cx| transcript.focus_rows(window, cx));
+        }
+    }
+
+    /// Opens the find bar at the top of the transcript, or gives it the
+    /// keyboard again with its words selected.
+    pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.transcript(cx).is_none() {
+            return;
+        }
+        if let Some(find) = &self.find {
+            find.input.update(cx, |input, cx| {
+                input.focus(window, cx);
+                input.select_all(window, cx);
+            });
+            return;
+        }
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Find in the conversation"));
+        let subscription = cx.subscribe_in(&input, window, Self::on_find_input);
+        let before = window.focused(cx);
+        input.update(cx, |input, cx| input.focus(window, cx));
+        self.find = Some(FindBar {
+            input,
+            before,
+            status: FindStatus::default(),
+            _input: subscription,
+        });
+        cx.notify();
+    }
+
+    /// Closes the find bar: the highlights go, and the keyboard goes back
+    /// where it was.
+    pub fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(find) = self.find.take() else {
+            return;
+        };
+        if let Some(transcript) = self.transcript(cx).cloned() {
+            transcript.update(cx, |transcript, cx| transcript.clear_find(cx));
+        }
+        match find.before {
+            Some(before) => before.focus(window, cx),
+            None => self.focus_composer(window, cx),
+        }
+        cx.notify();
+    }
+
+    /// Whether the find bar shows, and where its find is.
+    pub fn find_status(&self) -> Option<FindStatus> {
+        self.find.as_ref().map(|find| find.status)
+    }
+
+    /// The next match down the transcript (`forward`), or the previous.
+    pub fn find_next(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(transcript) = self.transcript(cx).cloned() else {
+            return;
+        };
+        let status = transcript.update(cx, |transcript, cx| transcript.find_next(forward, cx));
+        if let Some(find) = &mut self.find {
+            find.status = status;
+        }
+        cx.notify();
+    }
+
+    fn on_find_input(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::Change => {
+                let query = input.read(cx).value().to_string();
+                let Some(transcript) = self.transcript(cx).cloned() else {
+                    return;
+                };
+                let status = transcript.update(cx, |transcript, cx| transcript.find(&query, cx));
+                if let Some(find) = &mut self.find {
+                    find.status = status;
+                }
+                cx.notify();
+            }
+            InputEvent::PressEnter { shift, .. } => self.find_next(!*shift, cx),
+            _ => {}
+        }
+    }
+
+    /// The find bar: the words, where the find is, previous and next, and
+    /// close.
+    fn render_find(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let find = self.find.as_ref()?;
+        let theme = cx.theme();
+        let has_words = !find.input.read(cx).value().trim().is_empty();
+        let status = match (find.status.current, find.status.total) {
+            _ if !has_words => String::new(),
+            (_, 0) => "No matches".to_string(),
+            (Some(current), total) => format!("{} of {total}", current + 1),
+            (None, total) => format!("{total} found"),
+        };
+        let key_tip = |label: &'static str, key: &'static str| {
+            move |window: &mut Window, cx: &mut App| {
+                Tooltip::new(label)
+                    .key_binding(Keystroke::parse(key).ok().map(Kbd::new))
+                    .build(window, cx)
+            }
+        };
+        let none = find.status.total == 0;
+        Some(
+            h_flex()
+                .id("find-bar")
+                .test_support()
+                .key_context(FIND_CONTEXT)
+                .capture_action(cx.listener(|this, _: &input::Escape, window, cx| {
+                    this.close_find(window, cx);
+                    cx.stop_propagation();
+                }))
+                .capture_action(cx.listener(|this, _: &input::MoveUp, _, cx| {
+                    this.find_next(false, cx);
+                    cx.stop_propagation();
+                }))
+                .capture_action(cx.listener(|this, _: &input::MoveDown, _, cx| {
+                    this.find_next(true, cx);
+                    cx.stop_propagation();
+                }))
+                .w_full()
+                .max_w(rems(46.))
+                .px_4()
+                .pt_2()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_1()
+                        .p_1()
+                        .rounded(theme.radius_lg)
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.background)
+                        .shadow_sm()
+                        .child(
+                            div().flex_1().min_w_0().child(
+                                Input::new(&find.input).small().appearance(false).prefix(
+                                    Icon::new(IconName::Search)
+                                        .xsmall()
+                                        .text_color(theme.muted_foreground),
+                                ),
+                            ),
+                        )
+                        .child(
+                            div()
+                                .id("find-status")
+                                .test_support()
+                                .flex_none()
+                                .px_1()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .font_features(FontFeatures(Arc::new(vec![("tnum".into(), 1)])))
+                                .child(status),
+                        )
+                        .child(
+                            div()
+                                .id("find-previous-tip")
+                                .tooltip(key_tip("Previous match", "shift-enter"))
+                                .child(
+                                    Button::new("find-previous")
+                                        .ghost()
+                                        .xsmall()
+                                        .compact()
+                                        .icon(IconName::ChevronUp)
+                                        .disabled(none)
+                                        .accessibility_label("Previous match")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.find_next(false, cx)),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("find-next-tip")
+                                .tooltip(key_tip("Next match", "enter"))
+                                .child(
+                                    Button::new("find-next")
+                                        .ghost()
+                                        .xsmall()
+                                        .compact()
+                                        .icon(IconName::ChevronDown)
+                                        .disabled(none)
+                                        .accessibility_label("Next match")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.find_next(true, cx)),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("find-close-tip")
+                                .tooltip(key_tip("Close", "escape"))
+                                .child(
+                                    Button::new("find-close")
+                                        .ghost()
+                                        .xsmall()
+                                        .compact()
+                                        .icon(IconName::Close)
+                                        .accessibility_label("Close")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.close_find(window, cx)
+                                        })),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Whether the composer edits a message.
+    pub fn is_editing(&self) -> bool {
+        self.editing.is_some()
+    }
+
+    /// Whether ↑ in the empty composer edits the latest message now: the
+    /// session is between turns, no worker runs, and there is one.
+    fn edits_last(&self, cx: &App) -> bool {
+        let idle = self
+            .session
+            .as_ref()
+            .is_some_and(|session| !session.read(cx).is_working());
+        idle && self.editing.is_none()
+            && self.target.is_none()
+            && self.transcript(cx).is_some_and(|transcript| {
+                let transcript = transcript.read(cx);
+                transcript.busy_reason().is_none() && transcript.last_message().is_some()
+            })
+    }
+
+    /// The images `images` of the session's store, as the composer takes
+    /// them: those it still keeps.
+    fn stored_images(&self, images: &[arko::images::ImageRef], cx: &App) -> Vec<Attached> {
+        let Some(store) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.read(cx).link())
+            .map(|link| link.images.clone())
+        else {
+            return Vec::new();
+        };
+        images
+            .iter()
+            .filter_map(|image| {
+                let stored = store.get(image.id)?;
+                let format = ImageFormat::from_mime_type(&stored.mime)?;
+                let name = Some(stored.label.clone()).filter(|label| !label.is_empty());
+                Some(Attached::new(format, stored.bytes.to_vec(), name))
+            })
+            .collect()
+    }
+
+    /// Puts the user's message `item` in the composer to edit: sending it
+    /// cuts the conversation back to just before the message and sends the
+    /// new text. Esc gives back what the composer held.
+    pub fn edit_message(&mut self, item: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(transcript) = self.transcript(cx).cloned() else {
+            return;
+        };
+        let (message, busy) = {
+            let transcript = transcript.read(cx);
+            if !transcript.is_editable(item) {
+                return;
+            }
+            (transcript.message(item), transcript.busy_reason())
+        };
+        if let Some(busy) = busy {
+            window.push_notification(format!("{busy}."), cx);
+            return;
+        }
+        let Some((text, images)) = message else {
+            return;
+        };
+        let images = self.stored_images(&images, cx);
+        match &mut self.editing {
+            Some(editing) => editing.item = item,
+            None => {
+                let composer = self.composer.read(cx);
+                self.editing = Some(Editing {
+                    item,
+                    draft: composer.expanded_text(cx),
+                    images: composer.images().to_vec(),
+                });
+            }
+        }
+        self.target = None;
+        self.composer.update(cx, |composer, cx| {
+            composer.set_text(&text, window, cx);
+            composer.set_images(images, cx);
+        });
+        self.sync_composer(window, cx);
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    /// Ends the edit: the composer gets back what it held.
+    pub fn end_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing.take() else {
+            return;
+        };
+        self.composer.update(cx, |composer, cx| {
+            composer.set_text(&editing.draft, window, cx);
+            composer.set_images(editing.images, cx);
+        });
+        self.sync_composer(window, cx);
+        cx.notify();
+    }
+
+    /// Sends the edited message: after asking (unless the user said not to)
+    /// whether to cut the conversation back or branch instead.
+    fn send_edit(&mut self, outgoing: Outgoing, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = self.editing.as_ref().map(|editing| editing.item) else {
+            return;
+        };
+        let message = arko::Message {
+            text: outgoing.text,
+            images: outgoing.images.iter().map(Attached::to_arko).collect(),
+        };
+        if !prefs::get(cx).sessions.ask_before_edit {
+            self.finish_edit(Choice::Change, item, message, window, cx);
+            return;
+        }
+        let after = self
+            .transcript(cx)
+            .map_or(0, |transcript| transcript.read(cx).messages_after(item));
+        let agent = self.mode(cx) == Mode::Agent;
+        let view = cx.entity().downgrade();
+        editing::confirm(
+            Change::Edit,
+            after,
+            agent,
+            window,
+            cx,
+            move |choice, window, cx| {
+                let message = message.clone();
+                view.update(cx, |view, cx| {
+                    view.finish_edit(choice, item, message, window, cx)
+                })
+                .ok();
+            },
+        );
+    }
+
+    fn finish_edit(
+        &mut self,
+        choice: Choice,
+        item: u64,
+        message: arko::Message,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let text = message.text.clone();
+        match choice {
+            Choice::Change => {
+                let editing = session.read(cx).edit(item, message, cx);
+                cx.spawn_in(window, async move |this, cx| {
+                    let edited = editing.await;
+                    this.update_in(cx, |this, window, cx| match edited {
+                        Ok(()) => this.edited(&text, window, cx),
+                        Err(why) => window.push_notification(why, cx),
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            Choice::Branch => {
+                self.edited(&text, window, cx);
+                self.branch(session, Some(item), Some(message), None, window, cx);
+            }
+        }
+    }
+
+    /// The edit was taken: the history keeps it, and the composer gets back
+    /// what it held before.
+    fn edited(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer
+            .update(cx, |composer, cx| composer.sent(text, window, cx));
+        self.end_edit(window, cx);
+    }
+
+    /// Regenerate: sends the user's last message again for a new reply,
+    /// after asking (unless the user said not to) whether to branch
+    /// instead.
+    pub fn regenerate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(transcript) = self.transcript(cx).cloned() else {
+            return;
+        };
+        let (last, busy) = {
+            let transcript = transcript.read(cx);
+            (transcript.last_message(), transcript.busy_reason())
+        };
+        if let Some(busy) = busy {
+            window.push_notification(format!("{busy}."), cx);
+            return;
+        }
+        let Some(last) = last else {
+            return;
+        };
+        if !prefs::get(cx).sessions.ask_before_edit {
+            self.finish_regenerate(Choice::Change, last, window, cx);
+            return;
+        }
+        let after = transcript.read(cx).messages_after(last);
+        let agent = self.mode(cx) == Mode::Agent;
+        let view = cx.entity().downgrade();
+        editing::confirm(
+            Change::Regenerate,
+            after,
+            agent,
+            window,
+            cx,
+            move |choice, window, cx| {
+                view.update(cx, |view, cx| {
+                    view.finish_regenerate(choice, last, window, cx)
+                })
+                .ok();
+            },
+        );
+    }
+
+    fn finish_regenerate(
+        &mut self,
+        choice: Choice,
+        last: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        match choice {
+            Choice::Change => {
+                let regenerating = session.read(cx).regenerate(cx);
+                cx.spawn_in(window, async move |_, cx| {
+                    if let Err(why) = regenerating.await {
+                        cx.update(|window, cx| window.push_notification(why, cx))
+                            .ok();
+                    }
+                })
+                .detach();
+            }
+            Choice::Branch => {
+                // The new session sends the message again, images and all.
+                let first = self
+                    .transcript(cx)
+                    .and_then(|transcript| transcript.read(cx).message(last))
+                    .map(|(text, images)| arko::Message {
+                        text,
+                        images: self
+                            .stored_images(&images, cx)
+                            .iter()
+                            .map(Attached::to_arko)
+                            .collect(),
+                    });
+                self.branch(session, Some(last), first, None, window, cx);
+            }
+        }
+    }
+
+    /// Branch: a new session with the conversation before the user's
+    /// message `before` (or all of it), which the window opens. Branching
+    /// from a message puts its text in the new session's composer.
+    pub fn branch_from(
+        &mut self,
+        before: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let transcript = self.transcript(cx).map(|transcript| transcript.read(cx));
+        if let Some(busy) = transcript.and_then(|transcript| transcript.busy_reason()) {
+            window.push_notification(format!("{busy}."), cx);
+            return;
+        }
+        let draft = before
+            .and_then(|item| transcript.and_then(|transcript| transcript.message(item)))
+            .map(|(text, _)| text);
+        self.branch(session, before, None, draft, window, cx);
+    }
+
+    fn branch(
+        &mut self,
+        session: Entity<LiveSession>,
+        before: Option<u64>,
+        first: Option<arko::Message>,
+        draft: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Before the first message there is nothing to copy: the message
+        // starts a new session of the same kind instead.
+        let from_start = before.is_some_and(|item| {
+            self.transcript(cx)
+                .is_some_and(|transcript| transcript.read(cx).message_index(item) == Some(0))
+        });
+        if from_start && let Some(first) = first {
+            let new = {
+                let session = session.read(cx);
+                let models = &session.reading().models;
+                NewSession {
+                    mode: session.mode(),
+                    folder: session.workspace().cloned(),
+                    model: Some(models.main.clone()).filter(|model| !model.is_empty()),
+                    effort: Some(models.main_effort.clone()).filter(|effort| !effort.is_empty()),
+                }
+            };
+            let created = LiveSession::create(new, arko::Input::Message(first), cx);
+            cx.emit(SessionViewEvent::Created(created));
+            return;
+        }
+        let branching = session.read(cx).branch(before, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let branched = branching.await;
+            this.update_in(cx, |_, window, cx| match branched {
+                Ok(id) => {
+                    let entry = session.read(cx).branch_entry(id);
+                    cx.emit(SessionViewEvent::OpenBranch(Box::new(Branched {
+                        entry,
+                        first,
+                        draft,
+                    })));
+                }
+                Err(why) => window.push_notification(why, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Sends what the composer holds (the Send button).
     pub fn send_composer(&mut self, cx: &mut Context<Self>) {
         self.composer.update(cx, |composer, cx| composer.send(cx));
@@ -617,6 +1360,10 @@ impl SessionView {
     /// it, or gives it to the open session as a message, a note or an
     /// answer. The composer empties once it is taken.
     pub fn send(&mut self, outgoing: Outgoing, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            self.send_edit(outgoing, window, cx);
+            return;
+        }
         let Outgoing { text, images } = outgoing;
         if images.is_empty() {
             match self.app_command(text.trim(), window, cx) {
@@ -655,26 +1402,40 @@ impl SessionView {
         // As in the terminal, a command runs while a question waits, and the
         // question stays open. Other text answers it.
         let command = arko::commands::find(&text).is_some();
-        let result = match &self.session {
-            None => self.start_session(message, attached, cx),
-            Some(session) => match session.read(cx).question() {
-                Some(_) if command => session.update(cx, |session, cx| {
-                    session.send(arko::Input::Message(message), cx)
-                }),
-                Some(_) if !message.images.is_empty() => Err(
-                    "An answer takes text only. Send the images once the question is answered."
-                        .to_string(),
-                ),
-                Some(question) => {
-                    let input = arko::Input::Answer {
-                        question: question.id,
-                        text: text.clone(),
-                    };
-                    session.update(cx, |session, cx| session.send(input, cx))
-                }
-                None => session.update(cx, |session, cx| {
-                    session.send(arko::Input::Message(message), cx)
-                }),
+        let result = match (&self.session, &self.target) {
+            (Some(_), Some(_)) if !message.images.is_empty() => Err(
+                "A message to a worker takes text only. Remove the images, or send them to Arko."
+                    .to_string(),
+            ),
+            (Some(session), Some(worker)) => {
+                // As `/message r1 …` typed in the terminal.
+                let input = arko::Input::Message(arko::Message {
+                    text: format!("/message {worker} {}", text.trim()),
+                    images: Vec::new(),
+                });
+                session.update(cx, |session, cx| session.send(input, cx))
+            }
+            (session, _) => match session {
+                None => self.start_session(message, attached, cx),
+                Some(session) => match session.read(cx).question() {
+                    Some(_) if command => session.update(cx, |session, cx| {
+                        session.send(arko::Input::Message(message), cx)
+                    }),
+                    Some(_) if !message.images.is_empty() => Err(
+                        "An answer takes text only. Send the images once the question is answered."
+                            .to_string(),
+                    ),
+                    Some(question) => {
+                        let input = arko::Input::Answer {
+                            question: question.id,
+                            text: text.clone(),
+                        };
+                        session.update(cx, |session, cx| session.send(input, cx))
+                    }
+                    None => session.update(cx, |session, cx| {
+                        session.send(arko::Input::Message(message), cx)
+                    }),
+                },
             },
         };
         match result {
@@ -1621,8 +2382,89 @@ impl SessionView {
         )
     }
 
+    /// The strip above the composer while it edits a message.
+    fn render_editing(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.editing.as_ref()?;
+        let theme = cx.theme();
+        Some(
+            h_flex()
+                .id("editing-strip")
+                .test_support()
+                .mb_2()
+                .px_3()
+                .py_1()
+                .gap_2()
+                .text_sm()
+                .rounded(theme.radius_lg)
+                .bg(theme.secondary)
+                .text_color(theme.secondary_foreground)
+                .child(Icon::new(gpui_kit::assets::IconName::SquarePen).xsmall())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child("Editing message — Esc cancels"),
+                )
+                .child(
+                    Button::new("cancel-edit")
+                        .ghost()
+                        .xsmall()
+                        .label("Cancel")
+                        .on_click(cx.listener(|this, _, window, cx| this.end_edit(window, cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// "To r1 ×": the worker the composer writes to, and the way back to
+    /// the main agent.
+    fn render_target(&self, target: SharedString, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        h_flex()
+            .id("composer-target")
+            .test_support()
+            .flex_none()
+            .h_6()
+            .pl_2()
+            .gap_1()
+            .rounded(theme.radius)
+            .bg(theme.secondary)
+            .text_xs()
+            .text_color(theme.secondary_foreground)
+            .child(Icon::new(gpui_kit::assets::IconName::Bot).xsmall())
+            .child(format!("To {target}"))
+            .child(
+                div()
+                    .id("clear-target-tip")
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Write to Arko again")
+                            .key_binding(Keystroke::parse("escape").ok().map(Kbd::new))
+                            .build(window, cx)
+                    })
+                    .child(
+                        Button::new("clear-target")
+                            .ghost()
+                            .xsmall()
+                            .compact()
+                            .icon(IconName::Close)
+                            .accessibility_label("Write to Arko again")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.set_target(None, window, cx)
+                                }),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_composer(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chip = self.render_mode_chip(cx);
+        let target = self
+            .target
+            .clone()
+            .map(|target| self.render_target(target, cx));
         let theme = cx.theme();
         let working = self
             .session
@@ -1692,6 +2534,7 @@ impl SessionView {
                             .on_click(cx.listener(|this, _, window, cx| this.attach(window, cx))),
                     )
                     .child(chip)
+                    .children(target)
                     .when_some(later_question, |this, _| {
                         this.child(
                             Button::new("question-chip")
@@ -1844,6 +2687,8 @@ impl Render for SessionView {
         let narrow = self.width == WidthClass::Narrow;
         let question = self.render_question(cx);
         let prompt = self.render_prompt(cx);
+        let editing = self.render_editing(cx);
+        let find = self.render_find(cx);
         // The transcript spans the column (its rows centre themselves, so
         // the wheel and the scrollbar work across it), and draws again only
         // when it changes.
@@ -1857,6 +2702,7 @@ impl Render for SessionView {
             .bg(theme.background)
             .text_color(theme.foreground)
             .items_center()
+            .children(find)
             .child(
                 div()
                     .id("transcript")
@@ -1883,6 +2729,7 @@ impl Render for SessionView {
                     .pb_3()
                     .children(prompt)
                     .children(question)
+                    .children(editing)
                     .child(self.render_composer(window, cx)),
             )
     }
