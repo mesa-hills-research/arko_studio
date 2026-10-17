@@ -29,6 +29,7 @@ pub mod paths;
 pub mod prefs;
 pub mod prompts;
 pub mod quit;
+pub mod session_info;
 pub mod session_view;
 pub mod settings_page;
 pub mod shortcuts;

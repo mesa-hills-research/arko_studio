@@ -716,3 +716,176 @@ fn cache_reminder_light() {
 fn cache_reminder_dark() {
     goldens().assert("cache-reminder-dark", &cache_reminder(ThemeMode::Dark));
 }
+
+/// A session's info, as its popover shows it.
+struct InfoCard {
+    info: gpui_kit::Entity<arko_studio::session_info::SessionInfo>,
+}
+
+impl gpui_kit::Render for InfoCard {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use gpui_kit::component::ActiveTheme as _;
+        use gpui_kit::{ParentElement as _, Styled as _, div};
+
+        let theme = cx.theme();
+        div()
+            .size_full()
+            .p_4()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .font_family(theme.font_family.clone())
+            .child(
+                div()
+                    .p_3()
+                    .bg(theme.popover)
+                    .text_color(theme.popover_foreground)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(theme.radius_lg)
+                    .child(self.info.clone()),
+            )
+    }
+}
+
+fn session_info(mode: ThemeMode) -> Screenshot {
+    use arko::details::{
+        HandoverFacts, McpFacts, McpServerFacts, ModelFacts, SessionFacts, SkillFacts, SkillsFacts,
+        WorkersFacts,
+    };
+    use arko_studio::backend::Mode;
+    use arko_studio::session_info::{Facts, Preview, SessionInfo};
+    use gpui_kit::AppContext as _;
+    use std::path::PathBuf;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+
+    let mut reading = arko::remote::Reading {
+        context_window: Some(1_000_000),
+        ..Default::default()
+    };
+    reading.settings.outside = true;
+    reading.settings.handover_at = 950_000;
+    reading.settings.workers_handover_at = 200_000;
+    reading.settings.background_after = 600;
+    reading.settings.text_replies = true;
+    reading.settings.extra_rules = arko::ExtraRules::Small;
+    reading.settings.worker_project_instructions = true;
+    reading.models.started = true;
+    reading.models.has_workers = true;
+    let preview = Preview {
+        title: "Split the engine out of main.rs".into(),
+        mode: Mode::Agent,
+        workspace: Some(PathBuf::from("/home/ada/src/arko")),
+        id: "20261016-091200-a1b2".into(),
+        dir: Some(PathBuf::from(
+            "/home/ada/.local/share/arko/sessions/20261016-091200-a1b2",
+        )),
+        reading: Arc::new(reading),
+        tools: vec![
+            "2 MCP servers".into(),
+            "2 skills".into(),
+            "indexes arko (code, monitored), docs (docs)".into(),
+        ],
+    };
+    let model = |shown: &str| ModelFacts {
+        model: "claude-opus-5-5".into(),
+        shown: shown.into(),
+        effort: arko::Effort::High,
+        fast: false,
+        cache_1h: false,
+    };
+    let facts = Facts {
+        session: SessionFacts {
+            id: preview.id.clone(),
+            dir: preview.dir.clone().unwrap(),
+            workspace: PathBuf::from("/home/ada/src/arko"),
+            title: Some(preview.title.clone()),
+            created: chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+            main: model("claude-opus-5-5 (high effort) on the Anthropic API"),
+            workers: Some(WorkersFacts {
+                model: model("claude-sonnet-5-5 (high effort) on the Anthropic API"),
+                max_running: None,
+            }),
+            handover: HandoverFacts {
+                main_at: 950_000,
+                main_compacts: false,
+                workers_at: 200_000,
+                workers_compact: false,
+            },
+            text_replies: true,
+            extra_rules: arko::ExtraRules::Small,
+            cc_compact: false,
+            project_files: arko::ProjectFiles::One,
+            project_workers: Some(true),
+            outside: true,
+            background_after: 600,
+            show_thinking: false,
+            hide_thinking: false,
+        },
+        mcp: McpFacts {
+            servers: vec![
+                McpServerFacts {
+                    name: "files".into(),
+                    shown: "files-server".into(),
+                    file: PathBuf::from("/home/ada/src/arko/.mcp.json"),
+                    tools: Ok(vec!["read".into(), "write".into(), "list".into()]),
+                },
+                McpServerFacts {
+                    name: "browser".into(),
+                    shown: "browser-server".into(),
+                    file: PathBuf::from("/home/ada/src/arko/.mcp.json"),
+                    tools: Err("no such program: browser-server".into()),
+                },
+            ],
+            ..McpFacts::default()
+        },
+        skills: Ok(SkillsFacts {
+            skills: ["release-notes", "docs-style"]
+                .into_iter()
+                .map(|name| SkillFacts {
+                    name: name.into(),
+                    description: String::new(),
+                    always: false,
+                })
+                .collect(),
+            folders: Vec::new(),
+            own_folder: PathBuf::new(),
+        }),
+    };
+    let window = app
+        .open_window_with(size(px(560.), px(1300.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                let info = cx.new(|cx| {
+                    let mut info = SessionInfo::new(window, cx);
+                    info.set_preview(preview, facts, window, cx);
+                    info
+                });
+                cx.new(|_| InfoCard { info })
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn session_info_light() {
+    goldens().assert("session-info-light", &session_info(ThemeMode::Light));
+}
+
+#[test]
+fn session_info_dark() {
+    goldens().assert("session-info-dark", &session_info(ThemeMode::Dark));
+}

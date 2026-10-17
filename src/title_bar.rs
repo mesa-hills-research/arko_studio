@@ -1,16 +1,19 @@
 //! The title bar: GPUI Kit's `TitleBar` with the menus (Windows and Linux),
-//! the open session's title and folder, and the layout buttons at the
-//! right end.
+//! the open session's title and folder, which open its info, and the
+//! layout buttons at the right end.
 
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Selectable as _, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::AppMenuBar,
+    popover::Popover,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::live::LiveSession;
+use crate::session_info::SessionInfo;
 use crate::{chrome, menus};
 
 /// The title bar of one window. It re-renders only when its own state
@@ -23,11 +26,14 @@ pub struct AppTitleBar {
     /// The workers panel's button: shown for a session that has or had
     /// workers, and whether the panel shows.
     workers: Option<bool>,
+    /// The session's info, which the title opens.
+    info: Entity<SessionInfo>,
+    info_open: bool,
     _menus: Subscription,
 }
 
 impl AppTitleBar {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let menu_bar = AppMenuBar::new(cx);
         // The menus change with the app's state (Show or Hide Sidebar).
         let menus = cx.observe_global::<menus::MenuState>(|this, cx| {
@@ -39,8 +45,49 @@ impl AppTitleBar {
             folder: None,
             sidebar_open: true,
             workers: None,
+            info: cx.new(|cx| SessionInfo::new(window, cx)),
+            info_open: false,
             _menus: menus,
         }
+    }
+
+    /// The session whose title shows: its info opens from it.
+    pub fn set_live_session(
+        &mut self,
+        session: Option<Entity<LiveSession>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if session.is_none() {
+            self.info_open = false;
+        }
+        self.info
+            .update(cx, |info, cx| info.set_session(session, window, cx));
+        cx.notify();
+    }
+
+    /// Opens the session's info (Session › Info), or closes it.
+    pub fn toggle_info(&mut self, cx: &mut Context<Self>) {
+        let has_session = self.info.read(cx).session().is_some();
+        self.set_info_open(!self.info_open && has_session, cx);
+    }
+
+    fn set_info_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if open && !self.info_open {
+            self.info.update(cx, |info, cx| info.load(cx));
+        }
+        if self.info_open != open {
+            self.info_open = open;
+            cx.notify();
+        }
+    }
+
+    pub fn is_info_open(&self) -> bool {
+        self.info_open
+    }
+
+    pub fn info(&self) -> &Entity<SessionInfo> {
+        &self.info
     }
 
     /// Shows the open session's title and the name of its folder.
@@ -74,10 +121,61 @@ impl AppTitleBar {
     }
 }
 
+impl AppTitleBar {
+    /// The title and the folder: plain text, or, for an open session, a
+    /// button that opens its info.
+    fn render_title(&self, cx: &mut Context<Self>) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let words = h_flex()
+            .min_w_0()
+            .gap_1p5()
+            .text_sm()
+            .when_some(self.title.clone(), |this, title| {
+                this.child(div().min_w_0().truncate().child(title))
+            })
+            .when_some(self.folder.clone(), |this, folder| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .text_color(muted)
+                        .child(format!("· {folder}")),
+                )
+            });
+        let has_session = self.info.read(cx).session().is_some();
+        if !has_session {
+            return words.into_any_element();
+        }
+        let info = self.info.clone();
+        let view = cx.entity().downgrade();
+        // Clicks on it don't drag the window. The space around it does.
+        title_bar_item(
+            Popover::new("session-info-popover")
+                .anchor(Anchor::TopCenter)
+                .open(self.info_open)
+                .on_open_change(move |open, _, cx| {
+                    let open = *open;
+                    view.update(cx, |this, cx| this.set_info_open(open, cx))
+                        .ok();
+                })
+                .trigger(
+                    Button::new("session-title-button")
+                        .ghost()
+                        .small()
+                        .max_w_full()
+                        .tooltip_with_action("Session info", &menus::SessionInfo, None)
+                        .child(words),
+                )
+                .content(move |_, _, _| info.clone()),
+        )
+        .min_w_0()
+        .into_any_element()
+    }
+}
+
 impl Render for AppTitleBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mac = cfg!(target_os = "macos");
-        let theme = cx.theme();
+        let title = self.render_title(cx);
         TitleBar::new()
             // GPUI Kit's Linux close button calls `window.remove_window()`, which
             // skips the close check. This sends it through the check instead. Only
@@ -93,8 +191,8 @@ impl Render for AppTitleBar {
                         this.child(title_bar_item(self.menu_bar.clone()))
                     })
                     // The session's title, centred in the space left, and cut
-                    // short when it doesn't fit. Plain text: the bar stays a drag
-                    // area around it.
+                    // short when it doesn't fit. The bar stays a drag area
+                    // around it.
                     .child(
                         h_flex()
                             .id("session-title")
@@ -102,19 +200,7 @@ impl Render for AppTitleBar {
                             .flex_1()
                             .min_w_0()
                             .justify_center()
-                            .gap_1p5()
-                            .text_sm()
-                            .when_some(self.title.clone(), |this, title| {
-                                this.child(div().min_w_0().truncate().child(title))
-                            })
-                            .when_some(self.folder.clone(), |this, folder| {
-                                this.child(
-                                    div()
-                                        .flex_none()
-                                        .text_color(theme.muted_foreground)
-                                        .child(format!("· {folder}")),
-                                )
-                            }),
+                            .child(title),
                     )
                     // The layout buttons, together at the right end, before
                     // the window buttons on Windows and Linux.

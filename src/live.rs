@@ -129,6 +129,9 @@ pub struct Link {
     /// The images of the session's messages and tools, by the ids the feed
     /// gives them.
     pub images: arko::images::Images,
+    /// The session's facts as it opened (its MCP servers, skills and
+    /// indexes in a line each).
+    pub banner: arko::Banner,
 }
 
 /// What a session asks of the window that shows it.
@@ -469,6 +472,7 @@ impl LiveSession {
             requests,
             quit_asks,
             images,
+            banner,
             ..
         } = seam;
         self.prompt = None;
@@ -488,6 +492,7 @@ impl LiveSession {
             requests,
             details,
             images,
+            banner,
         });
         self.phase = Phase::Open;
         self.opened += 1;

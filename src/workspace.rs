@@ -109,7 +109,7 @@ impl Workspace {
         window.on_window_should_close(cx, chrome::can_close);
         appearance::set_system_appearance(window.appearance(), cx);
 
-        let title_bar = cx.new(AppTitleBar::new);
+        let title_bar = cx.new(|cx| AppTitleBar::new(window, cx));
         let status_bar = cx.new(|_| StatusBar::new());
         let sidebar = cx.new(|cx| Sidebar::new(window, cx));
         let session_view = cx.new(|cx| SessionView::new(window, cx));
@@ -192,6 +192,10 @@ impl Workspace {
 
     pub fn status_bar(&self) -> &Entity<StatusBar> {
         &self.status_bar
+    }
+
+    pub fn title_bar(&self) -> &Entity<AppTitleBar> {
+        &self.title_bar
     }
 
     pub fn settings(&self) -> Option<&Entity<SettingsPage>> {
@@ -425,6 +429,9 @@ impl Workspace {
         self.session = session.clone();
         self.status_bar
             .update(cx, |bar, cx| bar.set_session(session.clone(), cx));
+        self.title_bar.update(cx, |bar, cx| {
+            bar.set_live_session(session.clone(), window, cx)
+        });
         self.session_view
             .update(cx, |view, cx| view.set_session(session.clone(), window, cx));
         self.sidebar
@@ -958,9 +965,8 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|_, _: &menus::Minimize, window, _| window.minimize_window()))
             .on_action(cx.listener(|_, _: &menus::Zoom, window, _| window.zoom_window()))
-            .on_action(cx.listener(|_, _: &menus::SessionInfo, window, cx| {
-                // TODO: the session info popover.
-                not_yet("Session info", window, cx)
+            .on_action(cx.listener(|this, _: &menus::SessionInfo, _, cx| {
+                this.title_bar.update(cx, |bar, cx| bar.toggle_info(cx));
             }))
             .on_action(cx.listener(|_, _: &menus::BranchSession, window, cx| {
                 // TODO: branching, once the engine branches sessions.
