@@ -237,7 +237,17 @@ pub(super) fn render(
         .into_any_element()
 }
 
-/// The id of a row's element: stable while the row keeps its key.
+/// One number for a block's row: its entry, its document's generation, its
+/// index and whether it shows as its source.
+fn block_number(id: u64, generation: u32, block: usize, source: bool) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    (id, generation, block, source).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The id of a row's element: stable while the row keeps its key. Made
+/// with each frame, so it is made of numbers, not formatted.
 pub(super) fn element_id(key: RowKey) -> ElementId {
     let (name, id): (&'static str, u64) = match key {
         RowKey::Separator(id) => ("separator", id),
@@ -248,11 +258,7 @@ pub(super) fn element_id(key: RowKey) -> ElementId {
             generation,
             block,
             source,
-        } => {
-            return ElementId::Name(
-                format!("block-{id}-{generation}-{block}-{}", u8::from(source)).into(),
-            );
-        }
+        } => ("block", block_number(id, generation, block, source)),
         RowKey::Actions(id) => ("actions", id),
         RowKey::Thinking(id) => ("thinking", id),
         RowKey::Call(id) => ("call", id),
@@ -475,7 +481,12 @@ impl TranscriptView {
             return div().into_any_element();
         };
         let tags = user_tags(item);
-        let text: SharedString = item.text.clone().into();
+        // Made when the message comes, not with each frame.
+        let text = self
+            .ui
+            .get(&id)
+            .and_then(|ui| ui.text.clone())
+            .unwrap_or_else(|| item.text.clone().into());
         let muted = theme.muted_foreground;
         let copy_view = view.downgrade();
         // Edit and Branch, for a message the conversation still has.
@@ -635,13 +646,7 @@ impl TranscriptView {
                 .when(ui.source, |this| {
                     this.code_font(theme).text_size(theme.mono_font_size)
                 })
-                .child(self.marked(
-                    SharedString::from(format!("source-{id}-{block}")),
-                    id,
-                    Place::Source(block),
-                    text,
-                    cx,
-                ))
+                .child(self.marked(("source", id), id, Place::Source(block), text, cx))
                 .into_any_element()
         } else {
             // The longest code block of the row, at the top level or inside
@@ -675,7 +680,7 @@ impl TranscriptView {
                 .when(!uncapped, |this| this.code_block_max_lines(CODE_LINES));
             let toggle = (lines > CODE_LINES).then(|| {
                 let view = view.downgrade();
-                Button::new(("show-all", block as u64))
+                Button::new("button")
                     .ghost()
                     .xsmall()
                     .label(if uncapped {
@@ -692,17 +697,13 @@ impl TranscriptView {
                 .w_full()
                 .child(text_view)
                 .children(toggle.map(|toggle| {
-                    h_flex().pt_1().child(
-                        div()
-                            .id(SharedString::from(format!("show-all-{id}-{block}")))
-                            .test_support()
-                            .child(toggle),
-                    )
+                    h_flex()
+                        .pt_1()
+                        .child(div().id("show-all").test_support().child(toggle))
                 }))
                 .into_any_element()
         };
         div()
-            .id(SharedString::from(format!("block-body-{id}-{block}")))
             .w_full()
             .when(thinking, |this| {
                 this.text_color(theme.muted_foreground).text_sm()
@@ -1173,21 +1174,18 @@ impl TranscriptView {
             return None;
         }
         let theme = cx.theme();
-        let fit = size(px(THUMBNAIL.0 * 16.), px(THUMBNAIL.1 * 16.));
         let entry = item.id;
         Some(
             h_flex()
                 .flex_wrap()
                 .gap_2()
                 .children(item.images.iter().map(|image| {
-                    let source = self
-                        .image(image.id)
-                        .map(|bytes| LruImageCache::source(&self.image_cache, bytes, Some(fit)));
                     let view = view.downgrade();
                     let id = image.id;
                     Thumbnail {
-                        id: ElementId::Name(format!("image-{entry}-{id}").into()),
-                        source,
+                        id: ("image", id).into(),
+                        image: self.image(id),
+                        cache: self.image_cache.clone(),
                         caption: super::image_caption(&image.label, image.bytes).into(),
                         on_open: Rc::new(move |window, cx| {
                             view.update(cx, |this, cx| this.open_image(entry, id, window, cx))
@@ -1386,13 +1384,18 @@ impl OutputViewer {
         let list = ListState::new(lines.len(), ListAlignment::Top, px(400.));
         Self { text, lines, list }
     }
+
+    /// What Copy all copies: the output itself, shared, not a copy of it
+    /// made with each frame.
+    fn copy_value(&self) -> SharedString {
+        self.text.clone().into()
+    }
 }
 
 impl Render for OutputViewer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let viewer = cx.entity().downgrade();
-        let copy: SharedString = self.text.to_string().into();
         v_flex()
             .gap_2()
             .child(
@@ -1427,7 +1430,7 @@ impl Render for OutputViewer {
                 h_flex().justify_end().child(
                     Clipboard::new("copy-output")
                         .tooltip("Copy all")
-                        .value(copy),
+                        .value(self.copy_value()),
                 ),
             )
     }
@@ -1530,7 +1533,7 @@ impl RenderOnce for HoverActions {
 }
 
 /// A thumbnail's size, in rem: up to four fit the reading column.
-const THUMBNAIL: (f32, f32) = (10., 7.5);
+pub(super) const THUMBNAIL: (f32, f32) = (10., 7.5);
 
 /// What a click on a thumbnail or a toggle does.
 type Callback = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -1541,7 +1544,8 @@ type Callback = Rc<dyn Fn(&mut Window, &mut App)>;
 struct Thumbnail {
     id: ElementId,
     /// `None` when the session's store no longer keeps the image.
-    source: Option<ImageSource>,
+    image: Option<Arc<Image>>,
+    cache: Entity<LruImageCache>,
     caption: SharedString,
     on_open: Callback,
 }
@@ -1577,8 +1581,16 @@ impl RenderOnce for Thumbnail {
             .bg(theme.muted)
             .focus(|this| this.border_color(theme.ring))
             .tooltip(move |window, cx| Tooltip::new(caption.clone()).build(window, cx))
-            .map(|this| match self.source {
-                Some(source) => this.child(img(source).size_full().object_fit(ObjectFit::Contain)),
+            .map(|this| match self.image {
+                Some(image) => {
+                    // Decoded at the tile's size, which the rem sets (the UI
+                    // font size and the zoom); the cache applies the
+                    // screen's scale.
+                    let rem = window.rem_size();
+                    let fit = size(rem * THUMBNAIL.0, rem * THUMBNAIL.1);
+                    let source = LruImageCache::source(&self.cache, image, Some(fit));
+                    this.child(img(source).size_full().object_fit(ObjectFit::Contain))
+                }
                 None => this
                     .text_xs()
                     .text_color(theme.muted_foreground)
@@ -1596,8 +1608,20 @@ impl RenderOnce for Thumbnail {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{apply_diff_patch, code_lines, duration, edit_diff, longest_code, preview};
+    use super::{
+        OutputViewer, apply_diff_patch, code_lines, duration, edit_diff, longest_code, preview,
+    };
     use arko::remote::{Item, Kind};
+    use gpui_kit::AppContext as _;
+    use std::sync::Arc;
+
+    #[gpui_kit::test]
+    fn the_output_dialogs_copy_shares_the_output(cx: &mut gpui_kit::TestAppContext) {
+        let text: Arc<str> = "line\n".repeat(100_000).into();
+        let viewer = cx.new(|cx| OutputViewer::new(text.clone(), cx));
+        let copy = cx.read(|cx| viewer.read(cx).copy_value());
+        assert_eq!(copy.as_ptr(), text.as_ptr());
+    }
 
     #[test]
     fn an_edits_diff_is_numbered_from_the_line_it_changed() {

@@ -41,10 +41,19 @@ impl AgentFilter {
     }
 }
 
-/// The bytes of whole call outputs a transcript keeps, the latest first: as
-/// much again as the feed keeps per lane (it keeps them for the latest calls
-/// only, and the transcript keeps what came in its updates).
+/// The bytes of calls' parameters and whole outputs a transcript keeps, the
+/// latest first: as much again as the feed keeps per lane (it keeps them for
+/// the latest calls only, and the transcript keeps what came in its
+/// updates).
 pub(crate) const KEPT_OUTPUTS: usize = 8 * 1024 * 1024;
+
+/// The bytes of `item` that count in [`KEPT_OUTPUTS`].
+fn kept_size(item: &Item) -> usize {
+    [&item.parameters, &item.output, &item.whole]
+        .into_iter()
+        .map(|part| part.as_ref().map_or(0, |part| part.len()))
+        .sum()
+}
 
 /// An item of the transcript, and the result block under it for a call.
 #[derive(Debug, Clone)]
@@ -134,8 +143,12 @@ impl Model {
     pub fn load(&mut self, snapshot: Snapshot, changes: &mut Changes) {
         self.entries.clear();
         self.cut = None;
+        let mut kept = false;
         for item in snapshot.items {
-            self.add(item, changes);
+            kept |= self.add(item, changes);
+        }
+        if kept {
+            self.keep_outputs_within_budget();
         }
         self.workers = snapshot.workers;
         self.activity = snapshot.activity;
@@ -154,7 +167,11 @@ impl Model {
 
     pub fn apply(&mut self, update: Update, changes: &mut Changes) {
         match update {
-            Update::Item(item) => self.add(item, changes),
+            Update::Item(item) => {
+                if self.add(item, changes) {
+                    self.keep_outputs_within_budget();
+                }
+            }
             Update::Append { id, text } => {
                 if let Ok(ix) = self.position(id) {
                     self.entries[ix].item.text.push_str(&text);
@@ -181,16 +198,20 @@ impl Model {
                         if item.images.is_empty() {
                             item.images = std::mem::take(&mut old.images);
                         }
-                        let output = item.output.is_some();
+                        let kept = kept_size(&item) > 0;
                         entry.item = item;
                         changes.changed.push(id);
-                        if output {
+                        if kept {
                             self.keep_outputs_within_budget();
                         }
                     }
                     // A change of an item never seen: one from before this
                     // client, or one the filter left out.
-                    Err(_) => self.add(item, changes),
+                    Err(_) => {
+                        if self.add(item, changes) {
+                            self.keep_outputs_within_budget();
+                        }
+                    }
                 }
             }
             Update::Worker(summary) => {
@@ -222,7 +243,10 @@ impl Model {
         }
     }
 
-    fn add(&mut self, item: Item, changes: &mut Changes) {
+    /// Adds `item`, and returns whether it brought bytes that count in
+    /// [`KEPT_OUTPUTS`].
+    fn add(&mut self, item: Item, changes: &mut Changes) -> bool {
+        let kept = kept_size(&item) > 0;
         let main = matches!(self.filter, AgentFilter::Main);
         if item.kind == Kind::Conversation {
             if main && item.is_main() {
@@ -232,23 +256,20 @@ impl Model {
                 self.entries.push(Entry { item, result: None });
                 changes.reset = true;
             }
-            return;
+            return false;
         }
         if self.cut.is_some_and(|cut| item.id < cut) || !self.filter.keeps(&item) {
-            return;
+            return false;
         }
         if item.kind == Kind::Result {
             if let Some(call) = item.call
                 && let Ok(ix) = self.position(call)
             {
-                let whole = item.whole.is_some();
                 self.entries[ix].result = Some(item);
                 changes.changed.push(call);
-                if whole {
-                    self.keep_outputs_within_budget();
-                }
+                return kept;
             }
-            return;
+            return false;
         }
         let id = item.id;
         match self.position(id) {
@@ -262,26 +283,27 @@ impl Model {
                 changes.added.push(id);
             }
         }
+        kept
     }
 
-    /// Lets go of the oldest calls' whole outputs past [`KEPT_OUTPUTS`]
-    /// bytes: the latest stay, and the older calls keep their lines.
+    /// Lets go of the oldest calls' parameters and whole outputs past
+    /// [`KEPT_OUTPUTS`] bytes: the latest stay, and the older calls keep
+    /// their lines.
     fn keep_outputs_within_budget(&mut self) {
-        let size = |entry: &Entry| {
-            let len = |text: &Option<std::sync::Arc<str>>| text.as_ref().map_or(0, |t| t.len());
-            len(&entry.item.output)
-                + len(&entry.item.whole)
-                + entry.result.as_ref().map_or(0, |result| len(&result.whole))
-        };
+        let size =
+            |entry: &Entry| kept_size(&entry.item) + entry.result.as_ref().map_or(0, kept_size);
         let mut total: usize = self.entries.iter().map(size).sum();
         for entry in &mut self.entries {
             if total <= KEPT_OUTPUTS {
                 break;
             }
             total -= size(entry);
+            entry.item.parameters = None;
             entry.item.output = None;
             entry.item.whole = None;
             if let Some(result) = &mut entry.result {
+                result.parameters = None;
+                result.output = None;
                 result.whole = None;
             }
         }
@@ -1003,6 +1025,41 @@ mod tests {
             .map(|entry| entry.item.output.is_some())
             .collect();
         assert_eq!(kept, [false, true, true, true]);
+    }
+
+    #[test]
+    fn the_parameters_of_the_oldest_calls_go_past_the_budget_too() {
+        let mut model = model(Vec::new());
+        // Twenty files of 1 MB written, as their calls come from the feed:
+        // the call with its parameters, then its change with the result.
+        let file = "x".repeat(1024 * 1024);
+        for id in 1..=20 {
+            let mut call = item(id, Kind::Call, "main", "write a.rs");
+            call.tool = Some("write_file".into());
+            call.parameters = Some(format!("{{\"content\":\"{file}\"}}").into());
+            model.apply(Update::Item(call.clone()), &mut Changes::default());
+            call.parameters = None;
+            call.status = Some(CallStatus::Ok);
+            call.output = Some("Wrote a.rs".into());
+            model.apply(Update::Change(call), &mut Changes::default());
+        }
+        let kept: usize = model.entries().iter().map(|e| kept_size(&e.item)).sum();
+        assert!(kept <= KEPT_OUTPUTS, "{kept}");
+        let with_parameters: Vec<u64> = model
+            .entries()
+            .iter()
+            .filter(|entry| entry.item.parameters.is_some())
+            .map(|entry| entry.item.id)
+            .collect();
+        assert_eq!(with_parameters, (14..=20).collect::<Vec<_>>());
+        // A history loaded at once keeps within it as well.
+        let mut items: Vec<Item> = model.entries().iter().map(|e| e.item.clone()).collect();
+        for item in &mut items {
+            item.parameters = Some(format!("{{\"content\":\"{file}\"}}").into());
+        }
+        let loaded = self::model(items);
+        let kept: usize = loaded.entries().iter().map(|e| kept_size(&e.item)).sum();
+        assert!(kept <= KEPT_OUTPUTS, "{kept}");
     }
 
     #[test]
