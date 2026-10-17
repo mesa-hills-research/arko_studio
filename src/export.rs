@@ -318,6 +318,47 @@ pub fn file_name(title: &str) -> String {
     }
 }
 
+/// A file in `folder` named `name`, or `name` with a number when that one
+/// is taken (`Notes 2.md`).
+pub fn free_path(folder: &Path, name: &str) -> PathBuf {
+    let path = folder.join(name);
+    if !path.exists() {
+        return path;
+    }
+    let (stem, extension) = name.rsplit_once('.').unwrap_or((name, "md"));
+    (2..)
+        .map(|number| folder.join(format!("{stem} {number}.{extension}")))
+        .find(|path| !path.exists())
+        .expect("a free name")
+}
+
+/// Writes `text` to `path` whole: to a file beside it first, which then
+/// takes its name. A failed write leaves the file that was there as it was.
+pub fn write(path: &Path, text: &str) -> std::io::Result<()> {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let beside = path.with_file_name(format!(".{name}.part"));
+    let written = std::fs::write(&beside, text).and_then(|()| std::fs::rename(&beside, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&beside);
+    }
+    written
+}
+
+/// Why a write failed, in plain words.
+pub fn why(error: &std::io::Error) -> String {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::PermissionDenied => "Arko isn’t allowed to write there.".to_string(),
+        ErrorKind::NotFound => "The folder isn’t there anymore.".to_string(),
+        ErrorKind::StorageFull => "The disk is full.".to_string(),
+        ErrorKind::ReadOnlyFilesystem => "The disk is read-only.".to_string(),
+        _ => format!("The system said “{error}”."),
+    }
+}
+
 /// Where the save dialog opens: the folder the session worked in, else the
 /// home folder.
 pub fn folder(workspace: Option<&Path>, home: Option<&Path>) -> PathBuf {
@@ -333,7 +374,7 @@ mod engine_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{Header, code, file_name, markdown};
+    use super::{Header, code, file_name, free_path, markdown, why, write};
     use arko::remote::{CallStatus, Item, Kind, Level};
 
     fn item(kind: Kind, text: &str) -> Item {
@@ -503,6 +544,25 @@ Thanks.
             ),
             "{text}"
         );
+    }
+
+    #[test]
+    fn an_export_is_written_whole_beside_a_taken_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path();
+        assert_eq!(free_path(folder, "Notes.md"), folder.join("Notes.md"));
+        std::fs::write(folder.join("Notes.md"), "old").unwrap();
+        assert_eq!(free_path(folder, "Notes.md"), folder.join("Notes 2.md"));
+        write(&folder.join("Notes.md"), "new").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(folder.join("Notes.md")).unwrap(),
+            "new"
+        );
+        // Nothing is left beside it.
+        assert_eq!(std::fs::read_dir(folder).unwrap().count(), 1);
+        // A folder that isn't there says so plainly.
+        let error = write(&folder.join("gone/Notes.md"), "x").unwrap_err();
+        assert_eq!(why(&error), "The folder isn’t there anymore.");
     }
 
     #[test]

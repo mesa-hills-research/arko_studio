@@ -7,6 +7,7 @@
 //! message, a note while a turn runs, the answer to the agent's question,
 //! or a command the app runs itself.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -798,43 +799,68 @@ impl SessionView {
             when: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
             starts_partway,
         };
-        let text = crate::export::markdown(&header, &items);
+        let export = Export {
+            text: crate::export::markdown(&header, &items),
+            starts_partway,
+        };
         let folder = crate::export::folder(
             session.workspace().map(PathBuf::as_path),
             self.home.as_deref(),
         );
-        let chosen =
-            cx.prompt_for_new_path(&folder, Some(&crate::export::file_name(session.title())));
-        cx.spawn_in(window, async move |_, cx| {
-            let Ok(Ok(Some(path))) = chosen.await else {
-                return;
-            };
-            // Written off the UI thread.
-            let written = cx
-                .background_spawn({
-                    let path = path.clone();
-                    async move { std::fs::write(&path, text) }
-                })
-                .await;
-            cx.update(|window, cx| match written {
-                Ok(()) => {
-                    let mut said = format!("Exported to {}.", path.display());
-                    if starts_partway {
-                        said.push_str(" It starts partway, without the earliest messages.");
-                    }
-                    window.push_notification(said, cx)
+        let name = crate::export::file_name(session.title());
+        let chosen = cx.prompt_for_new_path(&folder, Some(&name));
+        cx.spawn_in(window, async move |this, cx| {
+            let answer = chosen
+                .await
+                .map_err(|_| "it closed without an answer".to_string());
+            let path = match answer.and_then(|chosen| chosen.map_err(|error| error.to_string())) {
+                Ok(Some(path)) => path,
+                // Cancelled.
+                Ok(None) => return,
+                Err(why) => {
+                    let instead = crate::export::free_path(&folder, &name);
+                    this.update_in(cx, |this, window, cx| {
+                        this.offer_export_to(export, instead, why, window, cx)
+                    })
+                    .ok();
+                    return;
                 }
-                Err(error) => window.push_notification(
-                    gpui_kit::component::notification::Notification::error(format!(
-                        "Couldn’t export to {}: {error}.",
-                        path.display()
-                    )),
-                    cx,
-                ),
-            })
-            .ok();
+            };
+            cx.update(|window, cx| write_export(export, path, window, cx))
+                .ok();
         })
         .detach();
+    }
+
+    /// The save dialog couldn't open (on Linux, without a desktop portal):
+    /// asks whether to save the export as `path` instead.
+    pub(crate) fn offer_export_to(
+        &mut self,
+        export: Export,
+        path: PathBuf,
+        why: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let description = format!(
+            "The save dialog couldn’t open ({why}). Save the conversation as {} instead?",
+            path.display()
+        );
+        let export = Rc::new(RefCell::new(Some(export)));
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let (export, path) = (export.clone(), path.clone());
+            dialog
+                .title("Export as Markdown")
+                .description(description.clone())
+                .confirm()
+                .ok_text("Save")
+                .on_ok(move |_, window, cx| {
+                    if let Some(export) = export.borrow_mut().take() {
+                        write_export(export, path.clone(), window, cx);
+                    }
+                    true
+                })
+        });
     }
 
     /// The keyboard goes to the transcript's rows, or from them back to the
@@ -2864,6 +2890,47 @@ impl Render for SessionView {
                     .child(self.render_composer(window, cx)),
             )
     }
+}
+
+/// A conversation exported as Markdown, ready to write.
+pub(crate) struct Export {
+    pub text: String,
+    /// It starts partway through the conversation.
+    pub starts_partway: bool,
+}
+
+/// Writes `export` to `path` off the UI thread, and says how it went. It
+/// goes to a file beside `path` first, which then takes its name, so a
+/// failed write leaves a file that was there whole.
+fn write_export(export: Export, path: PathBuf, window: &mut Window, cx: &mut App) {
+    let written = cx.background_spawn({
+        let path = path.clone();
+        async move { crate::export::write(&path, &export.text) }
+    });
+    let starts_partway = export.starts_partway;
+    window
+        .spawn(cx, async move |cx| {
+            let written = written.await;
+            cx.update(|window, cx| match written {
+                Ok(()) => {
+                    let mut said = format!("Exported to {}.", path.display());
+                    if starts_partway {
+                        said.push_str(" It starts partway, without the earliest messages.");
+                    }
+                    window.push_notification(said, cx)
+                }
+                Err(error) => window.push_notification(
+                    gpui_kit::component::notification::Notification::error(format!(
+                        "Couldn’t export to {}. {}",
+                        path.display(),
+                        crate::export::why(&error)
+                    )),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
 }
 
 #[cfg(test)]

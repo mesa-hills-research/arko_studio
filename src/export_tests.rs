@@ -69,3 +69,38 @@ fn export_writes_the_conversation_where_the_user_chooses(cx: &mut TestAppContext
         cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
     });
 }
+
+/// The save dialog can't open (Linux without a desktop portal): Arko offers
+/// to save the conversation in the folder the dialog would have opened.
+#[gpui_kit::test]
+fn when_the_save_dialog_cant_open_the_export_is_offered_a_place(cx: &mut TestAppContext) {
+    use crate::backend::FakeBackend;
+    use gpui_kit::component::WindowExt as _;
+
+    let temp = tempfile::tempdir().unwrap();
+    let backend = Arc::new(FakeBackend::sample("/arko", std::time::SystemTime::now()));
+    cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    let (window, workspace) = open(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let path = crate::export::free_path(temp.path(), "Pears.md");
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.offer_export_to(
+                crate::session_view::Export {
+                    text: "# Pears\n".into(),
+                    starts_partway: false,
+                },
+                path.clone(),
+                "no portal".into(),
+                window,
+                cx,
+            )
+        })
+    });
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        window.within("dialog").click("ok", cx)
+    });
+    wait_until(cx, "the file", |_| path.exists());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Pears\n");
+}
