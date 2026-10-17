@@ -175,6 +175,9 @@ impl Model {
                         item.parameters = item.parameters.or_else(|| old.parameters.take());
                         item.output = item.output.or_else(|| old.output.take());
                         item.whole = item.whole.or_else(|| old.whole.take());
+                        if item.images.is_empty() {
+                            item.images = std::mem::take(&mut old.images);
+                        }
                         let output = item.output.is_some();
                         entry.item = item;
                         changes.changed.push(id);

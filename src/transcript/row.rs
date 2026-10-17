@@ -1,10 +1,12 @@
 //! How each row of the transcript draws.
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use arko::remote::{CallStatus, Delivery, Item, Kind, Level, Source, WorkerState};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::Easing;
+use gpui_kit::base::image_cache::LruImageCache;
 use gpui_kit::base::text::{TextView, TextViewMotion};
 use gpui_kit::component::text::TextBlockContent;
 use gpui_kit::component::{
@@ -15,6 +17,7 @@ use gpui_kit::component::{
     h_flex,
     shimmer::ShimmerText,
     spinner::Spinner,
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -331,6 +334,7 @@ impl TranscriptView {
                         .child(tags.join(" · ")),
                 )
             })
+            .children(self.thumbnails(item, view, cx))
             .child(selectable(("user-text", id), text))
             // Copy shows on hover. TODO: Edit and Branch join it.
             .child(
@@ -675,6 +679,10 @@ impl TranscriptView {
         v_flex()
             .w_full()
             .child(div().id(("call-row", id)).test_support().child(header))
+            .children(
+                self.thumbnails(item, view, cx)
+                    .map(|thumbnails| div().pl_6().pt_1().child(thumbnails)),
+            )
             .when(open, |this| this.child(self.call_details(id, cx)))
             .into_any_element()
     }
@@ -780,8 +788,6 @@ impl TranscriptView {
                 }
             }
         }
-        // TODO: thumbnails of the images a tool returned, once the feed
-        // carries them.
         details.into_any_element()
     }
 
@@ -894,6 +900,43 @@ impl TranscriptView {
                 view.update(cx, |this, cx| this.open_run(id, cx)).ok();
             })
             .into_any_element()
+    }
+
+    /// The images an item shows (the user's attachments, what a tool
+    /// returned), as tiles of a fixed size, so a row's height doesn't change
+    /// when an image is decoded. Each is scaled down on a background thread
+    /// through the transcript's image cache.
+    fn thumbnails(&self, item: &Item, view: &Entity<Self>, cx: &App) -> Option<AnyElement> {
+        if item.images.is_empty() {
+            return None;
+        }
+        let theme = cx.theme();
+        let fit = size(px(THUMBNAIL.0 * 16.), px(THUMBNAIL.1 * 16.));
+        let entry = item.id;
+        Some(
+            h_flex()
+                .flex_wrap()
+                .gap_2()
+                .children(item.images.iter().map(|image| {
+                    let source = self
+                        .image(image.id)
+                        .map(|bytes| LruImageCache::source(&self.image_cache, bytes, Some(fit)));
+                    let view = view.downgrade();
+                    let id = image.id;
+                    Thumbnail {
+                        id: ElementId::Name(format!("image-{entry}-{id}").into()),
+                        source,
+                        caption: super::image_caption(&image.label, image.bytes).into(),
+                        on_open: Rc::new(move |window, cx| {
+                            view.update(cx, |this, cx| this.open_image(entry, id, window, cx))
+                                .ok();
+                        }),
+                    }
+                    .into_any_element()
+                }))
+                .text_color(theme.muted_foreground)
+                .into_any_element(),
+        )
     }
 
     fn notice(&self, id: u64, cx: &App) -> AnyElement {
@@ -1124,6 +1167,70 @@ impl Render for OutputViewer {
                         .value(copy),
                 ),
             )
+    }
+}
+
+/// A thumbnail's size, in rem: up to four fit the reading column.
+const THUMBNAIL: (f32, f32) = (10., 7.5);
+
+/// What opening a thumbnail does.
+type OpenImage = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// One image of a row, as a tile that opens the image viewer (a click, or
+/// Enter when it has the focus, which it gets back when the viewer closes).
+#[derive(IntoElement)]
+struct Thumbnail {
+    id: ElementId,
+    /// `None` when the session's store no longer keeps the image.
+    source: Option<ImageSource>,
+    caption: SharedString,
+    on_open: OpenImage,
+}
+
+impl RenderOnce for Thumbnail {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = window
+            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        let theme = cx.theme();
+        let caption = self.caption.clone();
+        let (click, key) = (self.on_open.clone(), self.on_open);
+        let click_focus = focus.clone();
+        div()
+            .id(self.id)
+            .test_support()
+            .track_focus(&focus)
+            .flex_none()
+            .w(rems(THUMBNAIL.0))
+            .h(rems(THUMBNAIL.1))
+            .flex()
+            .items_center()
+            .justify_center()
+            .overflow_hidden()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.muted)
+            .focus(|this| this.border_color(theme.ring))
+            .tooltip(move |window, cx| Tooltip::new(caption.clone()).build(window, cx))
+            .map(|this| match self.source {
+                Some(source) => this.child(img(source).size_full().object_fit(ObjectFit::Contain)),
+                None => this
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child("Image not kept"),
+            })
+            .on_click(move |_, window, cx| {
+                click_focus.focus(window, cx);
+                click(window, cx);
+            })
+            .on_key_down(move |event, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.stop_propagation();
+                    key(window, cx);
+                }
+            })
     }
 }
 

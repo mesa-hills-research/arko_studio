@@ -20,15 +20,19 @@ mod row;
 mod tests;
 mod tool;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use arko::remote::{CallStatus, Feed, Kind};
 use gpui_kit::base::image_cache::LruImageCache;
 use gpui_kit::base::{SelectableText, TextSelection};
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::diff_view::DiffViewState;
+use gpui_kit::component::image_viewer::ImageViewerItem;
 use gpui_kit::component::input;
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::text::{TextBlockContent, TextBlockId, TextViewState};
@@ -130,6 +134,9 @@ struct EntryUi {
 /// Returns the current time in Unix milliseconds.
 pub type Clock = Rc<dyn Fn() -> i64>;
 
+/// Reads an image's bytes and MIME type by its ID in the session's store.
+type ImageLookup = Rc<dyn Fn(u64) -> Option<(Arc<[u8]>, String)>>;
+
 /// A session's transcript (the main agent's, or a worker's).
 pub struct TranscriptView {
     model: Model,
@@ -153,6 +160,10 @@ pub struct TranscriptView {
     /// Draws again every second while a call or a worker runs.
     ticker: Option<Task<()>>,
     image_cache: Entity<LruImageCache>,
+    /// Where the images the items show are read: the session's store.
+    images: Option<ImageLookup>,
+    /// The images read so far, by ID, ready for the image cache.
+    image_sources: RefCell<HashMap<u64, Arc<Image>>>,
     renders: usize,
     _prefs: Subscription,
 }
@@ -199,6 +210,8 @@ impl TranscriptView {
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
             image_cache: LruImageCache::new(IMAGE_BUDGET, cx),
+            images: None,
+            image_sources: RefCell::default(),
             renders: 0,
             _prefs: observe_prefs,
         };
@@ -254,6 +267,32 @@ impl TranscriptView {
         if current.unwrap_or(default) != open {
             self.toggle(item, default, cx);
         }
+    }
+
+    /// Shows the images the items show (the user's attachments, what tools
+    /// returned) from `images`, the session's store.
+    pub fn set_images(&mut self, images: arko::images::Images, cx: &mut Context<Self>) {
+        self.set_image_lookup(
+            move |id| {
+                images
+                    .get(id)
+                    .map(|image| (image.bytes.clone(), image.mime.clone()))
+            },
+            cx,
+        );
+    }
+
+    /// Reads images by ID from `lookup` instead of a session's store: for
+    /// tests and screenshots.
+    #[doc(hidden)]
+    pub fn set_image_lookup(
+        &mut self,
+        lookup: impl Fn(u64) -> Option<(Arc<[u8]>, String)> + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.images = Some(Rc::new(lookup));
+        self.image_sources.borrow_mut().clear();
+        cx.notify();
     }
 
     /// Reads the time from `clock` instead of the system's: for tests and
@@ -704,6 +743,44 @@ impl TranscriptView {
         )
     }
 
+    /// The image `id` of the session's store, ready to draw, while the
+    /// store keeps it.
+    fn image(&self, id: u64) -> Option<Arc<Image>> {
+        if let Some(image) = self.image_sources.borrow().get(&id) {
+            return Some(image.clone());
+        }
+        let (bytes, mime) = (self.images.as_ref()?)(id)?;
+        let format = ImageFormat::from_mime_type(&mime)?;
+        let image = Arc::new(Image::from_bytes(format, bytes.to_vec()));
+        self.image_sources.borrow_mut().insert(id, image.clone());
+        Some(image)
+    }
+
+    /// Opens the image viewer on the image `image` of the entry `entry`,
+    /// with every image of the conversation to browse, in order.
+    fn open_image(&mut self, entry: u64, image: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let mut items = Vec::new();
+        let mut selected = 0;
+        for shown in self.model.entries() {
+            for image_ref in &shown.item.images {
+                let Some(source) = self.image(image_ref.id) else {
+                    continue;
+                };
+                if shown.item.id == entry && image_ref.id == image {
+                    selected = items.len();
+                }
+                let caption = image_caption(&image_ref.label, image_ref.bytes);
+                items.push(
+                    ImageViewerItem::new(LruImageCache::source(&self.image_cache, source, None))
+                        .with_caption(caption),
+                );
+            }
+        }
+        if !items.is_empty() {
+            window.open_image_viewer(items, selected, cx);
+        }
+    }
+
     fn copy_entry(&mut self, id: u64, markdown: bool, cx: &mut Context<Self>) {
         if let Some(text) = self.entry_text(id, markdown, cx) {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -789,4 +866,18 @@ impl Render for TranscriptView {
 /// Plain text that takes part in the window's selection, in a row.
 fn selectable(id: impl Into<ElementId>, text: impl Into<SharedString>) -> SelectableText {
     SelectableText::new(id, text)
+}
+
+/// "screenshot.png · 240 KB": an image's label and size.
+fn image_caption(label: &str, bytes: usize) -> String {
+    let size = match bytes {
+        0..1024 => format!("{bytes} B"),
+        1024..1_048_576 => format!("{} KB", bytes.div_ceil(1024)),
+        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.),
+    };
+    if label.is_empty() {
+        size
+    } else {
+        format!("{label} · {size}")
+    }
 }
