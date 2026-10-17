@@ -31,6 +31,10 @@ pub const EARLY_MS: i64 = 5 * 60_000;
 pub const FINAL_MS: i64 = 60_000;
 /// Caches that last less than this get only the last reminder.
 pub const EARLY_FROM_LIFETIME: Duration = Duration::from_secs(15 * 60);
+/// The longest the reminders wait before they look again. Timers stand
+/// still while the computer sleeps, and the cache's lifetime runs on: a
+/// reminder due meanwhile comes this long after it wakes, at the most.
+pub const RECHECK_MS: i64 = 30_000;
 /// Sessions the user hadn't touched for this long when their idle period
 /// started get no reminders.
 pub const UNTOUCHED_MS: i64 = 60 * 60_000;
@@ -251,7 +255,7 @@ impl CacheReminders {
         self._timer = next.map(|wait| {
             cx.spawn(async move |this, cx| {
                 cx.background_executor()
-                    .timer(Duration::from_millis(wait.max(1) as u64))
+                    .timer(Duration::from_millis(wait.clamp(1, RECHECK_MS) as u64))
                     .await;
                 this.update(cx, |this, cx| this.check(cx)).ok();
             })
@@ -661,11 +665,18 @@ mod tests {
             }
         }
 
+        /// Moves both clocks on by `ms`, a second at a time: the wall clock
+        /// the reminders read, and GPUI's (its timers).
         fn advance(&self, cx: &mut TestAppContext, ms: i64) {
-            self.now.set(self.now.get() + ms);
-            cx.executor()
-                .advance_clock(Duration::from_millis(ms as u64));
-            cx.run_until_parked();
+            let mut left = ms;
+            while left > 0 {
+                let step = left.min(1_000);
+                left -= step;
+                self.now.set(self.now.get() + step);
+                cx.executor()
+                    .advance_clock(Duration::from_millis(step as u64));
+                cx.run_until_parked();
+            }
         }
 
         fn sent(&self, cx: &mut TestAppContext) -> Sent {
@@ -784,6 +795,19 @@ mod tests {
         reminded.advance(cx, 4 * 60_000);
         assert!(reminded.sent(cx).last);
         assert!(reminded.shows(cx, "cache-countdown"));
+    }
+
+    /// A reminder due while the computer slept comes after it wakes: its
+    /// timers stood still, the cache's lifetime didn't.
+    #[gpui_kit::test]
+    fn a_reminder_due_during_sleep_comes_after_waking(cx: &mut TestAppContext) {
+        // An hour-long cache. The computer sleeps 57 minutes, and wakes with
+        // 3 minutes left: the first reminder is overdue.
+        let reminded = Reminded::new(cx, 60, 0);
+        reminded.now.set(reminded.now.get() + 57 * 60_000);
+        reminded.advance(cx, 30_000);
+        assert!(reminded.sent(cx).early);
+        assert_eq!(reminded.notes(cx), 1);
     }
 
     /// An hour-long cache gets a first reminder 5 minutes before.
