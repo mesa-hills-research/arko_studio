@@ -1,7 +1,9 @@
 //! Interaction tests of the composer and the session's dialogs, on the fake
 //! backend's sample sessions (which show, but don't run).
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -10,6 +12,7 @@ use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AnyWindowHandle, AppContext as _, ClipboardItem, Entity, TestAppContext};
 
 use crate::backend::FakeBackend;
+use crate::composer::ComposerEvent;
 use crate::live::{PromptAnswer, PromptKind};
 use crate::prefs::{self, SendKey};
 use crate::tests::{act, open, open_title, row_of};
@@ -180,6 +183,65 @@ fn the_send_key_follows_settings_and_mod_enter_always_sends(cx: &mut TestAppCont
     assert_eq!(composer_text(&workspace, cx), "Three\n");
     act(cx, window, |window, cx| window.press("shift-enter", cx));
     assert_eq!(composer_text(&workspace, cx), "");
+}
+
+#[gpui_kit::test]
+fn the_slash_menu_takes_tab_and_enter_and_mod_enter_sends_as_typed(cx: &mut TestAppContext) {
+    let (_, window, workspace) = start(cx);
+    let composer = cx.read(|cx| {
+        workspace
+            .read(cx)
+            .session_view()
+            .read(cx)
+            .composer()
+            .clone()
+    });
+    let sent: Rc<RefCell<Vec<String>>> = Rc::default();
+    let _subscription = cx.update(|cx| {
+        let sent = sent.clone();
+        cx.subscribe(&composer, move |_, event, _| {
+            if let ComposerEvent::Submit(outgoing) = event {
+                sent.borrow_mut().push(outgoing.text.clone());
+            }
+        })
+    });
+    // Types `text` into an empty composer, workers r1, r10 and r11 running.
+    let type_text = |text: &str, cx: &mut TestAppContext| {
+        let reading = Arc::new(arko::remote::Reading {
+            workers_running: vec!["r1".into(), "r10".into(), "r11".into()],
+            ..arko::remote::Reading::default()
+        });
+        cx.update(|cx| {
+            composer.update(cx, |composer, _| {
+                composer.set_session_state(reading, false, true)
+            })
+        });
+        act(cx, window, |window, cx| {
+            composer.update(cx, |composer, cx| composer.set_text("", window, cx))
+        });
+        act(cx, window, |window, cx| window.input(text, cx));
+    };
+
+    // Tab and Enter take the highlighted word.
+    type_text("/stop-workers r", cx);
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(composer_text(&workspace, cx), "/stop-workers r1 ");
+    type_text("/stop-workers r1", cx);
+    act(cx, window, |window, cx| window.press("tab", cx));
+    assert_eq!(composer_text(&workspace, cx), "/stop-workers r10 ");
+    assert!(sent.borrow().is_empty());
+    // A command typed in full goes as typed, though r10 and r11 are offered.
+    type_text("/stop-workers r1", cx);
+    assert!(cx.read(|cx| composer.read(cx).menu().is_some()));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(*sent.borrow(), ["/stop-workers r1"]);
+    // Mod+Enter sends what is typed, whatever the menu offers.
+    type_text("/stop-workers r", cx);
+    act(cx, window, |window, cx| window.press("secondary-enter", cx));
+    assert_eq!(
+        sent.borrow().last().map(String::as_str),
+        Some("/stop-workers r")
+    );
 }
 
 #[gpui_kit::test]

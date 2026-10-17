@@ -186,6 +186,9 @@ pub struct SlashMenu {
     pub selected: usize,
     /// The bytes a choice replaces.
     pub range: Range<usize>,
+    /// What is typed is a whole command already (`/cost`, `/stop-workers
+    /// r1` with r10 running too): Enter sends it as it is.
+    pub complete: bool,
 }
 
 /// The commands the menu offers: the session's, and the screen ones the
@@ -212,10 +215,12 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
                 more: !command.args.is_empty(),
             })
             .collect();
+        let complete = items.iter().any(|item| item.insert == text && !item.more);
         return (!items.is_empty()).then_some(SlashMenu {
             items,
             selected: 0,
             range: 0..text.len(),
+            complete,
         });
     };
     let name = &text[..space];
@@ -229,7 +234,9 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
     };
     let start = text.len() - partial.len();
     let lower = partial.to_lowercase();
-    let items: Vec<MenuItem> = arko::commands::dynamic_choices(reading, command.name, &words)
+    let choices = arko::commands::dynamic_choices(reading, command.name, &words);
+    let complete = !partial.is_empty() && choices.iter().any(|word| word == partial);
+    let items: Vec<MenuItem> = choices
         .into_iter()
         .filter(|word| word.to_lowercase().starts_with(&lower) && *word != partial)
         .map(|word| MenuItem {
@@ -244,6 +251,7 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
         items,
         selected: 0,
         range: start..text.len(),
+        complete,
     })
 }
 
@@ -525,7 +533,9 @@ impl Composer {
                 if !textarea.read(cx).is_submit_chord(*secondary, *shift) {
                     return;
                 }
-                if self.menu.is_some() && !self.menu_completes_text(cx) {
+                // Mod+Enter always sends the text as typed. The send key
+                // takes the menu's choice, unless what is typed is whole.
+                if !*secondary && self.menu.as_ref().is_some_and(|menu| !menu.complete) {
                     self.accept_menu(window, cx);
                 } else {
                     self.submit(cx);
@@ -576,16 +586,6 @@ impl Composer {
             }
             menu
         });
-    }
-
-    /// The menu's choice is what is typed already: Enter sends it.
-    fn menu_completes_text(&self, cx: &App) -> bool {
-        let Some(menu) = &self.menu else {
-            return false;
-        };
-        let text = self.text(cx);
-        let item = &menu.items[menu.selected];
-        text[menu.range.clone()] == item.insert && !item.more
     }
 
     /// Puts the menu's selected choice in the field.
@@ -713,13 +713,23 @@ impl Composer {
 
     fn on_enter(&mut self, enter: &Enter, window: &mut Window, cx: &mut Context<Self>) {
         // A chord that sends reaches the view through `PressEnter`. One that
-        // breaks a line chooses from the menu instead while it is open.
+        // breaks a line chooses from the menu instead while it is open, or
+        // closes it over a whole command, which it leaves as typed.
         let sends = self
             .textarea
             .read(cx)
             .is_submit_chord(enter.secondary, enter.shift);
-        if self.menu.is_some() && !sends {
-            self.accept_menu(window, cx);
+        let Some(menu) = &self.menu else {
+            return;
+        };
+        if !sends {
+            if menu.complete {
+                self.menu = None;
+                self.dismissed = Some(self.text(cx));
+                cx.notify();
+            } else {
+                self.accept_menu(window, cx);
+            }
             cx.stop_propagation();
         }
     }
@@ -1034,5 +1044,20 @@ mod tests {
         // Words after a word.
         let menu = slash_menu("/project-instructions workers ", &reading).unwrap();
         assert_eq!(menu.items.len(), 2);
+    }
+
+    #[test]
+    fn the_slash_menu_knows_a_command_typed_in_full() {
+        let reading = Reading {
+            workers_running: vec!["r1".into(), "r10".into(), "r11".into()],
+            ..Reading::default()
+        };
+        let menu = slash_menu("/stop-workers r1", &reading).unwrap();
+        let words: Vec<&str> = menu.items.iter().map(|item| item.label.as_ref()).collect();
+        assert_eq!(words, ["r10", "r11"]);
+        assert!(menu.complete, "r1 runs too");
+        assert!(!slash_menu("/stop-workers r", &reading).unwrap().complete);
+        assert!(slash_menu("/handover", &reading).unwrap().complete);
+        assert!(!slash_menu("/hand", &reading).unwrap().complete);
     }
 }
