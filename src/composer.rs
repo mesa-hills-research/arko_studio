@@ -338,7 +338,10 @@ pub struct Composer {
     /// The folder whose files "@" mentions: an agent session's.
     mention_folder: Option<PathBuf>,
     /// The files listed there, and when.
-    files: Option<(PathBuf, std::time::Instant, Arc<Vec<String>>)>,
+    files: Option<(PathBuf, std::time::Instant, Arc<crate::mentions::Files>)>,
+    /// The files each recent query matched, by its lowercase words (the
+    /// latest last): a query that extends one is ranked among those only.
+    narrowed: Vec<(String, Arc<Vec<u32>>)>,
     listing: Option<Task<()>>,
     /// The files ranked for what follows the "@", off the UI thread. A
     /// newer query replaces it, so the latest one's files show.
@@ -395,6 +398,7 @@ impl Composer {
             files: None,
             listing: None,
             ranking: None,
+            narrowed: Vec::new(),
             mentioned: 0,
             image_model: None,
             _subscriptions: subscriptions,
@@ -494,6 +498,7 @@ impl Composer {
         if self.mention_folder != folder {
             self.mention_folder = folder;
             self.files = None;
+            self.narrowed.clear();
             self.listing = None;
         }
     }
@@ -784,19 +789,44 @@ impl Composer {
     /// one's task, so only the latest query's files ever show.
     fn rank_mentions(
         &mut self,
-        files: Arc<Vec<String>>,
+        files: Arc<crate::mentions::Files>,
         typed: String,
         range: Range<usize>,
         cx: &mut Context<Self>,
     ) {
+        // The latest query this one extends: its files hold this one's.
+        let words = crate::mentions::lowercase(&typed);
+        self.narrowed
+            .retain(|(earlier, _)| !earlier.is_empty() && words.starts_with(earlier.as_str()));
+        let among = self.narrowed.last().map(|(_, matched)| matched.clone());
         let ranking = cx.background_spawn({
             let typed = typed.clone();
-            async move { crate::mentions::rank(&files, &typed, MENTION_ROWS) }
+            async move {
+                crate::mentions::rank(
+                    &files,
+                    among.as_deref().map(Vec::as_slice),
+                    &typed,
+                    MENTION_ROWS,
+                )
+            }
         });
         self.ranking = Some(cx.spawn(async move |this, cx| {
-            let ranked = ranking.await;
+            let ranking = ranking.await;
             this.update(cx, |this, cx| {
                 this.ranking = None;
+                if !words.is_empty()
+                    && this
+                        .narrowed
+                        .last()
+                        .is_none_or(|(earlier, _)| *earlier != words)
+                {
+                    this.narrowed
+                        .push((words.clone(), Arc::new(ranking.matched)));
+                    if this.narrowed.len() > 8 {
+                        this.narrowed.remove(0);
+                    }
+                }
+                let ranked = ranking.ranked;
                 let text = this.text(cx);
                 let now = this.mention_typed(&text, cx);
                 let same = now.is_some_and(|(_, now, words)| now == range && words == typed);
@@ -831,7 +861,12 @@ impl Composer {
                 if this.mention_folder.as_ref() != Some(&folder) {
                     return;
                 }
-                this.files = Some((folder, std::time::Instant::now(), Arc::new(files)));
+                this.files = Some((
+                    folder,
+                    std::time::Instant::now(),
+                    Arc::new(crate::mentions::Files::new(files)),
+                ));
+                this.narrowed.clear();
                 let text = this.text(cx);
                 if this.menu.is_none() && this.dismissed.as_deref() != Some(text.as_str()) {
                     this.menu = this.mention_menu(&text, None, cx);
