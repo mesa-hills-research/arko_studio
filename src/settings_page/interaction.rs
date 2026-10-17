@@ -361,3 +361,23 @@ fn a_projects_mcp_answer_is_forgotten(cx: &mut TestAppContext) {
         assert!(window.try_find(("forget-approval", 0usize)).is_none());
     });
 }
+
+/// MCP config files added under Advanced reach every session's options,
+/// and Remove takes one out.
+#[gpui_kit::test]
+fn mcp_config_files_are_added_and_removed(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, 7, 2400.);
+    let file = std::path::PathBuf::from("/home/ada/mcp/work.json");
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.add_mcp_configs(vec![file.clone(), file.clone()], cx)
+        })
+    });
+    assert_eq!(backend.defaults().mcp_config, [file.clone()], "once");
+    act(cx, window, |window, cx| {
+        window.click(("remove-mcp-config", 0usize), cx)
+    });
+    assert!(backend.defaults().mcp_config.is_empty());
+    assert!(cx.read(|cx| prefs::get(cx).advanced.mcp_config.is_empty()));
+}

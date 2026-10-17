@@ -268,6 +268,37 @@ impl SettingsPage {
         .detach();
     }
 
+    /// Asks for an MCP config file that every session reads.
+    fn add_mcp_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Add".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            this.update(cx, |this, cx| this.add_mcp_configs(paths, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Adds MCP config files every session reads, each once.
+    pub fn add_mcp_configs(&mut self, files: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        prefs::update(cx, |prefs| {
+            for file in files {
+                if !prefs.advanced.mcp_config.contains(&file) {
+                    prefs.advanced.mcp_config.push(file);
+                }
+            }
+        });
+        // Extensions lists the files' servers.
+        self.extensions.update(cx, |page, cx| page.refresh(cx));
+    }
+
     fn confirm_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.open_alert_dialog(cx, |alert, _, _| {
             alert
@@ -298,7 +329,7 @@ impl SettingsPage {
             notifications_page(),
             self.web_page.read(cx).page(cx),
             self.extensions.read(cx).page(&self.extensions),
-            advanced_page(cx),
+            advanced_page(&cx.entity(), cx),
         ]
     }
 
@@ -726,7 +757,7 @@ fn notifications_page() -> SettingPage {
         ]))
 }
 
-fn advanced_page(cx: &App) -> SettingPage {
+fn advanced_page(this: &Entity<SettingsPage>, cx: &App) -> SettingPage {
     let data = cx
         .global::<crate::backend::SharedBackend>()
         .data_root()
@@ -735,56 +766,138 @@ fn advanced_page(cx: &App) -> SettingPage {
     let logs = paths::logs_folder()
         .map(|folder| folder.display().to_string())
         .unwrap_or_default();
+    let home = cx.global::<crate::session_view::HomeFolder>().0.clone();
+    let mut groups = Vec::new();
+    // Only Windows runs commands in a shell the user picks.
+    if cfg!(windows) {
+        groups.push(
+            SettingGroup::new().title("Shell").item(
+                choice(
+                    "Shell on Windows",
+                    &[
+                        (None, "As ARKO_SHELL says"),
+                        (Some(prefs::WindowsShell::Cmd), "cmd.exe"),
+                        (Some(prefs::WindowsShell::Powershell), "PowerShell"),
+                    ],
+                    |prefs| prefs.advanced.windows_shell,
+                    |prefs, shell| prefs.advanced.windows_shell = shell,
+                    None,
+                )
+                .description(
+                    "What new sessions run commands in. PowerShell is PowerShell 7 where it’s installed, else Windows PowerShell. Without ARKO_SHELL, cmd.exe.",
+                )
+                .keywords(["cmd", "powershell", "pwsh", "ARKO_SHELL"]),
+            ),
+        );
+    }
+    let mut files: Vec<SettingItem> = prefs::get(cx)
+        .advanced
+        .mcp_config
+        .iter()
+        .enumerate()
+        .map(|(ix, file)| {
+            let file = file.clone();
+            SettingItem::new(
+                crate::backend::account_words::tilde(&file, home.as_deref()),
+                SettingField::render(move |_, _, _| {
+                    let file = file.clone();
+                    Button::new(("remove-mcp-config", ix))
+                        .ghost()
+                        .small()
+                        .label("Remove")
+                        .on_click(move |_, _, cx| {
+                            let file = file.clone();
+                            prefs::update(cx, |prefs| {
+                                prefs.advanced.mcp_config.retain(|kept| *kept != file)
+                            })
+                        })
+                }),
+            )
+            .description("Every session starts the servers in it. Extensions lists them.")
+            .keywords(["mcp", "--mcp-config", "servers"])
+        })
+        .collect();
+    let add = this.downgrade();
+    files.push(
+        SettingItem::new(
+            "Add an MCP config file…",
+            SettingField::render(move |_, _, _| {
+                let add = add.clone();
+                Button::new("add-mcp-config")
+                    .outline()
+                    .small()
+                    .label("Add…")
+                    .on_click(move |_, window, cx| {
+                        add.update(cx, |page, cx| page.add_mcp_config(window, cx))
+                            .ok();
+                    })
+            })
+            .on_reset(
+                |cx| !prefs::get(cx).advanced.mcp_config.is_empty(),
+                |_, cx| prefs::update(cx, |prefs| prefs.advanced.mcp_config.clear()),
+            ),
+        )
+        .description(
+            "Servers every session starts, besides Arko’s mcp.json and a project’s .mcp.json, as arko --mcp-config does. In Claude Code’s format or arko’s.",
+        )
+        .keywords(["mcp", "--mcp-config", "servers", "json"]),
+    );
+    groups.push(SettingGroup::new().title("MCP config files").items(files));
+    groups.push(
+        SettingGroup::new().title("Folders").items([
+            SettingItem::new(
+                "Arko’s folder",
+                SettingField::render(|_, _, _| {
+                    Button::new("open-data")
+                        .outline()
+                        .small()
+                        .label("Open")
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(menus::OpenDataFolder), cx)
+                        })
+                }),
+            )
+            .description(format!(
+                "{data}. Shared with arko in the terminal: sessions, keys, history and themes."
+            ))
+            .keywords(["data", "ARKO_HOME", "sessions"]),
+            SettingItem::new(
+                "Logs",
+                SettingField::render(|_, _, _| {
+                    Button::new("open-logs")
+                        .outline()
+                        .small()
+                        .label("Open")
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(menus::OpenLogsFolder), cx)
+                        })
+                }),
+            )
+            .description(logs)
+            .keywords(["log", "debug"]),
+        ]),
+    );
+    groups.push(
+        SettingGroup::new().title("Reset").item(
+            SettingItem::new(
+                "Reset preferences…",
+                SettingField::render(|_, _, _| {
+                    Button::new("reset-preferences")
+                        .outline()
+                        .small()
+                        .label("Reset…")
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(ResetPreferences), cx)
+                        })
+                }),
+            )
+            .description("Every setting in Arko Studio goes back to its default.")
+            .keywords(["defaults", "studio.json"]),
+        ),
+    );
     SettingPage::new(PAGES[7])
         .icon(IconName::Settings2)
-        .resettable(false)
-        .groups([
-            SettingGroup::new().title("Folders").items([
-                SettingItem::new(
-                    "Arko’s folder",
-                    SettingField::render(|_, _, _| {
-                        Button::new("open-data")
-                            .outline()
-                            .small()
-                            .label("Open")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(menus::OpenDataFolder), cx)
-                            })
-                    }),
-                )
-                .description(format!(
-                    "{data}. Shared with arko in the terminal: sessions, keys, history and themes."
-                )),
-                SettingItem::new(
-                    "Logs",
-                    SettingField::render(|_, _, _| {
-                        Button::new("open-logs")
-                            .outline()
-                            .small()
-                            .label("Open")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(menus::OpenLogsFolder), cx)
-                            })
-                    }),
-                )
-                .description(logs),
-            ]),
-            SettingGroup::new().title("Reset").item(
-                SettingItem::new(
-                    "Reset preferences…",
-                    SettingField::render(|_, _, _| {
-                        Button::new("reset-preferences")
-                            .outline()
-                            .small()
-                            .label("Reset…")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(ResetPreferences), cx)
-                            })
-                    }),
-                )
-                .description("Every setting in Arko Studio goes back to its default."),
-            ),
-        ])
+        .groups(groups)
 }
 
 actions!(settings_page, [ResetPreferences]);
