@@ -8,25 +8,82 @@ use std::path::Path;
 /// tree is typed out.
 pub const MAX_FILES: usize = 50_000;
 
+/// The most files and folders listing a folder looks at, to keep the
+/// shallowest [`MAX_FILES`] of a larger tree.
+const VISITS: usize = 200_000;
+
 /// The files under `root`, relative to it with `/` between folders: what
 /// `.gitignore`, `.ignore` and git's excludes leave, hidden files included,
-/// `.git` itself left out. Blocking: run it off the UI thread.
+/// `.git` itself left out. In a larger tree, the shallowest. Blocking: run
+/// it off the UI thread.
 pub fn list(root: &Path) -> Vec<String> {
-    let mut files: Vec<String> = ignore::WalkBuilder::new(root)
-        .hidden(false)
-        .require_git(false)
-        .filter_entry(|entry| entry.file_name() != ".git")
-        .build()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
-        .filter_map(|entry| {
-            let relative = entry.path().strip_prefix(root).ok()?;
-            Some(relative.to_string_lossy().replace('\\', "/"))
-        })
-        .take(MAX_FILES)
-        .collect();
-    files.sort_by(|a, b| depth(a).cmp(&depth(b)).then_with(|| a.cmp(b)));
-    files
+    list_within(root, MAX_FILES, VISITS)
+}
+
+/// The shallowest `most` files under `root`, of the first `visits` files
+/// and folders seen. Hidden folders (`.cache`, `.venv`) are looked in
+/// after the rest, and their files come last.
+fn list_within(root: &Path, most: usize, visits: usize) -> Vec<String> {
+    use std::collections::BinaryHeap;
+    use std::sync::{Arc, Mutex};
+    // The shallowest seen, the one to give way first on top.
+    let mut kept: BinaryHeap<(bool, usize, String)> = BinaryHeap::new();
+    let mut visited = 0;
+    let hidden_folders: Arc<Mutex<Vec<std::path::PathBuf>>> = Arc::default();
+    let mut walk = |start: &Path, hidden: bool, kept: &mut BinaryHeap<(bool, usize, String)>| {
+        let later = hidden_folders.clone();
+        let walker = ignore::WalkBuilder::new(start)
+            .hidden(false)
+            .require_git(false)
+            .filter_entry(move |entry| {
+                if entry.file_name() == ".git" {
+                    return false;
+                }
+                let folder = entry.file_type().is_some_and(|kind| kind.is_dir());
+                let dot = entry.file_name().to_string_lossy().starts_with('.');
+                if !hidden && folder && dot && entry.depth() > 0 {
+                    if let Ok(mut later) = later.lock() {
+                        later.push(entry.path().to_path_buf());
+                    }
+                    return false;
+                }
+                true
+            })
+            .build();
+        for entry in walker.filter_map(Result::ok) {
+            visited += 1;
+            if visited > visits {
+                break;
+            }
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let Ok(relative) = entry.path().strip_prefix(root) else {
+                continue;
+            };
+            let path = relative.to_string_lossy().replace('\\', "/");
+            let key = (hidden, depth(&path), path);
+            if kept.len() < most {
+                kept.push(key);
+            } else if kept.peek().is_some_and(|deepest| key < *deepest) {
+                kept.pop();
+                kept.push(key);
+            }
+        }
+    };
+    walk(root, false, &mut kept);
+    let later = std::mem::take(
+        &mut *hidden_folders
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    for folder in later {
+        walk(&folder, true, &mut kept);
+    }
+    kept.into_sorted_vec()
+        .into_iter()
+        .map(|(_, _, path)| path)
+        .collect()
 }
 
 fn depth(path: &str) -> usize {
@@ -341,6 +398,44 @@ mod tests {
                 "src/deep/parse.rs"
             ]
         );
+    }
+
+    /// A folder with more files than the list keeps: the shallowest stay,
+    /// and hidden folders' files come last.
+    #[test]
+    fn a_large_folder_keeps_its_shallowest_files() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path();
+        for data in ["aaa_data", "bbb_data", "ccc_data"] {
+            let deep = root.join(data).join("x/y");
+            std::fs::create_dir_all(&deep).unwrap();
+            for n in 0..30 {
+                std::fs::write(deep.join(format!("{n}.csv")), "x").unwrap();
+            }
+        }
+        std::fs::create_dir_all(root.join(".cache/pip")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for file in [
+            "README.md",
+            "Cargo.toml",
+            "src/main.rs",
+            ".cache/pip/a",
+            ".env",
+        ] {
+            std::fs::write(root.join(file), "x").unwrap();
+        }
+        let listed = super::list_within(root, 6, 10_000);
+        assert_eq!(listed.len(), 6);
+        for shallow in [".env", "Cargo.toml", "README.md", "src/main.rs"] {
+            assert!(
+                listed.contains(&shallow.to_string()),
+                "{shallow} in {listed:?}"
+            );
+        }
+        assert!(!listed.contains(&".cache/pip/a".to_string()));
+        // With room, a hidden folder's files come last.
+        let all = super::list_within(root, 1000, 10_000);
+        assert_eq!(all.last().map(String::as_str), Some(".cache/pip/a"));
     }
 
     #[test]
