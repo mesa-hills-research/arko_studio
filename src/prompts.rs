@@ -219,6 +219,15 @@ impl Render for CredentialsForm {
         v_flex()
             .id("credentials-form")
             .test_support()
+            // Enter in the key's field saves it, as the button does (the
+            // dialog would close unanswered).
+            .when(takes_key, |this| {
+                this.on_action(cx.listener(
+                    |this, _: &gpui_kit::base::actions::Confirm, window, cx| {
+                        this.save_key(window, cx)
+                    },
+                ))
+            })
             .gap_3()
             .child(
                 div()
@@ -363,6 +372,7 @@ fn show_mcp(session: Entity<LiveSession>, request: McpRequest, window: &mut Wind
             .content({
                 let muted = theme.muted_foreground;
                 let mono = theme.mono_font_family.clone();
+                let mono_features = theme.mono_font_features.clone();
                 move |content, _, _| {
                     let request = request.clone();
                     content.child(
@@ -382,6 +392,7 @@ fn show_mcp(session: Entity<LiveSession>, request: McpRequest, window: &mut Wind
                                     .child(
                                         div()
                                             .font_family(mono.clone())
+                                            .font_features(mono_features.clone())
                                             .text_xs()
                                             .text_color(muted)
                                             .child(command.clone()),
@@ -430,11 +441,16 @@ fn show_mcp(session: Entity<LiveSession>, request: McpRequest, window: &mut Wind
 
 /// A token count as the context ring labels it: "8.2k", "142k", "1.02M".
 pub fn short_tokens(tokens: usize) -> String {
-    match tokens {
-        0..1_000 => tokens.to_string(),
-        1_000..10_000 => format!("{:.1}k", tokens as f64 / 1e3),
-        10_000..1_000_000 => format!("{}k", (tokens as f64 / 1e3).round()),
-        _ => format!("{:.2}M", tokens as f64 / 1e6),
+    // The unit is picked after rounding: 999,600 is 1.00M, not 1000k.
+    let thousands = tokens as f64 / 1e3;
+    if tokens < 1_000 {
+        tokens.to_string()
+    } else if (thousands * 10.).round() < 100. {
+        format!("{thousands:.1}k")
+    } else if thousands.round() < 1_000. {
+        format!("{}k", thousands.round())
+    } else {
+        format!("{:.2}M", tokens as f64 / 1e6)
     }
 }
 
@@ -463,10 +479,14 @@ pub fn switch_cost_text(cost: Option<&arko::details::SwitchCost>) -> String {
 /// Asks before switching an open session between Chat and Agent: what
 /// changes, what it costs, and for Agent the folder it works in (`folders`:
 /// the choices, the first chosen). `answer` hears the folder (none for
-/// Chat) on Switch. "Don't ask again" counts only on Switch.
+/// Chat) on Switch. "Don't ask again" counts only on Switch. With
+/// `folder_only` (the user said not to ask again), it asks only for the
+/// folder: without the cost, and without "Don't ask again".
+#[allow(clippy::too_many_arguments)]
 pub fn confirm_switch(
     to: crate::backend::Mode,
     cost: Option<arko::details::SwitchCost>,
+    folder_only: bool,
     folders: Vec<std::path::PathBuf>,
     home: Option<std::path::PathBuf>,
     window: &mut Window,
@@ -487,7 +507,11 @@ pub fn confirm_switch(
             "From your next message Arko answers without tools, as a chat.",
         ),
     };
-    let description = format!("{change} {}", switch_cost_text(cost.as_ref()));
+    let description = if folder_only {
+        change.to_string()
+    } else {
+        format!("{change} {}", switch_cost_text(cost.as_ref()))
+    };
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
@@ -559,15 +583,17 @@ pub fn confirm_switch(
                                     ),
                             )
                         })
-                        .child(
-                            Checkbox::new("dont-ask-switch")
-                                .label("Don’t ask again")
-                                .checked(checked.get())
-                                .on_click(move |on, window, _| {
-                                    checked.set(*on);
-                                    window.refresh();
-                                }),
-                        ),
+                        .when(!folder_only, |this| {
+                            this.child(
+                                Checkbox::new("dont-ask-switch")
+                                    .label("Don’t ask again")
+                                    .checked(checked.get())
+                                    .on_click(move |on, window, _| {
+                                        checked.set(*on);
+                                        window.refresh();
+                                    }),
+                            )
+                        }),
                 )
             })
             .confirm()
@@ -640,6 +666,7 @@ pub fn confirm_stop(
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let theme = cx.theme();
         let (muted, mono) = (theme.muted_foreground, theme.mono_font_family.clone());
+        let mono_features = theme.mono_font_features.clone();
         let work = work.clone();
         let (ok, cancel) = (answer.clone(), answer.clone());
         let checked = dont_ask.clone();
@@ -680,6 +707,7 @@ pub fn confirm_stop(
                                 .children(ask.jobs.iter().map(|job| {
                                     div()
                                         .font_family(mono.clone())
+                                        .font_features(mono_features.clone())
                                         .text_xs()
                                         .text_color(muted)
                                         .truncate()
@@ -724,6 +752,8 @@ mod tests {
         assert_eq!(short_tokens(8_200), "8.2k");
         assert_eq!(short_tokens(142_318), "142k");
         assert_eq!(short_tokens(1_020_000), "1.02M");
+        assert_eq!(short_tokens(9_960), "10k");
+        assert_eq!(short_tokens(999_600), "1.00M");
     }
 
     #[test]

@@ -19,7 +19,7 @@ use gpui_kit::*;
 
 use crate::backend::{BackendError, Mode, SessionEntry, SessionId, SharedBackend};
 use crate::layout::relative_time;
-use crate::live::{LiveEvent, LiveSessions};
+use crate::live::LiveSessions;
 use crate::menus::{DeleteSession, NewSession, RenameSession};
 use crate::prefs;
 
@@ -743,9 +743,14 @@ impl Sidebar {
                 .ok_text("Delete")
                 .ok_variant(ButtonVariant::Danger)
                 .on_ok(move |_, window, cx| {
-                    sidebar
-                        .update(cx, |sidebar, cx| sidebar.delete(id.clone(), window, cx))
-                        .ok();
+                    // After this dialog closes: closing the session may ask
+                    // about its work in a dialog of its own.
+                    let (sidebar, id) = (sidebar.clone(), id.clone());
+                    window.defer(cx, move |window, cx| {
+                        sidebar
+                            .update(cx, |sidebar, cx| sidebar.delete(id, window, cx))
+                            .ok();
+                    });
                     true
                 })
         });
@@ -757,16 +762,12 @@ impl Sidebar {
         if let Some(session) =
             LiveSessions::find(&id, cx).filter(|session| session.read(cx).is_running())
         {
-            let subscription = cx.subscribe_in(&session, window, {
-                let id = id.clone();
-                move |this, _, event: &LiveEvent, window, cx| {
-                    if *event == LiveEvent::Ended {
-                        this.delete(id.clone(), window, cx);
-                    }
-                }
+            let sidebar = cx.entity().downgrade();
+            crate::quit::close_then(vec![session], window, cx, move |window, cx| {
+                sidebar
+                    .update(cx, |sidebar, cx| sidebar.delete(id, window, cx))
+                    .ok();
             });
-            self._subscriptions.push(subscription);
-            crate::quit::close(vec![session], false, window, cx);
             return;
         }
         let backend = cx.global::<SharedBackend>().clone();
@@ -884,6 +885,11 @@ impl Sidebar {
                         } else {
                             "Show conversations"
                         })
+                        .accessibility_label(if expanded {
+                            "Hide conversations"
+                        } else {
+                            "Show conversations"
+                        })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
                             this.toggle_conversations(&id, cx);
@@ -907,7 +913,7 @@ impl Sidebar {
                 let asking = background && indicator.question;
                 let unseen = indicator.unseen;
                 base.role(Role::TreeItem)
-                    .aria_label(SharedString::from(title.clone()))
+                    .aria_label(SharedString::from(row_label(&title, working, asking, unseen)))
                     .aria_selected(is_active)
                     .when(conversations, |this| this.aria_expanded(expanded))
                     .pl(rems(1.25))
@@ -1069,6 +1075,22 @@ impl Sidebar {
     }
 }
 
+/// A session row as a screen reader names it: the title, and the state the
+/// row's marks show.
+fn row_label(title: &str, working: bool, asking: bool, unseen: bool) -> String {
+    let mut label = title.to_string();
+    if working {
+        label.push_str(", working");
+    }
+    if asking {
+        label.push_str(", a question waits");
+    }
+    if unseen {
+        label.push_str(", new reply");
+    }
+    label
+}
+
 /// Tells the user why a backend call failed.
 fn show_error(what: &str, error: &BackendError, window: &mut Window, cx: &mut App) {
     window.push_notification(
@@ -1191,12 +1213,28 @@ impl Render for Sidebar {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{CHATS, Row, rows};
+    use super::{CHATS, Row, row_label, rows};
     use crate::backend::Backend as _;
     use crate::backend::{ConversationEntry, FakeBackend, Mode, SessionEntry, SessionId};
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn a_rows_name_carries_its_marks() {
+        assert_eq!(
+            row_label("Fix the parser", false, false, false),
+            "Fix the parser"
+        );
+        assert_eq!(
+            row_label("Fix the parser", true, false, true),
+            "Fix the parser, working, new reply"
+        );
+        assert_eq!(
+            row_label("Fix the parser", false, true, false),
+            "Fix the parser, a question waits"
+        );
+    }
 
     fn sample() -> (Vec<SessionEntry>, SystemTime) {
         let now = SystemTime::now();

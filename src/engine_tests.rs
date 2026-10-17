@@ -302,6 +302,78 @@ fn the_agents_question_is_answered_from_the_composer(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_long_question_scrolls_inside_its_card(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, _| {
+        let plan: Vec<String> = (1..=60).map(|step| format!("{step}. A step.")).collect();
+        let call = arko::testing::tool_call(
+            "q1",
+            "ask_user",
+            serde_json::json!({ "questions": format!("Shall I go ahead?\n\n{}", plan.join("\n")) }),
+        );
+        Box::pin(async move { call })
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Plan the work.");
+    wait_until(cx, "the question card", |cx| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("question-text").is_some()
+        })
+        .unwrap()
+    });
+    act(cx, app.window, |window, _| {
+        let tallest = window.rem_size() * crate::session_view::QUESTION_MAX_HEIGHT;
+        let height = window.find("question-text").bounds().size.height;
+        assert!(height <= tallest + gpui_kit::px(0.5), "{height:?}");
+        // The composer is still on screen below it.
+        let composer = window.find("composer-field").bounds();
+        assert!(composer.bottom() <= window.viewport_size().height);
+    });
+    app.close_all(cx);
+}
+
+#[gpui_kit::test]
+fn a_command_typed_while_a_question_waits_runs_and_the_question_stays(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, body| {
+        if body.contains("Two spaces.") {
+            answer("Indented with two spaces.", Duration::ZERO)
+        } else {
+            let call = arko::testing::tool_call(
+                "q1",
+                "ask_user",
+                serde_json::json!({ "questions": "Tabs or spaces?" }),
+            );
+            Box::pin(async move { call })
+        }
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Indent the file.");
+    let session = app.shown(cx).unwrap();
+    wait_until(cx, "the question", |cx| {
+        cx.read(|cx| session.read(cx).question().is_some())
+    });
+    app.send(cx, "/cost");
+    wait_until(cx, "the cost", |cx| {
+        app.feed(cx).iter().any(|item| item.contains('$'))
+    });
+    assert!(
+        cx.read(|cx| session.read(cx).question().is_some()),
+        "still asked"
+    );
+    assert!(!mock.was_sent("/cost"), "not an answer");
+    // Esc folds the question card, and the turn goes on.
+    act(cx, app.window, |window, cx| window.press("escape", cx));
+    act(cx, app.window, |window, _| {
+        assert!(window.try_find("question-card").is_none());
+        assert!(window.try_find("question-chip").is_some());
+    });
+    assert!(cx.read(|cx| session.read(cx).is_working()));
+    app.send(cx, "Two spaces.");
+    app.wait_for_text(cx, "Indented with two spaces.");
+    app.close_all(cx);
+}
+
+#[gpui_kit::test]
 fn a_slash_command_is_completed_from_the_menu_and_runs(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, _| answer("Hello.", Duration::ZERO));
     let app = start(cx, &mock);
@@ -330,7 +402,7 @@ fn a_slash_command_is_completed_from_the_menu_and_runs(cx: &mut TestAppContext) 
 fn a_session_streams_on_while_the_window_shows_another(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, body| {
         if body.contains("The slow one.") {
-            answer("Slow answer.", Duration::from_secs(2))
+            answer("Slow answer.", Duration::from_secs(6))
         } else {
             answer("Quick answer.", Duration::ZERO)
         }
@@ -405,6 +477,43 @@ fn a_projects_mcp_servers_are_approved_in_a_dialog(cx: &mut TestAppContext) {
     let approvals = std::fs::read_to_string(app.root.join("mcp-approvals.json")).unwrap();
     assert!(approvals.contains("echo"), "{approvals}");
     app.close_all(cx);
+}
+
+#[gpui_kit::test]
+fn a_session_closed_before_it_opened_never_sends_its_first_message(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, _| answer("Hello.", Duration::ZERO));
+    let app = start(cx, &mock);
+    std::fs::write(
+        app.work.join(".mcp.json"),
+        r#"{ "mcpServers": { "echo": { "command": "this-program-isnt-there" } } }"#,
+    )
+    .unwrap();
+    app.send(cx, "Say hello.");
+    // It waits on the approval, and is closed meanwhile.
+    wait_until(cx, "the approval dialog", |cx| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("mcp-approval").is_some()
+        })
+        .unwrap()
+    });
+    let session = app.shown(cx).unwrap();
+    act(cx, app.window, |window, cx| {
+        crate::quit::close(LiveSessions::all(cx), false, window, cx);
+    });
+    // The question is answered for the user: it ends without waiting.
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| !session.read(cx).is_running())
+    });
+    assert!(cx.read(|cx| LiveSessions::all(cx).is_empty()));
+    assert!(
+        mock.bodies.lock().unwrap().is_empty(),
+        "nothing went to the model"
+    );
+    // The message it didn't send is back in the composer.
+    wait_until(cx, "the message back", |cx| {
+        app.composer_text(cx) == "Say hello."
+    });
 }
 
 #[gpui_kit::test]
@@ -535,6 +644,170 @@ fn closing_a_session_with_a_background_job_asks_first(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_turn_that_ends_after_its_window_closed_marks_the_session_unseen(cx: &mut TestAppContext) {
+    // Slow enough for the window to close first on a loaded machine.
+    let mock = Mock::start(|_, _| answer("Slow answer.", Duration::from_secs(6)));
+    let app = start(cx, &mock);
+    let (second, _) = open(cx, 1300.);
+    app.send(cx, "The slow one.");
+    let slow = app.shown(cx).unwrap();
+    wait_until(cx, "the slow turn", |cx| {
+        cx.read(|cx| slow.read(cx).is_working() && slow.read(cx).id().is_some())
+    });
+    let id = cx.read(|cx| slow.read(cx).id().cloned().unwrap());
+    // Its window closes, and another stays open.
+    cx.update_window(app.window, |_, window, cx| {
+        assert!(crate::chrome::can_close(window, cx));
+        window.remove_window();
+    })
+    .unwrap();
+    cx.run_until_parked();
+    wait_until(cx, "the reply", |cx| {
+        cx.read(|cx| !slow.read(cx).is_working())
+    });
+    assert!(cx.read(|cx| LiveSessions::indicator(&id, cx)).unseen);
+    act(cx, second, |window, cx| {
+        crate::quit::close(LiveSessions::all(cx), false, window, cx);
+    });
+    wait_until(cx, "the sessions to end", |cx| {
+        cx.read(|cx| LiveSessions::all(cx).is_empty())
+    });
+}
+
+/// A session running a background job, listed in the sidebar.
+fn a_session_with_a_job(cx: &mut TestAppContext) -> (Mock, App, Entity<LiveSession>, SessionId) {
+    let mock = Mock::start(|index, _| {
+        if index == 0 {
+            let call = arko::testing::tool_call(
+                "j1",
+                "terminal_start",
+                serde_json::json!({ "command": "sleep 60", "terminal": "false" }),
+            );
+            Box::pin(async move { call })
+        } else {
+            answer("Started it.", Duration::ZERO)
+        }
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Start the long job.");
+    app.wait_for_text(cx, "Started it.");
+    let session = app.shown(cx).unwrap();
+    wait_until(cx, "the job in the status", |cx| {
+        cx.read(|cx| !session.read(cx).reading().jobs.is_empty())
+    });
+    let id = cx.read(|cx| session.read(cx).id().cloned().unwrap());
+    wait_until(cx, "the sidebar to list it", |cx| {
+        cx.read(|cx| {
+            let sidebar = app.workspace.read(cx).sidebar().read(cx);
+            sidebar.sessions().iter().any(|entry| entry.id == id)
+        })
+    });
+    (mock, app, session, id)
+}
+
+impl App {
+    /// Delete… on `id` in the sidebar, then Delete in the dialog.
+    fn delete(&self, id: &SessionId, cx: &mut TestAppContext) {
+        act(cx, self.window, |window, cx| {
+            let sidebar = self.workspace.read(cx).sidebar().clone();
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.confirm_delete(id.clone(), window, cx)
+            });
+        });
+        wait_until(cx, "the delete dialog", |cx| {
+            cx.update_window(self.window, |_, window, cx| {
+                window.render_frame(cx);
+                window.has_active_dialog(cx)
+            })
+            .unwrap()
+        });
+        act(cx, self.window, |window, cx| {
+            window.within("dialog").click("ok", cx)
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn quitting_with_no_window_open_asks_about_the_work_in_a_new_one(cx: &mut TestAppContext) {
+    let (_mock, app, session, _) = a_session_with_a_job(cx);
+    // As on macOS: the last window closed, and the sessions run on.
+    cx.update_window(app.window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert!(cx.read(|cx| cx.windows().is_empty()));
+    cx.update(crate::chrome::quit);
+    cx.run_until_parked();
+    let window = cx
+        .read(|cx| cx.windows().first().copied())
+        .expect("a window to ask in");
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("quit-work").is_some());
+        window.within("dialog").click("cancel", cx);
+    });
+    assert!(cx.read(|cx| session.read(cx).is_running()), "kept");
+    act(cx, window, |window, cx| {
+        crate::quit::close(LiveSessions::all(cx), false, window, cx);
+    });
+    act(cx, window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| LiveSessions::all(cx).is_empty())
+    });
+}
+
+#[gpui_kit::test]
+fn deleting_a_session_with_running_work_asks_to_stop_it_then_deletes_it(cx: &mut TestAppContext) {
+    let (_mock, app, session, id) = a_session_with_a_job(cx);
+    app.delete(&id, cx);
+    // The Delete dialog gave way to the question about the job.
+    act(cx, app.window, |window, cx| {
+        assert!(window.try_find("quit-work").is_some());
+        window.within("dialog").click("ok", cx);
+        assert!(!window.has_active_dialog(cx), "no dialog left behind");
+    });
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| *session.read(cx).phase() == Phase::Ended)
+    });
+    wait_until(cx, "the delete", |_| {
+        arko::sessions::list(&app.root).is_empty()
+    });
+    wait_until(cx, "the sidebar to drop it", |cx| {
+        cx.read(|cx| {
+            let sidebar = app.workspace.read(cx).sidebar().read(cx);
+            !sidebar.sessions().iter().any(|entry| entry.id == id)
+        })
+    });
+}
+
+#[gpui_kit::test]
+fn a_cancelled_delete_leaves_nothing_behind_for_a_later_close(cx: &mut TestAppContext) {
+    let (_mock, app, session, id) = a_session_with_a_job(cx);
+    app.delete(&id, cx);
+    act(cx, app.window, |window, cx| {
+        assert!(window.try_find("quit-work").is_some());
+        window.within("dialog").click("cancel", cx);
+        assert!(!window.has_active_dialog(cx), "no dialog left behind");
+    });
+    assert!(cx.read(|cx| session.read(cx).is_running()));
+    // Later, a plain close: the session closes and stays.
+    act(cx, app.window, |window, cx| {
+        window.dispatch_action(Box::new(menus::CloseSession), cx)
+    });
+    act(cx, app.window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| *session.read(cx).phase() == Phase::Ended)
+    });
+    for _ in 0..20 {
+        cx.run_until_parked();
+        cx.executor().advance_clock(crate::live::FRAME);
+    }
+    assert_eq!(arko::sessions::list(&app.root).len(), 1, "still there");
+}
+
+#[gpui_kit::test]
 fn an_agent_session_switches_to_chat_after_saying_what_it_costs(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, body| {
         if body.contains("Now just talk.") {
@@ -578,6 +851,9 @@ fn an_agent_session_switches_to_chat_after_saying_what_it_costs(cx: &mut TestApp
         app.shown(cx).map(|shown| shown.entity_id()),
         Some(session.entity_id())
     );
+    // The first feed went, with the tasks that drained it.
+    let feed_tasks = cx.read(|cx| session.read(cx).feed_tasks());
+    assert_eq!(feed_tasks, 4);
     // The reopened session's feed has a transcript of its own, with the
     // conversation so far.
     app.wait_for_rows(cx, 2);

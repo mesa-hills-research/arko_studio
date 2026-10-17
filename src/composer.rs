@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use arko::remote::Reading;
 use gpui_kit::component::attachment::{
-    Attachment, AttachmentContent, AttachmentMedia, AttachmentTitle,
+    Attachment, AttachmentContent, AttachmentMedia, AttachmentStatus, AttachmentTitle,
 };
 use gpui_kit::component::input::{
     Enter, Escape, IndentInline, InlineToken, InputEvent, InputToken, Keymap, MoveDown, MoveUp,
@@ -30,6 +30,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::writing::WordSuggestions;
 use gpui_kit::*;
 
+use crate::fonts::CodeFont as _;
 use crate::prefs::{self, SendKey};
 use crate::writing::WritingAids;
 
@@ -207,6 +208,9 @@ pub struct SlashMenu {
     /// The bytes a choice replaces.
     pub range: Range<usize>,
     pub kind: MenuKind,
+    /// What is typed is a whole command already (`/cost`, `/stop-workers
+    /// r1` with r10 running too): Enter sends it as it is.
+    pub complete: bool,
 }
 
 /// The commands the menu offers: the session's, and the screen ones the
@@ -233,11 +237,13 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
                 more: !command.args.is_empty(),
             })
             .collect();
+        let complete = items.iter().any(|item| item.insert == text && !item.more);
         return (!items.is_empty()).then_some(SlashMenu {
             items,
             selected: 0,
             range: 0..text.len(),
             kind: MenuKind::Command,
+            complete,
         });
     };
     let name = &text[..space];
@@ -251,7 +257,9 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
     };
     let start = text.len() - partial.len();
     let lower = partial.to_lowercase();
-    let items: Vec<MenuItem> = arko::commands::dynamic_choices(reading, command.name, &words)
+    let choices = arko::commands::dynamic_choices(reading, command.name, &words);
+    let complete = !partial.is_empty() && choices.iter().any(|word| word == partial);
+    let items: Vec<MenuItem> = choices
         .into_iter()
         .filter(|word| word.to_lowercase().starts_with(&lower) && *word != partial)
         .map(|word| MenuItem {
@@ -267,6 +275,7 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
         selected: 0,
         range: start..text.len(),
         kind: MenuKind::Command,
+        complete,
     })
 }
 
@@ -305,6 +314,8 @@ pub struct Composer {
     listing: Option<Task<()>>,
     /// Mentions inserted so far, for their tokens' ids.
     mentioned: u32,
+    /// The model the images go to, which says which it can't take.
+    image_model: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -353,6 +364,7 @@ impl Composer {
             files: None,
             listing: None,
             mentioned: 0,
+            image_model: None,
             _subscriptions: subscriptions,
         }
     }
@@ -463,6 +475,25 @@ impl Composer {
     /// it walks the input history), asked as the key comes.
     pub fn set_edits_last(&mut self, edits_last: impl Fn(&App) -> bool + 'static) {
         self.edits_last = Some(Rc::new(edits_last));
+    }
+
+    /// Gives the model the images go to: the main agent's.
+    pub fn set_image_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
+        if self.image_model != model {
+            self.image_model = model;
+            cx.notify();
+        }
+    }
+
+    /// Why the model can't take `image`, if it can't.
+    fn refusal(&self, image: &Attached) -> Option<String> {
+        let model = self.image_model.as_deref()?;
+        arko::models::image_refusal(model, image.image.format().mime_type())
+    }
+
+    /// Why the message can't go with its images, if it can't.
+    pub fn image_refusal(&self) -> Option<String> {
+        self.images.iter().find_map(|image| self.refusal(image))
     }
 
     /// The images the message takes along.
@@ -596,7 +627,9 @@ impl Composer {
                 if !textarea.read(cx).is_submit_chord(*secondary, *shift) {
                     return;
                 }
-                if self.menu.is_some() && !self.menu_completes_text(cx) {
+                // Mod+Enter always sends the text as typed. The send key
+                // takes the menu's choice, unless what is typed is whole.
+                if !*secondary && self.menu.as_ref().is_some_and(|menu| !menu.complete) {
                     self.accept_menu(window, cx);
                 } else {
                     self.submit(cx);
@@ -706,6 +739,8 @@ impl Composer {
             selected: 0,
             range,
             kind: MenuKind::Mention,
+            // Enter takes the file, never sends.
+            complete: false,
         })
     }
 
@@ -735,19 +770,6 @@ impl Composer {
             })
             .ok();
         }));
-    }
-
-    /// The menu's choice is what is typed already: Enter sends it.
-    fn menu_completes_text(&self, cx: &App) -> bool {
-        let Some(menu) = &self.menu else {
-            return false;
-        };
-        if menu.kind == MenuKind::Mention {
-            return false;
-        }
-        let text = self.text(cx);
-        let item = &menu.items[menu.selected];
-        text[menu.range.clone()] == item.insert && !item.more
     }
 
     /// Puts the menu's selected choice in the field.
@@ -913,13 +935,23 @@ impl Composer {
 
     fn on_enter(&mut self, enter: &Enter, window: &mut Window, cx: &mut Context<Self>) {
         // A chord that sends reaches the view through `PressEnter`. One that
-        // breaks a line chooses from the menu instead while it is open.
+        // breaks a line chooses from the menu instead while it is open, or
+        // closes it over a whole command, which it leaves as typed.
         let sends = self
             .textarea
             .read(cx)
             .is_submit_chord(enter.secondary, enter.shift);
-        if self.menu.is_some() && !sends {
-            self.accept_menu(window, cx);
+        let Some(menu) = &self.menu else {
+            return;
+        };
+        if !sends {
+            if menu.complete {
+                self.menu = None;
+                self.dismissed = Some(self.text(cx));
+                cx.notify();
+            } else {
+                self.accept_menu(window, cx);
+            }
             cx.stop_propagation();
         }
     }
@@ -1003,13 +1035,19 @@ impl Composer {
                     .clone()
                     .unwrap_or_else(|| "Pasted image".to_string())
                     .into();
-                Attachment::new()
+                let tile = Attachment::new()
                     .id(("image", index))
                     .small()
                     .media(AttachmentMedia::new().src(attached.image.clone()))
                     .content(AttachmentContent::new().title(AttachmentTitle::new(name.clone())))
-                    .tooltip(name)
-                    .on_remove(cx.listener(move |this, _, _, cx| this.remove_image(index, cx)))
+                    .on_remove(cx.listener(move |this, _, _, cx| this.remove_image(index, cx)));
+                // A tile the model can't take says why.
+                match self.refusal(attached) {
+                    Some(why) => tile
+                        .status(AttachmentStatus::Failed)
+                        .tooltip(crate::backend::sentence(&why)),
+                    None => tile.tooltip(name),
+                }
             }))
             .into_any_element()
     }
@@ -1042,17 +1080,12 @@ impl Composer {
                     .when(selected, |this| {
                         this.bg(theme.accent).text_color(theme.accent_foreground)
                     })
-                    .child(
-                        div()
-                            .flex_none()
-                            .font_family(theme.mono_font_family.clone())
-                            .child(item.label.clone()),
-                    )
+                    .child(div().flex_none().code_font(theme).child(item.label.clone()))
                     .when(!item.hint.is_empty(), |this| {
                         this.child(
                             div()
                                 .flex_none()
-                                .font_family(theme.mono_font_family.clone())
+                                .code_font(theme)
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
                                 .child(item.hint.clone()),
@@ -1104,6 +1137,7 @@ impl Render for Composer {
         let tiles = (!self.images.is_empty()).then(|| self.render_images(cx));
         div()
             .id("composer-field")
+            .test_support()
             .relative()
             .w_full()
             .key_context(CONTEXT)
@@ -1244,5 +1278,20 @@ mod tests {
         // Words after a word.
         let menu = slash_menu("/project-instructions workers ", &reading).unwrap();
         assert_eq!(menu.items.len(), 2);
+    }
+
+    #[test]
+    fn the_slash_menu_knows_a_command_typed_in_full() {
+        let reading = Reading {
+            workers_running: vec!["r1".into(), "r10".into(), "r11".into()],
+            ..Reading::default()
+        };
+        let menu = slash_menu("/stop-workers r1", &reading).unwrap();
+        let words: Vec<&str> = menu.items.iter().map(|item| item.label.as_ref()).collect();
+        assert_eq!(words, ["r10", "r11"]);
+        assert!(menu.complete, "r1 runs too");
+        assert!(!slash_menu("/stop-workers r", &reading).unwrap().complete);
+        assert!(slash_menu("/handover", &reading).unwrap().complete);
+        assert!(!slash_menu("/hand", &reading).unwrap().complete);
     }
 }

@@ -323,6 +323,14 @@ fn finished_blocks_keep_their_rows_while_text_streams_and_ends(cx: &mut TestAppC
     assert_eq!(keys(&view, cx), expected);
 }
 
+/// Scrolls so that the row at `ix` is at the top, as the reader would.
+fn scroll_to_row(cx: &mut TestAppContext, view: &Entity<TranscriptView>, ix: usize) {
+    view.update(cx, |view, cx| {
+        view.list.scroll_to(ix, px(0.));
+        cx.notify();
+    });
+}
+
 /// Where the row `key` is drawn, if it is.
 fn row_top(cx: &mut TestAppContext, window: AnyWindowHandle, key: RowKey) -> Option<f32> {
     cx.update_window(window, |_, window, _| {
@@ -352,10 +360,7 @@ fn the_view_follows_the_bottom_until_the_reader_scrolls_up(cx: &mut TestAppConte
     assert!(cx.read(|cx| view.read(cx).is_following(cx)));
     assert!(row_top(cx, window, user(&feed, 40)).is_some());
     // The reader scrolls up: new rows don't move what they read.
-    let scroller = cx.read(|cx| view.read(cx).scroller.clone());
-    scroller.update(cx, |scroller, cx| {
-        scroller.scroll_to_item(5, cx);
-    });
+    scroll_to_row(cx, &view, 5);
     settle(cx, window);
     assert!(!cx.read(|cx| view.read(cx).is_following(cx)));
     let reading = user(&feed, 6);
@@ -375,6 +380,557 @@ fn the_view_follows_the_bottom_until_the_reader_scrolls_up(cx: &mut TestAppConte
     assert!(row_top(cx, window, user(&feed, 43)).is_some());
 }
 
+/// `count` turns of a user message, `calls` file reads, a two-paragraph
+/// reply and a footer.
+fn turns(feed: &Feed, count: usize, calls: usize) {
+    for turn in 0..count {
+        feed.user(&format!("Question {turn}"), Source::App, Delivery::Turn);
+        feed.turn_started();
+        for file in 0..calls {
+            let id = call(
+                feed,
+                "main",
+                "read_file",
+                &[("path", format!("src/f{turn}_{file}.rs").into())],
+            );
+            result(feed, "main", id, "read_file", "1 | fn a() {}\n");
+        }
+        feed.reply(&format!(
+            "Answer {turn}, first paragraph.\n\nAnswer {turn}, **second** paragraph."
+        ));
+        feed.turn_ended("3 s · $0.01", None);
+    }
+}
+
+/// The row of the user's message of turn `turn`.
+fn user_row(feed: &Feed, turn: usize) -> RowKey {
+    let users: Vec<u64> = item_ids(feed)
+        .into_iter()
+        .filter(|(_, kind)| *kind == Kind::User)
+        .map(|(id, _)| id)
+        .collect();
+    RowKey::User(users[turn])
+}
+
+/// Draws until every entry is ready to show.
+fn load_all(cx: &mut TestAppContext, window: AnyWindowHandle, view: &Entity<TranscriptView>) {
+    for _ in 0..40 {
+        settle(cx, window);
+        if cx.read(|cx| view.read(cx).loaded_from.is_none()) {
+            return;
+        }
+    }
+}
+
+/// Scrolls so that the row `key` is at the top, and returns its top.
+fn scroll_to_key(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    view: &Entity<TranscriptView>,
+    key: RowKey,
+) -> f32 {
+    let ix = keys(view, cx).iter().position(|row| *row == key).unwrap();
+    scroll_to_row(cx, view, ix);
+    settle(cx, window);
+    row_top(cx, window, key).expect("scrolled to it")
+}
+
+/// Changes the preferences while the reader reads turn 30, and checks
+/// that turn 30 stays where it was.
+fn change_while_reading(cx: &mut TestAppContext, change: impl Fn(&mut prefs::Prefs)) {
+    start(cx);
+    let feed = Feed::new("main");
+    turns(&feed, 60, 4);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    load_all(cx, window, &view);
+    let reading = user_row(&feed, 30);
+    let top = scroll_to_key(cx, window, &view, reading);
+    cx.update(|cx| prefs::update(cx, &change));
+    settle(cx, window);
+    assert_eq!(row_top(cx, window, reading), Some(top));
+    assert!(!cx.read(|cx| view.read(cx).is_following(cx)));
+}
+
+#[gpui_kit::test]
+fn changing_the_view_while_scrolled_up_keeps_the_reader_at_their_turn(cx: &mut TestAppContext) {
+    change_while_reading(cx, |prefs| prefs.view = View::Quiet);
+}
+
+#[gpui_kit::test]
+fn the_messages_view_keeps_the_reader_at_their_turn(cx: &mut TestAppContext) {
+    change_while_reading(cx, |prefs| prefs.view = View::Messages);
+}
+
+#[gpui_kit::test]
+fn turning_markdown_off_while_scrolled_up_keeps_the_reader_in_place(cx: &mut TestAppContext) {
+    change_while_reading(cx, |prefs| prefs.appearance.render_markdown = false);
+}
+
+#[gpui_kit::test]
+fn the_source_of_a_long_reply_shows_where_the_reader_reads(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Explain", Source::App, Delivery::Turn);
+    let text: String = (0..30)
+        .map(|n| format!("Paragraph {n} of the answer, with **bold** words.\n\n"))
+        .collect();
+    feed.reply(&text);
+    // More below, so that the screen isn't the end of the transcript.
+    turns(&feed, 10, 0);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 300.);
+    let reply = item_ids(&feed)[1].0;
+    let block = |n: usize, source: bool| RowKey::Block {
+        id: reply,
+        generation: 0,
+        block: n,
+        source,
+    };
+    let top = scroll_to_key(cx, window, &view, block(25, false));
+    view.update(cx, |view, cx| view.toggle_source(reply, cx));
+    settle(cx, window);
+    assert_eq!(row_top(cx, window, block(25, true)), Some(top));
+}
+
+#[gpui_kit::test]
+fn a_live_quiet_run_keeps_the_call_the_reader_opened(cx: &mut TestAppContext) {
+    start(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Quiet));
+    let feed = Feed::new("main");
+    feed.user("Run the tests", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let output: String = (1..=60).map(|n| format!("line {n}\n")).collect();
+    for n in 0..3 {
+        let id = call(
+            &feed,
+            "main",
+            "shell",
+            &[("command", format!("cargo test -p c{n}").into())],
+        );
+        result(
+            &feed,
+            "main",
+            id,
+            "shell",
+            &format!("exit code 0, 1.0 s\n{output}"),
+        );
+    }
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    let calls: Vec<u64> = item_ids(&feed)
+        .into_iter()
+        .filter(|(_, kind)| *kind == Kind::Call)
+        .map(|(id, _)| id)
+        .collect();
+    let third = calls[2];
+    view.update(cx, |view, cx| view.toggle(third, false, cx));
+    settle(cx, window);
+    let top = scroll_to_key(cx, window, &view, RowKey::Call(third));
+    // A fourth call starts: the run folds into a group, which stays open
+    // on the call the reader reads.
+    call(&feed, "main", "shell", &[("command", "cargo build".into())]);
+    settle(cx, window);
+    let rows = keys(&view, cx);
+    assert!(rows.contains(&RowKey::Group(calls[0])), "{rows:?}");
+    assert_eq!(row_top(cx, window, RowKey::Call(third)), Some(top));
+}
+
+#[gpui_kit::test]
+fn opening_a_call_at_the_bottom_keeps_it_in_place(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    turns(&feed, 6, 1);
+    feed.user("Run it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let output: String = (1..=60).map(|n| format!("line {n}\n")).collect();
+    let id = call(&feed, "main", "shell", &[("command", "cargo test".into())]);
+    result(
+        &feed,
+        "main",
+        id,
+        "shell",
+        &format!("exit code 1, 1.0 s\n{output}"),
+    );
+    feed.notice(Level::Info, "Done.");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    let shell = item_ids(&feed)
+        .into_iter()
+        .rev()
+        .find(|(_, kind)| *kind == Kind::Call)
+        .unwrap()
+        .0;
+    assert!(cx.read(|cx| view.read(cx).is_following(cx)));
+    let before = row_top(cx, window, RowKey::Call(shell)).expect("on screen");
+    cx.update_window(window, |_, window, cx| {
+        window.click(("call-row", shell), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(row_top(cx, window, RowKey::Call(shell)), Some(before));
+    // Back at the bottom, the view follows again.
+    view.update(cx, |view, cx| view.scroll_to_end(cx));
+    settle(cx, window);
+    assert!(cx.read(|cx| view.read(cx).is_following(cx)));
+}
+
+#[gpui_kit::test]
+fn showing_all_of_a_code_block_at_the_bottom_keeps_its_top(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    turns(&feed, 6, 1);
+    let code: String = (1..=120).map(|n| format!("let x{n} = {n};\n")).collect();
+    feed.reply(&format!("Here:\n\n```rust\n{code}```"));
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let reply = item_ids(&feed).last().unwrap().0;
+    let key = RowKey::Block {
+        id: reply,
+        generation: 0,
+        block: 1,
+        source: false,
+    };
+    let before = row_top(cx, window, key).expect("on screen");
+    cx.update_window(window, |_, window, cx| {
+        window.click(SharedString::from(format!("show-all-{reply}-1")), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(row_top(cx, window, key), Some(before));
+    let _ = view;
+}
+
+#[gpui_kit::test]
+fn a_long_code_block_in_a_list_item_is_capped_too(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    let code: String = (1..=200).map(|n| format!("   let x{n} = {n};\n")).collect();
+    feed.reply(&format!(
+        "Steps:\n\n1. Run this:\n\n   ```rust\n{code}   ```\n2. Done.\n"
+    ));
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 2000.);
+    let reply = item_ids(&feed)[0].0;
+    let list = RowKey::Block {
+        id: reply,
+        generation: 0,
+        block: 1,
+        source: false,
+    };
+    let (height, show_all) = cx
+        .update_window(window, |_, window, _| {
+            let height = window
+                .try_find(super::row::element_id(list))
+                .map(|row| f32::from(row.bounds().size.height));
+            let show_all = window
+                .try_find(SharedString::from(format!("show-all-{reply}-1")))
+                .is_some();
+            (height, show_all)
+        })
+        .unwrap();
+    assert!(show_all);
+    // Forty lines, not two hundred.
+    assert!(height.is_some_and(|height| height < 1200.), "{height:?}");
+    cx.read(|cx| {
+        let doc = view.read(cx).ui[&reply].doc.as_ref().unwrap();
+        assert_eq!(doc.blocks[1].code_lines, 200);
+    });
+}
+
+#[gpui_kit::test]
+fn tables_scroll_sideways_in_their_row(cx: &mut TestAppContext) {
+    start(cx);
+    cx.update(|cx| {
+        let style = super::row::text_style(cx);
+        assert_eq!(style.table().overflow.x, Some(gpui_kit::Overflow::Scroll));
+    });
+}
+
+/// The ids of the entries of `kind`, oldest first.
+fn ids_of(feed: &Feed, kind: Kind) -> Vec<u64> {
+    item_ids(feed)
+        .into_iter()
+        .filter(|(_, of)| *of == kind)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+#[gpui_kit::test]
+fn a_replys_actions_stay_while_the_pointer_moves_onto_them_and_work(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Explain", Source::App, Delivery::Turn);
+    feed.reply("First paragraph.\n\nSecond **paragraph**.");
+    feed.user("Thanks", Source::App, Delivery::Turn);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let reply = ids_of(&feed, Kind::Reply)[0];
+    let thanks = ids_of(&feed, Kind::User)[1];
+    let hovered = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).hovered);
+    let text = keys(&view, cx).into_iter().find(block(reply, 1)).unwrap();
+    cx.update_window(window, |_, window, cx| {
+        window.hover(super::row::element_id(text), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(hovered(cx), Some(reply));
+    // From the text down onto the actions, they stay, and they work.
+    cx.update_window(window, |_, window, cx| {
+        window.hover(("copy-reply", reply), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(hovered(cx), Some(reply));
+    cx.update_window(window, |_, window, cx| {
+        window.click(("copy-reply", reply), cx)
+    })
+    .unwrap();
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(
+        copied.as_deref(),
+        Some("First paragraph.\nSecond paragraph.")
+    );
+    cx.update_window(window, |_, window, cx| {
+        window.click(("copy-markdown", reply), cx)
+    })
+    .unwrap();
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(
+        copied.as_deref(),
+        Some("First paragraph.\n\nSecond **paragraph**.")
+    );
+    cx.update_window(window, |_, window, cx| {
+        window.click(("view-source", reply), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    assert!(cx.read(|cx| view.read(cx).ui[&reply].source));
+    // Onto the next message: its Copy shows instead, and copies it.
+    cx.update_window(window, |_, window, cx| {
+        window.hover(super::row::element_id(RowKey::User(thanks)), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(hovered(cx), Some(thanks));
+    cx.update_window(window, |_, window, cx| {
+        window.click(("copy-user", thanks), cx)
+    })
+    .unwrap();
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("Thanks".to_string())
+    );
+    // Off the entry, the actions stay a moment, then go.
+    view.update(cx, |view, cx| {
+        view.row_hovered(RowKey::User(thanks), false, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(hovered(cx), Some(thanks));
+    cx.executor()
+        .advance_clock(super::HOVER_GRACE + std::time::Duration::from_millis(10));
+    cx.run_until_parked();
+    assert_eq!(hovered(cx), None);
+}
+
+#[gpui_kit::test]
+fn tab_reaches_the_transcript_and_its_thumbnails_but_not_hidden_actions(cx: &mut TestAppContext) {
+    use arko::images::ImageRef;
+    start(cx);
+    let feed = Feed::new("main");
+    let mut user = arko::remote::Item::new(Kind::User, "What does this show?");
+    user.id = 1;
+    user.images = vec![ImageRef {
+        id: 1,
+        mime: "image/png".into(),
+        label: "a.png".into(),
+        bytes: 10,
+    }];
+    let mut reply = arko::remote::Item::new(Kind::Reply, "A picture.");
+    reply.id = 2;
+    feed.restore(vec![user, reply]);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    view.update(cx, |view, cx| {
+        view.set_image_lookup(
+            |_| Some((Arc::<[u8]>::from(PNG), "image/png".to_string())),
+            cx,
+        )
+    });
+    settle(cx, window);
+    let thumbnail = SharedString::from("image-1-1");
+    let focused = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, _| {
+            (
+                window.find("transcript").focused(),
+                window.find(thumbnail.clone()).focused(),
+            )
+        })
+        .unwrap()
+    };
+    let tab = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| window.focus_next(cx))
+            .unwrap();
+        settle(cx, window);
+    };
+    let focus = cx.read(|cx| view.read(cx).focus_handle.clone());
+    cx.update_window(window, |_, window, cx| focus.focus(window, cx))
+        .unwrap();
+    settle(cx, window);
+    assert_eq!(focused(cx), (Some(true), Some(false)));
+    tab(cx);
+    assert_eq!(focused(cx), (Some(true), Some(true)));
+    let tile = cx
+        .update_window(window, |_, window, _| {
+            let tile = window.find(thumbnail.clone());
+            (tile.role(), tile.label().map(str::to_string))
+        })
+        .unwrap();
+    assert_eq!(tile.0, Some(gpui_kit::Role::Button));
+    assert_eq!(tile.1.as_deref(), Some("Open image a.png · 10 B"));
+    // The message's Copy and the reply's actions are hidden: Tab goes
+    // round to the transcript.
+    tab(cx);
+    assert_eq!(focused(cx), (Some(true), Some(false)));
+}
+
+#[gpui_kit::test]
+fn toggles_say_whether_they_are_open(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    let id = call(&feed, "main", "shell", &[("command", "cargo test".into())]);
+    result(&feed, "main", id, "shell", "exit code 0, 1.0 s\nok");
+    let (window, _) = open(cx, &feed, AgentFilter::Main, 720.);
+    let shell = ids_of(&feed, Kind::Call)[0];
+    let toggle = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, _| {
+            let toggle = window.find(("call-toggle", shell));
+            (
+                toggle.role(),
+                toggle.expanded(),
+                toggle.label().map(str::to_string),
+            )
+        })
+        .unwrap()
+    };
+    let (role, expanded, label) = toggle(cx);
+    assert_eq!(role, Some(gpui_kit::Role::Button));
+    assert_eq!(expanded, Some(false));
+    assert!(label.is_some_and(|label| label.contains("cargo test")));
+    // Tab goes from the transcript to the toggle, and Enter opens it.
+    cx.update_window(window, |_, window, cx| {
+        window.focus_next(cx);
+        window.render_frame(cx);
+        window.focus_next(cx);
+        window.render_frame(cx);
+        assert_eq!(window.find(("call-toggle", shell)).focused(), Some(true));
+        window.press("enter", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(toggle(cx).1, Some(true));
+    cx.update_window(window, |_, window, cx| {
+        window.click(("call-toggle", shell), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(toggle(cx).1, Some(false));
+}
+
+#[gpui_kit::test]
+fn the_keyboard_scrolls_the_transcript(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    turns(&feed, 20, 1);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    load_all(cx, window, &view);
+    let following = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).is_following(cx));
+    let press = |cx: &mut TestAppContext, key: &str| {
+        cx.update_window(window, |_, window, cx| window.press(key, cx))
+            .unwrap();
+        settle(cx, window);
+    };
+    let focus = cx.read(|cx| view.read(cx).focus_handle.clone());
+    cx.update_window(window, |_, window, cx| focus.focus(window, cx))
+        .unwrap();
+    let last = user_row(&feed, 19);
+    let bottom = row_top(cx, window, last).expect("the last turn shows");
+    press(cx, "pageup");
+    assert!(!following(cx));
+    let moved = row_top(cx, window, last).map_or(f32::INFINITY, |top| top - bottom);
+    assert!(moved > 300., "{moved}");
+    press(cx, "pagedown");
+    assert_eq!(row_top(cx, window, last), Some(bottom));
+    press(cx, "home");
+    assert!(row_top(cx, window, user_row(&feed, 0)).is_some());
+    assert!(row_top(cx, window, last).is_none());
+    press(cx, "end");
+    assert!(following(cx));
+    assert_eq!(row_top(cx, window, last), Some(bottom));
+}
+
+/// How many times the transcript draws in a second of the test clock.
+fn draws_in_a_second(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> usize {
+    for _ in 0..200 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1));
+        cx.run_until_parked();
+    }
+    let before = cx.read(|cx| view.read(cx).render_count());
+    for _ in 0..1000 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1));
+        cx.run_until_parked();
+    }
+    cx.read(|cx| view.read(cx).render_count()) - before
+}
+
+#[gpui_kit::test]
+fn one_indicator_turns_at_a_time(cx: &mut TestAppContext) {
+    start(cx);
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| prefs.appearance.motion = prefs::Motion::On);
+        cx.set_reduce_motion(false);
+    });
+    let feed = Feed::new("main");
+    turns(&feed, 4, 1);
+    feed.user("Build", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.worker("r1", "Write the fuzz target", WorkerChange::Started);
+    call(&feed, "main", "shell", &[("command", "cargo build".into())]);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    // A worker and a call run: the call's indicator turns, a dozen times a
+    // second, and the elapsed times tick once.
+    let draws = draws_in_a_second(cx, &view);
+    assert!((10..=16).contains(&draws), "{draws} draws");
+    // Then thinking streams: its shimmer is the one that moves.
+    think(&feed, "hmm");
+    settle(cx, window);
+    let draws = draws_in_a_second(cx, &view);
+    assert!((25..=34).contains(&draws), "{draws} draws");
+    let thinking = item_ids(&feed).last().unwrap().0;
+    assert_eq!(cx.read(|cx| view.read(cx).animated), Some(thinking));
+}
+
+#[gpui_kit::test]
+fn the_new_count_counts_what_the_view_shows(cx: &mut TestAppContext) {
+    start(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Messages));
+    let feed = Feed::new("main");
+    turns(&feed, 30, 1);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 300.);
+    load_all(cx, window, &view);
+    scroll_to_key(cx, window, &view, user_row(&feed, 10));
+    feed.user("Next", Source::App, Delivery::Turn);
+    feed.turn_started();
+    for n in 0..5 {
+        let id = call(
+            &feed,
+            "main",
+            "read_file",
+            &[("path", format!("x{n}").into())],
+        );
+        result(&feed, "main", id, "read_file", "1 | x\n");
+    }
+    think(&feed, "hmm");
+    feed.notice(Level::Info, "Handed over.");
+    settle(cx, window);
+    // The message and the one line counting the calls.
+    assert_eq!(cx.read(|cx| view.read(cx).new_while_away), 2);
+}
+
 #[gpui_kit::test]
 fn a_long_transcript_shows_its_end_first_and_the_rest_a_chunk_a_frame(cx: &mut TestAppContext) {
     start(cx);
@@ -390,17 +946,13 @@ fn a_long_transcript_shows_its_end_first_and_the_rest_a_chunk_a_frame(cx: &mut T
             })
         })
         .unwrap();
-    let rows = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).row_count());
-    // The latest 200 at once (and a hundred more with each frame drawn
-    // since: opening the window drew one).
-    let first = rows(cx);
-    assert!((200..450).contains(&first), "{first}");
-    assert_eq!((first - 200) % 100, 0);
-    cx.update_window(window, |_, window, cx| window.render_frame(cx))
-        .unwrap();
-    assert_eq!(rows(cx), first + 100, "a hundred more each frame");
+    // The history comes off the UI thread, and shows from the next frame
+    // on: its latest 200 entries and a hundred older ones, then a hundred
+    // more with each frame.
     settle(cx, window);
-    assert_eq!(rows(cx), 450);
+    let mut frames: Vec<usize> = cx.read(|cx| view.read(cx).frames.clone());
+    frames.dedup();
+    assert_eq!(frames, [0, 300, 400, 450]);
     // The reader stayed at the latest message all along.
     assert!(cx.read(|cx| view.read(cx).is_following(cx)));
     assert!(row_top(cx, window, RowKey::User(item_ids(&feed)[449].0)).is_some());
@@ -932,4 +1484,50 @@ fn a_keystroke_beside_the_transcript_does_not_draw_it(cx: &mut TestAppContext) {
     feed.user("More", Source::App, Delivery::Turn);
     draw(cx);
     assert!(cx.read(|cx| transcript.read(cx).render_count()) > before);
+}
+
+/// Subscribing copies the session's history under the feed's lock: the
+/// view takes it on a background thread and shows it with the next frame.
+/// A row opened before then (as a window opening a call does) opens once
+/// its entry comes.
+#[gpui_kit::test]
+fn the_history_comes_off_the_ui_thread_and_rows_opened_before_stay_open(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Read the notes.", Source::App, Delivery::Turn);
+    let id = call(
+        &feed,
+        "main",
+        "read_file",
+        &[("path", Value::from("notes.md"))],
+    );
+    result(&feed, "main", id, "read_file", "Some notes.");
+    let call_item = item_ids(&feed)
+        .into_iter()
+        .find(|(_, kind)| *kind == Kind::Call)
+        .unwrap()
+        .0;
+    let opened = feed.clone();
+    let (window, view) = cx
+        .update(|cx| {
+            gpui_kit::open_window(options(800., 600.), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut view = TranscriptView::new(&opened, AgentFilter::Main, window, cx);
+                    // Made with nothing yet: the history comes later.
+                    assert!(view.model.entries().is_empty());
+                    view.set_expanded(call_item, true, cx);
+                    view
+                })
+            })
+        })
+        .unwrap();
+    settle(cx, window);
+    cx.read(|cx| {
+        let view = view.read(cx);
+        assert_eq!(view.model.entries().len(), 2);
+        assert_eq!(
+            view.ui.get(&call_item).and_then(|ui| ui.expanded),
+            Some(true)
+        );
+    });
 }

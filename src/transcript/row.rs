@@ -2,13 +2,13 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arko::remote::{CallStatus, Delivery, Item, Kind, Level, Source, WorkerState};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::Easing;
 use gpui_kit::base::image_cache::LruImageCache;
-use gpui_kit::base::text::{TextView, TextViewMotion};
-use gpui_kit::component::text::TextBlockContent;
+use gpui_kit::base::text::{TextView, TextViewMotion, TextViewStyle};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
@@ -16,7 +16,6 @@ use gpui_kit::component::{
     diff_view::{Diff, DiffView},
     h_flex,
     shimmer::ShimmerText,
-    spinner::Spinner,
     tooltip::Tooltip,
     v_flex,
 };
@@ -24,9 +23,14 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::find::Place;
+use crate::fonts::CodeFont as _;
+
 use super::model::{Gap, RowKey};
 use super::tool::{self, Tool};
 use super::{AgentFilter, CODE_LINES, TranscriptEvent, TranscriptView, selectable};
+
+/// How often the running indicator turns, in frames a second.
+const SPINNER_FPS: f32 = 12.;
 
 /// The reading column's widest.
 const COLUMN: f32 = 46.;
@@ -102,6 +106,9 @@ pub(super) fn shown_parameters(item: &Item) -> Option<Arc<str>> {
     let line = item.text.trim();
     if parameters_shown_by_line(item) {
         None
+    } else if let Some(patch) = apply_diff_patch(item) {
+        // An edit from a session saved before edit_file: its patch.
+        Some(patch.into())
     } else if let Some(parameters) = item.parameters.clone() {
         Some(parameters)
     } else if line.contains('\n') || item.detail.is_some() {
@@ -131,12 +138,42 @@ fn shows_diff(item: &Item) -> bool {
     matches!(item.tool.as_deref(), Some("edit_file" | "write_file")) && item.parameters.is_some()
 }
 
+/// The patch an `apply_diff` call applied (sessions saved before
+/// `edit_file` edit with it), from its parameters.
+fn apply_diff_patch(item: &Item) -> Option<String> {
+    if item.tool.as_deref() != Some("apply_diff") {
+        return None;
+    }
+    let parameters: serde_json::Value = serde_json::from_str(item.parameters.as_deref()?).ok()?;
+    Some(parameters.get("diff")?.as_str()?.to_string())
+}
+
+/// The longest line a preview shows, in characters: a minified file or a
+/// one-line JSON shows its start.
+const PREVIEW_LINE_CHARS: usize = 500;
+
+/// The first lines of `text` for a preview, each at most
+/// [`PREVIEW_LINE_CHARS`] long, and how many lines it has.
+pub(super) fn preview(text: &str) -> (String, usize) {
+    let total = text.lines().count();
+    let shown = text
+        .lines()
+        .take(OUTPUT_LINES)
+        .map(|line| match line.char_indices().nth(PREVIEW_LINE_CHARS) {
+            Some((end, _)) => format!("{}…", &line[..end]),
+            None => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (shown, total)
+}
+
 /// Whether a call's line already says all its parameters do: a one-line
 /// command, a file read or listed, an edit (whose diff shows instead).
 fn parameters_shown_by_line(item: &Item) -> bool {
     match item.tool.as_deref() {
         Some("shell") => item.detail.is_none(),
-        Some("read_file" | "list_files" | "edit_file" | "write_file" | "apply_diff") => true,
+        Some("read_file" | "list_files" | "edit_file" | "write_file") => true,
         _ => false,
     }
 }
@@ -160,6 +197,19 @@ pub(super) fn render(
         return div().into_any_element();
     };
     let content = this.row(row.key, &view, cx);
+    // The pointer over any row of an entry with hover actions shows them,
+    // the gap above a row included, so crossing from one row to the next
+    // or onto the actions keeps them.
+    let hover = match row.key {
+        RowKey::User(_) | RowKey::Actions(_) => true,
+        RowKey::Block { id, .. } => this
+            .model
+            .entry(id)
+            .is_some_and(|entry| entry.item.kind == Kind::Reply),
+        _ => false,
+    };
+    let hover_view = view.downgrade();
+    let key = row.key;
     let gap = match row.gap {
         Gap::None => 0.,
         Gap::Tight => 0.25,
@@ -176,6 +226,13 @@ pub(super) fn render(
         .pt(rems(gap))
         .flex()
         .justify_center()
+        .when(hover, |this| {
+            this.on_hover(move |hovered, _, cx| {
+                hover_view
+                    .update(cx, |this, cx| this.row_hovered(key, *hovered, cx))
+                    .ok();
+            })
+        })
         .child(div().w_full().max_w(rems(COLUMN)).px_4().child(content))
         .into_any_element()
 }
@@ -276,6 +333,76 @@ fn local_images_only(uri: &SharedUri) -> ImageSource {
     }
 }
 
+/// How the rows' Markdown looks: the theme's text style, with tables that
+/// scroll sideways inside their row rather than squeeze their columns.
+pub(super) fn text_style(cx: &App) -> TextViewStyle {
+    let theme = cx.theme();
+    let radius = theme.semantic_tokens().radius.md;
+    let mut rounded = StyleRefinement::default();
+    rounded.corner_radii.top_left = Some(radius.into());
+    rounded.corner_radii.top_right = Some(radius.into());
+    rounded.corner_radii.bottom_left = Some(radius.into());
+    rounded.corner_radii.bottom_right = Some(radius.into());
+    let mut table = rounded.clone();
+    table.overflow.x = Some(Overflow::Scroll);
+    TextViewStyle::default()
+        .with_foreground(theme.foreground)
+        .with_muted_foreground(theme.muted_foreground)
+        .with_link(theme.link)
+        .with_selection(theme.selection)
+        .with_code_background(theme.muted)
+        .with_border(theme.border)
+        .with_code_block(rounded)
+        .with_table(table)
+        .with_table_head(
+            StyleRefinement::default()
+                .bg(theme.table_head)
+                .text_color(theme.table_head_foreground),
+        )
+        .with_inline_code(HighlightStyle {
+            background_color: Some(theme.accent),
+            ..Default::default()
+        })
+        .with_dark(theme.is_dark())
+}
+
+/// The lines of the longest fenced code block in `source`, which may be a
+/// list or a quote that holds code blocks.
+pub(crate) fn longest_code(source: &str) -> usize {
+    // A line without its indentation and quote markers.
+    let bare = |line: &str| {
+        let mut line = line.trim_start();
+        while let Some(rest) = line.strip_prefix('>') {
+            line = rest.trim_start();
+        }
+        line.to_string()
+    };
+    let fence = |line: &str| {
+        let mark = line.chars().next().filter(|c| *c == '`' || *c == '~')?;
+        let length = line.chars().take_while(|c| *c == mark).count();
+        (length >= 3).then_some((mark, length))
+    };
+    let mut longest = 0;
+    let mut open: Option<(char, usize, usize)> = None;
+    for line in source.lines() {
+        let line = bare(line);
+        match &mut open {
+            Some((mark, length, lines)) => {
+                let closes = fence(&line).is_some_and(|(m, n)| m == *mark && n >= *length)
+                    && line.trim_start_matches(*mark).trim().is_empty();
+                if closes {
+                    longest = longest.max(*lines);
+                    open = None;
+                } else {
+                    *lines += 1;
+                }
+            }
+            None => open = fence(&line).map(|(mark, length)| (mark, length, 0)),
+        }
+    }
+    open.map_or(longest, |(_, _, lines)| longest.max(lines))
+}
+
 fn stream_motion(fade: bool) -> TextViewMotion {
     if fade {
         TextViewMotion::default()
@@ -349,83 +476,106 @@ impl TranscriptView {
         };
         let tags = user_tags(item);
         let text: SharedString = item.text.clone().into();
-        let group: SharedString = format!("user-{id}").into();
-        let copy_text = text.clone();
+        let muted = theme.muted_foreground;
+        let copy_view = view.downgrade();
+        // Edit and Branch, for a message the conversation still has.
         let changes = self.is_editable(id).then(|| {
             let busy = self.busy_reason();
             // The engine branches from after the first message at the
             // earliest: before it there is nothing to copy.
             let first = item.message_index == Some(0);
-            let (edit_view, branch_view) = (view.downgrade(), view.downgrade());
-            let action = |name: &'static str, icon: Lucide| {
-                Button::new((name, id))
-                    .ghost()
-                    .xsmall()
-                    .compact()
-                    .icon(Icon::new(icon))
-            };
-            [
-                action("edit-message", Lucide::SquarePen)
-                    .disabled(busy.is_some())
-                    .tooltip(busy.unwrap_or("Edit"))
-                    .accessibility_label("Edit")
-                    .on_click(move |_, _, cx| {
-                        edit_view
-                            .update(cx, |this, cx| this.change(TranscriptEvent::Edit(id), cx))
-                            .ok();
-                    }),
-                action("branch-message", Lucide::GitBranch)
-                    .disabled(busy.is_some() || first)
-                    .tooltip(match busy {
-                        Some(busy) => busy,
-                        None if first => "Branch from a later message",
-                        None => "Branch: a new session with the conversation before this message",
-                    })
-                    .accessibility_label("Branch")
-                    .on_click(move |_, _, cx| {
-                        branch_view
-                            .update(cx, |this, cx| this.change(TranscriptEvent::Branch(id), cx))
-                            .ok();
-                    }),
-            ]
+            (busy, first, view.downgrade(), view.downgrade())
         });
-        v_flex()
+        h_flex()
             .id(("user-message", id))
-            .group(group.clone())
-            .relative()
             .w_full()
+            .items_start()
             .gap_1()
-            .px_3()
+            .pl_3()
+            .pr_1()
             .py_2()
             .rounded(theme.radius)
             .bg(theme.secondary)
             .text_color(theme.secondary_foreground)
-            .when(!tags.is_empty(), |this| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(tags.join(" · ")),
-                )
-            })
-            .children(self.thumbnails(item, view, cx))
-            .child(self.marked(("user-text", id), id, Place::Text, text, cx))
-            // Copy, Edit and Branch show on hover.
             .child(
-                h_flex()
-                    .absolute()
-                    .top_1()
-                    .right_1()
-                    .gap_0p5()
-                    .opacity(0.)
-                    .group_hover(group, |this| this.opacity(1.))
-                    .children(changes.into_iter().flatten())
-                    .child(
-                        Clipboard::new(("copy-user", id))
-                            .tooltip("Copy")
-                            .value(copy_text),
-                    ),
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .when(!tags.is_empty(), |this| {
+                        this.child(div().text_xs().text_color(muted).child(tags.join(" · ")))
+                    })
+                    .children(self.thumbnails(item, view, cx))
+                    .child(self.marked(("user-text", id), id, Place::Text, text, cx)),
             )
+            // Edit, Branch and Copy show on hover, in a column of their own
+            // beside the text.
+            .child(div().flex_none().child(HoverActions {
+                id: ("user-actions", id).into(),
+                shown: self.hovered == Some(id),
+                build: Box::new(move |shown| {
+                    let action = |name: &'static str, icon: Lucide| {
+                        Button::new((name, id))
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(icon))
+                            .text_color(muted)
+                            .tab_stop(shown)
+                    };
+                    h_flex()
+                        .when_some(changes, |this, (busy, first, edit_view, branch_view)| {
+                            this.child(
+                                action("edit-message", Lucide::SquarePen)
+                                    .disabled(busy.is_some())
+                                    .tooltip(busy.unwrap_or("Edit"))
+                                    .accessibility_label("Edit")
+                                    .on_click(move |_, _, cx| {
+                                        edit_view
+                                            .update(cx, |this, cx| {
+                                                this.change(TranscriptEvent::Edit(id), cx)
+                                            })
+                                            .ok();
+                                    }),
+                            )
+                            .child(
+                                action("branch-message", Lucide::GitBranch)
+                                    .disabled(busy.is_some() || first)
+                                    .tooltip(match busy {
+                                        Some(busy) => busy,
+                                        None if first => "Branch from a later message",
+                                        None => {
+                                            "Branch: a new session with the conversation before this message"
+                                        }
+                                    })
+                                    .accessibility_label("Branch")
+                                    .on_click(move |_, _, cx| {
+                                        branch_view
+                                            .update(cx, |this, cx| {
+                                                this.change(TranscriptEvent::Branch(id), cx)
+                                            })
+                                            .ok();
+                                    }),
+                            )
+                        })
+                        .child(
+                            div().id(("copy-user", id)).test_support().child(
+                                Button::new("button")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Copy)
+                                    .tooltip("Copy")
+                                    .text_color(muted)
+                                    .tab_stop(shown)
+                                    .on_click(move |_, _, cx| {
+                                        copy_view
+                                            .update(cx, |this, cx| this.copy_entry(id, true, cx))
+                                            .ok();
+                                    }),
+                            ),
+                        )
+                        .into_any_element()
+                }),
+            }))
             .into_any_element()
     }
 
@@ -448,7 +598,6 @@ impl TranscriptView {
             return div().into_any_element();
         };
         let thinking = item.kind == Kind::Thinking;
-        let reply = item.kind == Kind::Reply;
         let label = (block == 0 && item.kind == Kind::Question).then(|| {
             h_flex()
                 .gap_1()
@@ -484,8 +633,7 @@ impl TranscriptView {
                 .to_string();
             div()
                 .when(ui.source, |this| {
-                    this.font_family(theme.mono_font_family.clone())
-                        .text_size(theme.mono_font_size)
+                    this.code_font(theme).text_size(theme.mono_font_size)
                 })
                 .child(self.marked(
                     SharedString::from(format!("source-{id}-{block}")),
@@ -496,39 +644,36 @@ impl TranscriptView {
                 ))
                 .into_any_element()
         } else {
-            let code = matches!(row.content, TextBlockContent::CodeBlock(_));
-            let lines = if code {
-                row.range
-                    .clone()
-                    .and_then(|range| doc.text.get(range))
-                    .map_or(0, code_lines)
-            } else {
-                0
-            };
+            // The longest code block of the row, at the top level or inside
+            // a list item or a quote: the cap and the header apply to every
+            // code block the row draws.
+            let lines = row.code_lines;
             let uncapped = ui.uncapped.contains(&block);
-            let capped = code && lines > CODE_LINES && !uncapped;
             let Some(row_view) = row.view.as_ref() else {
                 return div().into_any_element();
             };
             let text_view = TextView::new(row_view)
+                .style(if thinking {
+                    text_style(cx).with_foreground(theme.muted_foreground)
+                } else {
+                    text_style(cx)
+                })
                 .selectable(true)
                 .image_source(local_images_only)
                 .motion(stream_motion(self.settings.stream_fade && !thinking))
-                .when(code, |this| {
-                    this.code_block_actions(|code, _, cx| {
-                        let theme = cx.theme();
-                        let copy = code.code();
-                        h_flex()
-                            .gap_1()
-                            .pl_1()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .when_some(code.lang(), |this, lang| this.child(lang))
-                            .child(Clipboard::new("copy").tooltip("Copy").value(copy))
-                    })
+                .code_block_actions(|code, _, cx| {
+                    let theme = cx.theme();
+                    let copy = code.code();
+                    h_flex()
+                        .gap_1()
+                        .pl_1()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .when_some(code.lang(), |this, lang| this.child(lang))
+                        .child(Clipboard::new("copy").tooltip("Copy").value(copy))
                 })
-                .when(capped, |this| this.code_block_max_lines(CODE_LINES));
-            let toggle = (code && lines > CODE_LINES).then(|| {
+                .when(!uncapped, |this| this.code_block_max_lines(CODE_LINES));
+            let toggle = (lines > CODE_LINES).then(|| {
                 let view = view.downgrade();
                 Button::new(("show-all", block as u64))
                     .ghost()
@@ -556,19 +701,11 @@ impl TranscriptView {
                 }))
                 .into_any_element()
         };
-        let hover_view = view.downgrade();
         div()
             .id(SharedString::from(format!("block-body-{id}-{block}")))
             .w_full()
             .when(thinking, |this| {
                 this.text_color(theme.muted_foreground).text_sm()
-            })
-            .when(reply, |this| {
-                this.on_hover(move |hovered, _, cx| {
-                    hover_view
-                        .update(cx, |this, cx| this.set_hovered(id, *hovered, cx))
-                        .ok();
-                })
             })
             .children(label)
             .children(from)
@@ -580,75 +717,102 @@ impl TranscriptView {
     /// showing them moves nothing.
     fn actions(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
         let theme = cx.theme();
-        let shown = self.hovered == Some(id);
         let source = self.ui.get(&id).is_some_and(|ui| ui.source);
-        let button = |name: &'static str, label: &'static str| {
-            Button::new((name, id))
-                .ghost()
-                .xsmall()
-                .label(label)
-                .text_color(theme.muted_foreground)
-        };
-        let copy_view = view.downgrade();
-        let markdown_view = view.downgrade();
-        let source_view = view.downgrade();
-        let hover_view = view.downgrade();
-        let regenerate_view = view.downgrade();
+        let render_markdown = self.settings.render_markdown;
+        let muted = theme.muted_foreground;
+        let view = view.downgrade();
+        // Regenerate, under the latest reply, while nothing runs.
         let last =
             self.model.last_reply() == Some(id) && matches!(self.model.filter(), AgentFilter::Main);
         let busy = self.busy_reason();
-        h_flex()
-            .id(("reply-actions", id))
-            .w_full()
-            .gap_1()
-            .opacity(if shown { 1. } else { 0. })
-            .on_hover(move |hovered, _, cx| {
-                hover_view
-                    .update(cx, |this, cx| this.set_hovered(id, *hovered, cx))
-                    .ok();
-            })
-            .child(button("copy-reply", "Copy").on_click(move |_, _, cx| {
-                copy_view
-                    .update(cx, |this, cx| this.copy_entry(id, false, cx))
-                    .ok();
-            }))
-            .child(
-                button("copy-markdown", "Copy as Markdown").on_click(move |_, _, cx| {
-                    markdown_view
-                        .update(cx, |this, cx| this.copy_entry(id, true, cx))
-                        .ok();
-                }),
-            )
-            .when(self.settings.render_markdown, |this| {
-                this.child(
-                    button(
-                        "view-source",
-                        if source {
-                            "View Formatted"
-                        } else {
-                            "View Source"
-                        },
+        HoverActions {
+            id: ("reply-actions", id).into(),
+            shown: self.hovered == Some(id),
+            build: Box::new(move |shown| {
+                let button = |name: &'static str, label: &'static str, action: ActionFn| {
+                    let view = view.clone();
+                    div().id((name, id)).test_support().child(
+                        Button::new("button")
+                            .ghost()
+                            .xsmall()
+                            .label(label)
+                            .text_color(muted)
+                            .tab_stop(shown)
+                            .on_click(move |_, _, cx| {
+                                view.update(cx, |this, cx| action(this, id, cx)).ok();
+                            }),
                     )
-                    .on_click(move |_, _, cx| {
-                        source_view
-                            .update(cx, |this, cx| this.toggle_source(id, cx))
-                            .ok();
-                    }),
-                )
-            })
-            .when(last, |this| {
-                this.child(
-                    button("regenerate", "Regenerate")
-                        .disabled(busy.is_some())
-                        .tooltip(busy.unwrap_or("Send your last message again for a new reply"))
-                        .on_click(move |_, _, cx| {
-                            regenerate_view
-                                .update(cx, |this, cx| this.change(TranscriptEvent::Regenerate, cx))
-                                .ok();
-                        }),
-                )
-            })
-            .into_any_element()
+                };
+                h_flex()
+                    .w_full()
+                    .gap_1()
+                    .child(button("copy-reply", "Copy", |this, id, cx| {
+                        this.copy_entry(id, false, cx)
+                    }))
+                    .child(button(
+                        "copy-markdown",
+                        "Copy as Markdown",
+                        |this, id, cx| this.copy_entry(id, true, cx),
+                    ))
+                    .when(render_markdown, |this| {
+                        this.child(button(
+                            "view-source",
+                            if source {
+                                "View Formatted"
+                            } else {
+                                "View Source"
+                            },
+                            |this, id, cx| this.toggle_source(id, cx),
+                        ))
+                    })
+                    .when(last, |this| {
+                        let view = view.clone();
+                        this.child(
+                            div().id(("regenerate", id)).test_support().child(
+                                Button::new("button")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Regenerate")
+                                    .text_color(muted)
+                                    .tab_stop(shown)
+                                    .disabled(busy.is_some())
+                                    .tooltip(
+                                        busy.unwrap_or(
+                                            "Send your last message again for a new reply",
+                                        ),
+                                    )
+                                    .on_click(move |_, _, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.change(TranscriptEvent::Regenerate, cx)
+                                        })
+                                        .ok();
+                                    }),
+                            ),
+                        )
+                    })
+                    .into_any_element()
+            }),
+        }
+        .into_any_element()
+    }
+
+    /// The running indicator of the entry `id`: it turns only for the
+    /// latest thing that runs, and stands still for the others. Each turning
+    /// frame draws the transcript, so one indicator turns, a dozen times a
+    /// second.
+    fn spinner(&self, id: u64, cx: &App) -> AnyElement {
+        let icon = Icon::new(IconName::Loader).xsmall();
+        if self.animated != Some(id) || cx.reduce_motion() {
+            return icon.into_any_element();
+        }
+        icon.with_animation(
+            ("running", id),
+            Animation::new(Duration::from_millis(900))
+                .repeat()
+                .with_max_fps(SPINNER_FPS),
+            |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
+        )
+        .into_any_element()
     }
 
     /// Whether thinking shows open unless the reader chose.
@@ -670,10 +834,20 @@ impl TranscriptView {
             .and_then(|ui| ui.expanded)
             .unwrap_or(default);
         let streaming = self.model.is_streaming(ix);
-        let label: AnyElement = if streaming {
+        let name: SharedString = if streaming {
+            "Thinking…".into()
+        } else {
+            match self.model.thought_for(ix) {
+                Some(ms) => format!("Thought for {}", duration(ms)).into(),
+                None => "Thought".into(),
+            }
+        };
+        let label: AnyElement = if streaming && self.animated == Some(id) && !cx.reduce_motion() {
             ShimmerText::new("Thinking…")
                 .id(("thinking-shimmer", id))
                 .into_any_element()
+        } else if streaming {
+            "Thinking…".into_any_element()
         } else {
             match self.model.thought_for(ix) {
                 Some(ms) => format!("Thought for {}", duration(ms)),
@@ -685,22 +859,26 @@ impl TranscriptView {
         h_flex()
             .w_full()
             .child(
-                div().id(("thinking-row", id)).test_support().child(
-                    Button::new(("thinking-toggle", id))
-                        .ghost()
-                        .xsmall()
-                        .text_color(theme.muted_foreground)
-                        .icon(if open {
-                            IconName::ChevronDown
-                        } else {
-                            IconName::ChevronRight
-                        })
-                        .child(label)
-                        .on_click(move |_, _, cx| {
+                div()
+                    .id(("thinking-row", id))
+                    .test_support()
+                    .child(Disclosure {
+                        id: ("thinking-toggle", id).into(),
+                        open,
+                        label: name,
+                        full_width: false,
+                        content: h_flex()
+                            .gap_1()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(Icon::new(chevron(open)).xsmall())
+                            .child(label)
+                            .into_any_element(),
+                        on_toggle: Rc::new(move |_, cx| {
                             view.update(cx, |this, cx| this.toggle(id, default, cx))
                                 .ok();
                         }),
-                ),
+                    }),
             )
             .into_any_element()
     }
@@ -721,7 +899,7 @@ impl TranscriptView {
                     .gap_1()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(Spinner::new().xsmall())
+                    .child(self.spinner(id, cx))
                     .child(duration((self.clock)() - item.at))
                     .into_any_element(),
             ),
@@ -742,41 +920,42 @@ impl TranscriptView {
             _ => None,
         };
         let header_view = view.downgrade();
-        let header = Button::new(("call-toggle", id))
-            .ghost()
-            .xsmall()
-            .w_full()
-            .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_1p5()
-                    .text_color(theme.muted_foreground)
-                    .when(!item.is_main(), |this| {
-                        this.child(
-                            div()
-                                .flex_none()
-                                .text_xs()
-                                .font_family(theme.mono_font_family.clone())
-                                .child(item.agent.clone()),
-                        )
-                    })
-                    .child(Icon::new(tool.icon()).xsmall().flex_none())
-                    .child(
+        let header = Disclosure {
+            id: ("call-toggle", id).into(),
+            open,
+            label: line.clone().into(),
+            full_width: true,
+            content: h_flex()
+                .w_full()
+                .min_w_0()
+                .gap_1p5()
+                .text_color(theme.muted_foreground)
+                .when(!item.is_main(), |this| {
+                    this.child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_left()
-                            .child(self.marked_plain(id, Place::Text, line, cx)),
+                            .flex_none()
+                            .text_xs()
+                            .code_font(theme)
+                            .child(item.agent.clone()),
                     )
-                    .children(trailing),
-            )
-            .on_click(move |_, _, cx| {
+                })
+                .child(Icon::new(tool.icon()).xsmall().flex_none())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_left()
+                        .child(self.marked_plain(id, Place::Text, line.clone(), cx)),
+                )
+                .children(trailing)
+                .into_any_element(),
+            on_toggle: Rc::new(move |_, cx| {
                 header_view
                     .update(cx, |this, cx| this.toggle(id, false, cx))
                     .ok();
-            });
+            }),
+        };
         v_flex()
             .w_full()
             .child(div().id(("call-row", id)).test_support().child(header))
@@ -803,7 +982,7 @@ impl TranscriptView {
                 .py_1p5()
                 .rounded(theme.radius)
                 .bg(theme.muted)
-                .font_family(theme.mono_font_family.clone())
+                .code_font(theme)
                 .text_size(theme.mono_font_size)
                 .child(self.marked((key, id), id, place, text, cx))
         };
@@ -815,8 +994,7 @@ impl TranscriptView {
         };
         // The first lines of a long text, and a button that shows it all.
         let lines = |text: Arc<str>, key: &'static str, place: Place, title: String| {
-            let total = text.lines().count();
-            let shown = super::find::shown_lines(&text);
+            let (shown, total) = preview(&text);
             let title: SharedString = title.into();
             v_flex()
                 .w_full()
@@ -901,59 +1079,50 @@ impl TranscriptView {
             .iter()
             .filter(|item| item.status == Some(CallStatus::Failed))
             .count();
-        let open = self.ui.get(&id).and_then(|ui| ui.expanded).unwrap_or(false);
+        let open = self.group_open(id);
         let view = view.downgrade();
-        Button::new(("group-toggle", id))
-            .ghost()
-            .xsmall()
-            .w_full()
-            .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_1p5()
-                    .text_color(theme.muted_foreground)
-                    .child(
-                        Icon::new(if open {
-                            IconName::ChevronDown
-                        } else {
-                            IconName::ChevronRight
-                        })
-                        .xsmall(),
+        let summary = tool::summary(calls.iter().copied());
+        Disclosure {
+            id: ("group-toggle", id).into(),
+            open,
+            label: summary.clone().into(),
+            full_width: true,
+            content: h_flex()
+                .w_full()
+                .min_w_0()
+                .gap_1p5()
+                .text_color(theme.muted_foreground)
+                .child(Icon::new(chevron(open)).xsmall())
+                .child(div().flex_none().child(summary))
+                .when_some(running, |this, running| {
+                    this.child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(self.spinner(running.id, cx))
+                            .child(div().min_w_0().truncate().child(
+                                running.text.lines().next().unwrap_or_default().to_string(),
+                            )),
                     )
-                    .child(
-                        div()
+                })
+                .when(running.is_none(), |this| this.child(div().flex_1()))
+                .when(failed > 0, |this| {
+                    this.child(
+                        h_flex()
                             .flex_none()
-                            .child(tool::summary(calls.iter().copied())),
+                            .gap_1()
+                            .text_color(theme.danger)
+                            .child(Icon::new(Lucide::CircleX).xsmall())
+                            .child(format!("{failed} failed")),
                     )
-                    .when_some(running, |this, running| {
-                        this.child(
-                            h_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_1()
-                                .child(Spinner::new().xsmall())
-                                .child(div().min_w_0().truncate().child(
-                                    running.text.lines().next().unwrap_or_default().to_string(),
-                                )),
-                        )
-                    })
-                    .when(running.is_none(), |this| this.child(div().flex_1()))
-                    .when(failed > 0, |this| {
-                        this.child(
-                            h_flex()
-                                .flex_none()
-                                .gap_1()
-                                .text_color(theme.danger)
-                                .child(Icon::new(Lucide::CircleX).xsmall())
-                                .child(format!("{failed} failed")),
-                        )
-                    }),
-            )
-            .on_click(move |_, _, cx| {
-                view.update(cx, |this, cx| this.toggle(id, false, cx)).ok();
-            })
-            .into_any_element()
+                })
+                .into_any_element(),
+            on_toggle: Rc::new(move |_, cx| {
+                view.update(cx, |this, cx| this.toggle_group(id, cx)).ok();
+            }),
+        }
+        .into_any_element()
     }
 
     fn count(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
@@ -1054,7 +1223,7 @@ impl TranscriptView {
                     div()
                         .flex_none()
                         .text_xs()
-                        .font_family(theme.mono_font_family.clone())
+                        .code_font(theme)
                         .text_color(theme.muted_foreground)
                         .child(item.agent.clone()),
                 )
@@ -1090,7 +1259,7 @@ impl TranscriptView {
             .pl_3()
             .border_l_2()
             .border_color(border)
-            .font_family(theme.mono_font_family.clone())
+            .code_font(theme)
             .text_size(theme.mono_font_size)
             .child(self.marked(("output-text", id), id, Place::Text, item.text.clone(), cx))
             .into_any_element()
@@ -1131,7 +1300,7 @@ impl TranscriptView {
                     .unwrap_or_default();
                 h_flex()
                     .gap_1()
-                    .child(Spinner::new().xsmall())
+                    .child(self.spinner(id, cx))
                     .child(elapsed)
                     .into_any_element()
             }
@@ -1160,7 +1329,7 @@ impl TranscriptView {
                     .child(
                         div()
                             .flex_none()
-                            .font_family(theme.mono_font_family.clone())
+                            .code_font(theme)
                             .text_size(theme.mono_font_size)
                             .child(worker_id),
                     )
@@ -1232,7 +1401,7 @@ impl Render for OutputViewer {
                     .w_full()
                     .rounded(theme.radius)
                     .bg(theme.muted)
-                    .font_family(theme.mono_font_family.clone())
+                    .code_font(theme)
                     .text_size(theme.mono_font_size)
                     .child(
                         list(self.list.clone(), move |ix, _, cx| {
@@ -1264,11 +1433,107 @@ impl Render for OutputViewer {
     }
 }
 
+/// The chevron of a disclosure, open or closed.
+fn chevron(open: bool) -> IconName {
+    if open {
+        IconName::ChevronDown
+    } else {
+        IconName::ChevronRight
+    }
+}
+
+/// A row's toggle: a button, a Tab stop, that opens and closes the row's
+/// details and tells assistive technology whether they're open.
+#[derive(IntoElement)]
+struct Disclosure {
+    id: ElementId,
+    open: bool,
+    /// What it's called, read by assistive technology.
+    label: SharedString,
+    content: AnyElement,
+    full_width: bool,
+    on_toggle: Callback,
+}
+
+impl RenderOnce for Disclosure {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = window
+            .use_keyed_state(self.id.clone(), cx, |_, cx| {
+                cx.focus_handle().tab_stop(true)
+            })
+            .read(cx)
+            .clone();
+        let theme = cx.theme();
+        // A ghost button's hover.
+        let hover = if theme.is_dark() {
+            theme.accent.opacity(0.5)
+        } else {
+            theme.accent
+        };
+        let ring = theme.ring;
+        // An extra-small button's size and padding, its border (the focus
+        // ring) taken out of the padding.
+        let padding = window.rem_size() * 0.25 - px(1.);
+        div()
+            .id(self.id)
+            .role(Role::Button)
+            .aria_expanded(self.open)
+            .aria_label(self.label)
+            .test_support()
+            .track_focus(&focus)
+            .when(self.full_width, |this| this.w_full())
+            .min_w_0()
+            .h_5()
+            .flex()
+            .items_center()
+            .px(padding)
+            .text_xs()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(transparent_black())
+            .hover(move |this| this.bg(hover))
+            .focus_visible(move |this| this.border_color(ring))
+            .child(self.content)
+            // A click, or Enter or Space while it has the focus.
+            .on_click(move |_, window, cx| (self.on_toggle)(window, cx))
+    }
+}
+
+/// What a hover action does to the entry `id`.
+type ActionFn = fn(&mut TranscriptView, u64, &mut Context<TranscriptView>);
+
+/// Actions that show while the pointer is over their entry, or while one of
+/// them has the focus. Hidden, they take their space (nothing moves when
+/// they show) and no Tab stop.
+#[derive(IntoElement)]
+struct HoverActions {
+    id: ElementId,
+    /// Whether the pointer is over the entry.
+    shown: bool,
+    /// Builds the actions, as Tab stops when they show.
+    build: Box<dyn FnOnce(bool) -> AnyElement>,
+}
+
+impl RenderOnce for HoverActions {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = window
+            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        let shown = self.shown || focus.contains_focused(window, cx);
+        div()
+            .id(self.id)
+            .track_focus(&focus)
+            .opacity(if shown { 1. } else { 0. })
+            .child((self.build)(shown))
+    }
+}
+
 /// A thumbnail's size, in rem: up to four fit the reading column.
 const THUMBNAIL: (f32, f32) = (10., 7.5);
 
-/// What opening a thumbnail does.
-type OpenImage = Rc<dyn Fn(&mut Window, &mut App)>;
+/// What a click on a thumbnail or a toggle does.
+type Callback = Rc<dyn Fn(&mut Window, &mut App)>;
 
 /// One image of a row, as a tile that opens the image viewer (a click, or
 /// Enter when it has the focus, which it gets back when the viewer closes).
@@ -1278,21 +1543,25 @@ struct Thumbnail {
     /// `None` when the session's store no longer keeps the image.
     source: Option<ImageSource>,
     caption: SharedString,
-    on_open: OpenImage,
+    on_open: Callback,
 }
 
 impl RenderOnce for Thumbnail {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus = window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+            .use_keyed_state(self.id.clone(), cx, |_, cx| {
+                cx.focus_handle().tab_stop(true)
+            })
             .read(cx)
             .clone();
         let theme = cx.theme();
         let caption = self.caption.clone();
-        let (click, key) = (self.on_open.clone(), self.on_open);
+        let name: SharedString = format!("Open image {}", self.caption).into();
         let click_focus = focus.clone();
         div()
             .id(self.id)
+            .role(Role::Button)
+            .aria_label(name)
             .test_support()
             .track_focus(&focus)
             .flex_none()
@@ -1315,15 +1584,10 @@ impl RenderOnce for Thumbnail {
                     .text_color(theme.muted_foreground)
                     .child("Image not kept"),
             })
+            // A click, or Enter or Space while it has the focus.
             .on_click(move |_, window, cx| {
                 click_focus.focus(window, cx);
-                click(window, cx);
-            })
-            .on_key_down(move |event, window, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    cx.stop_propagation();
-                    key(window, cx);
-                }
+                (self.on_open)(window, cx);
             })
     }
 }
@@ -1332,7 +1596,7 @@ impl RenderOnce for Thumbnail {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{code_lines, duration, edit_diff};
+    use super::{apply_diff_patch, code_lines, duration, edit_diff, longest_code, preview};
     use arko::remote::{Item, Kind};
 
     #[test]
@@ -1363,6 +1627,42 @@ mod tests {
         assert_eq!(duration(12_400), "12 s");
         assert_eq!(duration(65_000), "1 m 5 s");
         assert_eq!(duration(7_380_000), "2 h 3 m");
+    }
+
+    #[test]
+    fn the_longest_code_block_counts_inside_lists_and_quotes() {
+        let code: String = (0..50).map(|n| format!("   let x{n} = {n};\n")).collect();
+        let list = format!("1. Run this:\n\n   ```rust\n{code}   ```\n2. Done.\n");
+        assert_eq!(longest_code(&list), 50);
+        let quote = "> ```\n> a\n> b\n> ```\n> text";
+        assert_eq!(longest_code(quote), 2);
+        // A block still streaming counts what came.
+        assert_eq!(longest_code("- step\n\n  ~~~~\n  a\n  ```\n  b\n"), 3);
+        assert_eq!(longest_code("no code here"), 0);
+    }
+
+    #[test]
+    fn a_preview_shows_forty_lines_of_at_most_500_characters() {
+        let long = "x".repeat(300_000);
+        let (shown, total) = preview(&long);
+        assert_eq!(total, 1);
+        assert_eq!(shown.chars().count(), 501);
+        let many: String = (0..100).map(|n| format!("line {n}\n")).collect();
+        let (shown, total) = preview(&many);
+        assert_eq!((shown.lines().count(), total), (40, 100));
+    }
+
+    #[test]
+    fn an_apply_diff_call_shows_its_patch() {
+        let mut item = Item::new(Kind::Call, "edit a.rs");
+        item.tool = Some("apply_diff".into());
+        item.parameters = Some(
+            r#"{"diff":"<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE","path":"a.rs"}"#.into(),
+        );
+        assert_eq!(
+            apply_diff_patch(&item).as_deref(),
+            Some("<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE")
+        );
     }
 
     #[test]

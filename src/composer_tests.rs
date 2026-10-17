@@ -1,15 +1,18 @@
 //! Interaction tests of the composer and the session's dialogs, on the fake
 //! backend's sample sessions (which show, but don't run).
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AnyWindowHandle, ClipboardItem, Entity, TestAppContext};
+use gpui_kit::{AnyWindowHandle, AppContext as _, ClipboardItem, Entity, TestAppContext};
 
 use crate::backend::FakeBackend;
+use crate::composer::ComposerEvent;
 use crate::live::{PromptAnswer, PromptKind};
 use crate::prefs::{self, SendKey};
 use crate::tests::{act, open, open_title, row_of};
@@ -65,6 +68,21 @@ fn each_session_keeps_its_draft(cx: &mut TestAppContext) {
         cx.read(|cx| drafts::get("20261016-091200-a1b2", cx))
             .as_deref(),
         Some("About the split")
+    );
+}
+
+#[gpui_kit::test]
+fn closing_the_window_keeps_what_was_just_typed(cx: &mut TestAppContext) {
+    let (_, window, _) = start(cx);
+    // Closed before typing rests, when the draft would be kept anyway.
+    act(cx, window, |window, cx| window.input("Half a thought", cx));
+    cx.update_window(window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| drafts::get(drafts::NEW_SESSION, cx))
+            .as_deref(),
+        Some("Half a thought")
     );
 }
 
@@ -168,6 +186,84 @@ fn the_send_key_follows_settings_and_mod_enter_always_sends(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
+fn the_slash_menu_takes_tab_and_enter_and_mod_enter_sends_as_typed(cx: &mut TestAppContext) {
+    let (_, window, workspace) = start(cx);
+    let composer = cx.read(|cx| {
+        workspace
+            .read(cx)
+            .session_view()
+            .read(cx)
+            .composer()
+            .clone()
+    });
+    let sent: Rc<RefCell<Vec<String>>> = Rc::default();
+    let _subscription = cx.update(|cx| {
+        let sent = sent.clone();
+        cx.subscribe(&composer, move |_, event, _| {
+            if let ComposerEvent::Submit(outgoing) = event {
+                sent.borrow_mut().push(outgoing.text.clone());
+            }
+        })
+    });
+    // Types `text` into an empty composer, workers r1, r10 and r11 running.
+    let type_text = |text: &str, cx: &mut TestAppContext| {
+        let reading = Arc::new(arko::remote::Reading {
+            workers_running: vec!["r1".into(), "r10".into(), "r11".into()],
+            ..arko::remote::Reading::default()
+        });
+        cx.update(|cx| {
+            composer.update(cx, |composer, _| {
+                composer.set_session_state(reading, false, true)
+            })
+        });
+        act(cx, window, |window, cx| {
+            composer.update(cx, |composer, cx| composer.set_text("", window, cx))
+        });
+        act(cx, window, |window, cx| window.input(text, cx));
+    };
+
+    // Tab and Enter take the highlighted word.
+    type_text("/stop-workers r", cx);
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(composer_text(&workspace, cx), "/stop-workers r1 ");
+    type_text("/stop-workers r1", cx);
+    act(cx, window, |window, cx| window.press("tab", cx));
+    assert_eq!(composer_text(&workspace, cx), "/stop-workers r10 ");
+    assert!(sent.borrow().is_empty());
+    // A command typed in full goes as typed, though r10 and r11 are offered.
+    type_text("/stop-workers r1", cx);
+    assert!(cx.read(|cx| composer.read(cx).menu().is_some()));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(*sent.borrow(), ["/stop-workers r1"]);
+    // Mod+Enter sends what is typed, whatever the menu offers.
+    type_text("/stop-workers r", cx);
+    act(cx, window, |window, cx| window.press("secondary-enter", cx));
+    assert_eq!(
+        sent.borrow().last().map(String::as_str),
+        Some("/stop-workers r")
+    );
+}
+
+#[gpui_kit::test]
+fn told_not_to_ask_a_switch_to_agent_still_asks_for_the_folder(cx: &mut TestAppContext) {
+    let (_, window, workspace) = start(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.sessions.ask_before_switch = false));
+    open_row(window, &workspace, "Naming a desktop app", cx);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.choose_mode(crate::backend::Mode::Agent, window, cx)
+        })
+    });
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("switch-mode").is_some());
+        assert!(window.try_find("switch-folder").is_some());
+        assert!(window.try_find("dont-ask-switch").is_none());
+        window.within("dialog").click("cancel", cx);
+    });
+}
+
+#[gpui_kit::test]
 fn spell_check_and_suggestions_follow_settings(cx: &mut TestAppContext) {
     let (_, _, workspace) = start(cx);
     let textarea = cx.read(|cx| {
@@ -247,6 +343,18 @@ fn the_mode_chip_lists_the_models_and_picks_one(cx: &mut TestAppContext) {
         "Agent · Opus 5.5 · high"
     );
     assert_eq!(open_title(&workspace, cx), None, "no session started");
+    // A name that isn't listed is refused, and stays to be put right.
+    act(cx, window, |window, cx| {
+        window.input("/model claude-sonnet-5", cx)
+    });
+    act(cx, window, |window, cx| window.press("escape", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(composer_text(&workspace, cx), "/model claude-sonnet-5");
+    assert_eq!(
+        cx.read(|cx| view.read(cx).draft().model.clone()).as_deref(),
+        Some("claude-opus-5-5")
+    );
+    assert_eq!(open_title(&workspace, cx), None);
 }
 
 #[gpui_kit::test]
@@ -274,9 +382,8 @@ fn missing_credentials_are_entered_in_a_dialog(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| {
         window.input("sk-ant-test-0123456789", cx)
     });
-    act(cx, window, |window, cx| {
-        window.click("credentials-save", cx)
-    });
+    // Enter in the field saves, as the button does.
+    act(cx, window, |window, cx| window.press("enter", cx));
     assert_eq!(
         backend.added_keys(),
         [(
@@ -416,6 +523,48 @@ fn a_pasted_image_waits_as_a_tile_until_sent_or_removed(cx: &mut TestAppContext)
     act(cx, window, |window, _| {
         assert!(window.try_find("composer-images").is_none())
     });
+}
+
+#[gpui_kit::test]
+fn an_image_the_model_cant_take_is_refused_before_sending(cx: &mut TestAppContext) {
+    // A 1×1 GIF, which Gemini doesn't take.
+    const GIF: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;";
+    let (_, window, workspace) = start(cx);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.set_draft_model("gemini-3.1-pro-preview".into(), None, cx)
+        });
+        composer.update(cx, |composer, cx| {
+            composer.attach_image(
+                crate::composer::Attached::new(
+                    gpui_kit::ImageFormat::Gif,
+                    GIF.to_vec(),
+                    Some("dot.gif".into()),
+                ),
+                cx,
+            )
+        });
+    });
+    let refusal = cx.read(|cx| composer.read(cx).image_refusal());
+    assert!(
+        refusal.as_deref().is_some_and(|why| why.contains("GIF")),
+        "{refusal:?}"
+    );
+    act(cx, window, |window, cx| window.input("What is this?", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    // Nothing went: the text and the image stay for the user to change.
+    assert_eq!(open_title(&workspace, cx), None);
+    assert_eq!(composer_text(&workspace, cx), "What is this?");
+    assert_eq!(cx.read(|cx| composer.read(cx).images().len()), 1);
+    // A model that takes it clears the warning.
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.set_draft_model("claude-opus-5-5".into(), None, cx)
+        })
+    });
+    assert_eq!(cx.read(|cx| composer.read(cx).image_refusal()), None);
 }
 
 #[test]

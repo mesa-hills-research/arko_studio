@@ -313,6 +313,9 @@ pub struct LiveSession {
     #[cfg(test)]
     applied: usize,
     _tasks: Vec<Task<()>>,
+    /// The tasks draining the feed it has open: dropped with that feed.
+    _feed: Vec<Task<()>>,
+    _rename: Option<Task<()>>,
 }
 
 impl EventEmitter<LiveEvent> for LiveSession {}
@@ -345,6 +348,8 @@ impl LiveSession {
             #[cfg(test)]
             applied: 0,
             _tasks: Vec::new(),
+            _feed: Vec::new(),
+            _rename: None,
         }
     }
 
@@ -380,7 +385,10 @@ impl LiveSession {
             this.launch(start, cx);
             this
         });
-        LiveSessions::add(session.clone(), cx);
+        // One the backend refused to start doesn't run.
+        if !matches!(session.read(cx).phase, Phase::Failed(_)) {
+            LiveSessions::add(session.clone(), cx);
+        }
         session.update(cx, |session, cx| session.update_indicator(cx));
         session
     }
@@ -474,6 +482,7 @@ impl LiveSession {
         }
         self.reading = status.borrow().clone();
         self.apply_reading();
+        // Closed before it opened, only the quit is queued.
         for queued in self.queued.drain(..) {
             let _ = input.send(queued);
         }
@@ -485,7 +494,9 @@ impl LiveSession {
             details,
             images,
         });
-        self.phase = Phase::Open;
+        if self.phase != Phase::Closing {
+            self.phase = Phase::Open;
+        }
         self.opened += 1;
         self.drain(feed, status, quit_asks, cx);
         self.update_indicator(cx);
@@ -504,7 +515,8 @@ impl LiveSession {
     ) {
         let drained = Arc::new(Mutex::new(Drained::default()));
         let wake = Arc::new(Notify::new());
-        self._tasks.push(cx.background_spawn({
+        self._feed.clear();
+        self._feed.push(cx.background_spawn({
             let (drained, wake) = (drained.clone(), wake.clone());
             async move {
                 // Subscribing copies the session's history so far: never on
@@ -540,7 +552,7 @@ impl LiveSession {
                 }
             }
         }));
-        self._tasks.push(cx.background_spawn({
+        self._feed.push(cx.background_spawn({
             let (drained, wake) = (drained.clone(), wake.clone());
             async move {
                 while status.changed().await.is_ok() {
@@ -550,7 +562,7 @@ impl LiveSession {
                 }
             }
         }));
-        self._tasks.push(cx.background_spawn({
+        self._feed.push(cx.background_spawn({
             let (drained, wake) = (drained.clone(), wake.clone());
             async move {
                 while let Some(ask) = quit_asks.recv().await {
@@ -559,7 +571,7 @@ impl LiveSession {
                 }
             }
         }));
-        self._tasks.push(cx.spawn(async move |this, cx| {
+        self._feed.push(cx.spawn(async move |this, cx| {
             loop {
                 wake.notified().await;
                 let batch = std::mem::take(&mut *lock(&drained));
@@ -645,8 +657,11 @@ impl LiveSession {
         let Some(id) = self.id.clone() else {
             return self.ended(cx);
         };
+        // The old feed goes, and the tasks that drained it.
         self.link = None;
+        self._feed.clear();
         self.activity = Activity::default();
+        self.answered = None;
         self.launch(Start::Resume(id), cx);
         cx.notify();
     }
@@ -702,6 +717,7 @@ impl LiveSession {
 
     fn ended(&mut self, cx: &mut Context<Self>) {
         self.phase = Phase::Ended;
+        self._feed.clear();
         self.activity = Activity::default();
         self.quit_ask = None;
         LiveSessions::remove(cx.entity_id(), self.id.as_ref(), cx);
@@ -846,7 +862,7 @@ impl LiveSession {
             self.title = title.trim().to_string().into();
             cx.notify();
         }
-        self._tasks.push(cx.spawn(async move |this, cx| {
+        self._rename = Some(cx.spawn(async move |this, cx| {
             if let Ok(Err(why)) = answer.await {
                 this.update(cx, |_, cx| cx.emit(LiveEvent::Refused(why)))
                     .ok();
@@ -917,6 +933,12 @@ impl LiveSession {
         }
     }
 
+    /// How many tasks drain its feeds (tests): one feed's worth.
+    #[cfg(test)]
+    pub(crate) fn feed_tasks(&self) -> usize {
+        self._feed.len()
+    }
+
     /// Asks the user as the engine's prompter does (tests).
     #[cfg(test)]
     pub fn ask(
@@ -963,10 +985,17 @@ impl LiveSession {
     pub fn close(&mut self, agreed: arko::QuitAsk, cx: &mut Context<Self>) {
         match &self.phase {
             Phase::Opening => {
-                // It hasn't opened: it closes as soon as it does.
+                // It hasn't opened: it closes as soon as it does, without
+                // sending what waited for it (a new session's first message
+                // would still go to the model). A question it asks before it
+                // opens is answered: don't open.
+                self.queued.clear();
                 self.queued.push(arko::Input::Quit(Some(Vec::new())));
                 self.quit_agreed = Some(agreed);
                 self.phase = Phase::Closing;
+                if let Some(prompt) = self.prompt.take() {
+                    let _ = prompt.reply.send(PromptAnswer::Cancel);
+                }
             }
             Phase::Open | Phase::Closing => {
                 let jobs = agreed.jobs.iter().map(|job| job.job_id).collect();
@@ -1061,9 +1090,30 @@ pub fn init(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Drained, LiveEvent, LiveSession, first_line};
+    use super::{Drained, LiveEvent, LiveSession, LiveSessions, Phase, first_line};
     use arko::remote::{Activity, Question};
     use gpui_kit::{AppContext as _, TestAppContext};
+
+    /// A session the backend refuses (open in a terminal) says why, and
+    /// isn't counted among those running.
+    #[gpui_kit::test]
+    fn a_session_the_backend_refuses_isnt_kept_running(cx: &mut TestAppContext) {
+        let backend = crate::backend::FakeBackend::sample("/arko", std::time::SystemTime::now());
+        let held = crate::backend::Backend::sessions(&backend)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.holder.is_some())
+            .unwrap();
+        cx.update(|cx| {
+            super::init(cx);
+            cx.set_global(crate::backend::SharedBackend(std::sync::Arc::new(backend)));
+        });
+        let session = cx.update(|cx| LiveSession::resume(&held, cx));
+        cx.read(|cx| {
+            assert!(matches!(session.read(cx).phase(), Phase::Failed(_)));
+            assert!(LiveSessions::all(cx).is_empty());
+        });
+    }
 
     /// A turn that ends while no window shows the session leaves it
     /// unseen. A question that closes without this app's answer was

@@ -1,6 +1,6 @@
-//! The feed's updates on their way to a transcript: drained off the UI
-//! thread as they come, held until the transcript's next frame, and applied
-//! then, all at once.
+//! The feed's history and updates on their way to a transcript: taken off
+//! the UI thread as they come, held until the transcript's next frame, and
+//! applied then, all at once.
 
 use std::sync::{Arc, Mutex};
 
@@ -11,6 +11,9 @@ use tokio::sync::Notify;
 /// What came since the transcript last drew.
 #[derive(Default)]
 pub(crate) struct Pending {
+    /// The history so far, once, as the subscription starts: the updates
+    /// that follow it come after it.
+    pub snapshot: Option<Snapshot>,
     pub updates: Vec<Update>,
     /// The activity as of the latest `Update::Activity` (which carries none).
     pub activity: Option<Activity>,
@@ -18,7 +21,7 @@ pub(crate) struct Pending {
 
 impl Pending {
     fn is_empty(&self) -> bool {
-        self.updates.is_empty() && self.activity.is_none()
+        self.snapshot.is_none() && self.updates.is_empty() && self.activity.is_none()
     }
 
     /// Adds `update`, joining text appended to the update before it.
@@ -53,10 +56,11 @@ pub(crate) struct Inbox {
 }
 
 impl Inbox {
-    /// Subscribes to `feed`: returns the history so far, and an inbox that
-    /// asks `cx`'s entity to draw again (once) when updates come.
-    pub fn subscribe<T: 'static>(feed: &Feed, cx: &mut Context<T>) -> (Snapshot, Self) {
-        let (snapshot, mut batches) = feed.subscribe_batched();
+    /// Subscribes to `feed`: an inbox that gets the history so far and then
+    /// the updates, and asks `cx`'s entity to draw again (once) when they
+    /// come. Subscribing copies the history under the feed's lock, so it
+    /// happens on a background thread too.
+    pub fn subscribe<T: 'static>(feed: &Feed, cx: &mut Context<T>) -> Self {
         let pending = Arc::new(Mutex::new(Pending::default()));
         let notify = Arc::new(Notify::new());
         let drain = cx.background_spawn({
@@ -64,6 +68,9 @@ impl Inbox {
             let notify = notify.clone();
             let feed = feed.clone();
             async move {
+                let (snapshot, mut batches) = feed.subscribe_batched();
+                pending.lock().unwrap_or_else(|p| p.into_inner()).snapshot = Some(snapshot);
+                notify.notify_one();
                 while let Some(batch) = batches.next().await {
                     let activity = batch
                         .iter()
@@ -98,14 +105,11 @@ impl Inbox {
                 }
             }
         });
-        (
-            snapshot,
-            Self {
-                pending,
-                _drain: drain,
-                _wake: wake,
-            },
-        )
+        Self {
+            pending,
+            _drain: drain,
+            _wake: wake,
+        }
     }
 
     /// Takes what came since the last call.

@@ -368,6 +368,42 @@ fn the_theme_follows_the_mode_and_keeps_the_zoom(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn turning_code_ligatures_off_reaches_the_code_font_and_outlasts_a_theme_change(
+    cx: &mut TestAppContext,
+) {
+    start(cx);
+    let _ = open(cx, 1300.);
+    // The theme's copy, which the app's own code text reads, and the one
+    // GPUI Kit's text views read.
+    let features = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            (
+                Theme::global(cx).mono_font_features.clone(),
+                gpui_kit::base::Theme::global(cx)
+                    .tokens
+                    .typography
+                    .mono_features
+                    .clone(),
+            )
+        })
+    };
+    let font_defaults = (
+        gpui_kit::FontFeatures::default(),
+        gpui_kit::FontFeatures::default(),
+    );
+    assert_eq!(features(cx), font_defaults, "on by default");
+
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.code_ligatures = false));
+    let off = crate::fonts::no_ligatures();
+    assert_eq!(features(cx), (off.clone(), off.clone()));
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.theme_mode = ThemeMode::Dark));
+    assert_eq!(features(cx), (off.clone(), off), "kept across themes");
+
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.code_ligatures = true));
+    assert_eq!(features(cx), font_defaults);
+}
+
+#[gpui_kit::test]
 fn system_mode_follows_the_systems_appearance(cx: &mut TestAppContext) {
     start(cx);
     let _ = open(cx, 1300.);

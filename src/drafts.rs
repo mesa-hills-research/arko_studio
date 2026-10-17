@@ -28,12 +28,18 @@ struct DraftsFile {
     drafts: BTreeMap<String, String>,
 }
 
+/// Puts what a composer holds into the drafts.
+type Keeper = Box<dyn Fn(&mut App)>;
+
 /// Every unsent draft.
 pub struct Drafts {
     drafts: BTreeMap<String, String>,
     path: Option<PathBuf>,
     changed: bool,
     saving: Option<Task<()>>,
+    /// Put what composers hold into the drafts before the last save at
+    /// quit. One whose composer is gone does nothing.
+    keepers: Vec<Keeper>,
 }
 
 impl Global for Drafts {}
@@ -54,18 +60,29 @@ pub fn init(drafts: BTreeMap<String, String>, path: Option<PathBuf>, cx: &mut Ap
         path,
         changed: false,
         saving: None,
+        keepers: Vec::new(),
     });
     cx.on_app_quit(|cx| {
+        // The last keystrokes, which a composer keeps only once typing rests.
+        let keepers = std::mem::take(&mut cx.global_mut::<Drafts>().keepers);
+        for keep in &keepers {
+            keep(cx);
+        }
         let unsaved = unsaved(cx);
         async move {
-            if let Some((path, text)) = unsaved
-                && let Err(error) = crate::prefs::write_atomically(&path, &text)
+            if let Some((path, drafts)) = unsaved
+                && let Err(error) = write(&path, drafts)
             {
                 tracing::error!("couldn't save {}: {error}", path.display());
             }
         }
     })
     .detach();
+}
+
+/// Has `keep` put a composer's text into the drafts before the app quits.
+pub fn keep_at_quit(keep: impl Fn(&mut App) + 'static, cx: &mut App) {
+    cx.global_mut::<Drafts>().keepers.push(Box::new(keep));
 }
 
 /// The draft of `key` (a session id or [`NEW_SESSION`]).
@@ -94,18 +111,16 @@ pub fn set(key: &str, text: &str, cx: &mut App) {
     schedule_save(cx);
 }
 
-fn unsaved(cx: &App) -> Option<(PathBuf, String)> {
+/// The drafts to write, when they changed since the last save.
+fn unsaved(cx: &App) -> Option<(PathBuf, BTreeMap<String, String>)> {
     let drafts = cx.global::<Drafts>();
     let path = drafts.path.clone()?;
-    if !drafts.changed {
-        return None;
-    }
-    let file = DraftsFile {
-        drafts: drafts.drafts.clone(),
-    };
-    serde_json::to_string_pretty(&file)
-        .ok()
-        .map(|text| (path, text))
+    drafts.changed.then(|| (path, drafts.drafts.clone()))
+}
+
+fn write(path: &Path, drafts: BTreeMap<String, String>) -> std::io::Result<()> {
+    let text = serde_json::to_string_pretty(&DraftsFile { drafts })?;
+    crate::prefs::write_atomically(path, &text)
 }
 
 fn schedule_save(cx: &mut App) {
@@ -115,17 +130,18 @@ fn schedule_save(cx: &mut App) {
     // Replacing the task drops the one waiting: only a pause saves.
     let task = cx.spawn(async move |cx| {
         cx.background_executor().timer(SAVE_DELAY).await;
-        let Some((path, text)) = cx.update(|cx| {
+        let Some((path, drafts)) = cx.update(|cx| {
             let unsaved = unsaved(cx);
             cx.global_mut::<Drafts>().changed = false;
             unsaved
         }) else {
             return;
         };
+        // Written as JSON off the UI thread.
         let written = cx
             .background_spawn({
                 let path = path.clone();
-                async move { crate::prefs::write_atomically(&path, &text) }
+                async move { write(&path, drafts) }
             })
             .await;
         if let Err(error) = written {

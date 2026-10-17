@@ -35,10 +35,34 @@ pub fn quit(window: &mut Window, cx: &mut App) {
     close(LiveSessions::all(cx), true, window, cx);
 }
 
+/// What runs once a close finished, in the window that started it.
+type Then = Box<dyn FnOnce(&mut Window, &mut App)>;
+
 /// Closes `sessions`, and with `quitting` quits the app once they all ended.
 pub fn close(
     sessions: Vec<Entity<LiveSession>>,
     quitting: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    close_and(sessions, quitting, None, window, cx);
+}
+
+/// Closes `sessions` and runs `then` once they all ended. A close the user
+/// cancels drops `then`, so nothing is left waiting for a later close.
+pub fn close_then(
+    sessions: Vec<Entity<LiveSession>>,
+    window: &mut Window,
+    cx: &mut App,
+    then: impl FnOnce(&mut Window, &mut App) + 'static,
+) {
+    close_and(sessions, false, Some(Box::new(then)), window, cx);
+}
+
+fn close_and(
+    sessions: Vec<Entity<LiveSession>>,
+    quitting: bool,
+    then: Option<Then>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -50,6 +74,9 @@ pub fn close(
         })
         .collect();
     if running.is_empty() {
+        if let Some(then) = then {
+            then(window, cx);
+        }
         if quitting {
             cx.quit();
         }
@@ -65,22 +92,31 @@ pub fn close(
         })
         .collect();
     if work.is_empty() || !prefs::get(cx).sessions.ask_before_quit {
-        start(running, quitting, window, cx);
+        start(running, quitting, then, window, cx);
     } else {
+        // The answer comes once, and `then` goes with it.
+        let then = std::cell::RefCell::new(then);
         prompts::confirm_stop(work, quitting, window, cx, move |agreed, window, cx| {
+            let then = then.take();
             if agreed {
-                start(running.clone(), quitting, window, cx);
+                start(running.clone(), quitting, then, window, cx);
             }
         });
     }
 }
 
-fn start(sessions: Vec<Entity<LiveSession>>, quitting: bool, window: &mut Window, cx: &mut App) {
+fn start(
+    sessions: Vec<Entity<LiveSession>>,
+    quitting: bool,
+    then: Option<Then>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     if cx.try_global::<Closings>().is_none() {
         cx.set_global(Closings::default());
     }
     let handle = window.window_handle();
-    let closing = cx.new(|cx| Closing::new(sessions.clone(), quitting, handle, cx));
+    let closing = cx.new(|cx| Closing::new(sessions.clone(), quitting, then, handle, cx));
     cx.update_global::<Closings, _>(|closings, _| closings.0.push(closing.clone()));
     for session in sessions {
         session.update(cx, |session, cx| {
@@ -95,6 +131,8 @@ fn start(sessions: Vec<Entity<LiveSession>>, quitting: bool, window: &mut Window
 struct Closing {
     sessions: Vec<Entity<LiveSession>>,
     quitting: bool,
+    /// Runs once every session ended. Dropped when the user keeps one.
+    then: Option<Then>,
     window: AnyWindowHandle,
     _subscriptions: Vec<Subscription>,
     _cap: Option<Task<()>>,
@@ -104,6 +142,7 @@ impl Closing {
     fn new(
         sessions: Vec<Entity<LiveSession>>,
         quitting: bool,
+        then: Option<Then>,
         window: AnyWindowHandle,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -127,6 +166,7 @@ impl Closing {
         Self {
             sessions,
             quitting,
+            then,
             window,
             _subscriptions: subscriptions,
             _cap: cap,
@@ -163,6 +203,7 @@ impl Closing {
                                 this.update(cx, |this, cx| {
                                     this.sessions.retain(|kept| kept != &session);
                                     this.quitting = false;
+                                    this.then = None;
                                     this.check(cx);
                                 })
                                 .ok();
@@ -184,6 +225,12 @@ impl Closing {
         }
         let me = cx.entity();
         cx.update_global::<Closings, _>(|closings, _| closings.0.retain(|closing| closing != &me));
+        if let Some(then) = self.then.take() {
+            let window = self.window;
+            cx.defer(move |cx| {
+                window.update(cx, |_, window, cx| then(window, cx)).ok();
+            });
+        }
         if self.quitting {
             cx.quit();
         }

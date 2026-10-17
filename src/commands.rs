@@ -213,6 +213,38 @@ pub fn commands() -> Vec<Command> {
             .keys(&["secondary-c"])
             .context(crate::transcript::CONTEXT)
             .not_in_palette(),
+        Command::new(
+            Transcript,
+            "Scroll Up a Page",
+            crate::transcript::ScrollPageUp,
+        )
+        .keys(&["pageup"])
+        .context(crate::transcript::CONTEXT)
+        .not_in_palette(),
+        Command::new(
+            Transcript,
+            "Scroll Down a Page",
+            crate::transcript::ScrollPageDown,
+        )
+        .keys(&["pagedown"])
+        .context(crate::transcript::CONTEXT)
+        .not_in_palette(),
+        Command::new(
+            Transcript,
+            "Scroll to the Start",
+            crate::transcript::ScrollToStart,
+        )
+        .keys(&["home", "secondary-home"])
+        .context(crate::transcript::CONTEXT)
+        .not_in_palette(),
+        Command::new(
+            Transcript,
+            "Jump to Latest",
+            crate::transcript::ScrollToLatest,
+        )
+        .keys(&["end", "secondary-end"])
+        .context(crate::transcript::CONTEXT)
+        .not_in_palette(),
         // The workers panel's list, and a worker's view in it.
         Command::new(Workers, "Previous Worker", workers_panel::SelectPrevious)
             .keys(&["up"])

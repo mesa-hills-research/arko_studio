@@ -218,8 +218,15 @@ fn scrolling_a_3000_item_transcript() {
     app.update_window(empty, |_, window, _| window.remove_window())
         .unwrap();
     let feed = long_feed(500);
-    let items = feed.subscribe().0.items.len();
+    // What subscribing costs: the history copied under the feed's lock (the
+    // view does it on a background thread).
+    let start = Instant::now();
+    let items = feed.subscribe_batched().0.items.len();
+    let copied = start.elapsed();
     let (window, view, opened) = open(&mut app, &feed);
+    // The history comes with the next frame.
+    app.run_until_parked();
+    let shown = frame(&mut app, window);
     let ready = app.update(|cx| view.read(cx).row_count());
     // The older entries are made ready a chunk a frame.
     let mut loading = Vec::new();
@@ -233,8 +240,10 @@ fn scrolling_a_3000_item_transcript() {
     }
     let rows = app.update(|cx| view.read(cx).row_count());
     println!(
-        "{items} items: the view made in {:.1} ms with {ready} rows ready, then {rows} rows in {} frames",
+        "{items} items: the history copied in {:.1} ms off the UI thread; the view made in {:.1} ms, the history shown in a {:.1} ms frame with {ready} rows ready, then {rows} rows in {} frames",
+        copied.as_secs_f64() * 1000.,
         opened.as_secs_f64() * 1000.,
+        shown.as_secs_f64() * 1000.,
         loading.len(),
     );
     report("  frames while the older entries are made ready", &loading);
@@ -322,6 +331,61 @@ fn streaming_a_20k_token_reply() {
     report("streaming a 20k-token reply, 40-byte chunks", &frames);
     let tail = &frames[frames.len() - 400..];
     report("  its last 200 chunks", tail);
+}
+
+/// Streams the last 8 KB of a 200 KB Rust code block, at the top level or
+/// inside a list item, and reports the frames.
+fn stream_a_long_code_block(nested: bool) {
+    let mut app = app();
+    let feed = Feed::new("main");
+    feed.user("Write the parser.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let indent = if nested { "   " } else { "" };
+    let mut code = String::new();
+    let mut line = 0;
+    while code.len() < 200 * 1024 {
+        code.push_str(&format!(
+            "{indent}    let value_{line} = self.pending.drain(..{line}).collect::<String>();\n"
+        ));
+        line += 1;
+    }
+    let head = if nested {
+        "Steps:\n\n1. Write this:\n\n   ```rust\n"
+    } else {
+        "Here it is:\n\n```rust\n"
+    };
+    let text = format!("{head}{code}");
+    let split = text.len() - 8 * 1024;
+    say(&feed, &text[..split]);
+    let (window, _, _) = open(&mut app, &feed);
+    for _ in 0..4 {
+        app.run_until_parked();
+        frame(&mut app, window);
+    }
+    let mut frames = Vec::new();
+    let mut at = split;
+    while at < text.len() {
+        let end = (at + 40).min(text.len());
+        say(&feed, &text[at..end]);
+        at = end;
+        app.run_until_parked();
+        frames.push(frame(&mut app, window));
+    }
+    report(
+        if nested {
+            "streaming a 200 KB code block in a list item, 40-byte chunks"
+        } else {
+            "streaming a 200 KB code block, 40-byte chunks"
+        },
+        &frames,
+    );
+}
+
+#[test]
+#[ignore = "a measurement: run it in release"]
+fn streaming_a_200_kb_code_block() {
+    stream_a_long_code_block(false);
+    stream_a_long_code_block(true);
 }
 
 /// A window with a sibling of the transcript, as the composer is.

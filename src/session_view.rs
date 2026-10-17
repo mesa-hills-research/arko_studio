@@ -30,7 +30,7 @@ use crate::backend::{Mode, ModelChoices, NewSession, SessionEntry, SharedBackend
 use crate::composer::{Attached, Composer, ComposerEvent, Outgoing};
 use crate::editing::{self, Change, Choice};
 use crate::layout::WidthClass;
-use crate::live::{LiveSession, LiveSessions, Phase, PromptKind};
+use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase, PromptKind};
 use crate::transcript::{AgentFilter, FindStatus, TranscriptEvent, TranscriptView};
 use crate::{drafts, menus, prefs};
 
@@ -39,6 +39,8 @@ const RECENT_FOLDERS: usize = 8;
 
 /// How long typing rests before the draft is kept.
 const DRAFT_REST: std::time::Duration = std::time::Duration::from_millis(300);
+/// The tallest the question card's text grows, in rem, before it scrolls.
+pub const QUESTION_MAX_HEIGHT: f32 = 12.;
 
 /// A new session, before its first message: how it will work, where and on
 /// which model.
@@ -144,19 +146,34 @@ pub struct SessionView {
     _draft: Option<Task<()>>,
     /// The transcripts of the sessions shown last, the latest last.
     transcripts: Vec<KeptTranscript>,
+    /// Its window closed: it shows nothing and keeps no more drafts.
+    closed: bool,
+    /// The first message of the new session that is opening.
+    first: Option<FirstMessage>,
+    /// The images of a first message whose session didn't open, for the
+    /// new session's composer.
+    returned_images: Vec<Attached>,
+}
+
+/// A new session's first message, kept until the session opens.
+struct FirstMessage {
+    text: String,
+    images: Vec<Attached>,
+    _subscription: Subscription,
 }
 
 impl SessionView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| Composer::new(window, cx));
         let model_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find a model"));
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::on_composer_event),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 this.sync_expanded(window, cx)
             }),
             cx.observe_window_bounds(window, |this, window, cx| this.sync_expanded(window, cx)),
             cx.observe(&model_filter, |_, _, cx| cx.notify()),
+            cx.on_release(|this, cx| this.window_closed(cx)),
         ];
         // ↑ in the empty composer edits the latest message, when it can.
         let view = cx.entity().downgrade();
@@ -166,6 +183,22 @@ impl SessionView {
                     .is_some_and(|view| view.read(cx).edits_last(cx))
             })
         });
+        let view = cx.entity().downgrade();
+        let window_id = window.window_handle().window_id();
+        subscriptions.push(cx.on_window_closed({
+            let view = view.clone();
+            move |cx, closed| {
+                if closed == window_id {
+                    view.update(cx, |this, cx| this.window_closed(cx)).ok();
+                }
+            }
+        }));
+        drafts::keep_at_quit(
+            move |cx| {
+                view.update(cx, |this, cx| this.keep_draft(cx)).ok();
+            },
+            cx,
+        );
         let mut this = Self {
             session: None,
             draft: Draft::default(),
@@ -186,6 +219,9 @@ impl SessionView {
             _models: None,
             _draft: None,
             transcripts: Vec::new(),
+            closed: false,
+            first: None,
+            returned_images: Vec::new(),
         };
         this.restore_draft(window, cx);
         this.sync_expanded(window, cx);
@@ -225,7 +261,26 @@ impl SessionView {
     ) {
         self.draft.model = Some(model);
         self.draft.effort = effort;
+        self.sync_image_model(cx);
         cx.notify();
+    }
+
+    /// The main agent's model, which the composer's images go to: the shown
+    /// session's, or the one a new session would start on.
+    fn image_model(&self, cx: &App) -> Option<String> {
+        match &self.session {
+            Some(session) => {
+                let main = &session.read(cx).reading().models.main;
+                (!main.is_empty()).then(|| main.clone())
+            }
+            None => self.draft_model(),
+        }
+    }
+
+    fn sync_image_model(&mut self, cx: &mut Context<Self>) {
+        let model = self.image_model(cx);
+        self.composer
+            .update(cx, |composer, cx| composer.set_image_model(model, cx));
     }
 
     /// The folders Change… offers, from the sessions in the sidebar.
@@ -278,6 +333,7 @@ impl SessionView {
             let models = listing.await;
             this.update(cx, |this, cx| {
                 this.models = Some((folder, models));
+                this.sync_image_model(cx);
                 cx.notify();
             })
             .ok();
@@ -343,8 +399,22 @@ impl SessionView {
         }
     }
 
-    fn keep_draft(&mut self, cx: &mut Context<Self>) {
+    /// Its window closed: the session it showed is no longer shown (and is
+    /// marked unseen from then on), and what was typed is kept.
+    fn window_closed(&mut self, cx: &mut App) {
+        self.keep_draft(cx);
+        self.closed = true;
+        self._session.clear();
+        if let Some(session) = self.session.take() {
+            session.update(cx, |session, cx| session.set_shown(false, cx));
+        }
+    }
+
+    fn keep_draft(&mut self, cx: &mut App) {
         self._draft = None;
+        if self.closed {
+            return;
+        }
         if let Some(key) = self.draft_key(cx) {
             let text = self.composer.read(cx).expanded_text(cx);
             drafts::set(&key, &text, cx);
@@ -356,9 +426,18 @@ impl SessionView {
             .draft_key(cx)
             .and_then(|key| drafts::get(&key, cx))
             .unwrap_or_default();
-        self.composer
-            .update(cx, |composer, cx| composer.set_text(&text, window, cx));
-        self.composer_empty = text.is_empty();
+        let images = if self.session.is_none() {
+            std::mem::take(&mut self.returned_images)
+        } else {
+            Vec::new()
+        };
+        self.composer_empty = text.is_empty() && images.is_empty();
+        self.composer.update(cx, |composer, cx| {
+            composer.set_text(&text, window, cx);
+            for image in images {
+                composer.attach_image(image, cx);
+            }
+        });
     }
 
     /// Shows `session`, or a new session when `None`. The composer keeps
@@ -550,6 +629,7 @@ impl SessionView {
             composer.set_session_state(reading, working, agent);
             composer.set_cancellable(cancellable);
         });
+        self.sync_image_model(cx);
         self.sync_mentions(cx);
     }
 
@@ -592,7 +672,15 @@ impl SessionView {
     ) {
         match event {
             ComposerEvent::Submit(outgoing) => self.send(outgoing.clone(), window, cx),
-            ComposerEvent::Stop => self.stop(window, cx),
+            ComposerEvent::Stop => match self.question(cx) {
+                // Esc backs out of the question card first, as Later does.
+                Some((id, _)) if self.later != Some(id) => {
+                    self.later = Some(id);
+                    self.sync_composer(window, cx);
+                    cx.notify();
+                }
+                _ => self.stop(window, cx),
+            },
             ComposerEvent::Cancel => self.cancel(window, cx),
             ComposerEvent::EditLast => {
                 if let Some(last) = self
@@ -1252,16 +1340,43 @@ impl SessionView {
             return;
         }
         let Outgoing { text, images } = outgoing;
-        if images.is_empty() && self.app_command(text.trim(), window, cx) {
-            self.composer
-                .update(cx, |composer, cx| composer.sent(&text, window, cx));
+        if images.is_empty() {
+            match self.app_command(text.trim(), window, cx) {
+                Ok(true) => {
+                    self.composer
+                        .update(cx, |composer, cx| composer.sent(&text, window, cx));
+                    return;
+                }
+                Ok(false) => {}
+                // Left in the composer to put right.
+                Err(why) => {
+                    window.push_notification(why, cx);
+                    return;
+                }
+            }
+        }
+        let attached = images;
+        // Images the model can't take stay, with the message, until the
+        // user removes them or picks another model.
+        if !attached.is_empty()
+            && let Some(why) = self.composer.read(cx).image_refusal()
+        {
+            window.push_notification(
+                format!(
+                    "The message wasn't sent: {why}. Send it without images, or switch to a model that takes them."
+                ),
+                cx,
+            );
             return;
         }
-        let images: Vec<arko::Attachment> = images.iter().map(|image| image.to_arko()).collect();
+        let images: Vec<arko::Attachment> = attached.iter().map(|image| image.to_arko()).collect();
         let message = arko::Message {
             text: text.clone(),
             images,
         };
+        // As in the terminal, a command runs while a question waits, and the
+        // question stays open. Other text answers it.
+        let command = arko::commands::find(&text).is_some();
         let result = match (&self.session, &self.target) {
             (Some(_), Some(_)) if !message.images.is_empty() => Err(
                 "A message to a worker takes text only. Remove the images, or send them to Arko."
@@ -1276,8 +1391,11 @@ impl SessionView {
                 session.update(cx, |session, cx| session.send(input, cx))
             }
             (session, _) => match session {
-                None => self.start_session(message, cx),
+                None => self.start_session(message, attached, cx),
                 Some(session) => match session.read(cx).question() {
+                    Some(_) if command => session.update(cx, |session, cx| {
+                        session.send(arko::Input::Message(message), cx)
+                    }),
                     Some(_) if !message.images.is_empty() => Err(
                         "An answer takes text only. Send the images once the question is answered."
                             .to_string(),
@@ -1335,8 +1453,14 @@ impl SessionView {
         self.focus_composer(window, cx);
     }
 
-    /// Runs the commands the app handles itself, `false` for the others.
-    fn app_command(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    /// Runs the commands the app handles itself, `false` for the others,
+    /// and says why when one can't run.
+    fn app_command(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
         let mut words = text.split_whitespace();
         match (words.next(), words.next(), words.next()) {
             (Some("/view"), Some(view), None) => {
@@ -1344,23 +1468,34 @@ impl SessionView {
                     "full" => prefs::TranscriptView::Full,
                     "quiet" => prefs::TranscriptView::Quiet,
                     "messages" => prefs::TranscriptView::Messages,
-                    _ => return false,
+                    _ => return Ok(false),
                 };
                 prefs::update(cx, |prefs| prefs.view = view);
-                true
+                Ok(true)
             }
             (Some("/settings"), None, None) => {
                 window.dispatch_action(Box::new(menus::OpenSettings), cx);
-                true
+                Ok(true)
             }
-            // A new session's model, before it starts.
+            // A new session's model, before it starts: one of those listed,
+            // by its name or its alias, once the list is known.
             (Some("/model"), Some(model), effort)
                 if self.session.is_none() && model != "worker" =>
             {
-                self.set_draft_model(model.to_string(), effort.map(str::to_string), cx);
-                true
+                let name = match &self.models {
+                    Some((_, choices)) => choices
+                        .groups
+                        .iter()
+                        .flat_map(|group| &group.models)
+                        .find(|choice| choice.name == model || choice.alias == model)
+                        .map(|choice| choice.name.clone())
+                        .ok_or_else(|| format!("Arko has no model called “{model}”."))?,
+                    None => model.to_string(),
+                };
+                self.set_draft_model(name, effort.map(str::to_string), cx);
+                Ok(true)
             }
-            _ => false,
+            _ => Ok(false),
         }
     }
 
@@ -1368,6 +1503,7 @@ impl SessionView {
     fn start_session(
         &mut self,
         message: arko::Message,
+        images: Vec<Attached>,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let folder = match self.draft.mode {
@@ -1383,8 +1519,25 @@ impl SessionView {
             model: self.draft.model.clone(),
             effort: self.draft.effort.clone(),
         };
+        let text = message.text.clone();
         let session = LiveSession::create(new, arko::Input::Message(message), cx);
         drafts::set(drafts::NEW_SESSION, "", cx);
+        // Should it not open, the first message comes back to the composer.
+        let subscription = cx.subscribe(&session, |this, _, event: &LiveEvent, cx| match event {
+            LiveEvent::Failed(_) => {
+                if let Some(first) = this.first.take() {
+                    drafts::set(drafts::NEW_SESSION, &first.text, cx);
+                    this.returned_images = first.images;
+                }
+            }
+            LiveEvent::Opened => this.first = None,
+            _ => {}
+        });
+        self.first = Some(FirstMessage {
+            text,
+            images,
+            _subscription: subscription,
+        });
         self.draft.model = None;
         self.draft.effort = None;
         cx.emit(SessionViewEvent::Created(session));
@@ -1789,12 +1942,18 @@ impl SessionView {
                 folders.push(folder.clone());
             }
         }
-        if !prefs::get(cx).sessions.ask_before_switch {
-            let folder = folders.first().cloned().filter(|_| to == Mode::Agent);
-            self.switch_mode(session, to, folder, window, cx);
+        // Told not to ask, a switch to Chat just happens, and one to Agent
+        // still asks where the agent works.
+        let ask = prefs::get(cx).sessions.ask_before_switch;
+        if !ask && to == Mode::Chat {
+            self.switch_mode(session, to, None, window, cx);
             return;
         }
-        let cost = session.read(cx).switch_cost(to, cx);
+        let cost = if ask {
+            session.read(cx).switch_cost(to, cx)
+        } else {
+            Task::ready(None)
+        };
         let home = self.home.clone();
         cx.spawn_in(window, async move |this, cx| {
             let cost = cost.await;
@@ -1803,6 +1962,7 @@ impl SessionView {
                 crate::prompts::confirm_switch(
                     to,
                     cost,
+                    !ask,
                     folders,
                     home,
                     window,
@@ -2008,9 +2168,15 @@ impl SessionView {
                                 .flex_none(),
                         )
                         .child(
+                            // A long question (a plan to approve) scrolls
+                            // and leaves room for the transcript.
                             div()
+                                .id("question-text")
+                                .test_support()
                                 .flex_1()
                                 .min_w_0()
+                                .max_h(rems(QUESTION_MAX_HEIGHT))
+                                .overflow_y_scroll()
                                 .text_sm()
                                 .child(TextView::markdown(("question", id as usize), text)),
                         )
@@ -2189,6 +2355,11 @@ impl SessionView {
                                 &menus::ExpandComposer,
                                 None,
                             )
+                            .accessibility_label(if expanded {
+                                "Shrink composer"
+                            } else {
+                                "Expand composer"
+                            })
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(menus::ExpandComposer), cx)
                             }),
@@ -2205,6 +2376,7 @@ impl SessionView {
                             .compact()
                             .icon(Icon::new(gpui_kit::assets::IconName::Paperclip))
                             .tooltip("Attach")
+                            .accessibility_label("Attach")
                             .on_click(cx.listener(|this, _, window, cx| this.attach(window, cx))),
                     )
                     .child(chip)

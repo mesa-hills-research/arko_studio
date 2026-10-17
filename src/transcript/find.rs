@@ -98,10 +98,7 @@ pub(crate) fn find_all(haystack: &str, needle: &str) -> Vec<Range<usize>> {
 
 /// The first lines of a call's text, as its details show them.
 pub(crate) fn shown_lines(text: &str) -> String {
-    text.lines()
-        .take(row::OUTPUT_LINES)
-        .collect::<Vec<_>>()
-        .join("\n")
+    row::preview(text).0
 }
 
 impl TranscriptView {
@@ -340,8 +337,7 @@ impl TranscriptView {
                 _ => self.row_of(found.entry),
             };
             if let Some(ix) = key {
-                self.scroller
-                    .update(cx, |scroller, cx| scroller.scroll_to_item(ix, cx));
+                self.list.scroll_to(ix, px(0.));
             }
         }
         self.highlight(cx);
