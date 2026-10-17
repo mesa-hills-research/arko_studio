@@ -959,6 +959,34 @@ fn a_long_transcript_shows_its_end_first_and_the_rest_a_chunk_a_frame(cx: &mut T
 }
 
 #[gpui_kit::test]
+fn a_transcript_not_drawn_takes_its_updates_a_moment_after_they_come(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    turns(&feed, 5, 1);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let rows = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).row_count());
+    let renders = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).render_count());
+    // Another session shows: the transcript is kept, not drawn.
+    cx.update_window(window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    let (before, drawn) = (rows(cx), renders(cx));
+    // A hundred turns come, in bursts, half a second apart.
+    for _ in 0..10 {
+        turns(&feed, 10, 1);
+        cx.run_until_parked();
+        cx.executor().advance_clock(super::inbox::CATCH_UP);
+        cx.run_until_parked();
+    }
+    assert_eq!(renders(cx), drawn);
+    // They're made into rows as they come: nothing waits for the frame
+    // that shows the transcript again.
+    assert!(rows(cx) >= before + 100 * 5, "{} rows", rows(cx));
+    let waiting = cx.read(|cx| view.read(cx).inbox.take());
+    assert!(waiting.snapshot.is_none() && waiting.updates.is_empty());
+}
+
+#[gpui_kit::test]
 fn a_truncate_and_another_conversation_drop_rows(cx: &mut TestAppContext) {
     start(cx);
     let feed = Feed::new("main");

@@ -1,12 +1,16 @@
 //! The feed's history and updates on their way to a transcript: taken off
 //! the UI thread as they come, held until the transcript's next frame, and
-//! applied then, all at once.
+//! applied then, all at once (or a moment later, by a transcript that
+//! isn't drawn).
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use arko::remote::{Activity, Feed, Snapshot, Update};
 use gpui_kit::{AppContext as _, Context, Task};
 use tokio::sync::Notify;
+
+use super::TranscriptView;
 
 /// What came since the transcript last drew.
 #[derive(Default)]
@@ -48,29 +52,43 @@ impl Pending {
     }
 }
 
+/// How long updates wait for a frame before a transcript that isn't drawn
+/// (one kept for a session not on screen) takes them anyway.
+pub(super) const CATCH_UP: Duration = Duration::from_millis(500);
+
 /// A transcript's subscription to a feed.
 pub(crate) struct Inbox {
     pending: Arc<Mutex<Pending>>,
     _drain: Task<()>,
     _wake: Task<()>,
+    _catch_up: Task<()>,
 }
 
 impl Inbox {
     /// Subscribes to `feed`: an inbox that gets the history so far and then
-    /// the updates, and asks `cx`'s entity to draw again (once) when they
+    /// the updates, and asks the transcript to draw again (once) when they
     /// come. Subscribing copies the history under the feed's lock, so it
     /// happens on a background thread too.
-    pub fn subscribe<T: 'static>(feed: &Feed, cx: &mut Context<T>) -> Self {
+    ///
+    /// A transcript that doesn't draw within [`CATCH_UP`] takes the
+    /// updates then: the model's work is quick, and the frame that shows
+    /// it again has no long backlog to go through.
+    pub fn subscribe(feed: &Feed, cx: &mut Context<TranscriptView>) -> Self {
         let pending = Arc::new(Mutex::new(Pending::default()));
+        // Woken when updates come to an empty inbox: one to draw, one to
+        // catch up if no frame comes.
         let notify = Arc::new(Notify::new());
+        let catch_up = Arc::new(Notify::new());
         let drain = cx.background_spawn({
             let pending = pending.clone();
             let notify = notify.clone();
+            let catch_up = catch_up.clone();
             let feed = feed.clone();
             async move {
                 let (snapshot, mut batches) = feed.subscribe_batched();
                 pending.lock().unwrap_or_else(|p| p.into_inner()).snapshot = Some(snapshot);
                 notify.notify_one();
+                catch_up.notify_one();
                 while let Some(batch) = batches.next().await {
                     let activity = batch
                         .iter()
@@ -93,6 +111,7 @@ impl Inbox {
                     // takes all that came meanwhile.
                     if wake {
                         notify.notify_one();
+                        catch_up.notify_one();
                     }
                 }
             }
@@ -105,10 +124,28 @@ impl Inbox {
                 }
             }
         });
+        let catch_up = cx.spawn(async move |this, cx| {
+            loop {
+                catch_up.notified().await;
+                let Ok(drawn) = this.read_with(cx, |this, _| this.renders) else {
+                    break;
+                };
+                cx.background_executor().timer(CATCH_UP).await;
+                let caught_up = this.update(cx, |this, cx| {
+                    if this.renders == drawn {
+                        this.apply_pending(cx);
+                    }
+                });
+                if caught_up.is_err() {
+                    break;
+                }
+            }
+        });
         Self {
             pending,
             _drain: drain,
             _wake: wake,
+            _catch_up: catch_up,
         }
     }
 
