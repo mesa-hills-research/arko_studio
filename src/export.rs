@@ -408,16 +408,13 @@ pub fn free_path(folder: &Path, name: &str) -> PathBuf {
 /// Writes `text` to `path` whole: to a file beside it first, which then
 /// takes its name. A failed write leaves the file that was there as it was.
 pub fn write(path: &Path, text: &str) -> std::io::Result<()> {
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let beside = path.with_file_name(format!(".{name}.part"));
-    let written = std::fs::write(&beside, text).and_then(|()| std::fs::rename(&beside, path));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&beside);
-    }
-    written
+    use std::io::Write;
+
+    let folder = path.parent().filter(|path| !path.as_os_str().is_empty());
+    let mut temporary = tempfile::NamedTempFile::new_in(folder.unwrap_or(Path::new(".")))?;
+    temporary.write_all(text.as_bytes())?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// Why a write failed, in plain words.
@@ -702,6 +699,56 @@ Thanks.
         // A folder that isn't there says so plainly.
         let error = write(&folder.join("gone/Notes.md"), "x").unwrap_err();
         assert_eq!(why(&error), "The folder isn’t there anymore.");
+    }
+
+    #[test]
+    fn exporting_preserves_unrelated_temporary_names_even_on_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let unrelated = temp.path().join(".notes.md.part");
+        std::fs::write(&unrelated, "valuable data").unwrap();
+        let destination = temp.path().join("notes.md");
+        write(&destination, "export").unwrap();
+        assert_eq!(std::fs::read_to_string(&unrelated).unwrap(), "valuable data");
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        assert!(write(&destination, "failed export").is_err());
+        assert_eq!(std::fs::read_to_string(&unrelated).unwrap(), "valuable data");
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exporting_never_follows_an_unrelated_temporary_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let unrelated = temp.path().join("other-document.txt");
+        std::fs::write(&unrelated, "valuable data").unwrap();
+        let link = temp.path().join(".notes.md.part");
+        std::os::unix::fs::symlink(&unrelated, &link).unwrap();
+        write(&temp.path().join("notes.md"), "export").unwrap();
+        assert_eq!(std::fs::read_to_string(&unrelated).unwrap(), "valuable data");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn concurrent_exports_each_replace_the_destination_whole() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("notes.md");
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for number in 0..8 {
+                let destination = &destination;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    write(destination, &number.to_string().repeat(16_384)).unwrap();
+                });
+            }
+        });
+        let text = std::fs::read_to_string(destination).unwrap();
+        assert_eq!(text.len(), 16_384);
+        assert!(text.bytes().all(|byte| byte == text.as_bytes()[0]));
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
     #[test]
