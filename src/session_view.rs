@@ -4,7 +4,8 @@
 //!
 //! The composer is a view of its own (typing draws only it). This view
 //! decides what a sent message is: a new session's first message, a
-//! message, or a note while a turn runs.
+//! message, a note while a turn runs, the answer to the agent's question,
+//! or a command the app runs itself.
 
 use std::path::{Path, PathBuf};
 
@@ -24,7 +25,7 @@ use gpui_kit::*;
 use crate::backend::{Mode, ModelChoices, NewSession, SessionEntry, SharedBackend};
 use crate::composer::{Composer, ComposerEvent};
 use crate::layout::WidthClass;
-use crate::live::{LiveSession, Phase};
+use crate::live::{LiveSession, Phase, PromptKind};
 use crate::prefs;
 
 /// How many recent folders Change… offers.
@@ -47,6 +48,8 @@ pub struct Draft {
 pub enum SessionViewEvent {
     /// A new session started with its first message: the window shows it.
     Created(Entity<LiveSession>),
+    /// Show the session's waiting prompt again.
+    ShowPrompt,
 }
 
 impl EventEmitter<SessionViewEvent> for SessionView {}
@@ -603,6 +606,38 @@ impl SessionView {
             .into_any_element()
     }
 
+    /// A strip above the composer while the session waits for credentials
+    /// or an approval the user put off.
+    fn render_prompt(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let session = self.session.as_ref()?.read(cx);
+        let text = match session.prompt()? {
+            PromptKind::Credentials(need) => crate::prompts::need_title(need),
+            PromptKind::Mcp(_) => "The project’s MCP servers wait for your approval.".to_string(),
+        };
+        let theme = cx.theme();
+        Some(
+            h_flex()
+                .id("prompt-strip")
+                .test_support()
+                .mb_2()
+                .px_3()
+                .py_2()
+                .gap_2()
+                .text_sm()
+                .border_1()
+                .border_color(theme.warning)
+                .rounded(theme.radius_lg)
+                .child(div().flex_1().child(text))
+                .child(
+                    Button::new("prompt-show")
+                        .small()
+                        .label("Continue…")
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SessionViewEvent::ShowPrompt))),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_composer(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chip = self.render_mode_chip(cx);
         let theme = cx.theme();
@@ -753,6 +788,7 @@ pub fn not_yet(what: &str, window: &mut Window, cx: &mut App) {
 impl Render for SessionView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let narrow = self.width == WidthClass::Narrow;
+        let prompt = self.render_prompt(cx);
         let theme = cx.theme();
         v_flex()
             .id("session-view")
@@ -778,7 +814,12 @@ impl Render for SessionView {
                             .justify_center()
                             .child(self.render_transcript(cx)),
                     )
-                    .child(v_flex().pb_3().child(self.render_composer(window, cx))),
+                    .child(
+                        v_flex()
+                            .pb_3()
+                            .children(prompt)
+                            .child(self.render_composer(window, cx)),
+                    ),
             )
     }
 }

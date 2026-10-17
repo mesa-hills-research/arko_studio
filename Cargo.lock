@@ -369,6 +369,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arko",
+ "async-trait",
  "chrono",
  "gpui-kit",
  "gpui-pre-screenshot",

@@ -253,6 +253,35 @@ fn a_session_streams_on_while_the_window_shows_another(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
+fn a_projects_mcp_servers_are_approved_in_a_dialog(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, _| answer("Hello.", Duration::ZERO));
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("arko");
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(
+        work.join(".mcp.json"),
+        r#"{ "mcpServers": { "echo": { "command": "this-program-isnt-there" } } }"#,
+    )
+    .unwrap();
+    let app = start_in(cx, &mock, temp, root, work);
+    app.send(cx, "Say hello.");
+    wait_until(cx, "the approval dialog", |cx| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("mcp-approval").is_some()
+        })
+        .unwrap()
+    });
+    act(cx, app.window, |window, cx| window.click("mcp-refuse", cx));
+    // The session opens without them, and arko remembers the answer.
+    app.wait_for_text(cx, "Hello.");
+    let approvals = std::fs::read_to_string(app.root.join("mcp-approvals.json")).unwrap();
+    assert!(approvals.contains("echo"), "{approvals}");
+    app.close_all(cx);
+}
+
+#[gpui_kit::test]
 fn a_session_open_elsewhere_says_who_has_it(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, _| answer("Done.", Duration::ZERO));
     let temp = tempfile::tempdir().unwrap();

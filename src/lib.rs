@@ -33,6 +33,8 @@ pub mod workers_panel;
 pub mod workspace;
 
 #[cfg(test)]
+mod composer_tests;
+#[cfg(test)]
 mod engine_tests;
 #[cfg(test)]
 mod testing;

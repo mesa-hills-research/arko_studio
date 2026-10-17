@@ -20,6 +20,9 @@ use crate::title_bar::AppTitleBar;
 use crate::workers_panel::WorkersPanel;
 use crate::{about, chrome, menus, palette, prompts, quit, shortcuts, status_bar};
 
+/// The Settings page of models and accounts.
+const ACCOUNTS_PAGE: usize = 2;
+
 /// The narrowest and widest the workers panel docks, in rem.
 const MIN_PANEL_WIDTH: f32 = 16.;
 const MAX_PANEL_WIDTH: f32 = 36.;
@@ -413,6 +416,12 @@ impl Workspace {
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_active(id, cx));
         self.sync_chrome(window, cx);
+        // A question it asked while elsewhere is asked now.
+        if let Some(session) = &session
+            && session.read(cx).prompt().is_some()
+        {
+            prompts::show(session, window, cx);
+        }
     }
 
     fn new_session(&mut self, _: &menus::NewSession, window: &mut Window, cx: &mut Context<Self>) {
@@ -446,6 +455,18 @@ impl Workspace {
                     );
                 }
                 self.show(None, window, cx);
+            }
+            LiveEvent::Prompt => prompts::show(session, window, cx),
+            LiveEvent::Note(level, text) => {
+                let text = crate::backend::sentence(text.trim_start_matches("arko: "));
+                window.push_notification(
+                    match level {
+                        arko::Level::Error => Notification::error(text),
+                        arko::Level::Warn => Notification::warning(text),
+                        _ => Notification::info(text),
+                    },
+                    cx,
+                );
             }
             LiveEvent::Ended => {
                 self.show(None, window, cx);
@@ -501,7 +522,18 @@ impl Workspace {
                 self.show(Some(session.clone()), window, cx);
                 self.sidebar.update(cx, |sidebar, cx| sidebar.refresh(cx));
             }
+            SessionViewEvent::ShowPrompt => {
+                if let Some(session) = &self.session {
+                    prompts::show(session, window, cx);
+                }
+            }
         }
+    }
+
+    /// Settings › Models & accounts.
+    fn open_accounts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let settings = self.show_settings(window, cx);
+        settings.update(cx, |settings, cx| settings.show_page(ACCOUNTS_PAGE, cx));
     }
 
     /// Closes the session shown here, asking first about what runs.
@@ -913,6 +945,9 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(Self::close_shown_session))
+            .on_action(cx.listener(|this, _: &menus::OpenAccounts, window, cx| {
+                this.open_accounts(window, cx)
+            }))
             .on_action(
                 cx.listener(|_, _: &menus::ExportMarkdown, window, cx| {
                     not_yet("Export", window, cx)

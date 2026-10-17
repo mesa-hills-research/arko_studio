@@ -126,6 +126,7 @@ pub fn commands() -> Vec<Command> {
             .not_in_palette(),
         Command::new(General, "Keyboard Shortcuts", KeyboardShortcuts).keys(&["secondary-/"]),
         Command::new(General, "Settings…", OpenSettings).keys(&["secondary-,"]),
+        Command::new(General, "Models & Accounts…", OpenAccounts),
         Command::new(General, "Close Settings", CloseSettings)
             .keys(&["escape"])
             .context(crate::settings_page::CONTEXT)

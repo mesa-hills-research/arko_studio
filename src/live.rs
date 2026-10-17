@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arko::remote::{Activity, Feed, Question, Reading, Update, WorkerSummary};
+use async_trait::async_trait;
 use gpui_kit::*;
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -133,6 +134,10 @@ pub enum LiveEvent {
     Opened,
     /// It didn't open; `None` when the user cancelled.
     Failed(Option<String>),
+    /// It asks for credentials or MCP approval: [`LiveSession::prompt`].
+    Prompt,
+    /// Arko said this as the session opened.
+    Note(arko::Level, String),
     /// It asks whether to stop its jobs and workers to quit:
     /// [`LiveSession::quit_ask`].
     QuitAsked,
@@ -146,6 +151,104 @@ pub enum LiveEvent {
     },
     /// A request to the engine failed: the sentence to show.
     Refused(String),
+}
+
+/// What a session asks as it opens.
+pub enum PromptKind {
+    /// The credentials it can't open without.
+    Credentials(arko::Need),
+    /// Whether to start the project's MCP servers.
+    Mcp(McpRequest),
+}
+
+/// A project's MCP servers waiting for the user's approval.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpRequest {
+    /// The project's `.mcp.json`.
+    pub file: PathBuf,
+    /// Each server's name and command.
+    pub servers: Vec<(String, String)>,
+    /// Servers left out (approved or refused before, or invalid).
+    pub skipped: Vec<String>,
+}
+
+/// The user's answer to a [`Prompt`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptAnswer {
+    /// Check the credentials again.
+    Again,
+    /// Don't open the session.
+    Cancel,
+    /// Start the MCP servers (`Some(true)`), not (`Some(false)`), both
+    /// remembered by arko; `None`: not this time, asked again next time.
+    Mcp(Option<bool>),
+}
+
+/// A question the engine waits on.
+pub struct Prompt {
+    pub kind: PromptKind,
+    reply: oneshot::Sender<PromptAnswer>,
+}
+
+/// What the prompter sends the interface.
+enum Asked {
+    Prompt(Prompt),
+    Note(arko::Level, String),
+}
+
+/// What an open session asks for and says, into the app: the engine's
+/// side of the prompts, on its threads.
+struct AppPrompter {
+    asked: mpsc::UnboundedSender<Asked>,
+}
+
+/// What a cancelled prompt makes the open fail with, so the window says
+/// nothing more.
+pub const CANCELLED: &str = "You cancelled.";
+
+#[async_trait]
+impl arko::Prompter for AppPrompter {
+    async fn need_credentials(&self, need: &arko::Need) -> Result<(), String> {
+        let (reply, answer) = oneshot::channel();
+        let prompt = Prompt {
+            kind: PromptKind::Credentials(need.clone()),
+            reply,
+        };
+        if self.asked.send(Asked::Prompt(prompt)).is_err() {
+            return Err(need.message());
+        }
+        match answer.await {
+            Ok(PromptAnswer::Again) => Ok(()),
+            _ => Err(CANCELLED.to_string()),
+        }
+    }
+
+    async fn approve_project_mcp(
+        &self,
+        approval: &arko::McpApproval,
+    ) -> Result<Option<bool>, String> {
+        let (reply, answer) = oneshot::channel();
+        let prompt = Prompt {
+            kind: PromptKind::Mcp(McpRequest {
+                file: approval.file.clone(),
+                servers: approval.servers.clone(),
+                skipped: approval.skipped.clone(),
+            }),
+            reply,
+        };
+        if self.asked.send(Asked::Prompt(prompt)).is_err() {
+            return Ok(None);
+        }
+        match answer.await {
+            Ok(PromptAnswer::Mcp(answer)) => Ok(answer),
+            Ok(PromptAnswer::Cancel) => Err(CANCELLED.to_string()),
+            _ => Ok(None),
+        }
+    }
+
+    fn note(&self, level: arko::Level, text: &str) {
+        let _ = self.asked.send(Asked::Note(level, text.to_string()));
+    }
 }
 
 /// What the background tasks drained since the interface last looked.
@@ -183,6 +286,7 @@ pub struct LiveSession {
     shown: usize,
     /// Input sent before it opened, sent once it does.
     queued: Vec<arko::Input>,
+    prompt: Option<Prompt>,
     quit_ask: Option<arko::QuitAsk>,
     /// What the user agreed to stop to close it.
     quit_agreed: Option<arko::QuitAsk>,
@@ -212,6 +316,7 @@ impl LiveSession {
             unseen: false,
             shown: 0,
             queued: Vec::new(),
+            prompt: None,
             quit_ask: None,
             quit_agreed: None,
             answered: None,
@@ -265,9 +370,8 @@ impl LiveSession {
     }
 
     fn launch(&mut self, start: Start, cx: &mut Context<Self>) {
-        // Nobody is asked yet: missing credentials fail the open, saying
-        // what they are, and a project's MCP servers don't start.
-        let prompter = Arc::new(arko::NoPrompter);
+        let (asked, mut asks) = mpsc::unbounded_channel();
+        let prompter = Arc::new(AppPrompter { asked });
         let backend = cx.global::<SharedBackend>().clone();
         match backend.start(start, prompter) {
             Launch::Engine(running) => {
@@ -288,6 +392,21 @@ impl LiveSession {
                         this.update(cx, |this, cx| this.ended(cx)).ok();
                     }
                 }));
+                self._tasks.push(cx.spawn(async move |this, cx| {
+                    while let Some(asked) = asks.recv().await {
+                        let kept = this.update(cx, |this, cx| match asked {
+                            Asked::Prompt(prompt) => {
+                                this.prompt = Some(prompt);
+                                cx.emit(LiveEvent::Prompt);
+                                cx.notify();
+                            }
+                            Asked::Note(level, text) => cx.emit(LiveEvent::Note(level, text)),
+                        });
+                        if kept.is_err() {
+                            break;
+                        }
+                    }
+                }));
             }
             Launch::Sample(entry) => {
                 self.set_entry(&entry);
@@ -299,8 +418,10 @@ impl LiveSession {
     }
 
     fn failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.prompt = None;
+        let cancelled = message == CANCELLED;
         self.phase = Phase::Failed(message.clone());
-        cx.emit(LiveEvent::Failed(Some(message)));
+        cx.emit(LiveEvent::Failed((!cancelled).then_some(message)));
         LiveSessions::remove(cx.entity_id(), self.id.as_ref(), cx);
         cx.notify();
     }
@@ -316,6 +437,7 @@ impl LiveSession {
             quit_asks,
             ..
         } = seam;
+        self.prompt = None;
         self.id = Some(SessionId(session.id.clone()));
         if self.mode == Mode::Agent {
             self.workspace = Some(session.workspace.clone());
@@ -614,6 +736,33 @@ impl LiveSession {
         }));
     }
 
+    /// Asks the user as the engine's prompter does (tests).
+    #[cfg(test)]
+    pub fn ask(
+        &mut self,
+        kind: PromptKind,
+        cx: &mut Context<Self>,
+    ) -> oneshot::Receiver<PromptAnswer> {
+        let (reply, answer) = oneshot::channel();
+        self.prompt = Some(Prompt { kind, reply });
+        cx.emit(LiveEvent::Prompt);
+        cx.notify();
+        answer
+    }
+
+    /// The prompt waiting for the user, if any.
+    pub fn prompt(&self) -> Option<&PromptKind> {
+        self.prompt.as_ref().map(|prompt| &prompt.kind)
+    }
+
+    /// Answers the waiting prompt.
+    pub fn answer_prompt(&mut self, answer: PromptAnswer, cx: &mut Context<Self>) {
+        if let Some(prompt) = self.prompt.take() {
+            let _ = prompt.reply.send(answer);
+            cx.notify();
+        }
+    }
+
     /// What closing it would stop, as its status says now.
     pub fn running_work(&self) -> arko::QuitAsk {
         arko::QuitAsk {
@@ -719,6 +868,7 @@ fn open_error(error: &arko::OpenError) -> String {
         arko::OpenError::Locked { holder: None } => {
             "It’s open in another copy of Arko.".to_string()
         }
+        arko::OpenError::Failed(message) if message == CANCELLED => CANCELLED.to_string(),
         other => crate::backend::sentence(&other.to_string()),
     }
 }

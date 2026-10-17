@@ -48,6 +48,7 @@ actions!(
         OpenLogsFolder,
         OpenDataFolder,
         CloseSession,
+        OpenAccounts,
     ]
 );
 

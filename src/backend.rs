@@ -306,6 +306,14 @@ pub trait Backend: Send + Sync + 'static {
     /// A sample session ([`Launch::Sample`]) closed. Engine sessions close
     /// themselves.
     fn closed(&self, _id: &SessionId) {}
+
+    /// Saves an API key (`provider` as `/keys add` names it: `anthropic`)
+    /// in Arko's folder, where every open session finds it. `Ok` says what
+    /// was done; `Err` why not.
+    fn add_key(&self, provider: &str, value: &str) -> Result<String, String>;
+
+    /// Uses the Codex auth file at `path` for the ChatGPT login.
+    fn set_chatgpt_login(&self, path: &Path) -> Result<(), String>;
 }
 
 /// The main model in Arko's `last-model.json`, which every new session
@@ -437,6 +445,21 @@ impl Backend for ArkoBackend {
     fn start(&self, start: Start, prompter: Arc<dyn arko::Prompter>) -> Launch {
         Launch::Engine(arko::spawn(self.options(start), prompter))
     }
+
+    fn add_key(&self, provider: &str, value: &str) -> Result<String, String> {
+        let key = arko::accounts::KEYS
+            .into_iter()
+            .find(|key| key.id == provider)
+            .ok_or_else(|| format!("Arko takes no {provider} key."))?;
+        match arko::accounts::add(&self.root, key, arko::accounts::Secret::new(value)) {
+            arko::accounts::Outcome::Done { said, .. } => Ok(said),
+            arko::accounts::Outcome::Failed(why) => Err(sentence(&why)),
+        }
+    }
+
+    fn set_chatgpt_login(&self, path: &Path) -> Result<(), String> {
+        arko::accounts::set_chatgpt_login(path).map(|_| ())
+    }
 }
 
 fn delete_error(error: arko::sessions::DeleteError) -> BackendError {
@@ -458,6 +481,8 @@ struct FakeState {
     /// Sessions started, which the delete refuses.
     open: Vec<SessionId>,
     created: u32,
+    /// The keys added, by provider.
+    keys: Vec<(String, String)>,
 }
 
 impl FakeBackend {
@@ -469,6 +494,7 @@ impl FakeBackend {
                 sessions,
                 open: Vec::new(),
                 created: 0,
+                keys: Vec::new(),
             }),
         }
     }
@@ -694,6 +720,25 @@ impl Backend for FakeBackend {
 
     fn closed(&self, id: &SessionId) {
         self.with_state(|state| state.open.retain(|open| open != id));
+    }
+
+    fn add_key(&self, provider: &str, value: &str) -> Result<String, String> {
+        if value.trim().len() < 8 {
+            return Err("That doesn’t look like a key.".into());
+        }
+        self.with_state(|state| state.keys.push((provider.into(), value.trim().into())));
+        Ok(format!("Arko saved the {provider} key."))
+    }
+
+    fn set_chatgpt_login(&self, path: &Path) -> Result<(), String> {
+        Err(format!("Could not use {}.", path.display()))
+    }
+}
+
+impl FakeBackend {
+    /// The keys added, by provider.
+    pub fn added_keys(&self) -> Vec<(String, String)> {
+        self.with_state(|state| state.keys.clone())
     }
 }
 
