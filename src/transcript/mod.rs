@@ -31,11 +31,11 @@ use std::time::Duration;
 use arko::remote::{CallStatus, Feed, Kind};
 use gpui_kit::base::image_cache::LruImageCache;
 use gpui_kit::base::{SelectableText, TextSelection};
-use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::diff_view::DiffViewState;
 use gpui_kit::component::image_viewer::ImageViewerItem;
 use gpui_kit::component::input;
 use gpui_kit::component::text::{TextBlockContent, TextBlockId, TextViewState};
+use gpui_kit::component::{ActiveTheme as _, WindowExt as _};
 use gpui_kit::*;
 
 use crate::prefs;
@@ -45,6 +45,27 @@ use model::{Changes, Layout, Model, Row, RowKey};
 
 /// The key context of the transcript, for its key bindings.
 pub const CONTEXT: &str = "Transcript";
+
+gpui_kit::actions!(
+    transcript,
+    [
+        /// Scrolls the transcript up by most of a screen.
+        ScrollPageUp,
+        /// Scrolls the transcript down by most of a screen.
+        ScrollPageDown,
+        /// Scrolls to the start of the conversation.
+        ScrollToStart,
+        /// Scrolls to the latest row and follows the rows from there.
+        ScrollToLatest,
+    ]
+);
+
+/// How much of a screen Page Up and Page Down scroll: a few lines stay in
+/// sight.
+const PAGE: f32 = 0.9;
+
+/// How long the hover actions stay after the pointer left their entry.
+const HOVER_GRACE: Duration = Duration::from_millis(150);
 
 /// Code blocks show this many lines until the reader asks for all of them.
 pub const CODE_LINES: usize = 40;
@@ -176,8 +197,12 @@ pub struct TranscriptView {
     list: list::RowList,
     focus_handle: FocusHandle,
     settings: Settings,
-    /// The reply whose hover actions show.
+    /// The entry whose hover actions show.
     hovered: Option<u64>,
+    /// The rows under the pointer, of entries with hover actions.
+    hovered_rows: HashSet<RowKey>,
+    /// Hides the hover actions a moment after the pointer left their entry.
+    hover_grace: Option<Task<()>>,
     /// Entries that came while the reader was scrolled up.
     new_while_away: usize,
     /// The oldest entry ready to show, while older ones wait to be made
@@ -239,9 +264,12 @@ impl TranscriptView {
             ui: HashMap::new(),
             rows: Vec::new(),
             list: list::RowList::new(),
-            focus_handle: cx.focus_handle(),
+            // A Tab stop, so the keyboard reaches the transcript to scroll it.
+            focus_handle: cx.focus_handle().tab_stop(true),
             settings,
             hovered: None,
+            hovered_rows: HashSet::new(),
+            hover_grace: None,
             new_while_away: 0,
             loaded_from: None,
             scroll_to: None,
@@ -366,6 +394,7 @@ impl TranscriptView {
         if changes.reset {
             self.ui.clear();
             self.hovered = None;
+            self.hovered_rows.clear();
             let ids: Vec<u64> = self.model.entries().iter().map(|e| e.item.id).collect();
             let start = ids.len().saturating_sub(FIRST_ENTRIES);
             for id in &ids[start..] {
@@ -614,6 +643,13 @@ impl TranscriptView {
             self.new_while_away += entries.len();
         }
         self.rows = rows;
+        // A row gone from under the pointer never says that the pointer
+        // left it.
+        if !self.hovered_rows.is_empty() {
+            let rows = &self.rows;
+            self.hovered_rows
+                .retain(|key| rows.iter().any(|row| row.key == *key));
+        }
         if let Some((key, offset)) = anchor
             && let Some((ix, offset)) = self.place_of(key, offset)
         {
@@ -805,15 +841,40 @@ impl TranscriptView {
         cx.notify();
     }
 
-    fn set_hovered(&mut self, id: u64, hovered: bool, cx: &mut Context<Self>) {
-        let before = self.hovered;
+    /// The pointer came over the row `key` (of an entry with hover
+    /// actions), or left it. The actions show for the entry under the
+    /// pointer, and stay a moment after it leaves, so that crossing to
+    /// them never hides them.
+    fn row_hovered(&mut self, key: RowKey, hovered: bool, cx: &mut Context<Self>) {
         if hovered {
-            self.hovered = Some(id);
-        } else if self.hovered == Some(id) {
-            self.hovered = None;
+            self.hovered_rows.insert(key);
+        } else {
+            self.hovered_rows.remove(&key);
         }
-        if self.hovered != before {
-            cx.notify();
+        let entry = if hovered {
+            Some(key.entry())
+        } else {
+            self.hovered_rows.iter().next().map(|row| row.entry())
+        };
+        match entry {
+            Some(entry) => {
+                self.hover_grace = None;
+                if self.hovered != Some(entry) {
+                    self.hovered = Some(entry);
+                    cx.notify();
+                }
+            }
+            None => {
+                self.hover_grace = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(HOVER_GRACE).await;
+                    this.update(cx, |this, cx| {
+                        if this.hovered_rows.is_empty() && this.hovered.take().is_some() {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }));
+            }
         }
     }
 
@@ -944,6 +1005,10 @@ impl Render for TranscriptView {
         }
         self.animated = self.latest_running();
         let new = self.new_while_away;
+        // Reached by Tab, the transcript shows that it has the focus, with a
+        // ring laid over its edge (a border would move the rows).
+        let ring = (self.focus_handle.is_focused(window) && window.last_input_was_keyboard())
+            .then(|| cx.theme().ring);
         let view = cx.entity().downgrade();
         let rows = list::render(
             "transcript-rows",
@@ -956,10 +1021,27 @@ impl Render for TranscriptView {
         image_cache(self.image_cache.clone()).size_full().child(
             div()
                 .id("transcript")
+                .test_support()
                 .key_context(CONTEXT)
                 .track_focus(&self.focus_handle)
+                .relative()
                 .size_full()
                 .on_action(cx.listener(Self::copy))
+                .on_action(cx.listener(|this, _: &ScrollPageUp, _, cx| {
+                    this.list.scroll_by(-this.list.viewport_height() * PAGE);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &ScrollPageDown, _, cx| {
+                    this.list.scroll_by(this.list.viewport_height() * PAGE);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &ScrollToStart, _, cx| {
+                    this.list.scroll_to(0, px(0.));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &ScrollToLatest, _, cx| {
+                    this.scroll_to_end(cx);
+                }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, window, cx| {
@@ -968,7 +1050,10 @@ impl Render for TranscriptView {
                         }
                     }),
                 )
-                .child(rows),
+                .child(rows)
+                .children(
+                    ring.map(|ring| div().absolute().inset_0().border_1().border_color(ring)),
+                ),
         )
     }
 }

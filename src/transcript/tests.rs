@@ -641,6 +641,226 @@ fn tables_scroll_sideways_in_their_row(cx: &mut TestAppContext) {
     });
 }
 
+/// The ids of the entries of `kind`, oldest first.
+fn ids_of(feed: &Feed, kind: Kind) -> Vec<u64> {
+    item_ids(feed)
+        .into_iter()
+        .filter(|(_, of)| *of == kind)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+#[gpui_kit::test]
+fn a_replys_actions_stay_while_the_pointer_moves_onto_them_and_work(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Explain", Source::App, Delivery::Turn);
+    feed.reply("First paragraph.\n\nSecond **paragraph**.");
+    feed.user("Thanks", Source::App, Delivery::Turn);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let reply = ids_of(&feed, Kind::Reply)[0];
+    let thanks = ids_of(&feed, Kind::User)[1];
+    let hovered = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).hovered);
+    let text = keys(&view, cx).into_iter().find(block(reply, 1)).unwrap();
+    cx.update_window(window, |_, window, cx| {
+        window.hover(super::row::element_id(text), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(hovered(cx), Some(reply));
+    // From the text down onto the actions, they stay, and they work.
+    cx.update_window(window, |_, window, cx| {
+        window.hover(("copy-reply", reply), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(hovered(cx), Some(reply));
+    cx.update_window(window, |_, window, cx| {
+        window.click(("copy-reply", reply), cx)
+    })
+    .unwrap();
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(
+        copied.as_deref(),
+        Some("First paragraph.\nSecond paragraph.")
+    );
+    cx.update_window(window, |_, window, cx| {
+        window.click(("copy-markdown", reply), cx)
+    })
+    .unwrap();
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(
+        copied.as_deref(),
+        Some("First paragraph.\n\nSecond **paragraph**.")
+    );
+    cx.update_window(window, |_, window, cx| {
+        window.click(("view-source", reply), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    assert!(cx.read(|cx| view.read(cx).ui[&reply].source));
+    // Onto the next message: its Copy shows instead, and copies it.
+    cx.update_window(window, |_, window, cx| {
+        window.hover(super::row::element_id(RowKey::User(thanks)), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(hovered(cx), Some(thanks));
+    cx.update_window(window, |_, window, cx| {
+        window.click(("copy-user", thanks), cx)
+    })
+    .unwrap();
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("Thanks".to_string())
+    );
+    // Off the entry, the actions stay a moment, then go.
+    view.update(cx, |view, cx| {
+        view.row_hovered(RowKey::User(thanks), false, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(hovered(cx), Some(thanks));
+    cx.executor()
+        .advance_clock(super::HOVER_GRACE + std::time::Duration::from_millis(10));
+    cx.run_until_parked();
+    assert_eq!(hovered(cx), None);
+}
+
+#[gpui_kit::test]
+fn tab_reaches_the_transcript_and_its_thumbnails_but_not_hidden_actions(cx: &mut TestAppContext) {
+    use arko::images::ImageRef;
+    start(cx);
+    let feed = Feed::new("main");
+    let mut user = arko::remote::Item::new(Kind::User, "What does this show?");
+    user.id = 1;
+    user.images = vec![ImageRef {
+        id: 1,
+        mime: "image/png".into(),
+        label: "a.png".into(),
+        bytes: 10,
+    }];
+    let mut reply = arko::remote::Item::new(Kind::Reply, "A picture.");
+    reply.id = 2;
+    feed.restore(vec![user, reply]);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    view.update(cx, |view, cx| {
+        view.set_image_lookup(
+            |_| Some((Arc::<[u8]>::from(PNG), "image/png".to_string())),
+            cx,
+        )
+    });
+    settle(cx, window);
+    let thumbnail = SharedString::from("image-1-1");
+    let focused = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, _| {
+            (
+                window.find("transcript").focused(),
+                window.find(thumbnail.clone()).focused(),
+            )
+        })
+        .unwrap()
+    };
+    let tab = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| window.focus_next(cx))
+            .unwrap();
+        settle(cx, window);
+    };
+    let focus = cx.read(|cx| view.read(cx).focus_handle.clone());
+    cx.update_window(window, |_, window, cx| focus.focus(window, cx))
+        .unwrap();
+    settle(cx, window);
+    assert_eq!(focused(cx), (Some(true), Some(false)));
+    tab(cx);
+    assert_eq!(focused(cx), (Some(true), Some(true)));
+    let tile = cx
+        .update_window(window, |_, window, _| {
+            let tile = window.find(thumbnail.clone());
+            (tile.role(), tile.label().map(str::to_string))
+        })
+        .unwrap();
+    assert_eq!(tile.0, Some(gpui_kit::Role::Button));
+    assert_eq!(tile.1.as_deref(), Some("Open image a.png · 10 B"));
+    // The message's Copy and the reply's actions are hidden: Tab goes
+    // round to the transcript.
+    tab(cx);
+    assert_eq!(focused(cx), (Some(true), Some(false)));
+}
+
+#[gpui_kit::test]
+fn toggles_say_whether_they_are_open(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    let id = call(&feed, "main", "shell", &[("command", "cargo test".into())]);
+    result(&feed, "main", id, "shell", "exit code 0, 1.0 s\nok");
+    let (window, _) = open(cx, &feed, AgentFilter::Main, 720.);
+    let shell = ids_of(&feed, Kind::Call)[0];
+    let toggle = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, _| {
+            let toggle = window.find(("call-toggle", shell));
+            (
+                toggle.role(),
+                toggle.expanded(),
+                toggle.label().map(str::to_string),
+            )
+        })
+        .unwrap()
+    };
+    let (role, expanded, label) = toggle(cx);
+    assert_eq!(role, Some(gpui_kit::Role::Button));
+    assert_eq!(expanded, Some(false));
+    assert!(label.is_some_and(|label| label.contains("cargo test")));
+    // Tab goes from the transcript to the toggle, and Enter opens it.
+    cx.update_window(window, |_, window, cx| {
+        window.focus_next(cx);
+        window.render_frame(cx);
+        window.focus_next(cx);
+        window.render_frame(cx);
+        assert_eq!(window.find(("call-toggle", shell)).focused(), Some(true));
+        window.press("enter", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(toggle(cx).1, Some(true));
+    cx.update_window(window, |_, window, cx| {
+        window.click(("call-toggle", shell), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(toggle(cx).1, Some(false));
+}
+
+#[gpui_kit::test]
+fn the_keyboard_scrolls_the_transcript(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    turns(&feed, 20, 1);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    load_all(cx, window, &view);
+    let following = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).is_following(cx));
+    let press = |cx: &mut TestAppContext, key: &str| {
+        cx.update_window(window, |_, window, cx| window.press(key, cx))
+            .unwrap();
+        settle(cx, window);
+    };
+    let focus = cx.read(|cx| view.read(cx).focus_handle.clone());
+    cx.update_window(window, |_, window, cx| focus.focus(window, cx))
+        .unwrap();
+    let last = user_row(&feed, 19);
+    let bottom = row_top(cx, window, last).expect("the last turn shows");
+    press(cx, "pageup");
+    assert!(!following(cx));
+    let moved = row_top(cx, window, last).map_or(f32::INFINITY, |top| top - bottom);
+    assert!(moved > 300., "{moved}");
+    press(cx, "pagedown");
+    assert_eq!(row_top(cx, window, last), Some(bottom));
+    press(cx, "home");
+    assert!(row_top(cx, window, user_row(&feed, 0)).is_some());
+    assert!(row_top(cx, window, last).is_none());
+    press(cx, "end");
+    assert!(following(cx));
+    assert_eq!(row_top(cx, window, last), Some(bottom));
+}
+
 /// How many times the transcript draws in a second of the test clock.
 fn draws_in_a_second(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> usize {
     for _ in 0..200 {
@@ -734,7 +954,11 @@ fn a_long_transcript_shows_its_end_first_and_the_rest_a_chunk_a_frame(cx: &mut T
     assert_eq!((first - 200) % 100, 0);
     cx.update_window(window, |_, window, cx| window.render_frame(cx))
         .unwrap();
-    assert_eq!(rows(cx), first + 100, "a hundred more each frame");
+    assert_eq!(
+        rows(cx),
+        (first + 100).min(450),
+        "a hundred more each frame"
+    );
     settle(cx, window);
     assert_eq!(rows(cx), 450);
     // The reader stayed at the latest message all along.

@@ -155,6 +155,19 @@ pub(super) fn render(
         return div().into_any_element();
     };
     let content = this.row(row.key, &view, cx);
+    // The pointer over any row of an entry with hover actions shows them,
+    // the gap above a row included, so crossing from one row to the next
+    // or onto the actions keeps them.
+    let hover = match row.key {
+        RowKey::User(_) | RowKey::Actions(_) => true,
+        RowKey::Block { id, .. } => this
+            .model
+            .entry(id)
+            .is_some_and(|entry| entry.item.kind == Kind::Reply),
+        _ => false,
+    };
+    let hover_view = view.downgrade();
+    let key = row.key;
     let gap = match row.gap {
         Gap::None => 0.,
         Gap::Tight => 0.25,
@@ -171,6 +184,13 @@ pub(super) fn render(
         .pt(rems(gap))
         .flex()
         .justify_center()
+        .when(hover, |this| {
+            this.on_hover(move |hovered, _, cx| {
+                hover_view
+                    .update(cx, |this, cx| this.row_hovered(key, *hovered, cx))
+                    .ok();
+            })
+        })
         .child(div().w_full().max_w(rems(COLUMN)).px_4().child(content))
         .into_any_element()
 }
@@ -414,44 +434,56 @@ impl TranscriptView {
         };
         let tags = user_tags(item);
         let text: SharedString = item.text.clone().into();
-        let group: SharedString = format!("user-{id}").into();
-        let copy_text = text.clone();
-        let _ = view;
-        v_flex()
+        let muted = theme.muted_foreground;
+        let copy_view = view.downgrade();
+        h_flex()
             .id(("user-message", id))
-            .group(group.clone())
-            .relative()
             .w_full()
+            .items_start()
             .gap_1()
-            .px_3()
+            .pl_3()
+            .pr_1()
             .py_2()
             .rounded(theme.radius)
             .bg(theme.secondary)
             .text_color(theme.secondary_foreground)
-            .when(!tags.is_empty(), |this| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(tags.join(" · ")),
-                )
-            })
-            .children(self.thumbnails(item, view, cx))
-            .child(selectable(("user-text", id), text))
-            // Copy shows on hover. TODO: Edit and Branch join it.
             .child(
-                h_flex()
-                    .absolute()
-                    .top_1()
-                    .right_1()
-                    .opacity(0.)
-                    .group_hover(group, |this| this.opacity(1.))
-                    .child(
-                        Clipboard::new(("copy-user", id))
-                            .tooltip("Copy")
-                            .value(copy_text),
-                    ),
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .when(!tags.is_empty(), |this| {
+                        this.child(div().text_xs().text_color(muted).child(tags.join(" · ")))
+                    })
+                    .children(self.thumbnails(item, view, cx))
+                    .child(selectable(("user-text", id), text)),
             )
+            // Copy shows on hover, in a column of its own beside the text.
+            // TODO: Edit and Branch join it.
+            .child(div().flex_none().child(HoverActions {
+                id: ("user-actions", id).into(),
+                shown: self.hovered == Some(id),
+                build: Box::new(move |shown| {
+                    div()
+                        .id(("copy-user", id))
+                        .test_support()
+                        .child(
+                            Button::new("button")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .tooltip("Copy")
+                                .text_color(muted)
+                                .tab_stop(shown)
+                                .on_click(move |_, _, cx| {
+                                    copy_view
+                                        .update(cx, |this, cx| this.copy_entry(id, true, cx))
+                                        .ok();
+                                }),
+                        )
+                        .into_any_element()
+                }),
+            }))
             .into_any_element()
     }
 
@@ -474,7 +506,6 @@ impl TranscriptView {
             return div().into_any_element();
         };
         let thinking = item.kind == Kind::Thinking;
-        let reply = item.kind == Kind::Reply;
         let label = (block == 0 && item.kind == Kind::Question).then(|| {
             h_flex()
                 .gap_1()
@@ -576,19 +607,11 @@ impl TranscriptView {
                 }))
                 .into_any_element()
         };
-        let hover_view = view.downgrade();
         div()
             .id(SharedString::from(format!("block-body-{id}-{block}")))
             .w_full()
             .when(thinking, |this| {
                 this.text_color(theme.muted_foreground).text_sm()
-            })
-            .when(reply, |this| {
-                this.on_hover(move |hovered, _, cx| {
-                    hover_view
-                        .update(cx, |this, cx| this.set_hovered(id, *hovered, cx))
-                        .ok();
-                })
             })
             .children(label)
             .children(from)
@@ -600,60 +623,55 @@ impl TranscriptView {
     /// showing them moves nothing.
     fn actions(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
         let theme = cx.theme();
-        let shown = self.hovered == Some(id);
         let source = self.ui.get(&id).is_some_and(|ui| ui.source);
-        let button = |name: &'static str, label: &'static str| {
-            Button::new((name, id))
-                .ghost()
-                .xsmall()
-                .label(label)
-                .text_color(theme.muted_foreground)
-        };
-        let copy_view = view.downgrade();
-        let markdown_view = view.downgrade();
-        let source_view = view.downgrade();
-        let hover_view = view.downgrade();
-        h_flex()
-            .id(("reply-actions", id))
-            .w_full()
-            .gap_1()
-            .opacity(if shown { 1. } else { 0. })
-            .on_hover(move |hovered, _, cx| {
-                hover_view
-                    .update(cx, |this, cx| this.set_hovered(id, *hovered, cx))
-                    .ok();
-            })
-            .child(button("copy-reply", "Copy").on_click(move |_, _, cx| {
-                copy_view
-                    .update(cx, |this, cx| this.copy_entry(id, false, cx))
-                    .ok();
-            }))
-            .child(
-                button("copy-markdown", "Copy as Markdown").on_click(move |_, _, cx| {
-                    markdown_view
-                        .update(cx, |this, cx| this.copy_entry(id, true, cx))
-                        .ok();
-                }),
-            )
-            .when(self.settings.render_markdown, |this| {
-                this.child(
-                    button(
-                        "view-source",
-                        if source {
-                            "View Formatted"
-                        } else {
-                            "View Source"
-                        },
+        let render_markdown = self.settings.render_markdown;
+        let muted = theme.muted_foreground;
+        let view = view.downgrade();
+        HoverActions {
+            id: ("reply-actions", id).into(),
+            shown: self.hovered == Some(id),
+            build: Box::new(move |shown| {
+                let button = |name: &'static str, label: &'static str, action: ActionFn| {
+                    let view = view.clone();
+                    div().id((name, id)).test_support().child(
+                        Button::new("button")
+                            .ghost()
+                            .xsmall()
+                            .label(label)
+                            .text_color(muted)
+                            .tab_stop(shown)
+                            .on_click(move |_, _, cx| {
+                                view.update(cx, |this, cx| action(this, id, cx)).ok();
+                            }),
                     )
-                    .on_click(move |_, _, cx| {
-                        source_view
-                            .update(cx, |this, cx| this.toggle_source(id, cx))
-                            .ok();
-                    }),
-                )
-            })
-            // TODO: Regenerate (the last reply) and Branch.
-            .into_any_element()
+                };
+                h_flex()
+                    .w_full()
+                    .gap_1()
+                    .child(button("copy-reply", "Copy", |this, id, cx| {
+                        this.copy_entry(id, false, cx)
+                    }))
+                    .child(button(
+                        "copy-markdown",
+                        "Copy as Markdown",
+                        |this, id, cx| this.copy_entry(id, true, cx),
+                    ))
+                    .when(render_markdown, |this| {
+                        this.child(button(
+                            "view-source",
+                            if source {
+                                "View Formatted"
+                            } else {
+                                "View Source"
+                            },
+                            |this, id, cx| this.toggle_source(id, cx),
+                        ))
+                    })
+                    // TODO: Regenerate (the last reply) and Branch.
+                    .into_any_element()
+            }),
+        }
+        .into_any_element()
     }
 
     /// The running indicator of the entry `id`: it turns only for the
@@ -694,6 +712,14 @@ impl TranscriptView {
             .and_then(|ui| ui.expanded)
             .unwrap_or(default);
         let streaming = self.model.is_streaming(ix);
+        let name: SharedString = if streaming {
+            "Thinking…".into()
+        } else {
+            match self.model.thought_for(ix) {
+                Some(ms) => format!("Thought for {}", duration(ms)).into(),
+                None => "Thought".into(),
+            }
+        };
         let label: AnyElement = if streaming && self.animated == Some(id) && !cx.reduce_motion() {
             ShimmerText::new("Thinking…")
                 .id(("thinking-shimmer", id))
@@ -711,22 +737,26 @@ impl TranscriptView {
         h_flex()
             .w_full()
             .child(
-                div().id(("thinking-row", id)).test_support().child(
-                    Button::new(("thinking-toggle", id))
-                        .ghost()
-                        .xsmall()
-                        .text_color(theme.muted_foreground)
-                        .icon(if open {
-                            IconName::ChevronDown
-                        } else {
-                            IconName::ChevronRight
-                        })
-                        .child(label)
-                        .on_click(move |_, _, cx| {
+                div()
+                    .id(("thinking-row", id))
+                    .test_support()
+                    .child(Disclosure {
+                        id: ("thinking-toggle", id).into(),
+                        open,
+                        label: name,
+                        full_width: false,
+                        content: h_flex()
+                            .gap_1()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(Icon::new(chevron(open)).xsmall())
+                            .child(label)
+                            .into_any_element(),
+                        on_toggle: Rc::new(move |_, cx| {
                             view.update(cx, |this, cx| this.toggle(id, default, cx))
                                 .ok();
                         }),
-                ),
+                    }),
             )
             .into_any_element()
     }
@@ -768,34 +798,35 @@ impl TranscriptView {
             _ => None,
         };
         let header_view = view.downgrade();
-        let header = Button::new(("call-toggle", id))
-            .ghost()
-            .xsmall()
-            .w_full()
-            .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_1p5()
-                    .text_color(theme.muted_foreground)
-                    .when(!item.is_main(), |this| {
-                        this.child(
-                            div()
-                                .flex_none()
-                                .text_xs()
-                                .font_family(theme.mono_font_family.clone())
-                                .child(item.agent.clone()),
-                        )
-                    })
-                    .child(Icon::new(tool.icon()).xsmall().flex_none())
-                    .child(div().flex_1().min_w_0().truncate().text_left().child(line))
-                    .children(trailing),
-            )
-            .on_click(move |_, _, cx| {
+        let header = Disclosure {
+            id: ("call-toggle", id).into(),
+            open,
+            label: line.clone().into(),
+            full_width: true,
+            content: h_flex()
+                .w_full()
+                .min_w_0()
+                .gap_1p5()
+                .text_color(theme.muted_foreground)
+                .when(!item.is_main(), |this| {
+                    this.child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .font_family(theme.mono_font_family.clone())
+                            .child(item.agent.clone()),
+                    )
+                })
+                .child(Icon::new(tool.icon()).xsmall().flex_none())
+                .child(div().flex_1().min_w_0().truncate().text_left().child(line))
+                .children(trailing)
+                .into_any_element(),
+            on_toggle: Rc::new(move |_, cx| {
                 header_view
                     .update(cx, |this, cx| this.toggle(id, false, cx))
                     .ok();
-            });
+            }),
+        };
         v_flex()
             .w_full()
             .child(div().id(("call-row", id)).test_support().child(header))
@@ -928,57 +959,48 @@ impl TranscriptView {
             .count();
         let open = self.group_open(id);
         let view = view.downgrade();
-        Button::new(("group-toggle", id))
-            .ghost()
-            .xsmall()
-            .w_full()
-            .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_1p5()
-                    .text_color(theme.muted_foreground)
-                    .child(
-                        Icon::new(if open {
-                            IconName::ChevronDown
-                        } else {
-                            IconName::ChevronRight
-                        })
-                        .xsmall(),
+        let summary = tool::summary(calls.iter().copied());
+        Disclosure {
+            id: ("group-toggle", id).into(),
+            open,
+            label: summary.clone().into(),
+            full_width: true,
+            content: h_flex()
+                .w_full()
+                .min_w_0()
+                .gap_1p5()
+                .text_color(theme.muted_foreground)
+                .child(Icon::new(chevron(open)).xsmall())
+                .child(div().flex_none().child(summary))
+                .when_some(running, |this, running| {
+                    this.child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(self.spinner(running.id, cx))
+                            .child(div().min_w_0().truncate().child(
+                                running.text.lines().next().unwrap_or_default().to_string(),
+                            )),
                     )
-                    .child(
-                        div()
+                })
+                .when(running.is_none(), |this| this.child(div().flex_1()))
+                .when(failed > 0, |this| {
+                    this.child(
+                        h_flex()
                             .flex_none()
-                            .child(tool::summary(calls.iter().copied())),
+                            .gap_1()
+                            .text_color(theme.danger)
+                            .child(Icon::new(Lucide::CircleX).xsmall())
+                            .child(format!("{failed} failed")),
                     )
-                    .when_some(running, |this, running| {
-                        this.child(
-                            h_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_1()
-                                .child(self.spinner(running.id, cx))
-                                .child(div().min_w_0().truncate().child(
-                                    running.text.lines().next().unwrap_or_default().to_string(),
-                                )),
-                        )
-                    })
-                    .when(running.is_none(), |this| this.child(div().flex_1()))
-                    .when(failed > 0, |this| {
-                        this.child(
-                            h_flex()
-                                .flex_none()
-                                .gap_1()
-                                .text_color(theme.danger)
-                                .child(Icon::new(Lucide::CircleX).xsmall())
-                                .child(format!("{failed} failed")),
-                        )
-                    }),
-            )
-            .on_click(move |_, _, cx| {
+                })
+                .into_any_element(),
+            on_toggle: Rc::new(move |_, cx| {
                 view.update(cx, |this, cx| this.toggle_group(id, cx)).ok();
-            })
-            .into_any_element()
+            }),
+        }
+        .into_any_element()
     }
 
     fn count(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
@@ -1288,11 +1310,107 @@ impl Render for OutputViewer {
     }
 }
 
+/// The chevron of a disclosure, open or closed.
+fn chevron(open: bool) -> IconName {
+    if open {
+        IconName::ChevronDown
+    } else {
+        IconName::ChevronRight
+    }
+}
+
+/// A row's toggle: a button, a Tab stop, that opens and closes the row's
+/// details and tells assistive technology whether they're open.
+#[derive(IntoElement)]
+struct Disclosure {
+    id: ElementId,
+    open: bool,
+    /// What it's called, read by assistive technology.
+    label: SharedString,
+    content: AnyElement,
+    full_width: bool,
+    on_toggle: Callback,
+}
+
+impl RenderOnce for Disclosure {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = window
+            .use_keyed_state(self.id.clone(), cx, |_, cx| {
+                cx.focus_handle().tab_stop(true)
+            })
+            .read(cx)
+            .clone();
+        let theme = cx.theme();
+        // A ghost button's hover.
+        let hover = if theme.is_dark() {
+            theme.accent.opacity(0.5)
+        } else {
+            theme.accent
+        };
+        let ring = theme.ring;
+        // An extra-small button's size and padding, its border (the focus
+        // ring) taken out of the padding.
+        let padding = window.rem_size() * 0.25 - px(1.);
+        div()
+            .id(self.id)
+            .role(Role::Button)
+            .aria_expanded(self.open)
+            .aria_label(self.label)
+            .test_support()
+            .track_focus(&focus)
+            .when(self.full_width, |this| this.w_full())
+            .min_w_0()
+            .h_5()
+            .flex()
+            .items_center()
+            .px(padding)
+            .text_xs()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(transparent_black())
+            .hover(move |this| this.bg(hover))
+            .focus_visible(move |this| this.border_color(ring))
+            .child(self.content)
+            // A click, or Enter or Space while it has the focus.
+            .on_click(move |_, window, cx| (self.on_toggle)(window, cx))
+    }
+}
+
+/// What a hover action does to the entry `id`.
+type ActionFn = fn(&mut TranscriptView, u64, &mut Context<TranscriptView>);
+
+/// Actions that show while the pointer is over their entry, or while one of
+/// them has the focus. Hidden, they take their space (nothing moves when
+/// they show) and no Tab stop.
+#[derive(IntoElement)]
+struct HoverActions {
+    id: ElementId,
+    /// Whether the pointer is over the entry.
+    shown: bool,
+    /// Builds the actions, as Tab stops when they show.
+    build: Box<dyn FnOnce(bool) -> AnyElement>,
+}
+
+impl RenderOnce for HoverActions {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = window
+            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        let shown = self.shown || focus.contains_focused(window, cx);
+        div()
+            .id(self.id)
+            .track_focus(&focus)
+            .opacity(if shown { 1. } else { 0. })
+            .child((self.build)(shown))
+    }
+}
+
 /// A thumbnail's size, in rem: up to four fit the reading column.
 const THUMBNAIL: (f32, f32) = (10., 7.5);
 
-/// What opening a thumbnail does.
-type OpenImage = Rc<dyn Fn(&mut Window, &mut App)>;
+/// What a click on a thumbnail or a toggle does.
+type Callback = Rc<dyn Fn(&mut Window, &mut App)>;
 
 /// One image of a row, as a tile that opens the image viewer (a click, or
 /// Enter when it has the focus, which it gets back when the viewer closes).
@@ -1302,21 +1420,25 @@ struct Thumbnail {
     /// `None` when the session's store no longer keeps the image.
     source: Option<ImageSource>,
     caption: SharedString,
-    on_open: OpenImage,
+    on_open: Callback,
 }
 
 impl RenderOnce for Thumbnail {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus = window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+            .use_keyed_state(self.id.clone(), cx, |_, cx| {
+                cx.focus_handle().tab_stop(true)
+            })
             .read(cx)
             .clone();
         let theme = cx.theme();
         let caption = self.caption.clone();
-        let (click, key) = (self.on_open.clone(), self.on_open);
+        let name: SharedString = format!("Open image {}", self.caption).into();
         let click_focus = focus.clone();
         div()
             .id(self.id)
+            .role(Role::Button)
+            .aria_label(name)
             .test_support()
             .track_focus(&focus)
             .flex_none()
@@ -1339,15 +1461,10 @@ impl RenderOnce for Thumbnail {
                     .text_color(theme.muted_foreground)
                     .child("Image not kept"),
             })
+            // A click, or Enter or Space while it has the focus.
             .on_click(move |_, window, cx| {
                 click_focus.focus(window, cx);
-                click(window, cx);
-            })
-            .on_key_down(move |event, window, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    cx.stop_propagation();
-                    key(window, cx);
-                }
+                (self.on_open)(window, cx);
             })
     }
 }

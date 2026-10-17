@@ -84,6 +84,16 @@ impl RowList {
         self.state.scroll_to_end();
     }
 
+    /// Scrolls by `distance`, down when positive.
+    pub fn scroll_by(&self, distance: Pixels) {
+        self.state.scroll_by(distance);
+    }
+
+    /// The screen's height, as last laid out.
+    pub fn viewport_height(&self) -> Pixels {
+        self.state.viewport_bounds().size.height
+    }
+
     /// Stops following the latest row where the screen is now, until the
     /// reader comes back to the bottom: a row the reader opens grows
     /// downward instead of pushing itself up off the screen.
