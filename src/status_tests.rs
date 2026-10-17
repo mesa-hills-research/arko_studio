@@ -313,6 +313,19 @@ fn the_web_pages_popover_shows_its_links_and_stops_sharing(cx: &mut TestAppConte
     });
     assert!(bar.find(cx, "web-page-panel"));
     assert!(bar.find(cx, "web-page-allows"));
+    // Each link's copy button says which link it copies.
+    let label = cx
+        .update_window(bar.window, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(("copy-web-page-link", 0usize))
+                .and_then(|found| found.label().map(str::to_string))
+        })
+        .unwrap();
+    assert_eq!(
+        label.as_deref(),
+        Some("Copy the Local network · wlan0 link")
+    );
     assert!(bar.find(cx, "web-page-qr"));
     act(cx, bar.window, |window, cx| {
         window.click("web-page-new-key", cx)

@@ -285,7 +285,7 @@ impl RenderOnce for WebPagePanel {
                             Clipboard::new(("copy-web-page-link", ix))
                                 .value(link.url.clone())
                                 .tooltip("Copy the link")
-                                .accessibility_label("Copy the link"),
+                                .accessibility_label(format!("Copy the {} link", link_label(link))),
                         )
                 }),
             ))

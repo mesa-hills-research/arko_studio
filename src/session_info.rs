@@ -698,11 +698,16 @@ impl Render for SessionInfo {
             .as_ref()
             .is_some_and(|facts| facts.session.handover.main_compacts);
 
-        let switch = |id: &'static str, locked: bool, on_cmd: String, off_cmd: String| {
+        let switch = |id: &'static str,
+                      label: &'static str,
+                      locked: bool,
+                      on_cmd: String,
+                      off_cmd: String| {
             let apply_on = choose(id, "on", on_cmd);
             let apply_off = choose(id, "off", off_cmd);
             Switch::new(id)
                 .small()
+                .accessibility_label(label)
                 .checked(shown(id) == "on")
                 .disabled(locked)
                 .when(locked, |this| this.tooltip(FIXED))
@@ -847,6 +852,7 @@ impl Render for SessionInfo {
                     "Outside access",
                     switch(
                         "outside-access",
+                        "Outside access",
                         false,
                         "/outside on".into(),
                         "/outside off".into(),
@@ -864,6 +870,7 @@ impl Render for SessionInfo {
                     "Text replies",
                     switch(
                         "text-replies",
+                        "Text replies",
                         started,
                         "/text-replies on".into(),
                         "/text-replies off".into(),
@@ -875,6 +882,7 @@ impl Render for SessionInfo {
                     "Claude Code compaction",
                     switch(
                         "cc-compact",
+                        "Claude Code compaction",
                         started,
                         "/cc-compact on".into(),
                         "/cc-compact off".into(),
@@ -914,6 +922,7 @@ impl Render for SessionInfo {
                                     .text_xs()
                                     .child(switch(
                                         "project-workers",
+                                        "Workers get the project’s instructions too",
                                         false,
                                         "/project-instructions workers on".into(),
                                         "/project-instructions workers off".into(),
@@ -972,7 +981,8 @@ impl Render for SessionInfo {
                     .child(
                         Clipboard::new("copy-session-id")
                             .value(id)
-                            .tooltip("Copy the session ID"),
+                            .tooltip("Copy the session ID")
+                            .accessibility_label("Copy the session ID"),
                     ),
                 cx,
             ))
@@ -1312,6 +1322,16 @@ mod view_tests {
             .unwrap()
         };
         assert_eq!(checked(cx), Some(false));
+        // A screen reader names the switch as its row does.
+        let label = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .try_find("outside-access")
+                    .and_then(|found| found.label().map(str::to_string))
+            })
+            .unwrap();
+        assert_eq!(label.as_deref(), Some("Outside access"));
         act(cx, window, |window, cx| window.click("outside-access", cx));
         assert_eq!(checked(cx), Some(true));
         // Clicked again before the status came: off again.
