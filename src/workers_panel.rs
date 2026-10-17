@@ -919,39 +919,42 @@ fn figures(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// `text` in a cell as wide as `widest`, at its `right` or left side: the
+/// `text` in a cell at least `width` wide, at its `right` or left side: the
 /// cells of every row are as wide, so what is in them lines up.
-fn cell(text: impl Into<SharedString>, widest: &'static str, right: bool) -> Div {
-    div()
-        .grid()
-        .grid_cols(1)
-        .child(
-            div()
-                .col_start(1)
-                .row_start(1)
-                .text_color(transparent_black())
-                .child(widest),
-        )
-        .child(
-            div()
-                .col_start(1)
-                .row_start(1)
-                .when(right, |this| this.text_right())
-                .child(text.into()),
-        )
+fn cell(text: impl Into<SharedString>, width: Pixels, right: bool) -> Div {
+    h_flex().flex_none().min_w(width).child(
+        div()
+            .flex_1()
+            .when(right, |this| this.text_right())
+            .child(text.into()),
+    )
+}
+
+/// How wide `text` is among a row's figures: `text_xs`, in tabular figures.
+fn figures_width(text: &'static str, window: &Window) -> Pixels {
+    let mut style = window.text_style();
+    style.font_size = rems(0.75).into();
+    style.font_features = tabular_figures();
+    let size = style.font_size.to_pixels(window.rem_size());
+    window
+        .text_system()
+        .shape_line(text.into(), size, &[style.to_run(text.len())], None)
+        .width
+        // As a line of text lays itself out: in whole pixels.
+        .ceil()
 }
 
 /// "18 calls", with the number right-aligned in room for three figures and
 /// the word after it, so 1 to 999 calls line up.
-fn calls(count: u32) -> impl IntoElement {
+fn calls(count: u32, window: &Window) -> impl IntoElement {
     h_flex()
         .flex_none()
         .gap_1()
         .font_features(tabular_figures())
-        .child(cell(count.to_string(), "999", true))
+        .child(cell(count.to_string(), figures_width("999", window), true))
         .child(cell(
             if count == 1 { "call" } else { "calls" },
-            "calls",
+            figures_width("calls", window),
             false,
         ))
 }
@@ -961,14 +964,14 @@ fn calls(count: u32) -> impl IntoElement {
 /// `danger` when it failed).
 fn state_mark(state: WorkerState, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
-    let dot = |color: Hsla| div().size(px(8.)).rounded_full().bg(color);
+    let dot = |color: Hsla| div().size_2().rounded_full().bg(color);
     let mark: AnyElement = match state {
         WorkerState::Running => Spinner::new()
             .xsmall()
             .color(theme.muted_foreground)
             .into_any_element(),
         WorkerState::Queued => div()
-            .size(px(8.))
+            .size_2()
             .rounded_full()
             .border_1()
             .border_color(theme.muted_foreground)
@@ -1087,19 +1090,27 @@ impl Render for WorkerRow {
                     .w_full()
                     .h(figures_line)
                     .min_w_0()
-                    .gap_2()
-                    .pl(rems(1.375))
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
+                    .gap_1p5()
+                    // Under the state's mark, so the line starts where the
+                    // worker's id does.
+                    .child(div().flex_none().w_4())
                     .child(
-                        div()
+                        h_flex()
                             .flex_1()
                             .min_w_0()
-                            .truncate()
-                            .child(facts.last.clone()),
-                    )
-                    .children(facts.context.clone().map(figures))
-                    .child(calls(facts.calls)),
+                            .gap_2()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(facts.last.clone()),
+                            )
+                            .children(facts.context.clone().map(figures))
+                            .child(calls(facts.calls, window)),
+                    ),
             )
     }
 }
