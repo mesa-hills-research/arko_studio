@@ -10,6 +10,7 @@ pub mod appearance;
 pub mod assets;
 pub mod backend;
 mod bundled_themes;
+pub mod cache_timer;
 pub mod chrome;
 pub mod commands;
 pub mod composer;

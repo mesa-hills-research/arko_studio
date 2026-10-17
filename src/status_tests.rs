@@ -161,6 +161,7 @@ fn an_idle_session_with_nothing_unusual_shows_nothing(cx: &mut TestAppContext) {
         "status-workers",
         "status-outside",
         "status-web-page",
+        "status-cache",
         "status-plan",
         "status-cost",
         "status-context",
@@ -180,6 +181,7 @@ fn a_busy_session_shows_its_turn_workers_warnings_and_figures(cx: &mut TestAppCo
             workers: vec!["r1".into(), "r2".into()],
             outside: true,
             web_page: true,
+            cache: None,
             plan: Some("5 h limit 84%".into()),
             cost: Some("$1.20".into()),
             context: Some(("142k / 1M".into(), false)),
@@ -362,4 +364,28 @@ fn the_costs_popover_shows_what_cost_says(cx: &mut TestAppContext) {
     bar.show(cx, busy(), Activity::default());
     act(cx, bar.window, |window, cx| window.click("status-cost", cx));
     assert!(bar.find(cx, "cost-details"));
+}
+
+#[gpui_kit::test]
+fn the_cache_timer_counts_down_while_idle_and_warns_in_its_last_minute(cx: &mut TestAppContext) {
+    let bar = bar(cx, 1300.);
+    let mut reading = Reading::default();
+    reading.cache.lifetime = Some(Duration::from_secs(300));
+    reading.cache.refreshed_at = Some(NOW - 180_000);
+    reading.cache.tokens = Some(180_000);
+    reading.cache.miss_cost = Some(0.9);
+    bar.show(cx, reading.clone(), Activity::default());
+    assert_eq!(bar.shown(cx).cache, Some(("cache 2:00".into(), false)));
+    assert!(bar.find(cx, "status-cache"));
+    assert!(cx.read(|cx| bar.bar.read(cx).is_ticking()));
+    bar.advance(cx, 61_000);
+    assert_eq!(bar.shown(cx).cache, Some(("cache 0:59".into(), true)));
+    bar.advance(cx, 60_000);
+    assert_eq!(bar.shown(cx).cache, Some(("cache expired".into(), false)));
+    // Expired, it no longer ticks.
+    bar.advance(cx, 1_000);
+    assert!(!cx.read(|cx| bar.bar.read(cx).is_ticking()));
+    // While a turn runs, every request refreshes it: hidden.
+    bar.show(cx, reading, working(NOW));
+    assert_eq!(bar.shown(cx).cache, None);
 }

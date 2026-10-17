@@ -1,6 +1,6 @@
 //! The status bar under the window. It shows only what the user may act on:
 //! a turn's state while one runs, workers, unusual states such as outside
-//! access, and on the right plan usage, cost and context.
+//! access, and on the right the cache timer, plan usage, cost and context.
 //! An idle window with nothing unusual has an empty bar.
 //!
 //! The bar is a view of its own: its clock ticks once a second only while
@@ -24,6 +24,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::cache_timer::{CacheTimer, cache_timer};
 use crate::context_ring::{ContextDetails, ContextSize, context_button};
 use crate::figures::{self, Turn};
 use crate::layout::WidthClass;
@@ -197,8 +198,9 @@ impl StatusBar {
                     .await;
                 let next = this.update(cx, |this, cx| {
                     cx.notify();
-                    this.status(cx)
-                        .and_then(|(_, activity)| next_change(&activity, (this.clock)()))
+                    this.status(cx).and_then(|(reading, activity)| {
+                        next_change(&reading, &activity, (this.clock)())
+                    })
                 });
                 match next {
                     Ok(Some(next)) => wait = next,
@@ -217,12 +219,21 @@ impl Default for StatusBar {
 }
 
 /// How long until a running time the bar shows changes, in milliseconds:
-/// the turn's clock moves each second. `None` when nothing shown moves.
-pub fn next_change(activity: &Activity, now: i64) -> Option<i64> {
-    match Turn::of(activity) {
+/// the turn's clock and the cache timer move each second. `None` when
+/// nothing shown moves.
+pub fn next_change(reading: &Reading, activity: &Activity, now: i64) -> Option<i64> {
+    let turn = match Turn::of(activity) {
         Some(Turn::Working { since: Some(since) }) => Some(1000 - (now - since).rem_euclid(1000)),
         _ => None,
-    }
+    };
+    let cache = match CacheTimer::of(&reading.cache, activity.working, now) {
+        Some(CacheTimer::Counting { left }) => Some(match left % 1000 {
+            0 => 1000,
+            part => part,
+        }),
+        _ => None,
+    };
+    turn.into_iter().chain(cache).min()
 }
 
 /// Sends a command line to the session, as if typed, and says why not when
@@ -457,6 +468,8 @@ pub struct Shown {
     pub workers: Vec<String>,
     pub outside: bool,
     pub web_page: bool,
+    /// "cache 3:12", and whether it warns.
+    pub cache: Option<(String, bool)>,
     /// "5 h limit 84%".
     pub plan: Option<String>,
     /// "$1.20".
@@ -474,6 +487,7 @@ impl StatusBar {
         };
         let now = (self.clock)();
         let wide = self.width != WidthClass::Narrow;
+        let cache = CacheTimer::of(&reading.cache, activity.working, now);
         Shown {
             turn: Turn::of(&activity)
                 .filter(|_| wide)
@@ -485,6 +499,9 @@ impl StatusBar {
             },
             outside: reading.settings.outside,
             web_page: reading.page.is_some(),
+            cache: cache
+                .filter(|_| wide)
+                .map(|timer| (timer.label(), timer.warns())),
             plan: figures::plan_alert(&reading.plans)
                 .filter(|_| wide)
                 .map(|(_, window)| figures::plan_label(window)),
@@ -503,7 +520,7 @@ impl Render for StatusBar {
             return bar;
         };
         let now = (self.clock)();
-        self.schedule_tick(next_change(&activity, now), cx);
+        self.schedule_tick(next_change(&reading, &activity, now), cx);
         let shown = self.shown(cx);
         let narrow = self.width == WidthClass::Narrow;
         if let Some(turn) = Turn::of(&activity).filter(|_| shown.turn.is_some()) {
@@ -517,6 +534,11 @@ impl Render for StatusBar {
         }
         if let Some(page) = &reading.page {
             bar = bar.left(self.render_web_page(page, narrow));
+        }
+        if let Some(timer) =
+            CacheTimer::of(&reading.cache, activity.working, now).filter(|_| shown.cache.is_some())
+        {
+            bar = bar.right(cache_timer(timer, &reading.cache, now, cx));
         }
         if shown.plan.is_some()
             && let Some(plan) = self.render_plan(&reading, now, cx)
@@ -670,7 +692,8 @@ mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::{names, next_change};
-    use arko::remote::Activity;
+    use arko::remote::{Activity, Reading};
+    use std::time::Duration;
 
     #[test]
     fn running_times_tick_on_their_seconds() {
@@ -679,11 +702,19 @@ mod tests {
             since: Some(10_300),
             ..Activity::default()
         };
+        let reading = Reading::default();
         // 1.7 s into the turn: the clock moves in 300 ms.
-        assert_eq!(next_change(&activity, 12_000), Some(300));
-        // Idle: nothing moves.
+        assert_eq!(next_change(&reading, &activity, 12_000), Some(300));
+        // Idle with no cache known: nothing moves.
         activity.working = false;
-        assert_eq!(next_change(&activity, 12_000), None);
+        assert_eq!(next_change(&reading, &activity, 12_000), None);
+        // The cache lapses at 300 s: at 12.25 s it moves in 750 ms.
+        let mut reading = Reading::default();
+        reading.cache.lifetime = Some(Duration::from_secs(300));
+        reading.cache.refreshed_at = Some(0);
+        assert_eq!(next_change(&reading, &activity, 12_250), Some(750));
+        // Expired: still.
+        assert_eq!(next_change(&reading, &activity, 400_000), None);
     }
 
     #[test]
