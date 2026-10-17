@@ -1979,3 +1979,26 @@ fn a_turn_without_a_reply_offers_regenerate_on_its_last_line(cx: &mut TestAppCon
     })
     .unwrap();
 }
+
+/// A user's message's bubble is the theme's background a step toward its
+/// text, channel by channel, so it keeps the theme's tones.
+#[gpui_kit::test]
+fn the_bubble_is_the_background_a_step_toward_the_text(cx: &mut TestAppContext) {
+    use gpui_kit::component::ActiveTheme as _;
+    start(cx);
+    cx.update(|cx| {
+        let theme = cx.theme();
+        let step = if theme.is_dark() { 0.09 } else { 0.13 };
+        let bubble = super::row::bubble_color(theme).to_rgb();
+        let (background, text) = (theme.background.to_rgb(), theme.foreground.to_rgb());
+        for (bubble, background, text) in [
+            (bubble.r, background.r, text.r),
+            (bubble.g, background.g, text.g),
+            (bubble.b, background.b, text.b),
+        ] {
+            let expected = background + (text - background) * step;
+            assert!((bubble - expected).abs() < 0.002, "{bubble} {expected}");
+        }
+        assert_ne!(super::row::bubble_color(theme), theme.background);
+    });
+}

@@ -10,7 +10,7 @@ use gpui_kit::base::Easing;
 use gpui_kit::base::image_cache::LruImageCache;
 use gpui_kit::base::text::{TextView, TextViewMotion, TextViewStyle};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Theme, WindowExt as _,
     button::{Button, ButtonVariants as _},
     clipboard::Clipboard,
     diff_view::{Diff, DiffView},
@@ -640,8 +640,8 @@ impl TranscriptView {
                                 .px_3()
                                 .py_2()
                                 .rounded(theme.radius)
-                                .bg(theme.secondary)
-                                .text_color(theme.secondary_foreground)
+                                .bg(bubble_color(theme))
+                                .text_color(theme.foreground)
                                 .when(!tags.is_empty(), |this| {
                                     this.child(
                                         div().text_xs().text_color(muted).child(tags.join(" · ")),
@@ -1773,6 +1773,37 @@ impl RenderOnce for HoverActions {
             .opacity(if shown { 1. } else { 0. })
             .child((self.build)(shown))
     }
+}
+
+/// How far a user's message's bubble moves from the background toward the
+/// text: a quiet step that still sets it apart. Light themes take a larger
+/// one, as the same step reads weaker on a light background.
+const BUBBLE_STEP_DARK: f32 = 0.09;
+const BUBBLE_STEP_LIGHT: f32 = 0.13;
+
+/// The surface of a user's message: the theme's background a step toward
+/// its text, so every theme gets a bubble in its own tones.
+pub(super) fn bubble_color(theme: &Theme) -> Hsla {
+    let step = if theme.is_dark() {
+        BUBBLE_STEP_DARK
+    } else {
+        BUBBLE_STEP_LIGHT
+    };
+    blend(theme.background, theme.foreground, step)
+}
+
+/// `from` moved `amount` of the way to `to`, each sRGB channel on its own,
+/// which keeps the hue of greys and tints alike.
+fn blend(from: Hsla, to: Hsla, amount: f32) -> Hsla {
+    let (from, to) = (from.to_rgb(), to.to_rgb());
+    let mix = |a: f32, b: f32| a + (b - a) * amount;
+    Rgba {
+        r: mix(from.r, to.r),
+        g: mix(from.g, to.g),
+        b: mix(from.b, to.b),
+        a: from.a,
+    }
+    .into()
 }
 
 /// Regenerate, for the entry `id` it shows on: it sends the user's last
