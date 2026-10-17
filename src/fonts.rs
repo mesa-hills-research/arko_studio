@@ -50,13 +50,20 @@ pub fn added(folder: &Path) -> Vec<Cow<'static, [u8]>> {
     paths
         .into_iter()
         .filter_map(|path| match std::fs::read(&path) {
-            Ok(data) => Some(Cow::Owned(data)),
+            Ok(data) => Some(keep(data)),
             Err(error) => {
                 tracing::warn!("couldn't read the font {}: {error}", path.display());
                 None
             }
         })
         .collect()
+}
+
+/// A font file's data, kept for as long as the app runs, as the text
+/// system keeps it once it's registered: handing it to the font lists then
+/// copies no bytes.
+pub fn keep(data: Vec<u8>) -> Cow<'static, [u8]> {
+    Cow::Borrowed(Box::leak(data.into_boxed_slice()))
 }
 
 fn is_font_file(path: &Path) -> bool {
@@ -121,22 +128,22 @@ pub fn is_available(family: &str, cx: &mut App) -> bool {
         .is_some_and(|names| names.contains(&family.to_lowercase()))
 }
 
-/// Records a font file the user just added, which a font picker registered
-/// with the text system: the font pickers made later list it too.
+/// Records a font file the user just added and registered with the text
+/// system. The font lists made later list it, and so do the ones there,
+/// once its families are read in the background. One added while the
+/// lists are read waits for them.
 pub fn note_added(data: Cow<'static, [u8]>, cx: &mut App) {
-    if !cx.has_global::<Fonts>() {
-        cx.set_global(Fonts::default());
-    }
-    let fonts = cx.global_mut::<Fonts>();
+    let fonts = cx.default_global::<Fonts>();
     fonts.added.push(data.clone());
     fonts.families = None;
-    if cx.has_global::<PickerCatalog>() {
-        cx.update_global::<PickerCatalog, _>(|picker, _| {
-            if let Some(catalog) = picker.catalog.as_mut() {
-                catalog.add_fonts(&[data]);
-            }
-        });
+    let picker = cx.default_global::<PickerCatalog>();
+    // Before the lists are read, the reading takes it with the other
+    // added fonts.
+    if picker.catalog.is_none() && picker.loading.is_none() {
+        return;
     }
+    picker.waiting.push(data);
+    add_waiting(cx);
 }
 
 /// The families the font pickers list: the system's, the bundled ones and
@@ -146,7 +153,13 @@ pub fn note_added(data: Cow<'static, [u8]>, cx: &mut App) {
 #[derive(Default)]
 pub struct PickerCatalog {
     catalog: Option<FontCatalog>,
+    /// Counts the catalogs: font lists made from an older one are behind.
+    version: u64,
     loading: Option<gpui_kit::Task<()>>,
+    /// Fonts added while the catalog is read, or while it takes others.
+    waiting: Vec<Cow<'static, [u8]>>,
+    /// Takes fonts added since the catalog was read.
+    adding: Option<gpui_kit::Task<()>>,
 }
 
 impl Global for PickerCatalog {}
@@ -154,6 +167,12 @@ impl Global for PickerCatalog {}
 /// The fonts the pickers list, once they're read ([`load_picker_catalog`]).
 pub fn picker_catalog(cx: &App) -> Option<FontCatalog> {
     cx.try_global::<PickerCatalog>()?.catalog.clone()
+}
+
+/// Which catalog [`picker_catalog`] gives: a new one has a higher number.
+pub fn picker_catalog_version(cx: &App) -> u64 {
+    cx.try_global::<PickerCatalog>()
+        .map_or(0, |picker| picker.version)
 }
 
 /// Starts reading the fonts the pickers list, unless that's done or under
@@ -184,11 +203,44 @@ pub fn load_picker_catalog(cx: &mut App) {
         cx.update(|cx| {
             cx.update_global::<PickerCatalog, _>(|picker, _| {
                 picker.catalog = Some(catalog);
+                picker.version += 1;
                 picker.loading = None;
-            })
+            });
+            add_waiting(cx);
         });
     });
     cx.global_mut::<PickerCatalog>().loading = Some(loading);
+}
+
+/// Adds the fonts waiting to the catalog, in the background, once it's
+/// read and isn't taking others.
+fn add_waiting(cx: &mut App) {
+    let picker = cx.global_mut::<PickerCatalog>();
+    if picker.adding.is_some() || picker.waiting.is_empty() {
+        return;
+    }
+    let Some(mut catalog) = picker.catalog.clone() else {
+        return;
+    };
+    let fonts = std::mem::take(&mut picker.waiting);
+    let adding = cx.spawn(async move |cx| {
+        let catalog = cx
+            .background_executor()
+            .spawn(async move {
+                catalog.add_fonts(&fonts);
+                catalog
+            })
+            .await;
+        cx.update(|cx| {
+            cx.update_global::<PickerCatalog, _>(|picker, _| {
+                picker.catalog = Some(catalog);
+                picker.version += 1;
+                picker.adding = None;
+            });
+            add_waiting(cx);
+        });
+    });
+    cx.global_mut::<PickerCatalog>().adding = Some(adding);
 }
 
 /// A font file the user chose, copied into the fonts folder.

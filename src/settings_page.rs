@@ -4,8 +4,6 @@
 //! The session's own live settings are in its info popover; these are the
 //! app's preferences and the defaults for new sessions.
 
-use std::borrow::Cow;
-
 use gpui_kit::component::font_picker::{
     FontPicker, FontPickerEvent, FontPickerState, FontSettings,
 };
@@ -64,6 +62,9 @@ pub struct SettingsPage {
     /// The font pickers, once the fonts they list are read.
     ui_font: Option<Entity<FontPickerState>>,
     code_font: Option<Entity<FontPickerState>>,
+    /// The catalog the font pickers list ([`fonts::picker_catalog_version`]).
+    fonts_version: u64,
+    _font_pickers: Vec<Subscription>,
     accounts: Entity<AccountsPage>,
     sessions: Entity<SessionsPage>,
     web_page: Entity<WebPageSettings>,
@@ -134,6 +135,8 @@ impl SettingsPage {
             dark_theme: cx.new(|cx| ThemePicker::new(true, window, cx)),
             ui_font: None,
             code_font: None,
+            fonts_version: 0,
+            _font_pickers: Vec::new(),
             accounts,
             sessions,
             web_page,
@@ -149,14 +152,17 @@ impl SettingsPage {
         this
     }
 
-    /// Makes the font pickers, once the fonts they list are read.
+    /// Makes the font pickers, once the fonts they list are read, and again
+    /// when they change (a font file added).
     fn make_font_pickers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ui_font.is_some() {
+        let version = fonts::picker_catalog_version(cx);
+        if self.ui_font.is_some() && self.fonts_version == version {
             return;
         }
         let Some(catalog) = fonts::picker_catalog(cx) else {
             return;
         };
+        self.fonts_version = version;
         let appearance = prefs::get(cx).appearance.clone();
         let mut picker = |choice: &prefs::FontChoice, monospace: bool| {
             let settings = FontSettings::new(choice.family.clone()).with_size(px(choice.size()));
@@ -170,7 +176,8 @@ impl SettingsPage {
         };
         let ui_font = picker(&appearance.ui_font, false);
         let code_font = picker(&appearance.code_font, true);
-        self._subscriptions.extend([
+        // The pickers made before, if any, go with what they sent.
+        self._font_pickers = vec![
             cx.subscribe(&ui_font, |_, _, event: &FontPickerEvent, cx| {
                 let FontPickerEvent::Change(font) = event else {
                     return;
@@ -185,7 +192,7 @@ impl SettingsPage {
                 let choice = prefs::FontChoice::new(font.family(), f32::from(font.size()));
                 prefs::update(cx, |prefs| prefs.appearance.code_font = choice);
             }),
-        ]);
+        ];
         self.ui_font = Some(ui_font);
         self.code_font = Some(code_font);
         cx.notify();
@@ -255,7 +262,6 @@ impl SettingsPage {
             multiple: false,
             prompt: Some("Add Font".into()),
         });
-        let folder = paths::fonts_folder(cx.global::<crate::backend::SharedBackend>().data_root());
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
                 return;
@@ -263,27 +269,41 @@ impl SettingsPage {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let imported = cx
-                .background_spawn(async move { fonts::import(&path, &folder) })
-                .await;
-            this.update_in(cx, |this, window, cx| match imported {
-                Ok(font) => {
-                    let data: Cow<'static, [u8]> = Cow::Owned(font.data);
-                    if !font.already_imported {
-                        fonts::note_added(data.clone(), cx);
+            this.update_in(cx, |this, window, cx| this.add_font_from(path, window, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Copies the font file at `path` into Arko's folder and offers it in
+    /// both font lists, saying how that went. The file is read, copied and
+    /// registered with the text system once, off the UI thread, and the
+    /// font lists hear of it as their catalog changes.
+    pub fn add_font_from(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let folder = paths::fonts_folder(cx.global::<crate::backend::SharedBackend>().data_root());
+        let text_system = cx.text_system().clone();
+        let importing = cx.background_spawn(async move {
+            let font = fonts::import(&path, &folder)?;
+            let data = fonts::keep(font.data);
+            // One the folder had is registered already.
+            if !font.already_imported {
+                text_system.add_fonts(vec![data.clone()])?;
+            }
+            anyhow::Ok((font.families, font.already_imported, data))
+        });
+        cx.spawn_in(window, async move |_, cx| {
+            let imported = importing.await;
+            cx.update(|window, cx| match imported {
+                Ok((families, already_imported, data)) => {
+                    if !already_imported {
+                        fonts::note_added(data, cx);
                     }
-                    for picker in [this.ui_font.clone(), this.code_font.clone()]
-                        .into_iter()
-                        .flatten()
-                    {
-                        picker
-                            .update(cx, |picker, cx| {
-                                picker.add_fonts(vec![data.clone()], window, cx)
-                            })
-                            .ok();
-                    }
-                    let names = font
-                        .families
+                    let names = families
                         .iter()
                         .map(|name| name.to_string())
                         .collect::<Vec<_>>()
