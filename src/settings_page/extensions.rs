@@ -152,7 +152,7 @@ impl ExtensionsPage {
             SettingGroup::new()
                 .title("MCP servers")
                 .description(
-                    "Programs that give the agents more tools. Every session starts the servers in these files. Servers over HTTP are skipped: Arko talks to servers over standard input and output.",
+                    "Programs that give the agents more tools. Agent sessions opened from now on start the servers in these files, and a server named in two is taken from the first. Servers over HTTP are skipped: Arko talks to servers over standard input and output.",
                 )
                 .items(files),
         ];
@@ -181,7 +181,8 @@ impl ExtensionsPage {
     }
 }
 
-/// The servers a file sets up, in a line.
+/// The servers a file sets up, in a line: each one's name and the command
+/// it runs, or why arko skips it.
 fn servers_words(servers: &[McpServer]) -> String {
     if servers.is_empty() {
         return "No servers.".into();
@@ -190,7 +191,8 @@ fn servers_words(servers: &[McpServer]) -> String {
         .iter()
         .map(|server| match &server.skipped {
             Some(why) => format!("{} (skipped: {why})", server.name),
-            None => server.name.clone(),
+            None if server.command.is_empty() => server.name.clone(),
+            None => format!("{} ({})", server.name, server.command),
         })
         .collect();
     format!("{}.", names.join(", "))
@@ -205,7 +207,7 @@ fn file_item(file: &McpFile, home: Option<&Path>) -> SettingItem {
     };
     let description = match &file.servers {
         None if file.arko => {
-            format!("{path} isn’t there. Servers set up in it start in every session.")
+            format!("{path} isn’t there. Servers set up in it start in every agent session.")
         }
         None => format!("{path} isn’t there. Remove it under Advanced, or make it."),
         Some(Err(why)) => format!("Can’t be read: {why}."),

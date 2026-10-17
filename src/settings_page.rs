@@ -963,7 +963,7 @@ fn advanced_page(
             ),
         )
         .description(
-            "Servers every session starts, besides Arko’s mcp.json and a project’s .mcp.json, as arko --mcp-config does. In Claude Code’s format or arko’s.",
+            "Servers agent sessions start ahead of a project’s and Arko’s, as arko --mcp-config does. In Claude Code’s format or arko’s.",
         )
         .keywords(["mcp", "--mcp-config", "servers", "json"]),
     );

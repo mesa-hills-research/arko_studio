@@ -23,8 +23,8 @@ pub const HOME_SKILL_FOLDERS: [&str; 2] = [".agents/skills", ".claude/skills"];
 /// What sessions get besides arko's own tools.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Extensions {
-    /// Arko's `mcp.json`, then the config files set in Settings, each with
-    /// its servers.
+    /// The config files set in Settings, then Arko's `mcp.json`, each with
+    /// its servers, in the order arko reads them.
     pub files: Vec<McpFile>,
     /// The projects with a `.mcp.json`, each with the answer remembered for
     /// its servers.
@@ -148,8 +148,12 @@ pub fn read(
     mcp_config: &[PathBuf],
     home: Option<&Path>,
 ) -> Extensions {
-    let mut files = vec![mcp_file(&root.join(USER_MCP_FILE), true)];
-    files.extend(mcp_config.iter().map(|path| mcp_file(path, false)));
+    // In the order arko reads them: a name in two is taken from the first.
+    let mut files: Vec<McpFile> = mcp_config
+        .iter()
+        .map(|path| mcp_file(path, false))
+        .collect();
+    files.push(mcp_file(&root.join(USER_MCP_FILE), true));
     let approvals = approvals(root);
     let mut projects: Vec<PathBuf> = folders.to_vec();
     // Projects answered about, whose sessions aren't listed any more.
@@ -531,6 +535,30 @@ mod tests {
         // Forgetting what isn't there does nothing.
         forget_approval(&root, &project).unwrap();
         forget_approval(&temp.path().join("none"), &project).unwrap();
+    }
+
+    /// The files set in Settings come before Arko's mcp.json, as arko
+    /// reads them: a server named in both is taken from them.
+    #[test]
+    fn config_files_come_before_arkos_mcp_json() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let config = temp.path().join("work.json");
+        write(&root.join(USER_MCP_FILE), r#"{"mcpServers": {}}"#);
+        write(&config, r#"{"mcpServers": {}}"#);
+        let found = read(&root, &[], std::slice::from_ref(&config), None);
+        let order: Vec<(&Path, bool)> = found
+            .files
+            .iter()
+            .map(|file| (file.path.as_path(), file.arko))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (config.as_path(), false),
+                (root.join(USER_MCP_FILE).as_path(), true)
+            ]
+        );
     }
 
     /// Servers arko skips show as skipped, with why: no name, not an
