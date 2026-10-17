@@ -125,6 +125,24 @@ impl App {
         });
     }
 
+    /// Lets the timers that wait on typing (the draft's save) run out.
+    fn rest(&self, cx: &mut TestAppContext) {
+        for _ in 0..5 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+            cx.run_until_parked();
+        }
+    }
+
+    /// The draft the shown session keeps.
+    fn kept_draft(&self, cx: &mut TestAppContext) -> Option<String> {
+        cx.read(|cx| {
+            let session = self.view.read(cx).live_session()?;
+            let key = session.read(cx).id()?.0.clone();
+            crate::drafts::get(&key, cx)
+        })
+    }
+
     fn close_all(&self, cx: &mut TestAppContext) {
         act(cx, self.window, |window, cx| {
             let sessions = LiveSessions::all(cx);
@@ -378,5 +396,30 @@ fn the_sidebar_branches_an_open_session_from_its_latest_message(cx: &mut TestApp
     app.wait_for(cx, "Three plums.");
     assert!(app.says(cx, "Seven pears."));
     assert!(cx.read(|cx| original.read(cx).is_running()), "it runs on");
+    app.close_all(cx);
+}
+
+/// While a message is edited, the draft the session keeps (what a quit, a
+/// closed window or a crash leaves) is the user's own, not the message.
+#[gpui_kit::test]
+fn the_draft_kept_while_editing_is_the_users_own(cx: &mut TestAppContext) {
+    let mock = answers();
+    let app = start(cx, &mock);
+    app.send(cx, "Count the pears.");
+    app.wait_for(cx, "Seven pears.");
+    app.wait_idle(cx);
+    act(cx, app.window, |window, cx| {
+        window.input("my unsent draft", cx)
+    });
+    app.rest(cx);
+    assert_eq!(app.kept_draft(cx).as_deref(), Some("my unsent draft"));
+    let first = app.message(cx, "Count the pears.");
+    act(cx, app.window, |window, cx| {
+        window.click(("edit-message", first), cx)
+    });
+    assert!(cx.read(|cx| app.view.read(cx).is_editing()));
+    app.set_composer(cx, "Count the apples.");
+    app.rest(cx);
+    assert_eq!(app.kept_draft(cx).as_deref(), Some("my unsent draft"));
     app.close_all(cx);
 }

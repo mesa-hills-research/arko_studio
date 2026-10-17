@@ -427,7 +427,12 @@ impl SessionView {
             return;
         }
         if let Some(key) = self.draft_key(cx) {
-            let text = self.composer.read(cx).expanded_text(cx);
+            // While a message is edited, the user's draft is the one put
+            // aside, not the message in the composer.
+            let text = match &self.editing {
+                Some(editing) => editing.draft.clone(),
+                None => self.composer.read(cx).expanded_text(cx),
+            };
             drafts::set(&key, &text, cx);
         }
     }
