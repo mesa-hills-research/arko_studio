@@ -141,9 +141,8 @@ impl SessionDefaults {
             }
             other => other,
         };
-        // TODO: the workers' own size, once arko's options take one; until
-        // then a new session's workers start at the main agent's.
         options.handover_at = self.handover_at;
+        options.workers_handover_at = self.workers_handover_at;
         options.background_after = self.background_after;
         if cfg!(windows) {
             options.shell = self.shell;
@@ -228,6 +227,7 @@ mod tests {
         new.worker_effort = Some("medium".into());
         new.cache_1h = Some(true);
         new.handover_at = Some(950_000);
+        new.workers_handover_at = Some(300_000);
         new.background_after = Some(0);
         new.outside_access = true;
         new.text_replies = false;
@@ -245,6 +245,7 @@ mod tests {
         assert_eq!(options.worker_effort, Some(arko::Effort::Medium));
         assert_eq!(options.cache_1h, Some(true));
         assert_eq!(options.handover_at, Some(950_000));
+        assert_eq!(options.workers_handover_at, Some(300_000));
         assert_eq!(options.background_after, Some(0));
         assert!(options.allow_outside_workspace);
         assert_eq!(options.text_replies, Some(false));
@@ -299,6 +300,7 @@ mod tests {
         SessionDefaults::from_prefs(&prefs).apply(&mut options, None, || None);
         assert_eq!(options.model, None);
         assert_eq!(options.handover_at, None);
+        assert_eq!(options.workers_handover_at, None);
         assert!(!options.allow_outside_workspace);
         assert_eq!(options.text_replies, None);
         assert_eq!(options.mcp_config.len(), 1);
