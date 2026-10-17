@@ -523,7 +523,7 @@ impl Backend for ArkoBackend {
     }
 
     fn accounts(&self) -> Accounts {
-        Accounts::read()
+        Accounts::read(&self.root)
     }
 
     fn remove_key(&self, provider: &str) -> Result<String, String> {

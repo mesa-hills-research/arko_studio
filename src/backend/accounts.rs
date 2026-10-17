@@ -26,14 +26,14 @@ pub struct Accounts {
 
 impl Accounts {
     /// As arko finds them now: the keys in the app's environment and the
-    /// `.env` files it reads, the ChatGPT login, Claude Code. It runs
-    /// `claude`: call it off the UI thread.
-    pub fn read() -> Self {
+    /// `.env` files it reads (Arko's folder `root`'s last), the ChatGPT
+    /// login, Claude Code. It runs `claude`: call it off the UI thread.
+    pub fn read(root: &Path) -> Self {
         Self {
             keys: arko::accounts::key_states(),
             chatgpt: arko::accounts::chatgpt_login(None),
             claude_code: arko::accounts::claude_code(),
-            cache_1h: arko::Env::for_folder(None, true)
+            cache_1h: arko::Env::for_folder_in(None, true, Some(root))
                 .var(CACHE_1H_VARIABLE)
                 .and_then(|value| switch_value(&value)),
         }
