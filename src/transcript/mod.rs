@@ -226,6 +226,9 @@ pub struct TranscriptView {
     /// The images read so far, by ID, ready for the image cache.
     image_sources: RefCell<HashMap<u64, Arc<Image>>>,
     renders: usize,
+    /// The rows of each frame drawn, in order.
+    #[cfg(test)]
+    frames: Vec<usize>,
     _prefs: Subscription,
 }
 
@@ -284,6 +287,8 @@ impl TranscriptView {
             images: None,
             image_sources: RefCell::default(),
             renders: 0,
+            #[cfg(test)]
+            frames: Vec::new(),
             _prefs: observe_prefs,
         };
         // The history so far comes with the next frame.
@@ -1025,6 +1030,8 @@ impl Render for TranscriptView {
             // The rows of older entries go above the reader: nothing moves.
             window.request_animation_frame();
         }
+        #[cfg(test)]
+        self.frames.push(self.rows.len());
         if !self.list.is_scrolled_up() {
             self.new_while_away = 0;
         }

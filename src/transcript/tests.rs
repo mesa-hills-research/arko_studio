@@ -946,24 +946,13 @@ fn a_long_transcript_shows_its_end_first_and_the_rest_a_chunk_a_frame(cx: &mut T
             })
         })
         .unwrap();
-    let rows = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).row_count());
-    // The history comes off the UI thread, with the next frame: then the
-    // latest 200 at once (and a hundred more with each frame drawn since).
-    cx.run_until_parked();
-    cx.update_window(window, |_, window, cx| window.render_frame(cx))
-        .unwrap();
-    let first = rows(cx);
-    assert!((200..450).contains(&first), "{first}");
-    assert_eq!((first - 200) % 100, 0);
-    cx.update_window(window, |_, window, cx| window.render_frame(cx))
-        .unwrap();
-    assert_eq!(
-        rows(cx),
-        (first + 100).min(450),
-        "a hundred more each frame"
-    );
+    // The history comes off the UI thread, and shows from the next frame
+    // on: its latest 200 entries and a hundred older ones, then a hundred
+    // more with each frame.
     settle(cx, window);
-    assert_eq!(rows(cx), 450);
+    let mut frames: Vec<usize> = cx.read(|cx| view.read(cx).frames.clone());
+    frames.dedup();
+    assert_eq!(frames, [0, 300, 400, 450]);
     // The reader stayed at the latest message all along.
     assert!(cx.read(|cx| view.read(cx).is_following(cx)));
     assert!(row_top(cx, window, RowKey::User(item_ids(&feed)[449].0)).is_some());
