@@ -101,6 +101,19 @@ struct Editing {
     /// What the composer held before, given back when the edit ends.
     draft: String,
     images: Vec<Attached>,
+    /// How many of the message's images the session no longer keeps: the
+    /// edit goes without them.
+    lost_images: usize,
+}
+
+/// "1 image is no longer kept": what an edit or a resend says of the
+/// message's images the session dropped.
+fn images_not_kept(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("1 image is no longer kept".to_string()),
+        count => Some(format!("{count} images are no longer kept")),
+    }
 }
 
 /// How many sessions' transcripts the window keeps ready: switching back to
@@ -1062,25 +1075,24 @@ impl SessionView {
     }
 
     /// The images `images` of the session's store, as the composer takes
-    /// them: those it still keeps.
-    fn stored_images(&self, images: &[arko::images::ImageRef], cx: &App) -> Vec<Attached> {
-        let Some(store) = self
+    /// them: those it still keeps. Also how many it no longer keeps.
+    fn stored_images(&self, images: &[arko::images::ImageRef], cx: &App) -> (Vec<Attached>, usize) {
+        let store = self
             .session
             .as_ref()
             .and_then(|session| session.read(cx).link())
-            .map(|link| link.images.clone())
-        else {
-            return Vec::new();
-        };
-        images
+            .map(|link| link.images.clone());
+        let kept: Vec<Attached> = images
             .iter()
             .filter_map(|image| {
-                let stored = store.get(image.id)?;
+                let stored = store.as_ref()?.get(image.id)?;
                 let format = ImageFormat::from_mime_type(&stored.mime)?;
                 let name = Some(stored.label.clone()).filter(|label| !label.is_empty());
                 Some(Attached::new(format, stored.bytes.to_vec(), name))
             })
-            .collect()
+            .collect();
+        let lost = images.len() - kept.len();
+        (kept, lost)
     }
 
     /// Puts the user's message `item` in the composer to edit: sending it
@@ -1104,15 +1116,19 @@ impl SessionView {
         let Some((text, images)) = message else {
             return;
         };
-        let images = self.stored_images(&images, cx);
+        let (images, lost_images) = self.stored_images(&images, cx);
         match &mut self.editing {
-            Some(editing) => editing.item = item,
+            Some(editing) => {
+                editing.item = item;
+                editing.lost_images = lost_images;
+            }
             None => {
                 let composer = self.composer.read(cx);
                 self.editing = Some(Editing {
                     item,
                     draft: composer.expanded_text(cx),
                     images: composer.images().to_vec(),
+                    lost_images,
                 });
             }
         }
@@ -1306,17 +1322,23 @@ impl SessionView {
             }
             Choice::Branch => {
                 // The new session sends the message again, images and all.
-                let first = self
+                let message = self
                     .transcript(cx)
-                    .and_then(|transcript| transcript.read(cx).message(last))
-                    .map(|(text, images)| arko::Message {
+                    .and_then(|transcript| transcript.read(cx).message(last));
+                let first = message.map(|(text, images)| {
+                    let (images, lost) = self.stored_images(&images, cx);
+                    if let Some(note) = images_not_kept(lost) {
+                        let them = if lost == 1 { "it" } else { "them" };
+                        window.push_notification(
+                            format!("{note}: the branch sends the message without {them}."),
+                            cx,
+                        );
+                    }
+                    arko::Message {
                         text,
-                        images: self
-                            .stored_images(&images, cx)
-                            .iter()
-                            .map(Attached::to_arko)
-                            .collect(),
-                    });
+                        images: images.iter().map(Attached::to_arko).collect(),
+                    }
+                });
                 self.branch(session, Some(last), first, None, None, window, cx);
             }
         }
@@ -2443,7 +2465,7 @@ impl SessionView {
 
     /// The strip above the composer while it edits a message.
     fn render_editing(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.editing.as_ref()?;
+        let lost = images_not_kept(self.editing.as_ref()?.lost_images);
         let theme = cx.theme();
         Some(
             h_flex()
@@ -2465,6 +2487,15 @@ impl SessionView {
                         .truncate()
                         .child("Editing message — Esc cancels"),
                 )
+                .children(lost.map(|lost| {
+                    div()
+                        .id("edit-lost-images")
+                        .test_support()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(theme.warning)
+                        .child(lost)
+                }))
                 .child(
                     Button::new("cancel-edit")
                         .ghost()
@@ -2807,7 +2838,7 @@ impl Render for SessionView {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{mode_description, recent_folders, shown_folder_from};
+    use super::{images_not_kept, mode_description, recent_folders, shown_folder_from};
     use crate::backend::Backend as _;
     use crate::backend::{FakeBackend, Mode, SessionEntry};
     use std::path::{Path, PathBuf};
@@ -2822,6 +2853,19 @@ mod tests {
         assert_eq!(
             mode_description(Mode::Agent, true),
             "Agent: works in a folder with tools and workers. Switching re-reads the conversation without its cache."
+        );
+    }
+
+    #[test]
+    fn an_edit_says_how_many_of_its_images_are_gone() {
+        assert_eq!(images_not_kept(0), None);
+        assert_eq!(
+            images_not_kept(1).as_deref(),
+            Some("1 image is no longer kept")
+        );
+        assert_eq!(
+            images_not_kept(3).as_deref(),
+            Some("3 images are no longer kept")
         );
     }
 
