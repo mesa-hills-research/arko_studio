@@ -47,8 +47,8 @@ impl Accounts {
 
     /// A set-up for tests and screenshots, in `home` with Arko's folder
     /// `arko`: an Anthropic key saved in Arko's folder, an OpenAI key from
-    /// the environment, a Gemini key in a project's `.env`, no ChatGPT
-    /// login, and Claude Code signed in to a Claude plan.
+    /// the environment, a Gemini key in the `.env` beside the program, no
+    /// ChatGPT login, and Claude Code signed in to a Claude plan.
     pub fn sample(home: &Path, arko: &Path) -> Self {
         let state = |id: &str, masked: Option<&str>, source: Option<KeySource>| {
             let key = key_named(id).expect("arko takes this key");
@@ -71,7 +71,7 @@ impl Accounts {
                 state(
                     "gemini",
                     Some("AIza…k1Qe"),
-                    Some(KeySource::DotEnv(home.join("src/arko/.env"))),
+                    Some(KeySource::DotEnv(PathBuf::from("/opt/arko-studio/.env"))),
                 ),
                 state("openrouter", None, None),
                 state("voyage", None, None),

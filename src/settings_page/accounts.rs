@@ -551,7 +551,7 @@ impl AccountsPage {
         SettingGroup::new()
             .title("API keys")
             .description(
-                "Arko looks in the environment, then a .env file in the session’s folder or a parent, one beside the program, and Arko’s folder. Keys added here are saved in Arko’s folder, readable only by you.",
+                "Arko looks in the environment, then a .env file in the session’s folder or a parent, one beside the program, and Arko’s folder. Keys added here are saved in Arko’s folder, readable only by you. A key in a project’s .env reaches only that project’s sessions, so it isn’t shown here.",
             )
             .items(rows)
     }
@@ -1075,7 +1075,7 @@ mod tests {
         assert!(
             words("gemini")
                 .unwrap()
-                .contains("GEMINI_API_KEY from ~/src/arko/.env comes first again")
+                .contains("GEMINI_API_KEY from /opt/arko-studio/.env comes first again")
         );
         assert_eq!(words("voyage"), None);
     }
