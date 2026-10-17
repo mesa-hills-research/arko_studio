@@ -506,3 +506,40 @@ fn what_the_find_opened_closes_as_it_moves_on(cx: &mut TestAppContext) {
     settle(cx, window);
     assert_eq!(open(cx), [a, b]);
 }
+
+/// Landing on a match on screen moves nothing, and landing deep in a tall
+/// message of the user's shows the match, not the message's top.
+#[gpui_kit::test]
+fn landing_scrolls_only_as_far_as_the_match(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    let long: String = (0..300)
+        .map(|line| match line {
+            250 => "the needle line\n".to_string(),
+            _ => format!("pasted line {line}\n"),
+        })
+        .collect();
+    feed.user(&long, Source::App, Delivery::Turn);
+    feed.turn_started();
+    say(&feed, "Seen.");
+    feed.reply("Seen.");
+    feed.turn_ended("1 s", None);
+    for n in 0..60 {
+        feed.user(&format!("Note number {n}."), Source::App, Delivery::Note);
+    }
+    let (window, view) = open_feed(cx, &feed, View::Full, 600.);
+    let on_screen = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).list.on_screen());
+    let before = on_screen(cx);
+    let note = entry(cx, &view, "Note number 58.");
+    let row = cx.read(|cx| view.read(cx).row_of(note).unwrap());
+    assert!(before.contains(&row));
+    assert_eq!(find(cx, window, &view, "number 58.").total, 1);
+    assert_eq!(on_screen(cx), before, "nothing moved");
+    // The needle, 250 lines down a message far above.
+    assert_eq!(find(cx, window, &view, "needle line").total, 1);
+    settle(cx, window);
+    let message = entry(cx, &view, "the needle line");
+    let row = cx.read(|cx| view.read(cx).row_of(message).unwrap());
+    let top = top(cx, &view);
+    assert_eq!(top.item_ix, row);
+    assert!(top.offset_in_item > px(3000.), "{top:?}");
+}

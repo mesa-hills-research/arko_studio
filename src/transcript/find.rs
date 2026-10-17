@@ -746,8 +746,8 @@ impl TranscriptView {
         cx.notify();
     }
 
-    /// Scrolls to `found`, and has its block's view show its line when it
-    /// draws.
+    /// Scrolls to `found`, by as little as it takes, and has its block's
+    /// view show its line when it draws.
     fn go_to(&mut self, found: &Match, cx: &mut Context<Self>) {
         // An older entry not ready to show: it is made ready, and the find
         // lands once its rows are.
@@ -772,10 +772,43 @@ impl TranscriptView {
         let Some(ix) = row else {
             return;
         };
-        self.list.scroll_to(ix, px(0.));
-        if let (Place::Block(block), Some(find)) = (found.place, self.find.as_mut()) {
-            find.reveal = Some((found.entry, block));
-            find.touched.insert(found.entry);
+        match found.place {
+            Place::Block(block) => {
+                if !self.list.on_screen().contains(&ix) {
+                    self.list.reveal(ix);
+                }
+                if let Some(find) = self.find.as_mut() {
+                    find.reveal = Some((found.entry, block));
+                    find.touched.insert(found.entry);
+                }
+            }
+            _ => {
+                // Plain text has no place for its lines: the match's share
+                // of the text says how far down the row it is.
+                let length = self.place_length(found).max(1);
+                let share = found.range.start as f32 / length as f32;
+                self.list.reveal_within(ix, share);
+            }
+        }
+    }
+
+    /// How long the text of `found`'s place is, as its row shows it.
+    fn place_length(&self, found: &Match) -> usize {
+        let Some(entry) = self.model.entry(found.entry) else {
+            return 0;
+        };
+        match found.place {
+            Place::Parameters => {
+                row::shown_parameters(&entry.item).map_or(0, |text| shown_lines(&text).len())
+            }
+            Place::Output => row::shown_output(entry).map_or(0, |text| shown_lines(&text).len()),
+            Place::Source(block) => self
+                .ui
+                .get(&found.entry)
+                .and_then(|ui| ui.doc.as_ref())
+                .and_then(|doc| doc.blocks.get(block)?.range.clone())
+                .map_or(0, |range| range.len()),
+            _ => entry.item.text.len(),
         }
     }
 
