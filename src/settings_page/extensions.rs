@@ -156,6 +156,14 @@ impl ExtensionsPage {
                 )
                 .items(files),
         ];
+        if let Some(extensions) = &self.extensions {
+            for note in &extensions.notes {
+                groups.push(SettingGroup::new().items([
+                    SettingItem::new("MCP file", SettingField::render(|_, _, _| div()))
+                        .description(note.clone()),
+                ]));
+            }
+        }
         if !projects.is_empty() {
             groups.push(
                 SettingGroup::new()
@@ -268,10 +276,14 @@ fn skills_item(folder: &SkillFolder, home: Option<&Path>) -> SettingItem {
     let found = if folder.skills.is_empty() {
         "No skills yet.".to_string()
     } else {
-        let names: Vec<&str> = folder
+        let names: Vec<String> = folder
             .skills
             .iter()
-            .map(|skill| skill.name.as_str())
+            .map(|skill| match &skill.skipped {
+                Some(why) => format!("{} (skipped because {why})", skill.name),
+                None if skill.auto_load => format!("{} (loaded automatically)", skill.name),
+                None => skill.name.clone(),
+            })
             .collect();
         format!("{}.", names.join(", "))
     };

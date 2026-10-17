@@ -616,10 +616,7 @@ impl Backend for ArkoBackend {
     }
 
     fn extensions(&self, folders: &[PathBuf], mcp_config: &[PathBuf]) -> extensions::Extensions {
-        let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-            .filter(|home| !home.is_empty())
-            .map(PathBuf::from);
-        extensions::read(&self.root, folders, mcp_config, home.as_deref())
+        extensions::read(&self.root, folders, mcp_config)
     }
 
     fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String> {
