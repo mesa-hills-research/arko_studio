@@ -22,6 +22,7 @@ pub mod history;
 pub mod layout;
 pub mod live;
 pub mod menus;
+pub mod notify;
 pub mod palette;
 pub mod paths;
 pub mod prefs;

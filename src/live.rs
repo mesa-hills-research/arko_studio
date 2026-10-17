@@ -378,6 +378,8 @@ impl LiveSession {
         });
         LiveSessions::add(session.clone(), cx);
         session.update(cx, |session, cx| session.update_indicator(cx));
+        // Its turns and questions reach the user away from it.
+        crate::notify::watch(&session, cx);
         session
     }
 
