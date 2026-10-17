@@ -6,6 +6,9 @@
 //! `/resume`) starts the transcript over. A call's result block goes under
 //! its call rather than in a row of its own.
 
+use std::collections::HashMap;
+use std::ops::Range;
+
 use arko::remote::{Activity, Delivery, Item, Kind, Level, Snapshot, Update, WorkerSummary};
 use gpui_kit::SharedString;
 
@@ -404,6 +407,62 @@ pub(crate) enum RowKey {
     Worker(u64),
 }
 
+impl RowKey {
+    /// The entry the row is of (the first of a group's or a count's run).
+    pub fn entry(self) -> u64 {
+        match self {
+            RowKey::Separator(id)
+            | RowKey::User(id)
+            | RowKey::Refresh(id)
+            | RowKey::Actions(id)
+            | RowKey::Thinking(id)
+            | RowKey::Call(id)
+            | RowKey::Group(id)
+            | RowKey::Count(id)
+            | RowKey::Notice(id)
+            | RowKey::Output(id)
+            | RowKey::Turn(id)
+            | RowKey::Worker(id)
+            | RowKey::Block { id, .. } => id,
+        }
+    }
+}
+
+/// Rows `range` of the old list give way to `count` new ones.
+pub(crate) type RowChange = (Range<usize>, usize);
+
+/// The runs of `old` that change to make `new`, first to last: each a range
+/// of `old`, and how many rows of `new` take its place. Rows in both, in the
+/// same order, stay: the second list says where each went, from `old` to
+/// `new`.
+pub(crate) fn row_changes(old: &[Row], new: &[Row]) -> (Vec<RowChange>, Vec<(usize, usize)>) {
+    let index: HashMap<RowKey, usize> = new
+        .iter()
+        .enumerate()
+        .map(|(ix, row)| (row.key, ix))
+        .collect();
+    let mut kept = Vec::new();
+    let mut next = 0;
+    for (old_ix, row) in old.iter().enumerate() {
+        if let Some(&new_ix) = index.get(&row.key)
+            && new_ix >= next
+        {
+            kept.push((old_ix, new_ix));
+            next = new_ix + 1;
+        }
+    }
+    let mut changes = Vec::new();
+    let (mut old_from, mut new_from) = (0, 0);
+    for &(old_ix, new_ix) in kept.iter().chain([&(old.len(), new.len())]) {
+        if old_ix > old_from || new_ix > new_from {
+            changes.push((old_from..old_ix, new_ix - new_from));
+        }
+        old_from = old_ix + 1;
+        new_from = new_ix + 1;
+    }
+    (changes, kept)
+}
+
 /// The space above a row, by what it follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Gap {
@@ -463,6 +522,8 @@ pub(crate) struct Layout<'a> {
     pub blocks: &'a dyn Fn(u64) -> (usize, u32),
     /// The reader's choice for an entry's thinking or a group, if any.
     pub expanded: &'a dyn Fn(u64) -> Option<bool>,
+    /// The reader's choice for a group of calls, by the run's first entry.
+    pub group_open: &'a dyn Fn(u64) -> Option<bool>,
     /// Whether an entry's text shows as its source.
     pub source: &'a dyn Fn(u64) -> bool,
     /// The oldest entry ready to show, when older ones are still being made
@@ -632,7 +693,13 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
                 if folded {
                     rows.push(RowKey::Group(id), Class::Activity);
                 }
-                if !folded || (layout.expanded)(id) == Some(true) {
+                // A group shows its calls when the reader opened it, or opened
+                // one of them: a run folding as it grows keeps that one in
+                // sight.
+                let member_open = members
+                    .iter()
+                    .any(|member| (layout.expanded)(entries[*member].item.id) == Some(true));
+                if !folded || (layout.group_open)(id).unwrap_or(member_open) {
                     for member in members {
                         rows.entry(&entries[member], view, worker_view);
                     }
@@ -702,6 +769,7 @@ mod tests {
             expand_thinking: false,
             blocks: &|_| (1, 0),
             expanded: &|_| None,
+            group_open: &|_| None,
             source: &|_| false,
             first: None,
         }
@@ -916,7 +984,7 @@ mod tests {
         );
         assert_eq!(run_of(&model, 6, View::Quiet), [5, 6, 7, 8, 9]);
         let expanded = Layout {
-            expanded: &|id| (id == 6).then_some(true),
+            group_open: &|id| (id == 6).then_some(true),
             ..layout(View::Quiet)
         };
         let rows: Vec<RowKey> = rows(&model, &expanded).iter().map(|r| r.key).collect();
@@ -1089,5 +1157,82 @@ mod tests {
         text.at = 1_001;
         let model = model(vec![thinking, text]);
         assert_eq!(model.thought_for(0), None);
+    }
+
+    #[test]
+    fn a_groups_open_state_is_its_own() {
+        let mut items = vec![
+            item(1, Kind::User, "main", "go"),
+            item(2, Kind::Thinking, "main", "first, read"),
+        ];
+        items.extend((3..7).map(|id| item(id, Kind::Call, "main", "read a.rs")));
+        let model = model(items);
+        // The group open: its calls show, and its first entry (a thinking)
+        // stays folded.
+        let open = Layout {
+            group_open: &|id| (id == 2).then_some(true),
+            ..layout(View::Quiet)
+        };
+        let keys_of = |layout: &Layout| -> Vec<RowKey> {
+            rows(&model, layout).iter().map(|r| r.key).collect()
+        };
+        assert_eq!(
+            keys_of(&open),
+            [
+                RowKey::User(1),
+                RowKey::Group(2),
+                RowKey::Thinking(2),
+                RowKey::Call(3),
+                RowKey::Call(4),
+                RowKey::Call(5),
+                RowKey::Call(6),
+            ]
+        );
+        // The thinking folded by the reader leaves the group open.
+        let folded_thinking = Layout {
+            expanded: &|id| (id == 2).then_some(false),
+            ..open
+        };
+        assert_eq!(keys_of(&folded_thinking).len(), 7);
+        // A call the reader opened keeps the group open as the run grows.
+        let call_open = Layout {
+            expanded: &|id| (id == 5).then_some(true),
+            ..layout(View::Quiet)
+        };
+        assert!(keys_of(&call_open).contains(&RowKey::Call(5)));
+        // And the reader can still fold the group.
+        let folded = Layout {
+            group_open: &|id| (id == 2).then_some(false),
+            ..call_open
+        };
+        assert_eq!(keys_of(&folded), [RowKey::User(1), RowKey::Group(2)]);
+    }
+
+    #[test]
+    fn rows_change_in_runs_and_the_rest_stay() {
+        let row = |key| Row {
+            key,
+            gap: Gap::None,
+        };
+        let old = [
+            row(RowKey::User(1)),
+            row(RowKey::Call(2)),
+            row(RowKey::Call(3)),
+            row(RowKey::User(4)),
+            row(RowKey::Call(5)),
+            row(RowKey::User(6)),
+        ];
+        let new = [
+            row(RowKey::User(1)),
+            row(RowKey::Group(2)),
+            row(RowKey::User(4)),
+            row(RowKey::Call(5)),
+            row(RowKey::Thinking(5)),
+            row(RowKey::User(6)),
+            row(RowKey::User(7)),
+        ];
+        let (changes, kept) = row_changes(&old, &new);
+        assert_eq!(changes, [(1..3, 1), (5..5, 1), (6..6, 1)]);
+        assert_eq!(kept, [(0, 0), (3, 2), (4, 3), (5, 5)]);
     }
 }

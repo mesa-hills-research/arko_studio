@@ -808,7 +808,7 @@ impl TranscriptView {
             .iter()
             .filter(|item| item.status == Some(CallStatus::Failed))
             .count();
-        let open = self.ui.get(&id).and_then(|ui| ui.expanded).unwrap_or(false);
+        let open = self.group_open(id);
         let view = view.downgrade();
         Button::new(("group-toggle", id))
             .ghost()
@@ -858,7 +858,7 @@ impl TranscriptView {
                     }),
             )
             .on_click(move |_, _, cx| {
-                view.update(cx, |this, cx| this.toggle(id, false, cx)).ok();
+                view.update(cx, |this, cx| this.toggle_group(id, cx)).ok();
             })
             .into_any_element()
     }

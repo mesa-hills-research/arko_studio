@@ -3,9 +3,9 @@
 //!
 //! A [`TranscriptView`] subscribes to the session's [`Feed`] itself. The
 //! updates are drained off the UI thread into an inbox and applied once per
-//! frame, when the view draws ([`inbox`]). The rows live in GPUI Kit's
-//! `MessageScroller`, a virtualized list that follows the latest row while
-//! the reader is at the bottom and keeps the reader's place otherwise. An
+//! frame, when the view draws ([`inbox`]). The rows live in a virtualized
+//! list that follows the latest row while the reader is at the bottom and
+//! keeps the reader's place otherwise ([`list`]). An
 //! assistant's text is one Markdown document per entry, shown as one row per
 //! top-level block, so a long answer only lays out the blocks on screen and
 //! a finished block is never parsed again.
@@ -14,6 +14,7 @@
 //! (a keystroke in the composer) doesn't draw it again.
 
 mod inbox;
+mod list;
 mod model;
 mod row;
 #[cfg(test)]
@@ -34,9 +35,7 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::diff_view::DiffViewState;
 use gpui_kit::component::image_viewer::ImageViewerItem;
 use gpui_kit::component::input;
-use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::text::{TextBlockContent, TextBlockId, TextViewState};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::prefs;
@@ -80,6 +79,9 @@ struct Settings {
     render_markdown: bool,
     stream_fade: bool,
     expand_thinking: bool,
+    /// The fonts, their sizes and the zoom, which every row's height
+    /// depends on.
+    fonts: u64,
 }
 
 impl Settings {
@@ -89,6 +91,17 @@ impl Settings {
             render_markdown: prefs.appearance.render_markdown,
             stream_fade: prefs.appearance.stream_fade,
             expand_thinking: prefs.appearance.expand_thinking,
+            fonts: {
+                use std::hash::{Hash as _, Hasher as _};
+                let appearance = &prefs.appearance;
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                appearance.ui_font.family.hash(&mut hasher);
+                appearance.ui_font.size().to_bits().hash(&mut hasher);
+                appearance.code_font.family.hash(&mut hasher);
+                appearance.code_font.size().to_bits().hash(&mut hasher);
+                appearance.zoom().to_bits().hash(&mut hasher);
+                hasher.finish()
+            },
         }
     }
 }
@@ -120,9 +133,12 @@ struct Block {
 #[derive(Default)]
 struct EntryUi {
     doc: Option<Doc>,
-    /// A call's details, a thinking's text or a group of calls, opened or
-    /// closed by the reader. `None` follows the defaults.
+    /// A call's details or a thinking's text, opened or closed by the
+    /// reader. `None` follows the defaults.
     expanded: Option<bool>,
+    /// The group of calls this entry starts (Quiet), opened or closed by the
+    /// reader, apart from the entry's own details.
+    group_open: Option<bool>,
     /// The text shows as its Markdown source ("View Source").
     source: bool,
     /// Code blocks shown whole, by block index.
@@ -143,7 +159,7 @@ pub struct TranscriptView {
     inbox: inbox::Inbox,
     ui: HashMap<u64, EntryUi>,
     rows: Vec<Row>,
-    scroller: Entity<MessageScrollerState>,
+    list: list::RowList,
     focus_handle: FocusHandle,
     settings: Settings,
     /// The reply whose hover actions show.
@@ -188,6 +204,11 @@ impl TranscriptView {
                 let rows_change = settings.view != this.settings.view
                     || settings.render_markdown != this.settings.render_markdown
                     || settings.expand_thinking != this.settings.expand_thinking;
+                // Rows off screen keep their heights until they're drawn,
+                // which a font's change makes wrong.
+                if settings.fonts != this.settings.fonts {
+                    this.list.remeasure();
+                }
                 this.settings = settings;
                 if rows_change {
                     this.refresh_rows(cx);
@@ -200,7 +221,7 @@ impl TranscriptView {
             inbox,
             ui: HashMap::new(),
             rows: Vec::new(),
-            scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
+            list: list::RowList::new(),
             focus_handle: cx.focus_handle(),
             settings,
             hovered: None,
@@ -235,13 +256,13 @@ impl TranscriptView {
 
     /// Scrolls to the latest row and follows the rows from there.
     pub fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
-        self.scroller
-            .update(cx, |scroller, cx| scroller.scroll_to_end(cx));
+        self.list.scroll_to_end();
+        cx.notify();
     }
 
     /// Whether the transcript follows the latest row.
-    pub fn is_following(&self, cx: &App) -> bool {
-        !self.scroller.read(cx).is_scrolled_up()
+    pub fn is_following(&self, _: &App) -> bool {
+        !self.list.is_scrolled_up()
     }
 
     /// The number of rows (for tests and diagnostics).
@@ -334,8 +355,7 @@ impl TranscriptView {
             }
             self.loaded_from = ids.get(start).copied().filter(|_| start > 0);
             self.rows.clear();
-            self.scroller
-                .update(cx, |scroller, cx| scroller.reset(0, cx));
+            self.list.reset(0);
             self.new_while_away = 0;
         } else {
             for id in &changes.removed {
@@ -346,17 +366,6 @@ impl TranscriptView {
             }
             for id in changes.text.iter().chain(&changes.changed) {
                 self.sync_text(*id, cx);
-            }
-            if self.scroller.read(cx).is_scrolled_up() {
-                self.new_while_away += changes
-                    .added
-                    .iter()
-                    .filter(|id| {
-                        self.model
-                            .entry(**id)
-                            .is_some_and(|e| e.item.kind != Kind::Thinking)
-                    })
-                    .count();
             }
         }
         self.refresh_rows(cx);
@@ -518,9 +527,11 @@ impl TranscriptView {
         )
     }
 
-    /// Rebuilds the rows from the model, and tells the list what changed:
-    /// rows kept at the start and the end keep their place and height.
-    fn refresh_rows(&mut self, cx: &mut Context<Self>) {
+    /// Rebuilds the rows from the model, and tells the list what changed.
+    /// Rows in both keep their place and measured height, so the reader's
+    /// row stays where it is. Where it went (folded into a group, shown as
+    /// source), the row that took its entry's place does.
+    fn refresh_rows(&mut self, _: &mut Context<Self>) {
         let render_markdown = self.settings.render_markdown;
         let ui = &self.ui;
         let blocks = |id: u64| {
@@ -529,6 +540,7 @@ impl TranscriptView {
                 .map_or((0, 0), |doc| (doc.blocks.len(), doc.generation))
         };
         let expanded = |id: u64| ui.get(&id).and_then(|ui| ui.expanded);
+        let group_open = |id: u64| ui.get(&id).and_then(|ui| ui.group_open);
         let source = |id: u64| !render_markdown || ui.get(&id).is_some_and(|ui| ui.source);
         let rows = model::rows(
             &self.model,
@@ -537,49 +549,81 @@ impl TranscriptView {
                 expand_thinking: self.settings.expand_thinking,
                 blocks: &blocks,
                 expanded: &expanded,
+                group_open: &group_open,
                 source: &source,
                 first: self.loaded_from,
             },
         );
-        let old = &self.rows;
-        let prefix = old
-            .iter()
-            .zip(&rows)
-            .take_while(|(old, new)| old.key == new.key)
-            .count();
-        let suffix = old[prefix..]
-            .iter()
-            .rev()
-            .zip(rows[prefix..].iter().rev())
-            .take_while(|(old, new)| old.key == new.key)
-            .count();
-        let removed = old.len() - prefix - suffix;
-        let added = rows.len() - prefix - suffix;
+        // The reader's place, unless they follow the latest row.
+        let scrolled_up = self.list.is_scrolled_up();
+        let anchor = (!self.list.is_following())
+            .then(|| {
+                let top = self.list.top();
+                self.rows
+                    .get(top.item_ix)
+                    .map(|row| (row.key, top.offset_in_item))
+            })
+            .flatten();
+        let old = std::mem::take(&mut self.rows);
+        let (changes, kept) = model::row_changes(&old, &rows);
+        for (range, count) in changes.iter().rev() {
+            self.list.splice(range.clone(), *count);
+        }
         // Rows kept whose space above changed.
-        let regapped: Vec<usize> = old
-            .iter()
-            .zip(&rows)
-            .enumerate()
-            .take(prefix)
-            .filter(|(_, (old, new))| old.gap != new.gap)
-            .map(|(ix, _)| ix)
-            .collect();
+        for &(old_ix, new_ix) in &kept {
+            if old[old_ix].gap != rows[new_ix].gap {
+                self.list.remeasure_row(new_ix);
+            }
+        }
+        // What came after the last row while the reader was away.
+        if scrolled_up
+            && let Some((range, count)) = changes.last()
+            && range.start == old.len()
+            && !old.is_empty()
+        {
+            let mut entries: Vec<u64> = rows[rows.len() - count..]
+                .iter()
+                .map(|row| row.key.entry())
+                .collect();
+            entries.dedup();
+            self.new_while_away += entries.len();
+        }
         self.rows = rows;
-        self.scroller.update(cx, |scroller, cx| {
-            if removed > 0 || added > 0 {
-                scroller.splice(prefix..prefix + removed, added, cx);
-            }
-            for ix in regapped {
-                scroller.remeasure_items(ix..ix + 1, cx);
-            }
-        });
+        if let Some((key, offset)) = anchor
+            && let Some((ix, offset)) = self.place_of(key, offset)
+        {
+            self.list.scroll_to(ix, offset);
+        }
         if let Some(key) = self.scroll_to
             && let Some(ix) = self.rows.iter().position(|row| row.key == key)
         {
             self.scroll_to = None;
-            self.scroller
-                .update(cx, |scroller, cx| scroller.scroll_to_item(ix, cx));
+            self.list.scroll_to(ix, px(0.));
         }
+    }
+
+    /// Where the row `key` is now, `offset` into it: the row itself, the
+    /// same block of its text shown another way, or else the row that
+    /// stands for its entry now (a group of calls), from its top.
+    fn place_of(&self, key: RowKey, offset: Pixels) -> Option<(usize, Pixels)> {
+        if let Some(ix) = self.rows.iter().position(|row| row.key == key) {
+            return Some((ix, offset));
+        }
+        if let RowKey::Block { id, block, .. } = key
+            && let Some(ix) = self.rows.iter().position(|row| {
+                matches!(row.key, RowKey::Block { id: row_id, block: row_block, .. }
+                    if row_id == id && row_block == block)
+            })
+        {
+            return Some((ix, offset));
+        }
+        let entry = key.entry();
+        let ix = self
+            .rows
+            .iter()
+            .rposition(|row| row.key.entry() <= entry)
+            .unwrap_or(0);
+        (!self.rows.is_empty()).then_some((ix, px(0.)))
     }
 
     /// Draws every second while something shows a running time.
@@ -640,20 +684,61 @@ impl TranscriptView {
             })
             .flatten()
             .map(|diff| cx.new(|cx| DiffViewState::new(diff, cx)));
+        let row = self.rows.iter().position(
+            |row| matches!(row.key, RowKey::Call(entry) | RowKey::Thinking(entry) if entry == id),
+        );
+        if let Some(ix) = row {
+            self.list.hold_place(ix);
+        }
         let ui = self.ui.entry(id).or_default();
         ui.expanded = Some(!ui.expanded.unwrap_or(open_by_default));
         if diff.is_some() {
             ui.diff = diff;
         }
-        if let Some(ix) = self.row_of(id) {
-            self.scroller
-                .update(cx, |scroller, cx| scroller.remeasure_items(ix..ix + 1, cx));
+        if let Some(ix) = row {
+            self.list.remeasure_row(ix);
         }
         self.refresh_rows(cx);
         cx.notify();
     }
 
+    /// Whether the Quiet group of calls that starts with the entry `first`
+    /// shows its calls: as the reader chose, else when the reader opened one
+    /// of them (a run that folds as it grows keeps that call in sight).
+    fn group_open(&self, first: u64) -> bool {
+        if let Some(open) = self.ui.get(&first).and_then(|ui| ui.group_open) {
+            return open;
+        }
+        let entries = self.model.entries();
+        model::run_of(&self.model, first, self.settings.view)
+            .iter()
+            .any(|ix| {
+                self.ui
+                    .get(&entries[*ix].item.id)
+                    .and_then(|ui| ui.expanded)
+                    == Some(true)
+            })
+    }
+
+    /// Opens or closes a Quiet group of calls.
+    fn toggle_group(&mut self, first: u64, cx: &mut Context<Self>) {
+        let open = self.group_open(first);
+        if let Some(ix) = self
+            .rows
+            .iter()
+            .position(|row| row.key == RowKey::Group(first))
+        {
+            self.list.hold_place(ix);
+        }
+        self.ui.entry(first).or_default().group_open = Some(!open);
+        self.refresh_rows(cx);
+        cx.notify();
+    }
+
     fn toggle_source(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(ix) = self.row_of(id) {
+            self.list.hold_place(ix);
+        }
         let ui = self.ui.entry(id).or_default();
         ui.source = !ui.source;
         self.refresh_rows(cx);
@@ -669,8 +754,8 @@ impl TranscriptView {
             matches!(row.key, RowKey::Block { id: row_id, block: row_block, .. }
                 if row_id == id && row_block == block)
         }) {
-            self.scroller
-                .update(cx, |scroller, cx| scroller.remeasure_items(ix..ix + 1, cx));
+            self.list.hold_place(ix);
+            self.list.remeasure_row(ix);
         }
         cx.notify();
     }
@@ -699,21 +784,7 @@ impl TranscriptView {
 
     /// The row an entry's first row is at.
     fn row_of(&self, id: u64) -> Option<usize> {
-        self.rows.iter().position(|row| match row.key {
-            RowKey::Separator(row)
-            | RowKey::User(row)
-            | RowKey::Refresh(row)
-            | RowKey::Actions(row)
-            | RowKey::Thinking(row)
-            | RowKey::Call(row)
-            | RowKey::Group(row)
-            | RowKey::Count(row)
-            | RowKey::Notice(row)
-            | RowKey::Output(row)
-            | RowKey::Turn(row)
-            | RowKey::Worker(row) => row == id,
-            RowKey::Block { id: row, .. } => row == id,
-        })
+        self.rows.iter().position(|row| row.key.entry() == id)
     }
 
     /// Copies what is selected in the transcript (Mod+C).
@@ -823,12 +894,19 @@ impl Render for TranscriptView {
             // The rows of older entries go above the reader: nothing moves.
             window.request_animation_frame();
         }
-        let scrolled_up = self.scroller.read(cx).is_scrolled_up();
-        if !scrolled_up {
+        if !self.list.is_scrolled_up() {
             self.new_while_away = 0;
         }
         let new = self.new_while_away;
         let view = cx.entity().downgrade();
+        let rows = list::render(
+            "transcript-rows",
+            &self.list,
+            new,
+            move |ix, window, cx| row::render(&view, ix, window, cx),
+            window,
+            cx,
+        );
         image_cache(self.image_cache.clone()).size_full().child(
             div()
                 .id("transcript")
@@ -844,21 +922,7 @@ impl Render for TranscriptView {
                         }
                     }),
                 )
-                .child(
-                    MessageScroller::new(
-                        "transcript-rows",
-                        self.scroller.clone(),
-                        move |ix, window, cx| row::render(&view, ix, window, cx),
-                    )
-                    .with_row_style(StyleRefinement::default().px_0().pb_0())
-                    .with_jump_button_label("Jump to latest")
-                    .when(new > 0, |scroller| {
-                        scroller.with_jump_button_renderer(move |button| {
-                            button.label(format!("{new} new"))
-                        })
-                    })
-                    .size_full(),
-                ),
+                .child(rows),
         )
     }
 }

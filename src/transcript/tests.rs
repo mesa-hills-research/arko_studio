@@ -323,6 +323,14 @@ fn finished_blocks_keep_their_rows_while_text_streams_and_ends(cx: &mut TestAppC
     assert_eq!(keys(&view, cx), expected);
 }
 
+/// Scrolls so that the row at `ix` is at the top, as the reader would.
+fn scroll_to_row(cx: &mut TestAppContext, view: &Entity<TranscriptView>, ix: usize) {
+    view.update(cx, |view, cx| {
+        view.list.scroll_to(ix, px(0.));
+        cx.notify();
+    });
+}
+
 /// Where the row `key` is drawn, if it is.
 fn row_top(cx: &mut TestAppContext, window: AnyWindowHandle, key: RowKey) -> Option<f32> {
     cx.update_window(window, |_, window, _| {
@@ -352,10 +360,7 @@ fn the_view_follows_the_bottom_until_the_reader_scrolls_up(cx: &mut TestAppConte
     assert!(cx.read(|cx| view.read(cx).is_following(cx)));
     assert!(row_top(cx, window, user(&feed, 40)).is_some());
     // The reader scrolls up: new rows don't move what they read.
-    let scroller = cx.read(|cx| view.read(cx).scroller.clone());
-    scroller.update(cx, |scroller, cx| {
-        scroller.scroll_to_item(5, cx);
-    });
+    scroll_to_row(cx, &view, 5);
     settle(cx, window);
     assert!(!cx.read(|cx| view.read(cx).is_following(cx)));
     let reading = user(&feed, 6);
@@ -373,6 +378,249 @@ fn the_view_follows_the_bottom_until_the_reader_scrolls_up(cx: &mut TestAppConte
     assert!(cx.read(|cx| view.read(cx).is_following(cx)));
     assert_eq!(cx.read(|cx| view.read(cx).new_while_away), 0);
     assert!(row_top(cx, window, user(&feed, 43)).is_some());
+}
+
+/// `count` turns of a user message, `calls` file reads, a two-paragraph
+/// reply and a footer.
+fn turns(feed: &Feed, count: usize, calls: usize) {
+    for turn in 0..count {
+        feed.user(&format!("Question {turn}"), Source::App, Delivery::Turn);
+        feed.turn_started();
+        for file in 0..calls {
+            let id = call(
+                feed,
+                "main",
+                "read_file",
+                &[("path", format!("src/f{turn}_{file}.rs").into())],
+            );
+            result(feed, "main", id, "read_file", "1 | fn a() {}\n");
+        }
+        feed.reply(&format!(
+            "Answer {turn}, first paragraph.\n\nAnswer {turn}, **second** paragraph."
+        ));
+        feed.turn_ended("3 s · $0.01", None);
+    }
+}
+
+/// The row of the user's message of turn `turn`.
+fn user_row(feed: &Feed, turn: usize) -> RowKey {
+    let users: Vec<u64> = item_ids(feed)
+        .into_iter()
+        .filter(|(_, kind)| *kind == Kind::User)
+        .map(|(id, _)| id)
+        .collect();
+    RowKey::User(users[turn])
+}
+
+/// Draws until every entry is ready to show.
+fn load_all(cx: &mut TestAppContext, window: AnyWindowHandle, view: &Entity<TranscriptView>) {
+    for _ in 0..40 {
+        settle(cx, window);
+        if cx.read(|cx| view.read(cx).loaded_from.is_none()) {
+            return;
+        }
+    }
+}
+
+/// Scrolls so that the row `key` is at the top, and returns its top.
+fn scroll_to_key(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    view: &Entity<TranscriptView>,
+    key: RowKey,
+) -> f32 {
+    let ix = keys(view, cx).iter().position(|row| *row == key).unwrap();
+    scroll_to_row(cx, view, ix);
+    settle(cx, window);
+    row_top(cx, window, key).expect("scrolled to it")
+}
+
+/// Changes the preferences while the reader reads turn 30, and checks
+/// that turn 30 stays where it was.
+fn change_while_reading(cx: &mut TestAppContext, change: impl Fn(&mut prefs::Prefs)) {
+    start(cx);
+    let feed = Feed::new("main");
+    turns(&feed, 60, 4);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    load_all(cx, window, &view);
+    let reading = user_row(&feed, 30);
+    let top = scroll_to_key(cx, window, &view, reading);
+    cx.update(|cx| prefs::update(cx, &change));
+    settle(cx, window);
+    assert_eq!(row_top(cx, window, reading), Some(top));
+    assert!(!cx.read(|cx| view.read(cx).is_following(cx)));
+}
+
+#[gpui_kit::test]
+fn changing_the_view_while_scrolled_up_keeps_the_reader_at_their_turn(cx: &mut TestAppContext) {
+    change_while_reading(cx, |prefs| prefs.view = View::Quiet);
+}
+
+#[gpui_kit::test]
+fn the_messages_view_keeps_the_reader_at_their_turn(cx: &mut TestAppContext) {
+    change_while_reading(cx, |prefs| prefs.view = View::Messages);
+}
+
+#[gpui_kit::test]
+fn turning_markdown_off_while_scrolled_up_keeps_the_reader_in_place(cx: &mut TestAppContext) {
+    change_while_reading(cx, |prefs| prefs.appearance.render_markdown = false);
+}
+
+#[gpui_kit::test]
+fn the_source_of_a_long_reply_shows_where_the_reader_reads(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Explain", Source::App, Delivery::Turn);
+    let text: String = (0..30)
+        .map(|n| format!("Paragraph {n} of the answer, with **bold** words.\n\n"))
+        .collect();
+    feed.reply(&text);
+    // More below, so that the screen isn't the end of the transcript.
+    turns(&feed, 10, 0);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 300.);
+    let reply = item_ids(&feed)[1].0;
+    let block = |n: usize, source: bool| RowKey::Block {
+        id: reply,
+        generation: 0,
+        block: n,
+        source,
+    };
+    let top = scroll_to_key(cx, window, &view, block(25, false));
+    view.update(cx, |view, cx| view.toggle_source(reply, cx));
+    settle(cx, window);
+    assert_eq!(row_top(cx, window, block(25, true)), Some(top));
+}
+
+#[gpui_kit::test]
+fn a_live_quiet_run_keeps_the_call_the_reader_opened(cx: &mut TestAppContext) {
+    start(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Quiet));
+    let feed = Feed::new("main");
+    feed.user("Run the tests", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let output: String = (1..=60).map(|n| format!("line {n}\n")).collect();
+    for n in 0..3 {
+        let id = call(
+            &feed,
+            "main",
+            "shell",
+            &[("command", format!("cargo test -p c{n}").into())],
+        );
+        result(
+            &feed,
+            "main",
+            id,
+            "shell",
+            &format!("exit code 0, 1.0 s\n{output}"),
+        );
+    }
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    let calls: Vec<u64> = item_ids(&feed)
+        .into_iter()
+        .filter(|(_, kind)| *kind == Kind::Call)
+        .map(|(id, _)| id)
+        .collect();
+    let third = calls[2];
+    view.update(cx, |view, cx| view.toggle(third, false, cx));
+    settle(cx, window);
+    let top = scroll_to_key(cx, window, &view, RowKey::Call(third));
+    // A fourth call starts: the run folds into a group, which stays open
+    // on the call the reader reads.
+    call(&feed, "main", "shell", &[("command", "cargo build".into())]);
+    settle(cx, window);
+    let rows = keys(&view, cx);
+    assert!(rows.contains(&RowKey::Group(calls[0])), "{rows:?}");
+    assert_eq!(row_top(cx, window, RowKey::Call(third)), Some(top));
+}
+
+#[gpui_kit::test]
+fn opening_a_call_at_the_bottom_keeps_it_in_place(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    turns(&feed, 6, 1);
+    feed.user("Run it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let output: String = (1..=60).map(|n| format!("line {n}\n")).collect();
+    let id = call(&feed, "main", "shell", &[("command", "cargo test".into())]);
+    result(
+        &feed,
+        "main",
+        id,
+        "shell",
+        &format!("exit code 1, 1.0 s\n{output}"),
+    );
+    feed.notice(Level::Info, "Done.");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    let shell = item_ids(&feed)
+        .into_iter()
+        .rev()
+        .find(|(_, kind)| *kind == Kind::Call)
+        .unwrap()
+        .0;
+    assert!(cx.read(|cx| view.read(cx).is_following(cx)));
+    let before = row_top(cx, window, RowKey::Call(shell)).expect("on screen");
+    cx.update_window(window, |_, window, cx| {
+        window.click(("call-row", shell), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(row_top(cx, window, RowKey::Call(shell)), Some(before));
+    // Back at the bottom, the view follows again.
+    view.update(cx, |view, cx| view.scroll_to_end(cx));
+    settle(cx, window);
+    assert!(cx.read(|cx| view.read(cx).is_following(cx)));
+}
+
+#[gpui_kit::test]
+fn showing_all_of_a_code_block_at_the_bottom_keeps_its_top(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    turns(&feed, 6, 1);
+    let code: String = (1..=120).map(|n| format!("let x{n} = {n};\n")).collect();
+    feed.reply(&format!("Here:\n\n```rust\n{code}```"));
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let reply = item_ids(&feed).last().unwrap().0;
+    let key = RowKey::Block {
+        id: reply,
+        generation: 0,
+        block: 1,
+        source: false,
+    };
+    let before = row_top(cx, window, key).expect("on screen");
+    cx.update_window(window, |_, window, cx| {
+        window.click(SharedString::from(format!("show-all-{reply}-1")), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(row_top(cx, window, key), Some(before));
+    let _ = view;
+}
+
+#[gpui_kit::test]
+fn the_new_count_counts_what_the_view_shows(cx: &mut TestAppContext) {
+    start(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Messages));
+    let feed = Feed::new("main");
+    turns(&feed, 30, 1);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 300.);
+    load_all(cx, window, &view);
+    scroll_to_key(cx, window, &view, user_row(&feed, 10));
+    feed.user("Next", Source::App, Delivery::Turn);
+    feed.turn_started();
+    for n in 0..5 {
+        let id = call(
+            &feed,
+            "main",
+            "read_file",
+            &[("path", format!("x{n}").into())],
+        );
+        result(&feed, "main", id, "read_file", "1 | x\n");
+    }
+    think(&feed, "hmm");
+    feed.notice(Level::Info, "Handed over.");
+    settle(cx, window);
+    // The message and the one line counting the calls.
+    assert_eq!(cx.read(|cx| view.read(cx).new_while_away), 2);
 }
 
 #[gpui_kit::test]
