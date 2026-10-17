@@ -462,6 +462,8 @@ fn prepare(
 ) -> (arko::Options, Vec<String>) {
     let mut options = arko::Options {
         root: Some(root.to_path_buf()),
+        app: "arko-studio",
+        app_name: "Arko Studio",
         ..arko::Options::default()
     };
     match start {
@@ -752,6 +754,7 @@ impl FakeBackend {
         sessions[1].had_workers = true;
         sessions[2].holder = Some(Holder {
             app: "arko".into(),
+            name: None,
             pid: 4121,
             host: String::new(),
             since: chrono::DateTime::<chrono::Utc>::from(ago(60)),
@@ -857,6 +860,7 @@ impl Backend for FakeBackend {
                 return Err(BackendError::Locked {
                     holder: Some(Holder {
                         app: "arko-studio".into(),
+                        name: Some("Arko Studio".into()),
                         pid: std::process::id(),
                         host: String::new(),
                         since: chrono::Utc::now(),
@@ -1036,6 +1040,19 @@ impl FakeBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sessions_identify_the_app_by_its_name() {
+        let root = tempfile::tempdir().unwrap();
+        let options = ArkoBackend::new(root.path()).options(Start::New(NewSession {
+            mode: Mode::Chat,
+            folder: None,
+            model: None,
+            effort: None,
+        }));
+        assert_eq!(options.app, "arko-studio");
+        assert_eq!(options.app_name, "Arko Studio");
+    }
 
     #[test]
     fn the_last_model_comes_from_last_model_json() {

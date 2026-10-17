@@ -529,6 +529,7 @@ fn a_session_open_elsewhere_says_who_has_it(cx: &mut TestAppContext) {
         root: Some(root.clone()),
         session: arko::SessionChoice::Resume(id.0.clone()),
         app: "arko",
+        app_name: "Arko in a terminal",
         ..arko::Options::default()
     };
     (mock.configure())(&mut options);

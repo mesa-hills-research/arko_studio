@@ -106,6 +106,8 @@ pub fn create_session(root: &Path, workspace: &Path, message: &str) -> SessionId
     let mut options = arko::Options {
         root: Some(root.to_path_buf()),
         workspace: Some(workspace.to_path_buf()),
+        app: "arko-studio",
+        app_name: "Arko Studio",
         ..arko::Options::default()
     };
     (mock.configure())(&mut options);
