@@ -16,7 +16,6 @@ use std::ops::Range;
 use arko::remote::Kind;
 use gpui_kit::base::text::{RangeHighlight, RenderedText};
 use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::component::text::TextBlockContent;
 use gpui_kit::*;
 
 use super::model::{self, Entry, RowKey, Show};
@@ -178,6 +177,42 @@ fn lowercase(words: &str) -> String {
 #[cfg(test)]
 pub(crate) fn find_all(haystack: &str, needle: &str) -> Vec<Range<usize>> {
     Lowered::new(haystack).find(&lowercase(needle))
+}
+
+/// The bytes of the code of each fenced code block in `source` (a block of
+/// Markdown, which a list item or a quote may indent), without its fences.
+fn code_regions(source: &str) -> Vec<Range<usize>> {
+    let mut regions = Vec::new();
+    // The open fence: its character, its length, and where the code starts.
+    let mut open: Option<(char, usize, usize)> = None;
+    let mut at = 0;
+    for line in source.split_inclusive('\n') {
+        // A list item's or a quote's marks come before the fence.
+        let trimmed = line.trim_start_matches([' ', '\t', '>', '-', '*', '+', '.', ')']);
+        let trimmed = trimmed.trim_start_matches(|c: char| c.is_ascii_digit());
+        let trimmed = trimmed.trim_start_matches([' ', '.', ')']);
+        let fence = ['`', '~'].into_iter().find_map(|mark| {
+            let length = trimmed.chars().take_while(|c| *c == mark).count();
+            (length >= 3).then_some((mark, length))
+        });
+        match (open, fence) {
+            (None, Some((mark, length))) => open = Some((mark, length, at + line.len())),
+            (Some((mark, length, start)), Some((closing, closing_length)))
+                if closing == mark
+                    && closing_length >= length
+                    && trimmed[closing_length..].trim().is_empty() =>
+            {
+                regions.push(start..at);
+                open = None;
+            }
+            _ => {}
+        }
+        at += line.len();
+    }
+    if let Some((_, _, start)) = open {
+        regions.push(start..source.len());
+    }
+    regions
 }
 
 /// A match, by its place and its order there.
@@ -889,8 +924,10 @@ impl TranscriptView {
         needs
     }
 
-    /// Whether the long code block `block` hides `found`: it shows its
-    /// first [`CODE_LINES`] lines, and the match is past them.
+    /// Whether a long code block of block `block` hides `found`: the block
+    /// shows the first [`CODE_LINES`] lines of each of its code blocks (at
+    /// the top level, or in a list item or a quote), and the match is in
+    /// one, past them.
     fn hides_in_code(&self, found: &Match, block: usize, cx: &App) -> bool {
         let Some(doc) = self.ui.get(&found.entry).and_then(|ui| ui.doc.as_ref()) else {
             return false;
@@ -898,22 +935,31 @@ impl TranscriptView {
         let Some(row) = doc.blocks.get(block) else {
             return false;
         };
-        if !matches!(row.content, TextBlockContent::CodeBlock(_)) {
+        let Some(source) = row.range.clone() else {
+            return false;
+        };
+        if row.code_lines <= CODE_LINES {
             return false;
         }
         let rendered = doc.state.read(cx).rendered_text();
-        let Some(text) = row
-            .range
-            .clone()
-            .and_then(|range| rendered.range_for_source(range))
-            .and_then(|range| rendered.as_str().get(range))
+        let Some(start) = rendered
+            .range_for_source(source.clone())
+            .map(|range| range.start)
         else {
             return false;
         };
-        let line = text[..found.range.start.min(text.len())]
-            .matches('\n')
-            .count();
-        line >= CODE_LINES
+        let at = start + found.range.start;
+        let text = doc.text.get(source.clone()).unwrap_or_default();
+        code_regions(text).into_iter().any(|code| {
+            let code = source.start + code.start..source.start + code.end;
+            rendered.range_for_source(code).is_some_and(|code| {
+                code.contains(&at)
+                    && rendered
+                        .as_str()
+                        .get(code.start..at)
+                        .is_some_and(|before| before.matches('\n').count() >= CODE_LINES)
+            })
+        })
     }
 
     /// Opens `what`, if it isn't open. Returns what it opened.

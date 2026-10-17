@@ -236,6 +236,23 @@ fn the_messages_view_finds_only_what_it_shows(cx: &mut TestAppContext) {
 }
 
 #[test]
+fn code_regions_are_the_lines_between_fences_also_in_lists() {
+    use super::code_regions;
+    let top = "```rust\nfn a() {}\n```\n";
+    let regions = code_regions(top);
+    assert_eq!(regions.len(), 1);
+    assert_eq!(&top[regions[0].clone()], "fn a() {}\n");
+    let list = "1. Run this:\n\n   ```bash\n   echo a\n   echo b\n   ```\n\n2. Done.\n";
+    let regions = code_regions(list);
+    assert_eq!(regions.len(), 1);
+    assert_eq!(&list[regions[0].clone()], "   echo a\n   echo b\n");
+    // Not closed yet (it streams): to the end.
+    let open = "> ~~~\n> one\n";
+    assert_eq!(&open[code_regions(open)[0].clone()], "> one\n");
+    assert!(code_regions("Just words.\n").is_empty());
+}
+
+#[test]
 fn matches_ignore_case_and_index_the_text_as_it_is() {
     assert_eq!(find_all("Parse the parser", "parse"), [0..5, 10..15]);
     let one = |text: &str, words: &str| {
@@ -542,4 +559,34 @@ fn landing_scrolls_only_as_far_as_the_match(cx: &mut TestAppContext) {
     let top = top(cx, &view);
     assert_eq!(top.item_ix, row);
     assert!(top.offset_in_item > px(3000.), "{top:?}");
+}
+
+/// A long code block in a list item is capped like one at the top level:
+/// landing past its first lines shows it whole.
+#[gpui_kit::test]
+fn landing_in_a_long_code_block_in_a_list_shows_it_whole(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    feed.user("Steps?", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let mut text = String::from("1. Run this:\n\n   ```bash\n");
+    for line in 0..100 {
+        if line == 80 {
+            text.push_str("   echo needle\n");
+        } else {
+            text.push_str(&format!("   echo line {line}\n"));
+        }
+    }
+    text.push_str("   ```\n\n2. Done.\n");
+    say(&feed, &text);
+    feed.reply(&text);
+    feed.turn_ended("1 s", None);
+    let (window, view) = open_feed(cx, &feed, View::Full, 900.);
+    assert_eq!(find(cx, window, &view, "needle").total, 1);
+    let steps = entry(cx, &view, "Run this");
+    let uncapped = cx.read(|cx| view.read(cx).ui.get(&steps).unwrap().uncapped.len());
+    assert_eq!(uncapped, 1, "the list item's block shows whole");
+    // The find moves on: it shows the first lines again.
+    assert_eq!(find(cx, window, &view, "Done").total, 1);
+    let uncapped = cx.read(|cx| view.read(cx).ui.get(&steps).unwrap().uncapped.len());
+    assert_eq!(uncapped, 0);
 }
