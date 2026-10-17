@@ -342,6 +342,8 @@ impl TranscriptView {
                 this.settings = settings;
                 if rows_change {
                     this.refresh_rows(cx);
+                    // A find covers what the rows show now.
+                    this.find_changed_all(cx);
                 }
                 cx.notify();
             }
@@ -600,7 +602,17 @@ impl TranscriptView {
         }
         self.refresh_rows(cx);
         self.tick_while_running(cx);
-        self.find_changed(cx);
+        if changes.reset {
+            self.find_changed_all(cx);
+        } else {
+            let changed = changes
+                .added
+                .iter()
+                .chain(&changes.text)
+                .chain(&changes.changed)
+                .copied();
+            self.find_changed(&changes.removed, changed, cx);
+        }
         cx.notify();
     }
 
@@ -655,9 +667,10 @@ impl TranscriptView {
         let observe = cx.observe(&state, move |this, _, cx| {
             if this.sync_blocks(id, cx) {
                 this.refresh_rows(cx);
-                this.find_changed(cx);
                 cx.notify();
             }
+            // A parse brings the text a find searches as it renders.
+            this.find_changed(&[], [id], cx);
         });
         Doc {
             state,
@@ -1055,6 +1068,7 @@ impl TranscriptView {
         let ui = self.ui.entry(id).or_default();
         ui.source = !ui.source;
         self.refresh_rows(cx);
+        self.find_changed(&[], [id], cx);
         cx.notify();
     }
 

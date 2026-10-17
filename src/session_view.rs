@@ -936,6 +936,7 @@ impl SessionView {
         let has_words = !find.input.read(cx).value().trim().is_empty();
         let status = match (find.status.current, find.status.total) {
             _ if !has_words => String::new(),
+            _ if find.status.searching => "Searching…".to_string(),
             (_, 0) => "No matches".to_string(),
             (Some(current), total) => format!("{} of {total}", current + 1),
             (None, total) => format!("{total} found"),

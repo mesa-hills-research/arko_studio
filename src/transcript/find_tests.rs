@@ -294,7 +294,8 @@ fn mod_f_opens_the_find_bar_and_esc_gives_the_keyboard_back(cx: &mut TestAppCont
         status(cx),
         Some(FindStatus {
             current: Some(1),
-            total: 2
+            total: 2,
+            ..FindStatus::default()
         }),
         "the message and the reply, on the latest"
     );
@@ -394,4 +395,66 @@ fn the_find_leaves_the_reader_where_they_scrolled_while_text_streams(cx: &mut Te
         4,
         "the code's and three more"
     );
+}
+
+/// The view changes while the find bar is open: the find covers what the
+/// rows show now.
+#[gpui_kit::test]
+fn a_view_change_finds_again_in_what_the_rows_show(cx: &mut TestAppContext) {
+    let (window, view) = open(cx, View::Full);
+    assert_eq!(find(cx, window, &view, "streaming.md").total, 1);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Messages));
+    settle(cx, window);
+    let status = cx.read(|cx| view.read(cx).find_status());
+    assert_eq!(status.total, 0, "the Messages view shows no calls");
+    assert_eq!(next(cx, window, &view, true).current, None);
+}
+
+/// A long transcript's first search lowercases its texts off the UI
+/// thread: the bar says it searches, and the count comes once they're
+/// ready.
+#[gpui_kit::test]
+fn a_long_transcripts_first_search_runs_off_the_ui_thread(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    let line = "The parser reads the tokens and the lexer hands them over.\n";
+    for _ in 0..40 {
+        feed.user(&line.repeat(150), Source::App, Delivery::Note);
+    }
+    let (window, view) = open_feed(cx, &feed, View::Full, 900.);
+    let status = view.update(cx, |view, cx| view.find("lexer", cx));
+    assert!(status.searching);
+    assert_eq!(status.total, 0);
+    settle(cx, window);
+    let status = cx.read(|cx| view.read(cx).find_status());
+    assert!(!status.searching);
+    assert_eq!(status.total, 40 * 150);
+    assert_eq!(status.current, Some(40 * 150 - 1), "on the latest");
+    // Words that grow search what matched, at once.
+    let status = find(cx, window, &view, "lexer hands");
+    assert_eq!(status.total, 40 * 150);
+}
+
+/// Words that stream in are found as they come, in the frame that brings
+/// them.
+#[gpui_kit::test]
+fn streamed_words_are_found_as_they_come(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    feed.user("A needle please.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    say(&feed, "First a needle. ");
+    let (window, view) = open_feed(cx, &feed, View::Full, 900.);
+    assert_eq!(find(cx, window, &view, "needle").total, 2);
+    for n in 0..3 {
+        say(&feed, &format!("Then needle {n}. "));
+        settle(cx, window);
+        let status = cx.read(|cx| view.read(cx).find_status());
+        assert_eq!(status.total, 3 + n, "with no wait");
+        assert_eq!(status.current, Some(1), "where it was");
+    }
+    // A word split across two pieces.
+    say(&feed, "Split nee");
+    settle(cx, window);
+    say(&feed, "dle here.");
+    settle(cx, window);
+    assert_eq!(cx.read(|cx| view.read(cx).find_status()).total, 6);
 }

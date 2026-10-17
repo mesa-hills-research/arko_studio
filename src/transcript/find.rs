@@ -2,12 +2,18 @@
 //! rows show, collapsed rows included, highlighted, and moving between
 //! them. Landing on a match opens what hides it: a thinking, a call's
 //! details, a group of calls, a long code block.
+//!
+//! The find keeps each entry's matches apart, and each entry's texts
+//! lowercased for as long as it goes on. A change of the transcript
+//! searches only the entries it changed, as it comes, and words that grow
+//! search only the entries that matched the shorter ones. The texts of a
+//! long transcript are lowercased off the UI thread the first time.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 
 use arko::remote::Kind;
-use gpui_kit::base::text::RangeHighlight;
+use gpui_kit::base::text::{RangeHighlight, RenderedText};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::text::TextBlockContent;
 use gpui_kit::*;
@@ -16,7 +22,11 @@ use super::model::{self, Entry, RowKey, Show};
 use super::{CODE_LINES, TranscriptEvent, TranscriptView, row};
 use crate::prefs::TranscriptView as View;
 
-/// Where in an entry a match is.
+/// The bytes of text above which the first search of a find lowercases
+/// the transcript's texts off the UI thread.
+const LOWERCASE_IN_BACKGROUND: usize = 256 * 1024;
+
+/// Where in an entry a match is, in the order the entry shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum Place {
     /// The entry's plain text: a message of the user's, a notice, an
@@ -30,6 +40,8 @@ pub(crate) enum Place {
     Parameters,
     /// A call's output, as its details show them.
     Output,
+    /// An entry's Markdown before its rows are ready: its source.
+    Unready,
 }
 
 /// One match.
@@ -49,59 +61,318 @@ pub struct FindStatus {
     /// The match shown, from 0.
     pub current: Option<usize>,
     pub total: usize,
+    /// The texts are being made ready to search: the count comes then.
+    pub searching: bool,
+}
+
+/// A text lowercased to find words in, and how to map its bytes back.
+pub(crate) struct Lowered {
+    lower: String,
+    /// For each byte of `lower`, the bytes of the character of the text it
+    /// comes from: only when lowercasing moved them (a rare character whose
+    /// lowercase is longer or shorter).
+    origin: Option<Vec<(usize, usize)>>,
+}
+
+impl Lowered {
+    pub fn new(text: &str) -> Self {
+        if text.is_ascii() {
+            return Self {
+                lower: text.to_ascii_lowercase(),
+                origin: None,
+            };
+        }
+        let mut lower = String::with_capacity(text.len());
+        let mut origin = Vec::new();
+        let mut moved = false;
+        for (at, character) in text.char_indices() {
+            let start = lower.len();
+            let mut count = 0;
+            for lowered in character.to_lowercase() {
+                lower.push(lowered);
+                count += 1;
+            }
+            let end = at + character.len_utf8();
+            moved |= start != at || lower.len() != end || count != 1;
+            origin.extend(std::iter::repeat_n((at, end), lower.len() - start));
+        }
+        Self {
+            lower,
+            origin: moved.then_some(origin),
+        }
+    }
+
+    /// Every place the lowercase `needle` is, as byte ranges of the text,
+    /// one after another.
+    pub fn find(&self, needle: &str) -> Vec<Range<usize>> {
+        let mut found = Vec::new();
+        if needle.is_empty() {
+            return found;
+        }
+        let mut from = 0;
+        while let Some(position) = self.lower[from..].find(needle) {
+            let start = from + position;
+            let end = start + needle.len();
+            found.push(match &self.origin {
+                None => start..end,
+                Some(origin) => origin[start].0..origin[end - 1].1,
+            });
+            from = end;
+        }
+        found
+    }
+}
+
+/// An entry's texts, as gathered on the UI thread. A Markdown entry's
+/// rendered blocks are read out of its rendered text later, off the UI
+/// thread for a long transcript's first search.
+enum Gathered {
+    Texts(Vec<(Place, String)>),
+    Rendered {
+        text: RenderedText,
+        /// Each block's source bytes.
+        blocks: Vec<(usize, Range<usize>)>,
+    },
+}
+
+impl Gathered {
+    /// About how many bytes it holds.
+    fn size(&self) -> usize {
+        match self {
+            Self::Texts(texts) => texts.iter().map(|(_, text)| text.len()).sum(),
+            Self::Rendered { blocks, .. } => blocks.iter().map(|(_, range)| range.len()).sum(),
+        }
+    }
+
+    fn lowered(self) -> Vec<(Place, Lowered)> {
+        match self {
+            Self::Texts(texts) => texts
+                .into_iter()
+                .map(|(place, text)| (place, Lowered::new(&text)))
+                .collect(),
+            Self::Rendered { text, blocks } => blocks
+                .into_iter()
+                .filter_map(|(block, source)| {
+                    let range = text.range_for_source(source)?;
+                    let block_text = text.as_str().get(range)?;
+                    Some((Place::Block(block), Lowered::new(block_text)))
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The first lines of a call's text, as its details show them.
+pub(crate) fn shown_lines(text: &str) -> String {
+    row::preview(text).0
+}
+
+/// `words` lowercased, as the texts are.
+fn lowercase(words: &str) -> String {
+    words.chars().flat_map(char::to_lowercase).collect()
+}
+
+/// Every place `needle` is in `haystack`, ignoring case, as byte ranges of
+/// `haystack`, one after another.
+#[cfg(test)]
+pub(crate) fn find_all(haystack: &str, needle: &str) -> Vec<Range<usize>> {
+    Lowered::new(haystack).find(&lowercase(needle))
+}
+
+/// A match, by its place and its order there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Key {
+    entry: u64,
+    place: Place,
+    ordinal: usize,
+}
+
+/// An entry's matches: each place's, in order.
+#[derive(Default)]
+struct Found {
+    places: Vec<(Place, Vec<Range<usize>>)>,
+    count: usize,
 }
 
 /// A find going on.
 #[derive(Default)]
 pub(crate) struct Find {
     pub query: String,
-    pub matches: Vec<Match>,
-    /// The matches of each place, by their index in `matches`.
-    pub places: HashMap<(u64, Place), Vec<usize>>,
-    pub current: Option<usize>,
+    /// The words lowercased.
+    needle: String,
+    /// The entries with matches, in the transcript's order (their ids).
+    found: BTreeMap<u64, Found>,
+    total: usize,
+    /// Each entry's texts, lowercased: kept while the find goes on, and
+    /// made again when the entry changes.
+    texts: HashMap<u64, Vec<(Place, Lowered)>>,
+    current: Option<Key>,
     /// The Markdown blocks whose views show highlights now.
     pub highlighted: HashSet<(u64, usize)>,
-    /// The transcript changed since the search: it runs again.
-    pub stale: bool,
+    /// Entries whose matches changed since the views were painted.
+    touched: HashSet<u64>,
     /// The block whose view shows the current match when it draws next:
     /// set as the find lands, never as it searches again.
-    pub reveal: Option<(u64, usize)>,
-    pub _again: Option<Task<()>>,
+    reveal: Option<(u64, usize)>,
+    /// The entry the find lands on once its rows are ready, and which of
+    /// its matches.
+    pending: Option<(u64, usize)>,
+    /// Lowercases the texts off the UI thread (a long transcript's first
+    /// search).
+    lowering: Option<Task<()>>,
+    /// Entries that changed while their texts were lowercased off the UI
+    /// thread: theirs are made again.
+    changed_meanwhile: HashSet<u64>,
 }
 
-/// Every place `needle` is in `haystack`, ignoring case, as byte ranges of
-/// `haystack`, one after another.
-pub(crate) fn find_all(haystack: &str, needle: &str) -> Vec<Range<usize>> {
-    let needle: String = needle.chars().flat_map(char::to_lowercase).collect();
-    if needle.is_empty() {
-        return Vec::new();
-    }
-    // The lowercase text, and for each of its bytes the start of the
-    // character of `haystack` it comes from.
-    let mut lower = String::with_capacity(haystack.len());
-    let mut origin = Vec::with_capacity(haystack.len());
-    for (at, character) in haystack.char_indices() {
-        for lowered in character.to_lowercase() {
-            let start = lower.len();
-            lower.push(lowered);
-            origin.extend(std::iter::repeat_n(at, lower.len() - start));
+impl Find {
+    /// Drops the entry's matches.
+    fn forget(&mut self, entry: u64) {
+        if let Some(found) = self.found.remove(&entry) {
+            self.total -= found.count;
+            self.touched.insert(entry);
         }
     }
-    let end_of = |at: usize| at + haystack[at..].chars().next().map_or(0, char::len_utf8);
-    let mut found = Vec::new();
-    let mut from = 0;
-    while let Some(position) = lower[from..].find(&needle) {
-        let start = from + position;
-        let end = start + needle.len();
-        found.push(origin[start]..end_of(origin[end - 1]));
-        from = end;
-    }
-    found
-}
 
-/// The first lines of a call's text, as its details show them.
-pub(crate) fn shown_lines(text: &str) -> String {
-    row::preview(text).0
+    /// Searches the entry's texts kept.
+    fn search_kept(&mut self, entry: u64) {
+        self.forget(entry);
+        let Some(texts) = self.texts.get(&entry) else {
+            return;
+        };
+        let mut found = Found::default();
+        for (place, text) in texts {
+            let ranges = text.find(&self.needle);
+            if !ranges.is_empty() {
+                found.count += ranges.len();
+                found.places.push((*place, ranges));
+            }
+        }
+        if found.count > 0 {
+            self.total += found.count;
+            self.found.insert(entry, found);
+            self.touched.insert(entry);
+        }
+    }
+
+    fn range(&self, key: Key) -> Option<Range<usize>> {
+        let found = self.found.get(&key.entry)?;
+        let (_, ranges) = found.places.iter().find(|(place, _)| *place == key.place)?;
+        ranges.get(key.ordinal).cloned()
+    }
+
+    fn matched(&self, key: Key) -> Option<Match> {
+        Some(Match {
+            entry: key.entry,
+            place: key.place,
+            range: self.range(key)?,
+            ordinal: key.ordinal,
+        })
+    }
+
+    /// Where `key` is among all the matches, from 0.
+    fn index_of(&self, key: Key) -> Option<usize> {
+        let before: usize = self
+            .found
+            .range(..key.entry)
+            .map(|(_, found)| found.count)
+            .sum();
+        let found = self.found.get(&key.entry)?;
+        let mut index = before;
+        for (place, ranges) in &found.places {
+            if *place == key.place {
+                return (key.ordinal < ranges.len()).then_some(index + key.ordinal);
+            }
+            index += ranges.len();
+        }
+        None
+    }
+
+    /// The match `n` of all, from 0.
+    fn nth(&self, mut n: usize) -> Option<Key> {
+        for (entry, found) in &self.found {
+            if n >= found.count {
+                n -= found.count;
+                continue;
+            }
+            return Self::nth_in(*entry, found, n);
+        }
+        None
+    }
+
+    /// The match `n` of the entry's, from 0.
+    fn nth_in(entry: u64, found: &Found, mut n: usize) -> Option<Key> {
+        for (place, ranges) in &found.places {
+            if n < ranges.len() {
+                return Some(Key {
+                    entry,
+                    place: *place,
+                    ordinal: n,
+                });
+            }
+            n -= ranges.len();
+        }
+        None
+    }
+
+    /// Which match of its entry's `key` is, from 0.
+    fn ordinal_in_entry(&self, key: Key) -> usize {
+        let Some(found) = self.found.get(&key.entry) else {
+            return 0;
+        };
+        found
+            .places
+            .iter()
+            .take_while(|(place, _)| *place != key.place)
+            .map(|(_, ranges)| ranges.len())
+            .sum::<usize>()
+            + key.ordinal
+    }
+
+    /// The first match at `at` (an entry, a place, a byte) or after it.
+    fn first_from(&self, at: (u64, Place, usize)) -> Option<Key> {
+        let (entry, place, start) = at;
+        for (id, found) in self.found.range(entry..) {
+            for (found_place, ranges) in &found.places {
+                let ordinal = if *id > entry || *found_place > place {
+                    Some(0)
+                } else if *found_place == place {
+                    ranges.iter().position(|range| range.start >= start)
+                } else {
+                    None
+                };
+                if let Some(ordinal) = ordinal {
+                    return Some(Key {
+                        entry: *id,
+                        place: *found_place,
+                        ordinal,
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    fn last(&self) -> Option<Key> {
+        self.total.checked_sub(1).and_then(|n| self.nth(n))
+    }
+
+    /// The current match after a search again: the same, or the next one.
+    fn settle_current(&mut self, anchor: Option<(u64, Place, usize)>) {
+        let old = self.current;
+        self.current = anchor.and_then(|anchor| self.first_from(anchor));
+        if old != self.current {
+            for key in [old, self.current].into_iter().flatten() {
+                self.touched.insert(key.entry);
+            }
+        }
+    }
+
+    /// Where the current match is: its entry, place and first byte.
+    fn current_at(&self) -> Option<(u64, Place, usize)> {
+        let key = self.current?;
+        Some((key.entry, key.place, self.range(key)?.start))
+    }
 }
 
 impl TranscriptView {
@@ -113,17 +384,31 @@ impl TranscriptView {
             self.clear_find(cx);
             return FindStatus::default();
         }
-        let anchor = self.current_match();
-        self.search(query, cx);
-        let find = self.find.as_mut().expect("searched");
-        find.current = match anchor {
-            Some(anchor) => find
-                .matches
-                .iter()
-                .position(|found| !before(found, &anchor, &self.model))
-                .or_else(|| find.matches.len().checked_sub(1)),
-            None => find.matches.len().checked_sub(1),
-        };
+        let needle = lowercase(query);
+        let mut find = self.find.take().unwrap_or_default();
+        let anchor = find.current_at();
+        // Longer words match only where the shorter ones did.
+        let narrowing = !find.needle.is_empty()
+            && find.lowering.is_none()
+            && needle.contains(find.needle.as_str());
+        find.query = query.to_string();
+        find.needle = needle;
+        find.current = None;
+        find.pending = None;
+        if narrowing {
+            let candidates: Vec<u64> = find.found.keys().copied().collect();
+            for entry in candidates {
+                find.search_kept(entry);
+            }
+        } else if find.lowering.is_none() && !self.lower_in_background(&mut find, cx) {
+            self.search_all(&mut find, cx);
+        }
+        if find.lowering.is_none() {
+            find.current = anchor
+                .and_then(|anchor| find.first_from(anchor))
+                .or_else(|| find.last());
+        }
+        self.find = Some(find);
         self.land(cx);
         self.find_status()
     }
@@ -131,44 +416,41 @@ impl TranscriptView {
     /// Goes to the next match (`forward`, down the transcript) or the
     /// previous one, around at the ends.
     pub fn find_next(&mut self, forward: bool, cx: &mut Context<Self>) -> FindStatus {
-        let Some(query) = self.find.as_ref().map(|find| find.query.clone()) else {
+        let Some(find) = self.find.as_mut() else {
             return FindStatus::default();
         };
-        if self.find.as_ref().is_some_and(|find| find.stale) {
-            let anchor = self.current_match();
-            self.search(&query, cx);
-            let find = self.find.as_mut().expect("searched");
-            find.current = anchor.and_then(|anchor| {
-                find.matches
-                    .iter()
-                    .position(|found| found == &anchor || !before(found, &anchor, &self.model))
-            });
+        if find.lowering.is_some() {
+            return self.find_status();
         }
-        let find = self.find.as_mut().expect("finding");
-        let total = find.matches.len();
-        if total == 0 {
-            find.current = None;
-        } else {
-            find.current = Some(match (find.current, forward) {
-                (None, true) => 0,
-                (None, false) => total - 1,
-                (Some(current), true) => (current + 1) % total,
-                (Some(current), false) => (current + total - 1) % total,
-            });
+        let total = find.total;
+        let index = find.current.and_then(|key| find.index_of(key));
+        let next = match (index, forward) {
+            _ if total == 0 => None,
+            (None, true) => Some(0),
+            (None, false) => Some(total - 1),
+            (Some(current), true) => Some((current + 1) % total),
+            (Some(current), false) => Some((current + total - 1) % total),
+        };
+        let old = find.current;
+        find.current = next.and_then(|n| find.nth(n));
+        for key in [old, find.current].into_iter().flatten() {
+            find.touched.insert(key.entry);
         }
+        find.pending = None;
         self.land(cx);
         self.find_status()
     }
 
     /// Where the find is.
     pub fn find_status(&self) -> FindStatus {
-        self.find
-            .as_ref()
-            .map(|find| FindStatus {
-                current: find.current,
-                total: find.matches.len(),
-            })
-            .unwrap_or_default()
+        let Some(find) = &self.find else {
+            return FindStatus::default();
+        };
+        FindStatus {
+            current: find.current.and_then(|key| find.index_of(key)),
+            total: find.total,
+            searching: find.lowering.is_some(),
+        }
     }
 
     /// Ends the find: the highlights go.
@@ -185,130 +467,203 @@ impl TranscriptView {
         cx.notify();
     }
 
-    fn current_match(&self) -> Option<Match> {
+    pub(super) fn current_match(&self) -> Option<Match> {
         let find = self.find.as_ref()?;
-        find.matches.get(find.current?).cloned()
+        find.matched(find.current?)
     }
 
-    /// The transcript changed while a find goes on: it searches again a
-    /// moment later, keeping its place.
-    pub(super) fn find_changed(&mut self, cx: &mut Context<Self>) {
-        let Some(find) = self.find.as_mut() else {
+    /// The entries `changed` changed (new ones too) and `removed` went,
+    /// while a find goes on: it searches them again now, keeping its place.
+    pub(super) fn find_changed(
+        &mut self,
+        removed: &[u64],
+        changed: impl IntoIterator<Item = u64>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut find) = self.find.take() else {
             return;
         };
-        find.stale = true;
-        if find._again.is_some() {
-            return;
+        let anchor = find.current_at();
+        for id in removed {
+            find.texts.remove(id);
+            find.forget(*id);
         }
-        find._again = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(250))
-                .await;
-            this.update(cx, |this, cx| {
-                let Some(query) = this.find.as_ref().map(|find| find.query.clone()) else {
-                    return;
-                };
-                let anchor = this.current_match();
-                this.search(&query, cx);
-                let model = &this.model;
-                if let Some(find) = this.find.as_mut() {
-                    find.current = anchor.and_then(|anchor| {
-                        find.matches
-                            .iter()
-                            .position(|found| found == &anchor || !before(found, &anchor, model))
-                    });
-                }
-                this.highlight(cx);
-                cx.emit(TranscriptEvent::FindStatus(this.find_status()));
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
-    /// Searches every entry the view shows (collapsed ones too) for
-    /// `query`. Older entries not made ready yet are made ready first.
-    fn search(&mut self, query: &str, cx: &mut Context<Self>) {
-        while self.load_older(cx) {}
-        let view = self.settings.view;
-        let filter = self.model.filter().clone();
-        let worker_view = matches!(filter, super::AgentFilter::Worker(_));
-        let view = if worker_view { View::Full } else { view };
-        let mut matches = Vec::new();
-        for entry in self.model.entries() {
-            if model::show(&filter, view, &entry.item) != Show::Item
-                || model::is_refresh(&entry.item)
-            {
+        let mut searched = false;
+        for id in changed.into_iter().collect::<HashSet<_>>() {
+            find.texts.remove(&id);
+            if find.lowering.is_some() {
+                find.changed_meanwhile.insert(id);
                 continue;
             }
-            for (place, text) in self.searchable(entry, cx) {
-                for (ordinal, range) in find_all(&text, query).into_iter().enumerate() {
-                    matches.push(Match {
-                        entry: entry.item.id,
-                        place,
-                        range,
-                        ordinal,
-                    });
-                }
+            self.search_entry(&mut find, id, cx);
+            searched = true;
+        }
+        if !searched && removed.is_empty() {
+            self.find = Some(find);
+            return;
+        }
+        find.settle_current(anchor);
+        self.find = Some(find);
+        if !self.land_pending(cx) {
+            self.highlight(cx);
+            cx.emit(TranscriptEvent::FindStatus(self.find_status()));
+        }
+        cx.notify();
+    }
+
+    /// Everything the find covers changed (the view, Markdown on or off, a
+    /// new history): it searches all again, keeping its place.
+    pub(super) fn find_changed_all(&mut self, cx: &mut Context<Self>) {
+        let Some(mut find) = self.find.take() else {
+            return;
+        };
+        let anchor = find.current_at();
+        find.texts.clear();
+        if find.lowering.is_none() && !self.lower_in_background(&mut find, cx) {
+            self.search_all(&mut find, cx);
+        }
+        find.settle_current(anchor);
+        self.find = Some(find);
+        self.highlight(cx);
+        cx.emit(TranscriptEvent::FindStatus(self.find_status()));
+        cx.notify();
+    }
+
+    /// Searches every entry the find covers.
+    fn search_all(&self, find: &mut Find, cx: &App) {
+        find.found.clear();
+        find.total = 0;
+        let ids: Vec<u64> = self
+            .model
+            .entries()
+            .iter()
+            .map(|entry| entry.item.id)
+            .collect();
+        find.texts.retain(|id, _| self.model.entry(*id).is_some());
+        for id in ids {
+            self.search_entry(find, id, cx);
+        }
+        find.touched
+            .extend(find.highlighted.iter().map(|(entry, _)| *entry));
+    }
+
+    /// Searches the entry `id`: its texts kept, else made now.
+    fn search_entry(&self, find: &mut Find, id: u64, cx: &App) {
+        find.texts.entry(id).or_insert_with(|| {
+            self.model
+                .entry(id)
+                .filter(|entry| self.finds_in(entry))
+                .map(|entry| self.gather(entry, cx).lowered())
+                .unwrap_or_default()
+        });
+        find.search_kept(id);
+    }
+
+    /// Whether the find covers `entry`: what the view shows of it.
+    fn finds_in(&self, entry: &Entry) -> bool {
+        let filter = self.model.filter();
+        let view = match filter {
+            super::AgentFilter::Worker(_) => View::Full,
+            _ => self.settings.view,
+        };
+        model::show(filter, view, &entry.item) == Show::Item && !model::is_refresh(&entry.item)
+    }
+
+    /// Starts lowercasing the texts of the entries not searched yet off the
+    /// UI thread, when there are many: the find searches once they're
+    /// ready. Returns whether it started.
+    fn lower_in_background(&self, find: &mut Find, cx: &mut Context<Self>) -> bool {
+        let mut texts: Vec<(u64, Gathered)> = Vec::new();
+        let mut bytes = 0;
+        for entry in self.model.entries() {
+            let id = entry.item.id;
+            if find.texts.contains_key(&id) || !self.finds_in(entry) {
+                continue;
+            }
+            let gathered = self.gather(entry, cx);
+            bytes += gathered.size();
+            texts.push((id, gathered));
+        }
+        if bytes < LOWERCASE_IN_BACKGROUND {
+            for (id, gathered) in texts {
+                find.texts.insert(id, gathered.lowered());
+            }
+            return false;
+        }
+        find.found.clear();
+        find.total = 0;
+        find.changed_meanwhile.clear();
+        let lowering = cx.background_spawn(async move {
+            texts
+                .into_iter()
+                .map(|(id, gathered)| (id, gathered.lowered()))
+                .collect::<Vec<_>>()
+        });
+        find.lowering = Some(cx.spawn(async move |this, cx| {
+            let lowered = lowering.await;
+            this.update(cx, |this, cx| this.lowered(lowered, cx)).ok();
+        }));
+        true
+    }
+
+    /// The texts lowercased off the UI thread are ready: the find searches.
+    fn lowered(&mut self, lowered: Vec<(u64, Vec<(Place, Lowered)>)>, cx: &mut Context<Self>) {
+        let Some(mut find) = self.find.take() else {
+            return;
+        };
+        find.lowering = None;
+        let changed = std::mem::take(&mut find.changed_meanwhile);
+        for (id, texts) in lowered {
+            if !changed.contains(&id) && self.model.entry(id).is_some() {
+                find.texts.insert(id, texts);
             }
         }
-        let mut places: HashMap<(u64, Place), Vec<usize>> = HashMap::new();
-        for (index, found) in matches.iter().enumerate() {
-            places
-                .entry((found.entry, found.place))
-                .or_default()
-                .push(index);
-        }
-        let (highlighted, reveal) = self
-            .find
-            .take()
-            .map(|find| (find.highlighted, find.reveal))
-            .unwrap_or_default();
-        self.find = Some(Find {
-            query: query.to_string(),
-            matches,
-            places,
-            current: None,
-            highlighted,
-            stale: false,
-            reveal,
-            _again: None,
-        });
+        self.search_all(&mut find, cx);
+        find.current = find.last();
+        self.find = Some(find);
+        self.land(cx);
+        cx.notify();
     }
 
     /// The texts of an entry the reader can find words in, as its rows
     /// show them.
-    fn searchable(&self, entry: &Entry, cx: &App) -> Vec<(Place, String)> {
+    fn gather(&self, entry: &Entry, cx: &App) -> Gathered {
         let item = &entry.item;
-        match item.kind {
+        let texts = match item.kind {
             Kind::User | Kind::Notice | Kind::Output => vec![(Place::Text, item.text.clone())],
             Kind::Text | Kind::Reply | Kind::Message | Kind::Question | Kind::Thinking => {
-                let Some(ui) = self.ui.get(&item.id) else {
-                    return Vec::new();
+                let doc = self
+                    .ui
+                    .get(&item.id)
+                    .and_then(|ui| ui.doc.as_ref())
+                    .filter(|doc| !doc.blocks.is_empty());
+                let Some(doc) = doc else {
+                    // Not ready to show yet: its source stands for it.
+                    return Gathered::Texts(if item.text.trim().is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![(Place::Unready, item.text.clone())]
+                    });
                 };
-                let Some(doc) = ui.doc.as_ref() else {
-                    return Vec::new();
-                };
-                let source = !self.settings.render_markdown || ui.source;
-                if source {
-                    return doc
-                        .blocks
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(block, row)| {
-                            let text = doc.text.get(row.range.clone()?)?.trim_end().to_string();
-                            Some((Place::Source(block), text))
-                        })
-                        .collect();
+                let source = !self.settings.render_markdown
+                    || self.ui.get(&item.id).is_some_and(|ui| ui.source);
+                if !source {
+                    return Gathered::Rendered {
+                        text: doc.state.read(cx).rendered_text(),
+                        blocks: doc
+                            .blocks
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(block, row)| Some((block, row.range.clone()?)))
+                            .collect(),
+                    };
                 }
-                let rendered = doc.state.read(cx).rendered_text();
                 doc.blocks
                     .iter()
                     .enumerate()
                     .filter_map(|(block, row)| {
-                        let range = rendered.range_for_source(row.range.clone()?)?;
-                        let text = rendered.as_str().get(range)?.to_string();
-                        Some((Place::Block(block), text))
+                        let text = doc.text.get(row.range.clone()?)?.trim_end().to_string();
+                        Some((Place::Source(block), text))
                     })
                     .collect()
             }
@@ -326,30 +681,95 @@ impl TranscriptView {
                 texts
             }
             _ => Vec::new(),
-        }
+        };
+        Gathered::Texts(texts)
     }
 
     /// Opens what hides the current match, scrolls to it and highlights.
     fn land(&mut self, cx: &mut Context<Self>) {
         if let Some(found) = self.current_match() {
             self.open_for(&found, cx);
-            let key = match found.place {
-                Place::Block(block) | Place::Source(block) => self.rows.iter().position(|row| {
-                    matches!(row.key, RowKey::Block { id, block: b, .. }
-                            if id == found.entry && b == block)
-                }),
-                _ => self.row_of(found.entry),
-            };
-            if let Some(ix) = key {
-                self.list.scroll_to(ix, px(0.));
-            }
-            if let (Place::Block(block), Some(find)) = (found.place, self.find.as_mut()) {
-                find.reveal = Some((found.entry, block));
-            }
+            self.go_to(&found, cx);
         }
         self.highlight(cx);
         cx.emit(TranscriptEvent::FindStatus(self.find_status()));
         cx.notify();
+    }
+
+    /// Scrolls to `found`, and has its block's view show its line when it
+    /// draws.
+    fn go_to(&mut self, found: &Match, cx: &mut Context<Self>) {
+        // An older entry not ready to show: it is made ready, and the find
+        // lands once its rows are.
+        if self.loaded_from.is_some_and(|from| found.entry < from) {
+            self.load_from(found.entry, cx);
+        }
+        if found.place == Place::Unready {
+            if let Some(find) = self.find.as_mut()
+                && let Some(key) = find.current
+            {
+                find.pending = Some((found.entry, find.ordinal_in_entry(key)));
+            }
+            return;
+        }
+        let row = match found.place {
+            Place::Block(block) | Place::Source(block) => self.rows.iter().position(|row| {
+                matches!(row.key, RowKey::Block { id, block: b, .. }
+                        if id == found.entry && b == block)
+            }),
+            _ => self.row_of(found.entry),
+        };
+        let Some(ix) = row else {
+            return;
+        };
+        self.list.scroll_to(ix, px(0.));
+        if let (Place::Block(block), Some(find)) = (found.place, self.find.as_mut()) {
+            find.reveal = Some((found.entry, block));
+            find.touched.insert(found.entry);
+        }
+    }
+
+    /// The entry the find waits for is ready: it lands there. Returns
+    /// whether it did.
+    fn land_pending(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(find) = self.find.as_mut() else {
+            return false;
+        };
+        let Some((entry, ordinal)) = find.pending else {
+            return false;
+        };
+        let Some(found) = find.found.get(&entry) else {
+            return false;
+        };
+        if found
+            .places
+            .iter()
+            .any(|(place, _)| *place == Place::Unready)
+        {
+            return false;
+        }
+        let ordinal = ordinal.min(found.count.saturating_sub(1));
+        find.current = Find::nth_in(entry, found, ordinal);
+        find.pending = None;
+        self.land(cx);
+        true
+    }
+
+    /// Makes the entries from `id` on ready to show at once (a find lands
+    /// on an older entry).
+    fn load_from(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(from) = self.loaded_from else {
+            return;
+        };
+        let entries = self.model.entries();
+        let start = self.model.position(id).unwrap_or_else(|ix| ix);
+        let end = self.model.position(from).unwrap_or_else(|ix| ix);
+        let ids: Vec<u64> = entries[start..end].iter().map(|e| e.item.id).collect();
+        self.loaded_from = entries.get(start).map(|e| e.item.id).filter(|_| start > 0);
+        for id in ids {
+            self.add_ui(id, cx);
+        }
+        self.refresh_rows(cx);
     }
 
     /// Opens a thinking, a call's details, a group of calls or a capped
@@ -433,28 +853,38 @@ impl TranscriptView {
             .clone()
     }
 
-    /// Paints the matches on the block views drawn, and clears those whose
-    /// matches went.
+    /// Paints the matches on the block views drawn whose matches changed,
+    /// and clears those whose matches went.
     fn highlight(&mut self, cx: &mut Context<Self>) {
-        let mut now: HashSet<(u64, usize)> = HashSet::new();
-        if let Some(find) = &self.find {
-            for (entry, place) in find.places.keys() {
-                if let Place::Block(block) = place {
-                    now.insert((*entry, *block));
+        let Some(find) = self.find.as_mut() else {
+            return;
+        };
+        let touched = std::mem::take(&mut find.touched);
+        let mut now: HashSet<(u64, usize)> = find
+            .highlighted
+            .iter()
+            .filter(|(entry, _)| !touched.contains(entry))
+            .copied()
+            .collect();
+        for entry in &touched {
+            if let Some(found) = find.found.get(entry) {
+                for (place, _) in &found.places {
+                    if let Place::Block(block) = place {
+                        now.insert((*entry, *block));
+                    }
                 }
             }
         }
-        let before = self
-            .find
-            .as_mut()
-            .map(|find| std::mem::take(&mut find.highlighted))
-            .unwrap_or_default();
+        let before = std::mem::take(&mut find.highlighted);
         for (entry, block) in before.difference(&now) {
             if let Some(view) = self.existing_block_view(*entry, *block) {
                 view.update(cx, |view, cx| view.clear_range_highlights(cx));
             }
         }
         for (entry, block) in &now {
+            if !touched.contains(entry) {
+                continue;
+            }
             if let Some(view) = self.existing_block_view(*entry, *block) {
                 self.highlight_block(*entry, *block, &view, cx);
             }
@@ -478,24 +908,29 @@ impl TranscriptView {
         let Some(find) = &mut self.find else {
             return;
         };
-        let Some(indices) = find.places.get(&(entry, Place::Block(block))) else {
+        let Some(found) = find.found.get(&entry) else {
             return;
         };
-        let current = indices
+        if !found
+            .places
             .iter()
-            .find(|index| Some(**index) == find.current)
-            .map(|index| find.matches[*index].ordinal);
-        // Searching again (while text streams) leaves the reader where they
-        // are: only landing reveals.
+            .any(|(place, _)| *place == Place::Block(block))
+        {
+            return;
+        }
+        let current = find
+            .current
+            .filter(|key| key.entry == entry && key.place == Place::Block(block))
+            .map(|key| key.ordinal);
         let reveal = current.is_some() && find.reveal == Some((entry, block));
         if reveal {
             find.reveal = None;
         }
         let (all, strong) = match_colors(cx);
-        let query = find.query.clone();
+        let needle = find.needle.clone();
         view.update(cx, |view, cx| {
             let text = view.rendered_text();
-            let ranges = find_all(text.as_str(), &query);
+            let ranges = Lowered::new(text.as_str()).find(&needle);
             let highlights = ranges.iter().enumerate().map(|(ordinal, range)| {
                 let color = if Some(ordinal) == current {
                     strong
@@ -517,20 +952,21 @@ impl TranscriptView {
         let Some(find) = &self.find else {
             return Vec::new();
         };
-        find.places
-            .get(&(entry, place))
-            .map(|indices| {
-                indices
-                    .iter()
-                    .map(|index| {
-                        (
-                            find.matches[*index].range.clone(),
-                            Some(*index) == find.current,
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        let Some(found) = find.found.get(&entry) else {
+            return Vec::new();
+        };
+        let Some((_, ranges)) = found.places.iter().find(|(found, _)| *found == place) else {
+            return Vec::new();
+        };
+        let current = find
+            .current
+            .filter(|key| key.entry == entry && key.place == place)
+            .map(|key| key.ordinal);
+        ranges
+            .iter()
+            .enumerate()
+            .map(|(ordinal, range)| (range.clone(), Some(ordinal) == current))
+            .collect()
     }
 
     /// `text` as the plain text of `place` in a row, its matches marked:
@@ -588,13 +1024,6 @@ impl TranscriptView {
 fn match_colors(cx: &App) -> (Hsla, Hsla) {
     let yellow = cx.theme().yellow;
     (yellow.opacity(0.25), yellow.opacity(0.55))
-}
-
-/// Whether `found` comes before `anchor` in the transcript.
-fn before(found: &Match, anchor: &Match, model: &model::Model) -> bool {
-    let position = |found: &Match| model.position(found.entry).unwrap_or_else(|ix| ix);
-    (position(found), found.place, found.range.start)
-        < (position(anchor), anchor.place, anchor.range.start)
 }
 
 #[cfg(test)]
