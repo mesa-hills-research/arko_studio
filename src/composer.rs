@@ -217,6 +217,8 @@ pub struct SlashMenu {
     /// The bytes a choice replaces.
     pub range: Range<usize>,
     pub kind: MenuKind,
+    /// The mention words these choices were ranked for.
+    words: Option<String>,
     /// What is typed is a whole command already (`/cost`, `/stop-workers
     /// r1` with r10 running too): Enter sends it as it is.
     pub complete: bool,
@@ -260,6 +262,7 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
             selected: 0,
             range: 0..text.len(),
             kind: MenuKind::Command,
+            words: None,
             complete,
             takes_enter: true,
             note: None,
@@ -294,6 +297,7 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
         selected: 0,
         range: start..text.len(),
         kind: MenuKind::Command,
+        words: None,
         complete,
         takes_enter: true,
         note: None,
@@ -301,7 +305,11 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
 }
 
 /// The menu of the files `ranked` for an @-mention over `range`, if any.
-fn mention_list(ranked: Vec<crate::mentions::Ranked>, range: Range<usize>) -> Option<SlashMenu> {
+fn mention_list(
+    ranked: Vec<crate::mentions::Ranked>,
+    range: Range<usize>,
+    words: String,
+) -> Option<SlashMenu> {
     // An ordinary word after an "@" ("@here") can hold a file's letters
     // here and there: Enter sends it then, as typed.
     let strong = ranked.first().is_some_and(|ranked| ranked.strong);
@@ -326,6 +334,7 @@ fn mention_list(ranked: Vec<crate::mentions::Ranked>, range: Range<usize>) -> Op
         selected: 0,
         range,
         kind: MenuKind::Mention,
+        words: Some(words),
         complete: false,
         takes_enter: strong,
         note: None,
@@ -692,11 +701,13 @@ impl Composer {
                 // Mod+Enter always sends the text as typed. The send key
                 // takes the menu's choice, unless what is typed is whole or
                 // the choice is a file that only weakly matches.
+                if !*secondary {
+                    self.settle_mentions(cx);
+                }
                 if !*secondary
-                    && self
-                        .menu
-                        .as_ref()
-                        .is_some_and(|menu| !menu.complete && menu.takes_enter)
+                    && self.menu.as_ref().is_some_and(|menu| {
+                        !menu.complete && menu.takes_enter && self.menu_is_current(menu, cx)
+                    })
                 {
                     self.accept_menu(window, cx);
                 } else {
@@ -766,8 +777,9 @@ impl Composer {
 
     /// The files an "@" before the caret mentions, once the session's
     /// folder is listed (in the background, the first time). They are
-    /// ranked off the UI thread: until they come, `shown` (the list of
-    /// what was typed before) stays, over what is typed now.
+    /// ranked off the UI thread. Until they come, `shown` (the list of what
+    /// was typed before) stays on screen, but a key that chooses from it
+    /// ranks what is typed now first (see `settle_mentions`).
     fn mention_menu(
         &mut self,
         text: &str,
@@ -800,17 +812,15 @@ impl Composer {
                     selected: 0,
                     range,
                     kind: MenuKind::Mention,
+                    words: Some(typed),
                     complete: false,
                     takes_enter: false,
                     note: Some("Listing files…".into()),
                 });
             }
         };
-        self.rank_mentions(files, typed, range.clone(), cx);
-        shown.map(|mut menu| {
-            menu.range = range;
-            menu
-        })
+        self.rank_mentions(files, typed, range, cx);
+        shown
     }
 
     /// The folder, the bytes from the "@" to the caret, and what follows
@@ -878,7 +888,7 @@ impl Composer {
                 if !same || command || this.dismissed.as_deref() == Some(text.as_str()) {
                     return;
                 }
-                this.menu = mention_list(ranked, range);
+                this.menu = mention_list(ranked, range, typed);
                 cx.notify();
             })
             .ok();
@@ -919,8 +929,77 @@ impl Composer {
         }));
     }
 
+    /// Whether `menu`'s choices were made for what is typed now. A mention's
+    /// list stays on screen while the next words' files are ranked, but
+    /// its choices go only where they were ranked for.
+    fn menu_is_current(&self, menu: &SlashMenu, cx: &App) -> bool {
+        menu.kind != MenuKind::Mention
+            || self
+                .mention_typed(&self.text(cx), cx)
+                .is_some_and(|(_, range, words)| {
+                    range == menu.range && menu.words.as_ref() == Some(&words)
+                })
+    }
+
+    /// Ranks the files for the mention typed now, on the UI thread, when a
+    /// key chooses from the menu before the background ranking came. That
+    /// key then chooses among the files for what was typed, never among an
+    /// earlier query's (Enter right after a quick change, for instance).
+    fn settle_mentions(&mut self, cx: &mut Context<Self>) {
+        let stale = match &self.menu {
+            Some(menu) => menu.kind == MenuKind::Mention && !self.menu_is_current(menu, cx),
+            // The first list for a mention, still being ranked.
+            None => self.ranking.is_some(),
+        };
+        if !stale {
+            return;
+        }
+        let text = self.text(cx);
+        if self.dismissed.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        let Some((folder, range, typed)) = self.mention_typed(&text, cx) else {
+            return;
+        };
+        let Some(files) = self
+            .files
+            .as_ref()
+            .filter(|(listed, _, _)| *listed == folder)
+            .map(|(_, _, files)| files.clone())
+        else {
+            return;
+        };
+        // The files of an earlier query that this one extends, as the
+        // background ranking would look among.
+        let words = crate::mentions::lowercase(&typed);
+        let among = self
+            .narrowed
+            .iter()
+            .rev()
+            .find(|(earlier, _)| !earlier.is_empty() && words.starts_with(earlier.as_str()))
+            .map(|(_, matched)| matched.clone());
+        let ranking = crate::mentions::rank(
+            &files,
+            among.as_deref().map(Vec::as_slice),
+            &typed,
+            MENTION_ROWS,
+        );
+        self.ranking = None;
+        self.menu = mention_list(ranking.ranked, range, typed);
+        cx.notify();
+    }
+
     /// Puts the menu's selected choice in the field.
     pub fn accept_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settle_mentions(cx);
+        if self
+            .menu
+            .as_ref()
+            .is_some_and(|menu| !self.menu_is_current(menu, cx))
+        {
+            self.menu = None;
+            return;
+        }
         let Some(menu) = self.menu.take() else {
             return;
         };
@@ -1120,6 +1199,7 @@ impl Composer {
     }
 
     fn on_tab(&mut self, _: &IndentInline, window: &mut Window, cx: &mut Context<Self>) {
+        self.settle_mentions(cx);
         if self
             .menu
             .as_ref()
@@ -1138,11 +1218,14 @@ impl Composer {
             .textarea
             .read(cx)
             .is_submit_chord(enter.secondary, enter.shift);
+        if !sends {
+            self.settle_mentions(cx);
+        }
         let Some(menu) = &self.menu else {
             return;
         };
         // A file that only weakly matches leaves the line break to Enter.
-        if !sends && menu.takes_enter {
+        if !sends && menu.takes_enter && self.menu_is_current(menu, cx) {
             if menu.complete {
                 self.menu = None;
                 self.dismissed = Some(self.text(cx));

@@ -628,6 +628,63 @@ fn at_mentions_a_file_of_the_agents_folder_as_a_token(cx: &mut TestAppContext) {
     assert!(cx.read(|cx| composer.read(cx).menu().is_none()));
 }
 
+/// Enter or Tab pressed right after a quick change, before the background
+/// ranking of the new words came, chooses among the files for what is
+/// typed now, never the earlier words' file still on screen.
+#[gpui_kit::test]
+fn a_fast_enter_or_tab_chooses_the_file_for_what_is_typed_now(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(folder.path().join("src")).unwrap();
+    for name in ["main.rs", "parse.rs"] {
+        std::fs::write(folder.path().join("src").join(name), "").unwrap();
+    }
+    let (_, window, workspace) = start(cx);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    view.update(cx, |view, cx| {
+        view.set_draft_folder(folder.path().into(), cx)
+    });
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    let sent: Rc<RefCell<Vec<String>>> = Rc::default();
+    let _subscription = cx.update(|cx| {
+        let sent = sent.clone();
+        cx.subscribe(&composer, move |_, event, _| {
+            if let ComposerEvent::Submit(outgoing) = event {
+                sent.borrow_mut().push(outgoing.text.clone());
+            }
+        })
+    });
+    let first = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            composer
+                .read(cx)
+                .menu()
+                .and_then(|menu| menu.items.first().map(|item| item.insert.clone()))
+        })
+    };
+    for key in ["enter", "tab"] {
+        act(cx, window, |window, cx| window.input("See @ma", cx));
+        crate::testing::wait_until(cx, "the first query", |cx| first(cx).is_some());
+        // A quick change, then the key, before anything runs in the
+        // background: the earlier words' list is still on screen.
+        cx.update_window(window, |_, window, cx| {
+            window.press("backspace", cx);
+            window.press("backspace", cx);
+            window.input("pa", cx);
+        })
+        .unwrap();
+        assert_eq!(first(cx).as_deref(), Some("src/main.rs"));
+        cx.update_window(window, |_, window, cx| window.press(key, cx))
+            .unwrap();
+        cx.run_until_parked();
+        let text = cx.read(|cx| composer.read(cx).expanded_text(cx));
+        assert_eq!(text, "See src/parse.rs ", "{key}");
+        assert!(sent.borrow().is_empty(), "{key} sent {:?}", sent.borrow());
+        act(cx, window, |window, cx| {
+            composer.update(cx, |composer, cx| composer.set_text("", window, cx))
+        });
+    }
+}
+
 /// The files for an @-mention are ranked off the UI thread: until the new
 /// ranking comes, the list of what was typed before stays, and the latest
 /// words' files are the ones that show.
@@ -656,8 +713,7 @@ fn an_at_mentions_files_are_ranked_off_the_ui_thread_latest_first(cx: &mut TestA
         })
     };
     assert_eq!(first(cx), Some(("src/main.rs".to_string(), 4..7)));
-    // Two quick changes, nothing run in the background yet: the list stays,
-    // over the words as they are now.
+    // Two quick changes, nothing run in the background yet: the list stays.
     cx.update_window(window, |_, window, cx| {
         window.press("backspace", cx);
         window.press("backspace", cx);
