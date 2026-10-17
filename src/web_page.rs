@@ -91,15 +91,14 @@ pub fn qr_link(page: &Page) -> Option<&Link> {
 }
 
 /// What one of the page's links lets someone do.
-pub const ACT_IN_IT: &str =
-    "follow this session and act in it: send messages and commands, answer questions, stop a turn.";
+pub const ACT_IN_IT: &str = "follow this session and act in it, sending messages and commands, answering questions and stopping turns.";
 
 /// Who can open a page other devices reach.
 pub const ON_THIS_NETWORK: &str =
     "Devices on this network can open the page with these links, which hold the session’s key.";
 
 /// The page isn't encrypted.
-pub const NOT_ENCRYPTED: &str = "The page isn’t encrypted: share it only on networks you trust.";
+pub const NOT_ENCRYPTED: &str = "The page isn’t encrypted, so share it only on networks you trust.";
 
 /// What the panel says the page allows: who can open it, what a link lets
 /// them do, and, for a page other devices reach, that it isn't encrypted.

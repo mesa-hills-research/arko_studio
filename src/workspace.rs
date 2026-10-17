@@ -27,11 +27,9 @@ const ACCOUNTS_PAGE: usize = 2;
 const WEB_PAGE_PAGE: usize = 5;
 
 /// Why a new session's page can't be shared yet.
-pub const NO_SESSION_TO_SHARE: &str =
-    "Send a message first: the web page shares a session that runs.";
+pub const NO_SESSION_TO_SHARE: &str = "Send a message first, then share the session’s web page.";
 /// Why a new session's cache can't be refreshed yet.
-pub const NO_CACHE_TO_REFRESH: &str =
-    "Send a message first: a new session has no prompt cache to keep warm.";
+pub const NO_CACHE_TO_REFRESH: &str = "A new session has no prompt cache until its first message.";
 
 /// The narrowest and widest the workers panel docks, in rem.
 const MIN_PANEL_WIDTH: f32 = 16.;
@@ -720,7 +718,7 @@ impl Workspace {
             if page.ip().is_none() {
                 window.push_notification(
                     Notification::warning(format!(
-                        "“{}” in Settings › Web page isn’t an IP address: the page is served on this computer only.",
+                        "“{}” in Settings › Web page isn’t an IP address, so the page is served on this computer only.",
                         page.address.trim()
                     )),
                     cx,

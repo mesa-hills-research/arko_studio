@@ -119,7 +119,7 @@ pub fn parse_handover_size(text: &str) -> Result<usize, String> {
     let tokens = usize::try_from(scaled / places).map_err(|_| invalid())?;
     if tokens < MIN_HANDOVER_SIZE {
         return Err(format!(
-            "At least {}: an agent’s fresh conversation would start near it.",
+            "Give at least {}, or an agent’s fresh conversation would start near the size.",
             handover_value(MIN_HANDOVER_SIZE)
         ));
     }
