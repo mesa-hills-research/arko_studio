@@ -190,6 +190,8 @@ pub struct SessionInfo {
     open: bool,
     /// Choices shown until the session's status does.
     held: Vec<Held>,
+    /// The session opening these pending choices and errors belong to.
+    controls_for: Option<(EntityId, u64)>,
     /// Why what's typed in a field can't be taken.
     errors: std::collections::HashMap<Field, SharedString>,
     fields: Vec<(Field, Entity<InputState>)>,
@@ -246,6 +248,7 @@ impl SessionInfo {
             facts_for: None,
             open: false,
             held: Vec::new(),
+            controls_for: None,
             errors: std::collections::HashMap::new(),
             fields,
             _load: None,
@@ -269,15 +272,29 @@ impl SessionInfo {
         self._load = None;
         self._session = session.as_ref().map(|session| {
             cx.observe_in(session, window, |this, _, window, cx| {
+                this.follow_controls(cx);
                 this.sync_fields(window, cx);
                 this.follow_facts(cx);
                 cx.notify();
             })
         });
         self.session = session;
+        self.follow_controls(cx);
         self.sync_fields(window, cx);
         self.follow_facts(cx);
         cx.notify();
+    }
+
+    fn follow_controls(&mut self, cx: &App) {
+        let opening = self
+            .session
+            .as_ref()
+            .map(|session| (session.entity_id(), session.read(cx).opening()));
+        if self.controls_for != opening {
+            self.controls_for = opening;
+            self.held.clear();
+            self.errors.clear();
+        }
     }
 
     /// The info shows (`true`) or no longer does. Shown, its facts are
@@ -1140,6 +1157,52 @@ mod tests {
 
 #[cfg(test)]
 mod view_tests {
+    #[gpui_kit::test]
+    fn optimistic_controls_belong_to_the_shown_session(cx: &mut TestAppContext) {
+        start(cx);
+        let (window, workspace) = open(cx, 1300.);
+        let a = cx.new(|cx| LiveSession::for_tests("a", cx));
+        let b = cx.new(|cx| LiveSession::for_tests("b", cx));
+        for session in [&a, &b] {
+            session.update(cx, |session, cx| {
+                session.set_status(
+                    Reading {
+                        settings: LiveSettings {
+                            outside: true,
+                            ..LiveSettings::default()
+                        },
+                        ..Reading::default()
+                    },
+                    Activity::default(),
+                    cx,
+                )
+            });
+        }
+        let title = cx.read(|cx| workspace.read(cx).title_bar().clone());
+        act(cx, window, |window, cx| {
+            title.update(cx, |title, cx| {
+                title.set_live_session(Some(a.clone()), window, cx);
+                title.toggle_info(cx);
+            })
+        });
+        act(cx, window, |window, cx| window.click("outside-access", cx));
+        act(cx, window, |window, cx| window.click("both", cx));
+        act(cx, window, |window, cx| {
+            title.update(cx, |title, cx| {
+                title.set_live_session(Some(b.clone()), window, cx);
+                if !title.is_info_open() {
+                    title.toggle_info(cx);
+                }
+            })
+        });
+        act(cx, window, |window, _| {
+            assert_eq!(window.find("outside-access").checked(), Some(true));
+            assert_eq!(window.find("one").checked(), Some(true));
+            assert_eq!(window.find("both").checked(), Some(false));
+        });
+        assert!(cx.read(|cx| b.read(cx).queued().is_empty()));
+    }
+
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::Field;

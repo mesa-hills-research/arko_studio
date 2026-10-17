@@ -737,10 +737,6 @@ impl Workspace {
         let Some(session) = self.running_session("The web page isn’t shared.", window, cx) else {
             return;
         };
-        if session.read(cx).reading().page.is_none() {
-            window.push_notification("The web page isn’t shared.", cx);
-            return;
-        }
         crate::web_page::stop(&session, window, cx);
     }
 

@@ -34,9 +34,11 @@ pub fn share(
 
 /// Stops serving the session's page, ending its links.
 pub fn stop(session: &Entity<LiveSession>, window: &mut Window, cx: &mut App) {
-    let answer = session
-        .read(cx)
-        .request(|reply| arko::Request::StopWebPage { reply }, cx);
+    let answer = session.update(cx, |session, cx| {
+        let answer = session.request(|reply| arko::Request::StopWebPage { reply }, cx);
+        cx.notify();
+        answer
+    });
     notify_error(answer, window, cx);
 }
 

@@ -102,18 +102,13 @@ impl SessionDefaults {
     /// Fills in `options` for a session starting: one resumed (`new` is
     /// `None`) gets only what every session gets, since it keeps the
     /// models and settings it was started with. A new one gets what the
-    /// user didn't choose in its composer. `last_model` is the last
-    /// session's main model, which a new session takes when no model is
-    /// chosen (read only when it matters).
-    pub fn apply(
-        &self,
-        options: &mut arko::Options,
-        new: Option<Mode>,
-        last_model: impl FnOnce() -> Option<String>,
-    ) {
+    /// user didn't choose in its composer. The engine resolves any model
+    /// left unchosen, then decides which settings that model supports.
+    pub fn apply(&self, options: &mut arko::Options, new: Option<Mode>) {
         options.mcp_config.extend(self.mcp_config.iter().cloned());
         if options.remote.is_none() {
             options.remote = self.web_page;
+            options.remote_port_fallback = self.web_page.is_some();
         }
         let Some(mode) = new else {
             return;
@@ -127,20 +122,9 @@ impl SessionDefaults {
         if options.worker_effort.is_none() {
             options.worker_effort = self.worker_effort;
         }
-        // The 1-hour cache is Anthropic's, by API key: it's asked for only
-        // when one of the session's models takes it, as arko notes it
-        // otherwise.
-        options.cache_1h = match self.cache_1h {
-            Some(true) => {
-                let main = options.model.clone().or_else(last_model);
-                let takes = main
-                    .iter()
-                    .chain(options.worker_model.as_ref())
-                    .any(|model| arko::models::takes_cache_1h(model));
-                takes.then_some(true)
-            }
-            other => other,
-        };
+        // The engine checks capability after resolving its default model,
+        // including the first session with no saved or chosen model.
+        options.cache_1h = self.cache_1h;
         options.handover_at = self.handover_at;
         options.workers_handover_at = self.workers_handover_at;
         options.background_after = self.background_after;
@@ -161,23 +145,6 @@ impl SessionDefaults {
     }
 }
 
-/// Leaves the web page's set port to the session that serves on it first:
-/// when `remote` names a port something serves on already (most often
-/// another session sharing its page), this session's page goes on any free
-/// port instead of not being served, and the note says so. It binds the
-/// port for a moment: call it off the UI thread.
-pub fn take_free_port(remote: &mut Option<arko::remote::Bind>) -> Option<String> {
-    let bind = remote.as_mut()?;
-    let port = bind.port?;
-    if std::net::TcpListener::bind((bind.ip, port)).is_ok() {
-        return None;
-    }
-    bind.port = None;
-    Some(format!(
-        "Port {port}, set in Settings › Web page, is taken by another session’s page or another program. This session’s page is served on another port, which its links show."
-    ))
-}
-
 /// Where the web page is served, from the preferences: `None` when the
 /// address isn't an IP address.
 pub fn web_page_bind(page: &prefs::WebPagePrefs) -> Option<arko::remote::Bind> {
@@ -191,6 +158,16 @@ pub fn web_page_bind(page: &prefs::WebPagePrefs) -> Option<arko::remote::Bind> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_first_session_keeps_its_hour_cache_preference() {
+        let mut prefs = Prefs::default();
+        prefs.new_sessions.cache_1h = Some(true);
+        let mut options = arko::Options::default();
+        SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent));
+        assert_eq!(options.model, None);
+        assert_eq!(options.cache_1h, Some(true));
+    }
+
     use super::*;
 
     fn new_options() -> arko::Options {
@@ -200,7 +177,7 @@ mod tests {
     #[test]
     fn the_defaults_leave_every_choice_to_arko() {
         let mut options = new_options();
-        SessionDefaults::default().apply(&mut options, Some(Mode::Agent), || None);
+        SessionDefaults::default().apply(&mut options, Some(Mode::Agent));
         let plain = new_options();
         assert_eq!(options.model, plain.model);
         assert_eq!(options.worker_model, plain.worker_model);
@@ -237,7 +214,7 @@ mod tests {
         prefs.advanced.mcp_config = vec![PathBuf::from("/home/ada/mcp.json")];
         let defaults = SessionDefaults::from_prefs(&prefs);
         let mut options = new_options();
-        defaults.apply(&mut options, Some(Mode::Agent), || None);
+        defaults.apply(&mut options, Some(Mode::Agent));
         assert_eq!(options.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(options.worker_model.as_deref(), Some("gpt-6.1-sol"));
         assert_eq!(options.worker_effort, Some(arko::Effort::Medium));
@@ -262,7 +239,7 @@ mod tests {
         prefs.new_sessions.model = Some("claude-opus-5-5".into());
         let mut options = new_options();
         options.model = Some("sonnet".into());
-        SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent), || None);
+        SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent));
         assert_eq!(options.model.as_deref(), Some("sonnet"));
     }
 
@@ -272,7 +249,7 @@ mod tests {
         prefs.new_sessions.chat_instructions = "  Answer briefly.\n".into();
         prefs.new_sessions.outside_access = true;
         let mut options = new_options();
-        SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Chat), || None);
+        SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Chat));
         assert_eq!(
             options.chat_instructions.as_deref(),
             Some("Answer briefly.")
@@ -295,7 +272,7 @@ mod tests {
         prefs.web_page.address = Some("0.0.0.0".into());
         prefs.web_page.port = Some(9000);
         let mut options = new_options();
-        SessionDefaults::from_prefs(&prefs).apply(&mut options, None, || None);
+        SessionDefaults::from_prefs(&prefs).apply(&mut options, None);
         assert_eq!(options.model, None);
         assert_eq!(options.handover_at, None);
         assert_eq!(options.workers_handover_at, None);
@@ -308,35 +285,25 @@ mod tests {
     }
 
     #[test]
-    fn the_hour_long_cache_is_asked_for_only_where_it_applies() {
+    fn the_engine_applies_the_cache_preference_after_choosing_its_models() {
         let mut prefs = Prefs::default();
         prefs.new_sessions.cache_1h = Some(true);
         let defaults = SessionDefaults::from_prefs(&prefs);
-        let cache = |model: Option<&str>, last: Option<&str>| {
+        for model in [
+            None,
+            Some("claude-sonnet-5-5"),
+            Some("cc:opus"),
+            Some("gpt-6.1-sol"),
+        ] {
             let mut options = new_options();
             options.model = model.map(str::to_string);
-            defaults.apply(&mut options, Some(Mode::Agent), || last.map(str::to_string));
-            options.cache_1h
-        };
-        assert_eq!(cache(Some("claude-sonnet-5-5"), None), Some(true));
-        assert_eq!(
-            cache(Some("openrouter:anthropic/claude-opus-5.5"), None),
-            Some(true)
-        );
-        assert_eq!(cache(Some("cc:claude-opus-5-5"), None), None);
-        assert_eq!(cache(Some("claude-code:opus"), None), None);
-        assert_eq!(
-            cache(Some("openrouter:~anthropic/claude-opus-latest"), None),
-            Some(true)
-        );
-        assert_eq!(cache(Some("gpt-6.1-sol"), None), None);
-        assert_eq!(cache(Some("claude-not-a-model"), None), None);
-        assert_eq!(cache(None, Some("claude-opus-5-5")), Some(true));
-        assert_eq!(cache(None, None), None);
+            defaults.apply(&mut options, Some(Mode::Agent));
+            assert_eq!(options.cache_1h, Some(true));
+        }
         // Off is passed on, over ARKO_CACHE_1H.
         prefs.new_sessions.cache_1h = Some(false);
         let mut options = new_options();
-        SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent), || None);
+        SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent));
         assert_eq!(options.cache_1h, Some(false));
     }
 

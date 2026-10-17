@@ -52,8 +52,8 @@ and the model. Agent mode asks for a folder to work in. Add credentials in **Set
 accounts**, or use an existing ChatGPT or Claude Code login. Type a message and press Enter to
 send it. **Settings › Input** changes the send key.
 
-The sidebar lists saved sessions. Click a session's title to open **Session info**, or use
-**Help › Keyboard Shortcuts** to find an action's keys.
+Open a session from the sidebar, then click its title at the top of the window to open
+**Session info**. Use **Help › Keyboard Shortcuts** to find an action's keys.
 
 ## More
 
