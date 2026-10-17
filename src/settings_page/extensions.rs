@@ -24,15 +24,27 @@ use crate::session_view::{HomeFolder, recent_folders};
 pub struct ExtensionsPage {
     extensions: Option<Extensions>,
     home: Option<PathBuf>,
+    /// The MCP config files set in Settings, as last read.
+    config: Vec<PathBuf>,
     _load: Option<Task<()>>,
+    _prefs: Subscription,
 }
 
 impl ExtensionsPage {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // A file added or removed under Advanced, or by a reset: the page
+        // reads them again.
+        let prefs = cx.observe_global::<prefs::PrefsStore>(|this, cx| {
+            if prefs::get(cx).advanced.mcp_config != this.config {
+                this.refresh(cx);
+            }
+        });
         let mut this = Self {
             extensions: None,
             home: cx.global::<HomeFolder>().0.clone(),
+            config: Vec::new(),
             _load: None,
+            _prefs: prefs,
         };
         this.refresh(cx);
         this
@@ -47,6 +59,7 @@ impl ExtensionsPage {
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let backend = cx.global::<SharedBackend>().clone();
         let config = prefs::get(cx).advanced.mcp_config.clone();
+        self.config = config.clone();
         let reading = cx.background_spawn(async move {
             let folders = backend
                 .sessions()

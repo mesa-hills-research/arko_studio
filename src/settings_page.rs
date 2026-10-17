@@ -365,7 +365,8 @@ impl SettingsPage {
         .detach();
     }
 
-    /// Adds MCP config files every session reads, each once.
+    /// Adds MCP config files every session reads, each once. Extensions
+    /// lists their servers as it hears of them.
     pub fn add_mcp_configs(&mut self, files: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
         prefs::update(cx, |prefs| {
             for file in files {
@@ -374,8 +375,6 @@ impl SettingsPage {
                 }
             }
         });
-        // Extensions lists the files' servers.
-        self.extensions.update(cx, |page, cx| page.refresh(cx));
     }
 
     fn confirm_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {

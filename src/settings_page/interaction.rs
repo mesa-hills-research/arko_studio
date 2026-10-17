@@ -491,11 +491,18 @@ fn a_projects_mcp_answer_is_forgotten(cx: &mut TestAppContext) {
 }
 
 /// MCP config files added under Advanced reach every session's options,
-/// and Remove takes one out.
+/// and Remove takes one out. Extensions lists what's there as it changes.
 #[gpui_kit::test]
 fn mcp_config_files_are_added_and_removed(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
     let (window, _, settings) = settings_window(cx, 7, 2400.);
+    let extensions = cx.read(|cx| settings.read(cx).extensions().clone());
+    let listed = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let found = extensions.read(cx).extensions().unwrap();
+            found.files.iter().filter(|file| !file.arko).count()
+        })
+    };
     let file = std::path::PathBuf::from("/home/ada/mcp/work.json");
     cx.update(|cx| {
         settings.update(cx, |settings, cx| {
@@ -507,11 +514,14 @@ fn mcp_config_files_are_added_and_removed(cx: &mut TestAppContext) {
         std::slice::from_ref(&file),
         "once"
     );
+    act(cx, window, |_, _| {});
+    assert_eq!(listed(cx), 1);
     act(cx, window, |window, cx| {
         window.click(("remove-mcp-config", 0usize), cx)
     });
     assert!(backend.defaults().mcp_config.is_empty());
     assert!(cx.read(|cx| prefs::get(cx).advanced.mcp_config.is_empty()));
+    assert_eq!(listed(cx), 0);
 }
 
 /// Add… under Advanced takes MCP config files only: another file is

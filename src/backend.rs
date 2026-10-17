@@ -990,8 +990,17 @@ impl Backend for FakeBackend {
         })
     }
 
-    fn extensions(&self, _: &[PathBuf], _: &[PathBuf]) -> extensions::Extensions {
-        self.with_state(|state| state.extensions.clone())
+    fn extensions(&self, _: &[PathBuf], mcp_config: &[PathBuf]) -> extensions::Extensions {
+        let mut found = self.with_state(|state| state.extensions.clone());
+        // The files set in Settings, none of them there.
+        found
+            .files
+            .extend(mcp_config.iter().map(|path| extensions::McpFile {
+                path: path.clone(),
+                arko: false,
+                servers: None,
+            }));
+        found
     }
 
     fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String> {
