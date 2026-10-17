@@ -10,7 +10,7 @@
 //! Stop and Message. While the worker's view has the focus, the composer
 //! writes to that worker.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -129,6 +129,8 @@ pub struct WorkersPanel {
     finished_open: bool,
     /// The workers the user opened: a failure stays in sight until then.
     seen: HashSet<String>,
+    /// Each worker's row, by its id.
+    row_views: HashMap<String, Entity<WorkerRow>>,
     scroll: ScrollHandle,
     clock: Clock,
     /// Draws again while a time on show goes on.
@@ -165,6 +167,7 @@ impl WorkersPanel {
             transcripts: Vec::new(),
             finished_open: false,
             seen: HashSet::new(),
+            row_views: HashMap::new(),
             scroll: ScrollHandle::new(),
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
@@ -204,6 +207,7 @@ impl WorkersPanel {
             self.cursor = None;
             self.finished_open = false;
             self.seen.clear();
+            self.row_views.clear();
         }
         let same = source.workers == self.source.workers
             && source.times == self.source.times
@@ -211,6 +215,7 @@ impl WorkersPanel {
             && source.key == self.source.key;
         self.source = source;
         if !same {
+            self.sync_rows(cx);
             cx.notify();
         }
     }
@@ -220,6 +225,7 @@ impl WorkersPanel {
     #[doc(hidden)]
     pub fn set_clock(&mut self, clock: impl Fn() -> i64 + 'static, cx: &mut Context<Self>) {
         self.clock = Rc::new(clock);
+        self.sync_rows(cx);
         cx.notify();
     }
 
@@ -484,6 +490,7 @@ impl WorkersPanel {
                 .await;
             this.update(cx, |this, cx| {
                 this.ticker = None;
+                this.sync_rows(cx);
                 cx.notify();
             })
             .ok();
@@ -547,16 +554,14 @@ impl WorkersPanel {
         }
         let focused = self.focus_handle.contains_focused(window, cx);
         let cursor = focused.then(|| self.cursor_index(&rows)).flatten();
+        let height = WorkerRow::height(window);
         let children: Vec<AnyElement> = rows
             .iter()
             .enumerate()
             .map(|(index, row)| {
                 let selected = cursor == Some(index);
                 match row {
-                    PanelRow::Worker(id) => match self.worker(id) {
-                        Some(worker) => self.render_row(index, worker, now, selected, cx),
-                        None => div().into_any_element(),
-                    },
+                    PanelRow::Worker(id) => self.render_row(index, id, height, selected, cx),
                     PanelRow::Finished(count) => self.render_group(index, *count, selected, cx),
                 }
             })
@@ -574,64 +579,69 @@ impl WorkersPanel {
             .into_any_element()
     }
 
+    /// A worker's row: the frame, which shows the keyboard's place and the
+    /// pointer's, around the worker's own view.
     fn render_row(
         &self,
         index: usize,
-        worker: &WorkerSummary,
-        now: i64,
+        id: &SharedString,
+        height: Pixels,
         selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let theme = cx.theme();
-        let id: SharedString = worker.id.clone().into();
-        let title = if worker.title.is_empty() {
-            worker.id.clone()
-        } else {
-            worker.title.clone()
+        let Some(view) = self.row_views.get(id.as_ref()) else {
+            return div().into_any_element();
         };
-        let elapsed = self
-            .source
-            .times
-            .total_ms(&worker.id, now)
-            .map(workers::elapsed_label);
-        let context = self.context_label(&worker.id);
-        let last = workers::last_line(worker)
-            .unwrap_or_else(|| workers::state_label(worker.state).to_string());
         let open = id.clone();
         row_base(("worker", index), selected, cx)
             .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_1p5()
-                    .child(state_mark(worker.state, index, cx))
-                    .child(
-                        div()
-                            .flex_none()
-                            .font_family(theme.mono_font_family.clone())
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(id.clone()),
-                    )
-                    .child(div().flex_1().min_w_0().truncate().child(title))
-                    .children(elapsed.map(|elapsed| figures(elapsed).text_xs())),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_2()
-                    .pl(rems(1.375))
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(div().flex_1().min_w_0().truncate().child(last))
-                    .children(context.map(figures))
-                    .child(calls(worker.tool_calls)),
+                view.clone()
+                    .cached(StyleRefinement::default().w_full().h(height)),
             )
             .on_click(
                 cx.listener(move |this, _, window, cx| this.enter_worker(open.clone(), window, cx)),
             )
             .into_any_element()
+    }
+
+    /// What `worker`'s row shows at `now`.
+    fn row_facts(&self, worker: &WorkerSummary, now: i64) -> RowFacts {
+        RowFacts {
+            id: worker.id.clone().into(),
+            state: worker.state,
+            title: if worker.title.is_empty() {
+                worker.id.clone()
+            } else {
+                worker.title.clone()
+            },
+            elapsed: self
+                .source
+                .times
+                .total_ms(&worker.id, now)
+                .map(workers::elapsed_label),
+            last: workers::last_line(worker)
+                .unwrap_or_else(|| workers::state_label(worker.state).to_string()),
+            context: self.context_label(&worker.id),
+            calls: worker.tool_calls,
+        }
+    }
+
+    /// Brings the workers' rows up to date: a row whose facts changed draws
+    /// again, the others keep what they drew.
+    fn sync_rows(&mut self, cx: &mut Context<Self>) {
+        let now = self.now();
+        let mut views = std::mem::take(&mut self.row_views);
+        views.retain(|id, _| self.worker(id).is_some());
+        for worker in &self.source.workers {
+            let facts = self.row_facts(worker, now);
+            match views.get(&worker.id) {
+                Some(view) => view.update(cx, |row, cx| row.set(facts, cx)),
+                None => {
+                    views.insert(worker.id.clone(), cx.new(|_| WorkerRow { facts }));
+                }
+            }
+        }
+        self.row_views = views;
     }
 
     fn render_group(
@@ -930,7 +940,7 @@ fn calls(count: u32) -> impl IntoElement {
 /// A worker's state as a mark: a spinner while it runs, a ring while it
 /// waits, a filled circle once it ended (in `success` when it finished, in
 /// `danger` when it failed).
-fn state_mark(state: WorkerState, index: usize, cx: &App) -> impl IntoElement {
+fn state_mark(state: WorkerState, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let dot = |color: Hsla| div().size(px(8.)).rounded_full().bg(color);
     let mark: AnyElement = match state {
@@ -950,7 +960,7 @@ fn state_mark(state: WorkerState, index: usize, cx: &App) -> impl IntoElement {
     };
     let label = workers::state_label(state);
     div()
-        .id(("worker-state", index))
+        .id("worker-state")
         .flex_none()
         .size_4()
         .flex()
@@ -960,9 +970,131 @@ fn state_mark(state: WorkerState, index: usize, cx: &App) -> impl IntoElement {
         .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
 }
 
+/// What a worker's row shows.
+#[derive(Clone, PartialEq)]
+struct RowFacts {
+    id: SharedString,
+    state: WorkerState,
+    title: String,
+    elapsed: Option<String>,
+    last: String,
+    context: Option<String>,
+    calls: u32,
+}
+
+/// A worker's row, as a view of its own: it draws again only when what it
+/// shows changes. A running worker's spinner, which asks for a frame 30
+/// times a second, draws its own row again and leaves the others as they
+/// were drawn.
+struct WorkerRow {
+    facts: RowFacts,
+}
+
+impl WorkerRow {
+    fn set(&mut self, facts: RowFacts, cx: &mut Context<Self>) {
+        if self.facts != facts {
+            self.facts = facts;
+            cx.notify();
+        }
+    }
+
+    /// The heights of its lines: the title's, in `text_sm`, and the
+    /// figures', in `text_xs`.
+    fn lines(window: &Window) -> (Pixels, Pixels) {
+        let rem = window.rem_size();
+        let line = |size: Rems| {
+            let mut style = window.text_style();
+            style.font_size = size.into();
+            style.line_height_in_pixels(rem)
+        };
+        // The state's mark is 1 rem high.
+        let title = line(rems(0.875)).max(rems(1.).to_pixels(rem));
+        (title, line(rems(0.75)))
+    }
+
+    /// Its height: a cached view is laid out at a set size, not measured.
+    fn height(window: &Window) -> Pixels {
+        let (title, figures) = Self::lines(window);
+        title + rems(0.125).to_pixels(window.rem_size()) + figures
+    }
+}
+
+impl Render for WorkerRow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        ROWS_DRAWN.with(|drawn| {
+            *drawn
+                .borrow_mut()
+                .entry(self.facts.id.to_string())
+                .or_default() += 1
+        });
+        let theme = cx.theme();
+        let (title_line, figures_line) = Self::lines(window);
+        let facts = &self.facts;
+        v_flex()
+            .size_full()
+            .gap_0p5()
+            .child(
+                h_flex()
+                    .w_full()
+                    .h(title_line)
+                    .min_w_0()
+                    .gap_1p5()
+                    .child(state_mark(facts.state, cx))
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(theme.mono_font_family.clone())
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(facts.id.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(facts.title.clone()),
+                    )
+                    .children(
+                        facts
+                            .elapsed
+                            .clone()
+                            .map(|elapsed| figures(elapsed).text_xs()),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .h(figures_line)
+                    .min_w_0()
+                    .gap_2()
+                    .pl(rems(1.375))
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(facts.last.clone()),
+                    )
+                    .children(facts.context.clone().map(figures))
+                    .child(calls(facts.calls)),
+            )
+    }
+}
+
 #[cfg(test)]
 #[path = "workers_panel_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+thread_local! {
+    /// How many times each worker's row was drawn.
+    static ROWS_DRAWN: std::cell::RefCell<std::collections::HashMap<String, usize>> =
+        std::cell::RefCell::default();
+}
 
 impl Render for WorkersPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

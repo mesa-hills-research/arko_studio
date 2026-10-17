@@ -412,3 +412,32 @@ fn writing_to_a_worker_ends_an_edit(cx: &mut TestAppContext) {
         cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
     });
 }
+
+/// A running worker's spinner draws its own row again, not the others'.
+#[gpui_kit::test]
+fn a_spinner_draws_only_its_own_row(cx: &mut TestAppContext) {
+    let panel = open(cx);
+    cx.update(|cx| {
+        crate::prefs::update(cx, |prefs| {
+            prefs.appearance.motion = crate::prefs::Motion::On
+        });
+        cx.set_reduce_motion(false);
+    });
+    panel.draw(cx);
+    super::ROWS_DRAWN.with(|drawn| drawn.borrow_mut().clear());
+    // A second, at 30 frames a second.
+    for _ in 0..30 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1000 / 30 + 1));
+        cx.run_until_parked();
+    }
+    let drawn = super::ROWS_DRAWN.with(|drawn| drawn.borrow().clone());
+    // r1 runs, and its spinner turns. r2 and r3 ended: nothing of theirs
+    // changed, so their rows aren't drawn again.
+    assert!(
+        drawn.get("r1").is_some_and(|&count| count >= 10),
+        "{drawn:?}"
+    );
+    assert_eq!(drawn.get("r2"), None, "{drawn:?}");
+    assert_eq!(drawn.get("r3"), None, "{drawn:?}");
+}
