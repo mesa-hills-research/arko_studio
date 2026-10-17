@@ -673,6 +673,8 @@ fn gap(previous: Option<Class>, next: Class) -> Gap {
         (_, Class::Actions) => Gap::None,
         (_, Class::Footer) => Gap::Small,
         (Class::Separator, Class::User) => Gap::Section,
+        // After a user's message's actions, as after a reply's.
+        (Class::User, _) => Gap::Small,
         (_, Class::User) => Gap::Turn,
         (Class::Activity, Class::Activity) => Gap::Tight,
         (Class::Activity, Class::Thought) | (Class::Thought, Class::Activity) => Gap::Small,
@@ -1292,7 +1294,7 @@ mod tests {
             gaps,
             [
                 Gap::None,
-                Gap::Section,
+                Gap::Small,
                 Gap::Tight,
                 Gap::Section,
                 Gap::None,

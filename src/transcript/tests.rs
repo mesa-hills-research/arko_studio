@@ -1776,8 +1776,8 @@ fn the_history_comes_off_the_ui_thread_and_rows_opened_before_stay_open(cx: &mut
 
 /// A user's message is a bubble at the right of the reading column, as wide
 /// as its words up to half the column. A narrow column lets it take the width
-/// of a comfortable line, and a very narrow one all but the room its actions
-/// take beside it.
+/// of a comfortable line, and a very narrow one all of it. Its actions sit in
+/// a row under it, at its right edge, and showing them moves nothing.
 #[gpui_kit::test]
 fn a_users_message_is_a_bubble_at_the_right_of_the_column(cx: &mut TestAppContext) {
     start(cx);
@@ -1788,7 +1788,7 @@ fn a_users_message_is_a_bubble_at_the_right_of_the_column(cx: &mut TestAppContex
         Source::App,
         Delivery::Turn,
     );
-    let (window, _) = open(cx, &feed, AgentFilter::Main, 600.);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
     let [short, long] = ids_of(&feed, Kind::User)[..] else {
         panic!("two messages")
     };
@@ -1796,12 +1796,12 @@ fn a_users_message_is_a_bubble_at_the_right_of_the_column(cx: &mut TestAppContex
         .update_window(window, |_, window, _| f32::from(window.rem_size()))
         .unwrap();
     // The window's width, and the long message's widest: half the column,
-    // a comfortable line, the column but the actions' room.
+    // a comfortable line, the whole column.
     type Widest = fn(f32, f32) -> f32;
     let widths: [(f32, Widest); 3] = [
         (800., |column, _| column / 2.),
         (480., |_, rem| 17.5 * rem),
-        (300., |column, rem| column - 4. * rem),
+        (300., |column, _| column),
     ];
     for (width, widest) in widths {
         cx.simulate_window_resize(window, size(px(width), px(600.)));
@@ -1811,25 +1811,43 @@ fn a_users_message_is_a_bubble_at_the_right_of_the_column(cx: &mut TestAppContex
             // each side.
             let column = width.min(46. * rem) - 2. * rem;
             let right = px((width + column) / 2.);
-            let short = window.find(("user-message", short)).bounds();
+            let short_bubble = window.find(("user-message", short)).bounds();
             let long_bubble = window.find(("user-message", long)).bounds();
-            assert_eq!(short.right(), right, "{width}");
+            assert_eq!(short_bubble.right(), right, "{width}");
             assert_eq!(long_bubble.right(), right, "{width}");
             assert!(
                 (long_bubble.size.width - px(widest(column, rem))).abs() < px(1.),
                 "{width}: {long_bubble:?}"
             );
-            assert!(short.size.width < long_bubble.size.width, "{width}");
-            // Its actions sit beside it, inside the column, level with its
-            // first line.
-            let copy = window.find(("copy-user", long)).bounds();
-            assert!(copy.right() <= long_bubble.left(), "{width}");
-            assert!(copy.left() >= px((width - column) / 2.), "{width}");
-            assert!(copy.top() > long_bubble.top(), "{width}");
-            assert!(copy.top() < long_bubble.top() + px(rem), "{width}");
+            assert!(short_bubble.size.width < long_bubble.size.width, "{width}");
+            // Its actions sit under it, at its right edge.
+            for (message, bubble) in [(short, short_bubble), (long, long_bubble)] {
+                let copy = window.find(("copy-user", message)).bounds();
+                assert_eq!(copy.right(), bubble.right(), "{width}");
+                assert!(copy.top() >= bubble.bottom(), "{width}");
+                assert!(copy.top() < bubble.bottom() + px(rem / 2.), "{width}");
+            }
         })
         .unwrap();
     }
+    // The pointer on the long message shows its actions where they were.
+    let place = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, _| {
+            (
+                window.find(("user-message", long)).bounds(),
+                window.find(("copy-user", long)).bounds(),
+            )
+        })
+        .unwrap()
+    };
+    let before = place(cx);
+    cx.update_window(window, |_, window, cx| {
+        window.hover(("user-message", long), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(cx.read(|cx| view.read(cx).hovered), Some(long));
+    assert_eq!(place(cx), before);
 }
 
 /// A conversation as a session opened again reads it: the user's message,

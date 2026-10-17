@@ -408,3 +408,24 @@ fn tab_reaches_regenerate_on_the_last_line_of_a_turn_without_a_reply(cx: &mut Te
         Some(&TranscriptEvent::Regenerate)
     );
 }
+
+/// From the keyboard, the user's message shows its actions in the row under
+/// it, and Tab reaches Edit first.
+#[gpui_kit::test]
+fn tab_reaches_the_actions_under_a_message(cx: &mut TestAppContext) {
+    let rows = open(cx, ended_turn(true), 600.);
+    rows.focus(cx);
+    while !matches!(rows.cursor(cx), Some(RowKey::User(_))) {
+        rows.press(cx, "up");
+    }
+    let Some(RowKey::User(message)) = rows.cursor(cx) else {
+        unreachable!()
+    };
+    assert_eq!(cx.read(|cx| rows.view.read(cx).hovered), Some(message));
+    rows.tab(cx);
+    rows.press(cx, "enter");
+    assert_eq!(
+        rows.events.borrow().last(),
+        Some(&TranscriptEvent::Edit(message))
+    );
+}

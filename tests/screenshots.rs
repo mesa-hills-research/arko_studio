@@ -660,6 +660,40 @@ fn transcript_stopped_narrow_dark() {
     );
 }
 
+/// A user's message under the pointer: Edit, Branch and Copy in a row under
+/// the bubble, at its right edge.
+#[test]
+fn transcript_message_actions_light() {
+    goldens().assert(
+        "transcript-message-actions-light",
+        &ended_turn_window(ThemeMode::Light, 1300., true, ("user", 1)),
+    );
+}
+
+#[test]
+fn transcript_message_actions_dark() {
+    goldens().assert(
+        "transcript-message-actions-dark",
+        &ended_turn_window(ThemeMode::Dark, 1300., true, ("user", 1)),
+    );
+}
+
+#[test]
+fn transcript_message_actions_narrow_light() {
+    goldens().assert(
+        "transcript-message-actions-narrow-light",
+        &ended_turn_window(ThemeMode::Light, 460., true, ("user", 1)),
+    );
+}
+
+#[test]
+fn transcript_message_actions_narrow_dark() {
+    goldens().assert(
+        "transcript-message-actions-narrow-dark",
+        &ended_turn_window(ThemeMode::Dark, 460., true, ("user", 1)),
+    );
+}
+
 /// The representative transcript with a find going on: its matches marked,
 /// the current one stronger, and the keyboard's ring on a row.
 fn transcript_find_window(mode: ThemeMode) -> Screenshot {

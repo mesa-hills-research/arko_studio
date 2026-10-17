@@ -37,9 +37,6 @@ const COLUMN: f32 = 46.;
 /// The width, in rem, a user's message may take even when that is more than
 /// half the column, the width of a comfortable line.
 const USER_BUBBLE_WIDTH: f32 = 17.5;
-/// The room, in rem, kept at the left of a user's message for its actions
-/// (three small buttons).
-const USER_ACTIONS_ROOM: f32 = 4.;
 /// The least room, in rem, between a reply's other actions and Regenerate.
 const REGENERATE_GAP: f32 = 2.;
 /// The room, in rem, a line keeps at its right for Regenerate laid over it.
@@ -538,8 +535,8 @@ impl TranscriptView {
             let last = self.model.last_message() == Some(id);
             (busy, last, view.downgrade(), view.downgrade())
         });
-        // Edit, Branch and Copy show on hover, beside the bubble at its left,
-        // level with its first line.
+        // Edit, Branch and Copy show on hover, in a row under the bubble at
+        // its right edge.
         let actions = HoverActions {
             id: ("user-actions", id).into(),
             shown: self.hovered == Some(id),
@@ -613,9 +610,10 @@ impl TranscriptView {
         };
         // The message is a bubble at the right of the column, as wide as its
         // words up to half the column. The space at its left gives way first
-        // as the column narrows, down to the room the actions take, so a
-        // narrow column gives the bubble the width of a comfortable line and
-        // a very narrow one nearly all of it.
+        // as the column narrows, so a narrow column gives the bubble the
+        // width of a comfortable line and a very narrow one all of it. Its
+        // actions keep their room under it, shown or not, so showing them
+        // moves nothing.
         h_flex()
             .w_full()
             .items_start()
@@ -623,64 +621,58 @@ impl TranscriptView {
                 div()
                     .flex_grow(1000.)
                     .flex_basis(px(0.))
-                    .max_w(relative(0.5))
-                    .min_w(rems(USER_ACTIONS_ROOM)),
+                    .max_w(relative(0.5)),
             )
             .child(
-                h_flex()
+                v_flex()
                     .flex_grow(1.)
                     .flex_basis(rems(USER_BUBBLE_WIDTH))
                     .min_w_0()
-                    .justify_end()
+                    .items_end()
+                    .gap_1()
                     .child(
-                        v_flex()
-                            .id(("user-message", id))
-                            .test_support()
-                            .relative()
-                            .min_w_0()
-                            .gap_1()
-                            .px_3()
-                            .py_2()
-                            .rounded(theme.radius)
-                            .bg(theme.secondary)
-                            .text_color(theme.secondary_foreground)
-                            .when(!tags.is_empty(), |this| {
-                                this.child(
-                                    div().text_xs().text_color(muted).child(tags.join(" · ")),
-                                )
-                            })
-                            .children(self.thumbnails(item, view, cx))
-                            .child(
-                                div()
-                                    // The words on one line, with no height,
-                                    // make the bubble as wide as they are.
-                                    // Text that wraps answers a later
-                                    // question about its width with the
-                                    // width it last wrapped at.
-                                    .child(
-                                        div()
-                                            .h_0()
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .child(text.clone()),
+                        h_flex().w_full().justify_end().child(
+                            v_flex()
+                                .id(("user-message", id))
+                                .test_support()
+                                .min_w_0()
+                                .gap_1()
+                                .px_3()
+                                .py_2()
+                                .rounded(theme.radius)
+                                .bg(theme.secondary)
+                                .text_color(theme.secondary_foreground)
+                                .when(!tags.is_empty(), |this| {
+                                    this.child(
+                                        div().text_xs().text_color(muted).child(tags.join(" · ")),
                                     )
-                                    .child(self.marked(
-                                        ("user-text", id),
-                                        id,
-                                        Place::Text,
-                                        text,
-                                        cx,
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top(rems(0.625))
-                                    .right_full()
-                                    .pr_1()
-                                    .child(actions),
-                            ),
-                    ),
+                                })
+                                .children(self.thumbnails(item, view, cx))
+                                .child(
+                                    div()
+                                        // The words on one line, with no height,
+                                        // make the bubble as wide as they are.
+                                        // Text that wraps answers a later
+                                        // question about its width with the
+                                        // width it last wrapped at.
+                                        .child(
+                                            div()
+                                                .h_0()
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .child(text.clone()),
+                                        )
+                                        .child(self.marked(
+                                            ("user-text", id),
+                                            id,
+                                            Place::Text,
+                                            text,
+                                            cx,
+                                        )),
+                                ),
+                        ),
+                    )
+                    .child(actions),
             )
             .into_any_element()
     }
