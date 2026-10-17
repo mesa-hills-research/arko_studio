@@ -328,8 +328,9 @@ pub trait Backend: Send + Sync + 'static {
     /// was done, `Err` why not.
     fn add_key(&self, provider: &str, value: &str) -> Result<String, String>;
 
-    /// Uses the Codex auth file at `path` for the ChatGPT login.
-    fn set_chatgpt_login(&self, path: &Path) -> Result<(), String>;
+    /// Uses the Codex auth file at `path` for the ChatGPT login. `Ok` says
+    /// for how long, `Err` why not.
+    fn set_chatgpt_login(&self, path: &Path) -> Result<String, String>;
 
     /// Starts the sessions started from now on with `defaults`, the
     /// preferences as they are now. It doesn't block.
@@ -536,8 +537,10 @@ impl Backend for ArkoBackend {
         ))
     }
 
-    fn set_chatgpt_login(&self, path: &Path) -> Result<(), String> {
-        arko::accounts::set_chatgpt_login(&self.root, path).map(|_| ())
+    fn set_chatgpt_login(&self, path: &Path) -> Result<String, String> {
+        let first = accounts::login_set_first();
+        arko::accounts::set_chatgpt_login(&self.root, path)?;
+        Ok(accounts::login_chosen_words(first.as_deref()))
     }
 
     fn set_defaults(&self, defaults: SessionDefaults) {
@@ -899,7 +902,7 @@ impl Backend for FakeBackend {
         Ok(format!("Arko saved the {provider} key."))
     }
 
-    fn set_chatgpt_login(&self, path: &Path) -> Result<(), String> {
+    fn set_chatgpt_login(&self, path: &Path) -> Result<String, String> {
         if path.file_name().is_none_or(|name| name != "auth.json") {
             return Err(format!(
                 "Could not use {}: it holds no ChatGPT login.",
@@ -907,7 +910,7 @@ impl Backend for FakeBackend {
             ));
         }
         self.with_state(|state| state.accounts.chatgpt = accounts::chosen_login(path.into()));
-        Ok(())
+        Ok(accounts::login_chosen_words(None))
     }
 
     fn set_defaults(&self, defaults: SessionDefaults) {

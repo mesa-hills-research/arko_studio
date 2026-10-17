@@ -778,10 +778,7 @@ pub fn use_login(this: &Entity<AccountsPage>, path: PathBuf, window: &mut Window
             let chosen = choosing.await;
             cx.update(|window, cx| {
                 match chosen {
-                    Ok(()) => window.push_notification(
-                        "Arko uses this ChatGPT login from now on, in new sessions and the terminal app.",
-                        cx,
-                    ),
+                    Ok(said) => window.push_notification(said, cx),
                     Err(why) => window.push_notification(Notification::error(why), cx),
                 }
                 this.update(cx, |page, cx| page.refresh(cx));
@@ -863,20 +860,29 @@ impl KeyForm {
     }
 }
 
+/// What a key saved in Arko's folder does to the key in use, `state`, if
+/// there is one. A key from the environment or another `.env` file comes
+/// before Arko's folder's when Arko starts, so the new one wins only until
+/// the app quits.
+pub fn replacing_words(state: &KeyState, home: Option<&std::path::Path>) -> Option<String> {
+    match (&state.masked, &state.source) {
+        (Some(masked), Some(KeySource::Arko(_))) => {
+            Some(format!("It replaces {masked} in Arko’s folder."))
+        }
+        (Some(masked), Some(source)) => Some(format!(
+            "Arko uses it in place of {masked} until Arko Studio quits. After that, {} {} comes first again: change it there to replace it for good.",
+            state.variable,
+            source_words(source, home)
+        )),
+        _ => None,
+    }
+}
+
 impl Render for KeyForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let replacing = replacing_words(&self.state, self.page.read(cx).home.as_deref());
         let theme = cx.theme();
         let key = self.state.key;
-        let replacing = match (&self.state.masked, &self.state.source) {
-            (Some(masked), Some(KeySource::Arko(_))) => {
-                Some(format!("It replaces {masked} in Arko’s folder."))
-            }
-            (Some(masked), Some(_)) => Some(format!(
-                "Arko uses it in place of {masked} from now on. The terminal app still reads {} first where it’s set.",
-                self.state.variable
-            )),
-            _ => None,
-        };
         v_flex()
             .id("key-form")
             .test_support()
@@ -936,7 +942,7 @@ impl Render for KeyForm {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{claude_code_words, effort_options};
+    use super::{claude_code_words, effort_options, replacing_words};
     use crate::backend::account_words::{ClaudeCodeStatus, Problem, Ready};
     use std::path::{Path, PathBuf};
 
@@ -981,6 +987,31 @@ mod tests {
         };
         let words = claude_code_words(&status(Some(path), Ok(api)), home);
         assert!(words.contains("may be billed per token"), "{words}");
+    }
+
+    /// A key saved in Arko's folder replaces one saved there for good, and
+    /// one from the environment or another `.env` only until the app quits.
+    #[test]
+    fn a_replaced_key_says_for_how_long() {
+        let home = Path::new("/home/ada");
+        let sample = crate::backend::Accounts::sample(home, Path::new("/home/ada/.local/arko"));
+        let words = |id: &str| replacing_words(sample.key(id).unwrap(), Some(home));
+        assert_eq!(
+            words("anthropic").as_deref(),
+            Some("It replaces sk-ant-…3f9a in Arko’s folder.")
+        );
+        assert_eq!(
+            words("openai").as_deref(),
+            Some(
+                "Arko uses it in place of sk-…b20c until Arko Studio quits. After that, OPENAI_API_KEY from the environment comes first again: change it there to replace it for good."
+            )
+        );
+        assert!(
+            words("gemini")
+                .unwrap()
+                .contains("GEMINI_API_KEY from ~/src/arko/.env comes first again")
+        );
+        assert_eq!(words("voyage"), None);
     }
 
     #[test]

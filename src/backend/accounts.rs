@@ -160,6 +160,39 @@ pub fn tilde(path: &Path, home: Option<&Path>) -> String {
     }
 }
 
+/// The variable that names the Codex auth file of the ChatGPT login.
+pub const CODEX_AUTH_VARIABLE: &str = "ARKO_CODEX_AUTH";
+
+/// Where [`CODEX_AUTH_VARIABLE`] is set ahead of Arko's folder's `.env`,
+/// in words ("from the environment"), if it is: a login chosen in the app
+/// is saved in Arko's folder, so that one comes first again in later runs.
+pub fn login_set_first() -> Option<String> {
+    // Without Arko's folder: the environment and the `.env` beside the
+    // program, what arko reads before it.
+    arko::Env::for_folder_in(None, true, None).var(CODEX_AUTH_VARIABLE)?;
+    let from_environment =
+        std::env::var(CODEX_AUTH_VARIABLE).is_ok_and(|value| !value.trim().is_empty());
+    Some(if from_environment {
+        "from the environment".to_string()
+    } else {
+        "from the .env beside Arko Studio".to_string()
+    })
+}
+
+/// What choosing a ChatGPT login did, when `first` (from
+/// [`login_set_first`]) sets one ahead of Arko's folder in later runs.
+pub fn login_chosen_words(first: Option<&str>) -> String {
+    match first {
+        None => {
+            "Arko uses this ChatGPT login from now on, in new sessions and in arko in the terminal."
+                .to_string()
+        }
+        Some(source) => format!(
+            "Arko uses this ChatGPT login until Arko Studio quits. After that, {CODEX_AUTH_VARIABLE} {source} comes first again: change it there to replace it for good."
+        ),
+    }
+}
+
 /// The ChatGPT login after `path` was chosen, as arko keeps it.
 pub fn chosen_login(path: PathBuf) -> ChatGptLogin {
     ChatGptLogin {
@@ -224,6 +257,19 @@ mod tests {
         )
         .unwrap();
         assert!(set(root.path()));
+    }
+
+    /// A ChatGPT login chosen in the app is saved in Arko's folder, so one
+    /// set ahead of it wins again in later runs, and the app says so.
+    #[test]
+    fn a_chosen_login_says_for_how_long() {
+        assert!(login_chosen_words(None).contains("from now on"));
+        let words = login_chosen_words(Some("from the environment"));
+        assert!(words.contains("until Arko Studio quits"), "{words}");
+        assert!(
+            words.contains("ARKO_CODEX_AUTH from the environment comes first again"),
+            "{words}"
+        );
     }
 
     #[test]
