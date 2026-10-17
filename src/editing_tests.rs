@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arko::remote::Kind;
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
 
@@ -421,5 +422,94 @@ fn the_draft_kept_while_editing_is_the_users_own(cx: &mut TestAppContext) {
     app.set_composer(cx, "Count the apples.");
     app.rest(cx);
     assert_eq!(app.kept_draft(cx).as_deref(), Some("my unsent draft"));
+    app.close_all(cx);
+}
+
+/// The mock model of `answers`, slow to answer "Slow one".
+fn answers_with_a_slow_one() -> Mock {
+    Mock::start(|_, body| {
+        if body.contains("Slow one") {
+            return crate::testing::reply_after(
+                "a1",
+                "Slow done.",
+                std::time::Duration::from_secs(3),
+            );
+        }
+        let text = if body.contains("And the plums?") {
+            "Three plums."
+        } else {
+            "Seven pears."
+        };
+        reply("a1", text)
+    })
+}
+
+/// Sends `text` to the session as a message from elsewhere (the web page),
+/// which starts a turn, and waits for it to start.
+fn turn_from_elsewhere(app: &App, cx: &mut TestAppContext, text: &str) {
+    let session = cx.read(|cx| app.view.read(cx).live_session().cloned().unwrap());
+    cx.update(|cx| {
+        session.update(cx, |session, cx| {
+            session.send(
+                arko::Input::Message(arko::Message {
+                    text: text.into(),
+                    images: Vec::new(),
+                }),
+                cx,
+            )
+        })
+    })
+    .unwrap();
+    wait_until(cx, "the other turn", |cx| {
+        cx.read(|cx| session.read(cx).is_working())
+    });
+}
+
+/// A turn that started while a message was edited: sending the edit says
+/// why it can't go yet instead of asking, and the edit stays. If the turn
+/// starts while the dialog asks, a refused Branch instead keeps the edit too.
+#[gpui_kit::test]
+fn an_edit_that_cant_go_yet_stays_in_the_composer(cx: &mut TestAppContext) {
+    let mock = answers_with_a_slow_one();
+    let app = start(cx, &mock);
+    app.send(cx, "Count the pears.");
+    app.wait_for(cx, "Seven pears.");
+    app.wait_idle(cx);
+    app.send(cx, "And the plums?");
+    app.wait_for(cx, "Three plums.");
+    app.wait_idle(cx);
+    let original = cx.read(|cx| app.view.read(cx).live_session().cloned().unwrap());
+    let editing = |cx: &mut TestAppContext| cx.read(|cx| app.view.read(cx).is_editing());
+    // The dialog asks, then a turn starts from elsewhere: the branch is
+    // refused, and the edit is still there.
+    act(cx, app.window, |window, cx| window.press("up", cx));
+    app.set_composer(cx, "The plums, carefully worded.");
+    act(cx, app.window, |window, cx| window.press("enter", cx));
+    act(cx, app.window, |window, _| {
+        assert!(window.try_find("edit-dialog").is_some());
+    });
+    turn_from_elsewhere(&app, cx, "Slow one");
+    act(cx, app.window, |window, cx| window.click("edit-branch", cx));
+    wait_until(cx, "the refusal", |cx| {
+        cx.update_window(app.window, |_, window, cx| {
+            !window.notifications(cx).is_empty()
+        })
+        .unwrap()
+    });
+    assert!(cx.read(|cx| {
+        app.view
+            .read(cx)
+            .live_session()
+            .is_some_and(|session| session.entity_id() == original.entity_id())
+    }));
+    assert_eq!(app.composer_text(cx), "The plums, carefully worded.");
+    assert!(editing(cx));
+    // While the turn runs, sending the edit says why it waits: no dialog.
+    act(cx, app.window, |window, cx| window.press("enter", cx));
+    act(cx, app.window, |window, cx| {
+        assert!(!window.has_active_dialog(cx));
+    });
+    assert_eq!(app.composer_text(cx), "The plums, carefully worded.");
+    assert!(editing(cx));
     app.close_all(cx);
 }

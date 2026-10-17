@@ -1140,6 +1140,15 @@ impl SessionView {
         let Some(item) = self.editing.as_ref().map(|editing| editing.item) else {
             return;
         };
+        // A turn that started meanwhile (from the web page, the workers'
+        // news): the edit waits in the composer, and the user knows why.
+        if let Some(busy) = self
+            .transcript(cx)
+            .and_then(|transcript| transcript.read(cx).busy_reason())
+        {
+            window.push_notification(format!("{busy}."), cx);
+            return;
+        }
         let message = arko::Message {
             text: outgoing.text,
             images: outgoing.images.iter().map(Attached::to_arko).collect(),
@@ -1195,8 +1204,16 @@ impl SessionView {
                 .detach();
             }
             Choice::Branch => {
-                self.edited(&text, window, cx);
-                self.branch(session, Some(item), Some(message), None, window, cx);
+                // The edit ends once the branch exists: refused, it stays.
+                self.branch(
+                    session,
+                    Some(item),
+                    Some(message),
+                    None,
+                    Some(text),
+                    window,
+                    cx,
+                );
             }
         }
     }
@@ -1283,7 +1300,7 @@ impl SessionView {
                             .map(Attached::to_arko)
                             .collect(),
                     });
-                self.branch(session, Some(last), first, None, window, cx);
+                self.branch(session, Some(last), first, None, None, window, cx);
             }
         }
     }
@@ -1308,15 +1325,21 @@ impl SessionView {
         let draft = before
             .and_then(|item| transcript.and_then(|transcript| transcript.message(item)))
             .map(|(text, _)| text);
-        self.branch(session, before, None, draft, window, cx);
+        self.branch(session, before, None, draft, None, window, cx);
     }
 
+    /// Branches `session` before the message `before` (or all of it), and
+    /// opens the branch, with `first` as its first message or `draft` in its
+    /// composer. `edit` is the edited text the branch goes on with: the
+    /// edit ends once the branch exists, and stays if it can't be made.
+    #[allow(clippy::too_many_arguments)]
     fn branch(
         &mut self,
         session: Entity<LiveSession>,
         before: Option<u64>,
         first: Option<arko::Message>,
         draft: Option<String>,
+        edit: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1337,6 +1360,9 @@ impl SessionView {
                     effort: Some(models.main_effort.clone()).filter(|effort| !effort.is_empty()),
                 }
             };
+            if let Some(text) = &edit {
+                self.edited(text, window, cx);
+            }
             let created = LiveSession::create(new, arko::Input::Message(first), cx);
             cx.emit(SessionViewEvent::Created(created));
             return;
@@ -1344,8 +1370,11 @@ impl SessionView {
         let branching = session.read(cx).branch(before, cx);
         cx.spawn_in(window, async move |this, cx| {
             let branched = branching.await;
-            this.update_in(cx, |_, window, cx| match branched {
+            this.update_in(cx, |this, window, cx| match branched {
                 Ok(id) => {
+                    if let Some(text) = &edit {
+                        this.edited(text, window, cx);
+                    }
                     let entry = session.read(cx).branch_entry(id);
                     cx.emit(SessionViewEvent::OpenBranch(Box::new(Branched {
                         entry,
