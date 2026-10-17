@@ -67,7 +67,7 @@ fn a_new_session_starts_as_settings_say(cx: &mut TestAppContext) {
     cx.read(|cx| {
         let view = workspace.read(cx).session_view().read(cx);
         assert_eq!(view.draft().mode, Mode::Chat);
-        assert_eq!(view.draft_model().as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(view.draft_model(cx).as_deref(), Some("claude-sonnet-5-5"));
     });
     assert_eq!(backend.defaults().mode, Mode::Chat);
     cx.update(|cx| prefs::update(cx, |prefs| prefs.new_sessions.handover_at = Some(400_000)));
@@ -83,6 +83,33 @@ fn a_new_session_starts_as_settings_say(cx: &mut TestAppContext) {
     let (_, second) = open(cx, 1300.);
     let mode = cx.read(|cx| second.read(cx).session_view().read(cx).draft().mode);
     assert_eq!(mode, Mode::Agent);
+}
+
+/// The default model and effort, changed in Settings while a window is
+/// open: its new session's chip names them, and the session starts on
+/// them.
+#[gpui_kit::test]
+fn the_chip_follows_the_defaults_set_in_settings(cx: &mut TestAppContext) {
+    start_with(cx, prefs::Prefs::default());
+    let (window, workspace) = open(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let chip = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).chip_label(cx));
+    assert_eq!(chip(cx), "Agent · Opus 5.5");
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.new_sessions.model = Some("claude-sonnet-5-5".into());
+            prefs.new_sessions.effort = Some("high".into());
+        })
+    });
+    act(cx, window, |_, _| {});
+    assert_eq!(chip(cx), "Agent · Sonnet 5.5 · high");
+    act(cx, window, |window, cx| window.input("Hello", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    let started = cx.read(|cx| view.read(cx).session(cx).map(|session| session.model));
+    assert_eq!(
+        started.map(|model| arko::models::display_name(&model)),
+        Some("Sonnet 5.5".to_string())
+    );
 }
 
 /// A key is added in a masked field, replaced, and removed after a

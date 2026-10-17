@@ -285,16 +285,6 @@ impl ModelChoices {
             group.needs.is_none() && group.models.iter().any(|model| model.name == name)
         })
     }
-
-    /// With `model` (the default set in Settings) as the default, when
-    /// there is one: a new session starts on it.
-    pub fn preferring(mut self, model: Option<&str>) -> Self {
-        if let Some(model) = model {
-            self.default = Some(model.to_string());
-            self.note = None;
-        }
-        self
-    }
 }
 
 /// What Arko Studio needs from arko's engine to list, manage and start
@@ -321,7 +311,8 @@ pub trait Backend: Send + Sync + 'static {
     fn delete(&self, id: &SessionId) -> Result<(), BackendError>;
 
     /// The models a new session in `folder` (none: a chat) can start on,
-    /// and its default. May run `claude auth status`.
+    /// and the one arko chooses when neither the composer nor Settings
+    /// chose one. May run `claude auth status`.
     fn models(&self, folder: Option<&Path>) -> ModelChoices;
 
     /// Starts a session, at once: it opens on threads of its own, asking
@@ -507,7 +498,7 @@ impl Backend for ArkoBackend {
         let models = arko::models::for_new_session(&self.root, folder);
         let mut choices = ModelChoices::from_arko(models.groups, models.main);
         choices.note = models.note;
-        choices.preferring(self.defaults().model.as_deref())
+        choices
     }
 
     fn start(&self, start: Start, prompter: Arc<dyn arko::Prompter>) -> Launch {
@@ -792,9 +783,7 @@ impl Backend for FakeBackend {
     }
 
     fn models(&self, _: Option<&Path>) -> ModelChoices {
-        self.models
-            .clone()
-            .preferring(self.defaults().model.as_deref())
+        self.models.clone()
     }
 
     fn start(&self, start: Start, _: Arc<dyn arko::Prompter>) -> Launch {
@@ -821,9 +810,12 @@ impl Backend for FakeBackend {
                     title: "New session".into(),
                     mode: new.mode,
                     workspace: new.folder.filter(|_| new.mode == Mode::Agent),
+                    // As arko starts one: the composer's model, else the
+                    // one Settings set, else its own choice.
                     model: new
                         .model
-                        .or_else(|| self.models(None).default)
+                        .or_else(|| self.defaults().model)
+                        .or_else(|| self.models.default.clone())
                         .unwrap_or_default(),
                     created: SystemTime::now(),
                     last_active: None,
@@ -1100,22 +1092,6 @@ mod tests {
         let options = backend.options(Start::Resume(SessionId("s1".into())));
         assert_eq!(options.model, None);
         assert_eq!(options.handover_at, None);
-    }
-
-    #[test]
-    fn the_default_model_set_in_settings_is_the_new_sessions() {
-        let backend = backend();
-        assert_eq!(
-            backend.models(None).default.as_deref(),
-            Some("claude-opus-5-5")
-        );
-        let mut prefs = crate::prefs::Prefs::default();
-        prefs.new_sessions.model = Some("claude-sonnet-5-5".into());
-        backend.set_defaults(SessionDefaults::from_prefs(&prefs));
-        assert_eq!(
-            backend.models(None).default.as_deref(),
-            Some("claude-sonnet-5-5")
-        );
     }
 
     /// A chat is created in no folder of the user's, even when one was

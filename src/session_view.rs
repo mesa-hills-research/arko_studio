@@ -128,6 +128,8 @@ pub struct SessionView {
     /// The models a new session can start on, for the folder they were
     /// listed for.
     models: Option<(Option<PathBuf>, ModelChoices)>,
+    /// The model and effort Settings set for new sessions, as last drawn.
+    defaults_shown: (Option<String>, Option<String>),
     composer: Entity<Composer>,
     composer_empty: bool,
     width: WidthClass,
@@ -175,7 +177,8 @@ impl SessionView {
         let mut subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::on_composer_event),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
-                this.sync_expanded(window, cx)
+                this.sync_expanded(window, cx);
+                this.sync_defaults(cx);
             }),
             cx.observe_window_bounds(window, |this, window, cx| this.sync_expanded(window, cx)),
             cx.observe(&model_filter, |_, _, cx| cx.notify()),
@@ -214,6 +217,7 @@ impl SessionView {
             recent_folders: Vec::new(),
             home: cx.global::<HomeFolder>().0.clone(),
             models: None,
+            defaults_shown: (settings_model(cx), settings_effort(cx)),
             composer,
             composer_empty: true,
             width: WidthClass::Wide,
@@ -284,7 +288,7 @@ impl SessionView {
                 let main = &session.read(cx).reading().models.main;
                 (!main.is_empty()).then(|| main.clone())
             }
-            None => self.draft_model(),
+            None => self.draft_model(cx),
         }
     }
 
@@ -351,13 +355,39 @@ impl SessionView {
         }));
     }
 
-    /// The model a new session would start on.
-    pub fn draft_model(&self) -> Option<String> {
-        self.draft.model.clone().or_else(|| {
-            self.models
-                .as_ref()
-                .and_then(|(_, models)| models.default.clone())
-        })
+    /// The model a new session would start on: the one chosen in the chip's
+    /// popover, else the one Settings set, else the one arko would choose.
+    /// Settings are read as they are now, since they can change while the
+    /// window is open.
+    pub fn draft_model(&self, cx: &App) -> Option<String> {
+        self.draft
+            .model
+            .clone()
+            .or_else(|| settings_model(cx))
+            .or_else(|| {
+                self.models
+                    .as_ref()
+                    .and_then(|(_, models)| models.default.clone())
+            })
+    }
+
+    /// The effort a new session would start with: the one chosen with its
+    /// model, else the one Settings set. `None`: its model's default.
+    pub fn draft_effort(&self, cx: &App) -> Option<String> {
+        self.draft.effort.clone().or_else(|| settings_effort(cx))
+    }
+
+    /// Draws again when the model or effort Settings set for new sessions
+    /// changed, since a new session's chip shows them.
+    fn sync_defaults(&mut self, cx: &mut Context<Self>) {
+        let defaults = (settings_model(cx), settings_effort(cx));
+        if defaults != self.defaults_shown {
+            self.defaults_shown = defaults;
+            if self.session.is_none() {
+                self.sync_image_model(cx);
+                cx.notify();
+            }
+        }
     }
 
     /// The line the empty transcript of a new session shows: "New agent
@@ -1649,9 +1679,9 @@ impl SessionView {
                 )
             }
             None => (
-                self.draft_model()
+                self.draft_model(cx)
                     .map(|model| arko::models::display_name(&model)),
-                self.draft.effort.clone(),
+                self.draft_effort(cx),
             ),
         };
         match (model, self.width) {
@@ -1713,7 +1743,7 @@ impl SessionView {
                     .as_ref()
                     .map(|(_, models)| models.clone())
                     .unwrap_or_default(),
-                self.draft_model(),
+                self.draft_model(cx),
                 false,
             ),
             Some(session) => {
@@ -1836,7 +1866,7 @@ impl SessionView {
                     &[model.as_str()],
                 );
                 let chosen = match &self.session {
-                    None => self.draft.effort.clone(),
+                    None => self.draft_effort(cx),
                     Some(session) => Some(session.read(cx).reading().models.main_effort.clone()),
                 };
                 (model, efforts, chosen)
@@ -2627,6 +2657,25 @@ fn default_mode(cx: &App) -> Mode {
         prefs::NewSessionMode::Chat => Mode::Chat,
         prefs::NewSessionMode::Agent => Mode::Agent,
     }
+}
+
+/// The main agent's model Settings set for new sessions, as the backend
+/// takes it.
+fn settings_model(cx: &App) -> Option<String> {
+    prefs::get(cx)
+        .new_sessions
+        .model
+        .clone()
+        .filter(|model| !model.trim().is_empty())
+}
+
+/// The effort Settings set for new sessions, when arko takes it.
+fn settings_effort(cx: &App) -> Option<String> {
+    prefs::get(cx)
+        .new_sessions
+        .effort
+        .clone()
+        .filter(|effort| effort.parse::<arko::Effort>().is_ok())
 }
 
 /// The folders of `sessions` that ran agents, the most recently active
