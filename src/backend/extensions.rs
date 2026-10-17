@@ -444,7 +444,7 @@ mod tests {
                 other.display()
             ),
         );
-        let read_now = || read(&root, &[project.clone()], &[], None);
+        let read_now = || read(&root, std::slice::from_ref(&project), &[], None);
         let found = read_now();
         assert_eq!(found.projects.len(), 2, "answered folders are listed too");
         assert_eq!(found.projects[0].approval, Approval::Approved);
@@ -471,7 +471,7 @@ mod tests {
         );
         write(&root.join("skills/notes/SKILL.md"), "No front matter");
         std::fs::create_dir_all(home.join(".agents/skills")).unwrap();
-        let found = read(&root, &[project.clone()], &[], Some(&home));
+        let found = read(&root, std::slice::from_ref(&project), &[], Some(&home));
         let of: Vec<&SkillsOf> = found.skills.iter().map(|folder| &folder.of).collect();
         assert_eq!(
             of,

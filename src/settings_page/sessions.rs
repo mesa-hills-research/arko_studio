@@ -331,7 +331,7 @@ pub fn parse_handover(text: &str) -> Result<Option<usize>, String> {
         .parse::<usize>()
         .ok()
         .and_then(|tokens| tokens.checked_mul(scale))
-        .ok_or_else(|| format!("Give a number of tokens, such as 200000 or 200k."))?;
+        .ok_or_else(|| "Give a number of tokens, such as 200000 or 200k.".to_string())?;
     if tokens < MIN_HANDOVER {
         return Err(format!(
             "At least {}k: a fresh conversation would start near it.",
@@ -343,7 +343,7 @@ pub fn parse_handover(text: &str) -> Result<Option<usize>, String> {
 
 /// A number of tokens as the field shows it: `950k`, or the number.
 pub fn shown_tokens(tokens: usize) -> String {
-    if tokens % 1000 == 0 {
+    if tokens.is_multiple_of(1000) {
         format!("{}k", tokens / 1000)
     } else {
         tokens.to_string()
@@ -388,8 +388,8 @@ pub fn parse_background_after(text: &str) -> Result<Option<u64>, String> {
 pub fn shown_background_after(seconds: u64) -> String {
     match seconds {
         0 => "off".into(),
-        seconds if seconds % 3_600 == 0 => format!("{}h", seconds / 3_600),
-        seconds if seconds % 60 == 0 => format!("{}m", seconds / 60),
+        seconds if seconds.is_multiple_of(3_600) => format!("{}h", seconds / 3_600),
+        seconds if seconds.is_multiple_of(60) => format!("{}m", seconds / 60),
         seconds => format!("{seconds}s"),
     }
 }

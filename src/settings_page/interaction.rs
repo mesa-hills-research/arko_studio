@@ -374,7 +374,11 @@ fn mcp_config_files_are_added_and_removed(cx: &mut TestAppContext) {
             settings.add_mcp_configs(vec![file.clone(), file.clone()], cx)
         })
     });
-    assert_eq!(backend.defaults().mcp_config, [file.clone()], "once");
+    assert_eq!(
+        backend.defaults().mcp_config,
+        std::slice::from_ref(&file),
+        "once"
+    );
     act(cx, window, |window, cx| {
         window.click(("remove-mcp-config", 0usize), cx)
     });
