@@ -763,6 +763,36 @@ fn a_mentions_token_tells_files_of_one_name_apart(cx: &mut TestAppContext) {
     assert_eq!(text, "See src/a/mod.rs and (`docs/my notes.md` ");
 }
 
+/// The first "@" lists the folder off the UI thread: the list says so
+/// meanwhile, and shows the files once they come.
+#[gpui_kit::test]
+fn the_first_at_says_the_files_are_being_listed(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    let root = folder.path().to_path_buf();
+    std::fs::write(root.join("README.md"), "").unwrap();
+    let (_, window, workspace) = start(cx);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    cx.update(|cx| view.update(cx, |view, cx| view.set_draft_folder(root.clone(), cx)));
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    let menu = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            composer
+                .read(cx)
+                .menu()
+                .map(|menu| (menu.note.clone(), menu.items.len()))
+        })
+    };
+    cx.update_window(window, |_, window, cx| window.input("See @", cx))
+        .unwrap();
+    assert_eq!(menu(cx), Some((Some("Listing files…".into()), 0)));
+    // Enter sends as typed meanwhile, and Tab chooses nothing.
+    let takes_enter = cx.read(|cx| composer.read(cx).menu().map(|menu| menu.takes_enter));
+    assert_eq!(takes_enter, Some(false));
+    crate::testing::wait_until(cx, "the files", |cx| {
+        menu(cx).is_some_and(|(note, items)| note.is_none() && items == 1)
+    });
+}
+
 /// Branching needs the session to run: a session this app hasn't opened
 /// offers Branch from Here, but disabled.
 #[gpui_kit::test]

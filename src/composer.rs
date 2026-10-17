@@ -216,6 +216,9 @@ pub struct SlashMenu {
     /// word) or that the user moved to. Otherwise Enter does what it does
     /// without a menu. Tab always takes the choice.
     pub takes_enter: bool,
+    /// What the menu says while it has no choices yet: the folder is being
+    /// listed.
+    pub note: Option<SharedString>,
 }
 
 /// The commands the menu offers: the session's, and the screen ones the
@@ -250,6 +253,7 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
             kind: MenuKind::Command,
             complete,
             takes_enter: true,
+            note: None,
         });
     };
     let name = &text[..space];
@@ -283,6 +287,7 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
         kind: MenuKind::Command,
         complete,
         takes_enter: true,
+        note: None,
     })
 }
 
@@ -314,6 +319,7 @@ fn mention_list(ranked: Vec<crate::mentions::Ranked>, range: Range<usize>) -> Op
         kind: MenuKind::Mention,
         complete: false,
         takes_enter: strong,
+        note: None,
     })
 }
 
@@ -777,8 +783,18 @@ impl Composer {
                 files
             }
             None => {
+                // The first time, the folder is listed off the UI thread
+                // (seconds on a cold disk): the menu says so meanwhile.
                 self.list_files(folder, cx);
-                return None;
+                return Some(SlashMenu {
+                    items: Vec::new(),
+                    selected: 0,
+                    range,
+                    kind: MenuKind::Mention,
+                    complete: false,
+                    takes_enter: false,
+                    note: Some("Listing files…".into()),
+                });
             }
         };
         self.rank_mentions(files, typed, range.clone(), cx);
@@ -884,7 +900,8 @@ impl Composer {
                 ));
                 this.narrowed.clear();
                 let text = this.text(cx);
-                if this.menu.is_none() && this.dismissed.as_deref() != Some(text.as_str()) {
+                let waiting = this.menu.as_ref().is_none_or(|menu| menu.note.is_some());
+                if waiting && this.dismissed.as_deref() != Some(text.as_str()) {
                     this.menu = this.mention_menu(&text, None, cx);
                     cx.notify();
                 }
@@ -898,7 +915,11 @@ impl Composer {
         let Some(menu) = self.menu.take() else {
             return;
         };
-        let item = &menu.items[menu.selected];
+        let Some(item) = menu.items.get(menu.selected) else {
+            // Nothing to choose yet.
+            self.menu = Some(menu);
+            return;
+        };
         if menu.kind == MenuKind::Mention {
             self.insert_mention(menu.range.clone(), item.insert.clone(), window, cx);
             return;
@@ -973,7 +994,7 @@ impl Composer {
     }
 
     fn move_menu(&mut self, step: isize, cx: &mut Context<Self>) {
-        if let Some(menu) = &mut self.menu {
+        if let Some(menu) = self.menu.as_mut().filter(|menu| !menu.items.is_empty()) {
             let count = menu.items.len() as isize;
             menu.selected = (menu.selected as isize + step).rem_euclid(count) as usize;
             menu.takes_enter = true;
@@ -1063,7 +1084,11 @@ impl Composer {
     }
 
     fn on_tab(&mut self, _: &IndentInline, window: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.is_some() {
+        if self
+            .menu
+            .as_ref()
+            .is_some_and(|menu| !menu.items.is_empty())
+        {
             self.accept_menu(window, cx);
             cx.stop_propagation();
         }
@@ -1281,6 +1306,16 @@ impl Composer {
             .rounded(theme.radius_lg)
             .shadow_md()
             .children(rows)
+            .children(menu.note.clone().map(|note| {
+                div()
+                    .id("slash-note")
+                    .test_support()
+                    .px_2()
+                    .py_1()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child(note)
+            }))
     }
 }
 
