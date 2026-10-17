@@ -25,8 +25,11 @@ use crate::theme_picker::ThemePicker;
 use crate::{fonts, menus, paths};
 
 mod accounts;
+mod fields;
+mod sessions;
 
 pub use accounts::AccountsPage;
+pub use sessions::SessionsPage;
 
 actions!(settings_page, [CloseSettings]);
 
@@ -57,6 +60,7 @@ pub struct SettingsPage {
     ui_font: Entity<FontPickerState>,
     code_font: Entity<FontPickerState>,
     accounts: Entity<AccountsPage>,
+    sessions: Entity<SessionsPage>,
     /// The page to show, set from outside (the command palette), and how
     /// many times it was: the page list starts afresh on it each time.
     page: usize,
@@ -96,8 +100,10 @@ impl SettingsPage {
         );
         let code_font = picker(&appearance.code_font, true, bundled, added, window, cx);
         let accounts = cx.new(AccountsPage::new);
+        let sessions = cx.new(|cx| SessionsPage::new(window, cx));
         let subscriptions = vec![
             cx.observe(&accounts, |_, _, cx| cx.notify()),
+            cx.observe(&sessions, |_, _, cx| cx.notify()),
             cx.subscribe(&ui_font, |_, _, event: &FontPickerEvent, cx| {
                 let FontPickerEvent::Change(font) = event else {
                     return;
@@ -123,6 +129,7 @@ impl SettingsPage {
             ui_font,
             code_font,
             accounts,
+            sessions,
             page: 0,
             shown: 0,
             _subscriptions: subscriptions,
@@ -151,6 +158,10 @@ impl SettingsPage {
 
     pub fn accounts(&self) -> &Entity<AccountsPage> {
         &self.accounts
+    }
+
+    pub fn sessions(&self) -> &Entity<SessionsPage> {
+        &self.sessions
     }
 
     /// Asks for a font file, copies it into Arko's folder and offers it in
@@ -233,7 +244,7 @@ impl SettingsPage {
             self.appearance_page(cx),
             input_page(),
             self.accounts.read(cx).page(&self.accounts, cx),
-            sessions_page(),
+            self.sessions.read(cx).page(),
             notifications_page(),
             planned_page(
                 PAGES[5],
@@ -652,64 +663,6 @@ fn notifications_page() -> SettingPage {
                 defaults.sound,
             ),
         ]))
-}
-
-/// Sessions: asking before quitting works, and the defaults for new
-/// sessions come later.
-fn sessions_page() -> SettingPage {
-    let defaults = prefs::SessionPrefs::default();
-    SettingPage::new(PAGES[3])
-        .icon(IconName::FolderOpen)
-        .groups([
-            SettingGroup::new().title("Quitting").item(switch(
-                "Ask about running work",
-                "Before quitting or closing a session stops background jobs and workers.",
-                |prefs| prefs.sessions.ask_before_quit,
-                |prefs, on| prefs.sessions.ask_before_quit = on,
-                defaults.ask_before_quit,
-            )),
-            SettingGroup::new()
-                .title("New sessions")
-                .description("These settings come with a later version.")
-                .items(
-                    [
-                        (
-                            "Handover size",
-                            "When the main agent and workers hand over to a fresh conversation.",
-                        ),
-                        (
-                            "Background after",
-                            "When a running command moves to the background.",
-                        ),
-                        (
-                            "Outside access",
-                            "Whether new sessions may touch files outside their folder.",
-                        ),
-                        (
-                            "Text replies",
-                            "Whether the agent ends its turns with a reply in text.",
-                        ),
-                        (
-                            "Claude Code compaction",
-                            "Whether Claude Code compacts or hands over.",
-                        ),
-                        (
-                            "Extra rules and project instructions",
-                            "What new agents are told.",
-                        ),
-                        (
-                            "Chat instructions",
-                            "Your custom instructions for new chats, and what happens at the context limit.",
-                        ),
-                    ]
-                    .into_iter()
-                    .map(|(title, description)| {
-                        SettingItem::new(title, SettingField::render(|_, _, _| div()))
-                            .description(description)
-                            .disabled(true)
-                    }),
-                ),
-        ])
 }
 
 /// A page whose settings come later: their names and what they'll do,

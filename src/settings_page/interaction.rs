@@ -162,3 +162,62 @@ fn logins_are_checked_and_chosen(cx: &mut TestAppContext) {
     let state = cx.read(|cx| page.read(cx).accounts().unwrap().chatgpt.state.clone());
     assert_eq!(state, LoginState::Ready);
 }
+
+/// Sizes and times are saved as soon as they read as arko reads them;
+/// until then the field says why, and the setting stays. A reset empties
+/// the field.
+#[gpui_kit::test]
+fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, 3, 2400.);
+    let page = cx.read(|cx| settings.read(cx).sessions().clone());
+    act(cx, window, |window, cx| window.click("handover-at", cx));
+    act(cx, window, |window, cx| window.input("5k", cx));
+    let errors = cx.read(|cx| page.read(cx).errors());
+    assert!(errors[0].is_some());
+    assert_eq!(cx.read(|cx| prefs::get(cx).new_sessions.handover_at), None);
+    act(cx, window, |window, _| {
+        assert!(window.try_find("handover-at-error").is_some());
+    });
+    act(cx, window, |window, cx| window.press("secondary-a", cx));
+    act(cx, window, |window, cx| window.input("500k", cx));
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.handover_at),
+        Some(500_000)
+    );
+    assert_eq!(backend.defaults().handover_at, Some(500_000));
+    assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
+
+    act(cx, window, |window, cx| {
+        window.click("background-after", cx)
+    });
+    act(cx, window, |window, cx| window.input("2h", cx));
+    assert!(cx.read(|cx| page.read(cx).errors())[2].is_some());
+    act(cx, window, |window, cx| window.press("secondary-a", cx));
+    act(cx, window, |window, cx| window.input("off", cx));
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.background_after),
+        Some(0)
+    );
+
+    act(cx, window, |window, cx| {
+        window.click("chat-instructions", cx)
+    });
+    act(cx, window, |window, cx| window.input("Answer briefly.", cx));
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.chat_instructions.clone()),
+        "Answer briefly."
+    );
+
+    // Reset, as the page's reset does it: the fields follow.
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.new_sessions.handover_at = None;
+            prefs.new_sessions.chat_instructions.clear();
+        })
+    });
+    act(cx, window, |_, _| {});
+    let typed = cx.read(|cx| page.read(cx).typed(cx));
+    assert_eq!(typed[0].as_ref(), "");
+    assert_eq!(typed[2].as_ref(), "off");
+}
