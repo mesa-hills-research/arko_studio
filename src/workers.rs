@@ -61,6 +61,13 @@ impl WorkerTimes {
     }
 }
 
+/// How long `worker` has worked at `now`, in milliseconds, over all its
+/// runs: what the lists and the worker's view show. `None` before it
+/// started.
+pub fn run_time_ms(worker: &WorkerSummary, times: &WorkerTimes, now: i64) -> Option<i64> {
+    times.total_ms(&worker.id, now)
+}
+
 /// Where a list of workers shows a worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {

@@ -614,10 +614,7 @@ impl WorkersPanel {
             } else {
                 worker.title.clone()
             },
-            elapsed: self
-                .source
-                .times
-                .total_ms(&worker.id, now)
+            elapsed: workers::run_time_ms(worker, &self.source.times, now)
                 .map(workers::elapsed_label),
             last: workers::last_line(worker)
                 .unwrap_or_else(|| workers::state_label(worker.state).to_string()),
@@ -696,7 +693,7 @@ impl WorkersPanel {
         let mut facts: Vec<String> = Vec::new();
         if let Some(worker) = self.worker(id) {
             facts.push(workers::state_label(worker.state).to_string());
-            if let Some(total) = self.source.times.total_ms(&worker.id, now) {
+            if let Some(total) = workers::run_time_ms(worker, &self.source.times, now) {
                 facts.push(workers::elapsed_label(total));
             }
             facts.push(match worker.tool_calls {
