@@ -1157,15 +1157,22 @@ impl SessionView {
             self.finish_edit(Choice::Change, item, message, window, cx);
             return;
         }
-        let after = self
-            .transcript(cx)
-            .map_or(0, |transcript| transcript.read(cx).messages_after(item));
+        let (after, no_branch) = self.transcript(cx).map_or((0, None), |transcript| {
+            let transcript = transcript.read(cx);
+            (
+                transcript.messages_after(item),
+                transcript
+                    .branch_loses_context(item)
+                    .then_some(editing::BRANCH_LOSES_THE_SUMMARY),
+            )
+        });
         let agent = self.mode(cx) == Mode::Agent;
         let view = cx.entity().downgrade();
         editing::confirm(
             Change::Edit,
             after,
             agent,
+            no_branch,
             window,
             cx,
             move |choice, window, cx| {
@@ -1249,12 +1256,17 @@ impl SessionView {
             return;
         }
         let after = transcript.read(cx).messages_after(last);
+        let no_branch = transcript
+            .read(cx)
+            .branch_loses_context(last)
+            .then_some(editing::BRANCH_LOSES_THE_SUMMARY);
         let agent = self.mode(cx) == Mode::Agent;
         let view = cx.entity().downgrade();
         editing::confirm(
             Change::Regenerate,
             after,
             agent,
+            no_branch,
             window,
             cx,
             move |choice, window, cx| {
