@@ -969,9 +969,7 @@ impl gpui_kit::Render for StatusPopovers {
             .child(card(
                 ContextDetails::new(&self.reading, status::NOW).into_any_element(),
             ))
-            .child(card(
-                CostDetails::new(Some(cost), &self.reading).into_any_element(),
-            ))
+            .child(card(CostDetails::new(Some(cost)).into_any_element()))
             .child(card(WebPagePanel::new(&status::page()).into_any_element()))
     }
 }

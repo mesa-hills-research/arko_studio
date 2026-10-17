@@ -133,8 +133,8 @@ impl Startup {
     /// kept in memory, the bundled themes and no fonts of its own, for
     /// `/home/ada`: for tests, which then read the same on every machine.
     pub fn for_tests(backend: Arc<dyn Backend>) -> Self {
-        // Animations play in real time. With motion off they rest on their
-        // first frame, so a test clicks where the last frame drew a dialog.
+        // Animations play in real time. With motion off they go straight to
+        // their end, so a test clicks where the last frame drew a dialog.
         let mut prefs = Prefs::default();
         prefs.appearance.motion = prefs::Motion::Off;
         Self {

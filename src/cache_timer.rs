@@ -161,7 +161,8 @@ pub fn answer_choices(cache: &CacheStatus) -> String {
 /// The timer, with what it means in its tooltip.
 pub fn cache_timer(timer: CacheTimer, cache: &CacheStatus, now: i64, cx: &App) -> AnyElement {
     let theme = cx.theme();
-    let tooltip = cache_tooltip(timer, cache, now);
+    // Written when it shows, not with every second's draw.
+    let cache = cache.clone();
     h_flex()
         .id("status-cache")
         .test_support()
@@ -174,7 +175,9 @@ pub fn cache_timer(timer: CacheTimer, cache: &CacheStatus, now: i64, cx: &App) -
         })
         .child(Icon::new(gpui_kit::assets::IconName::Timer).xsmall())
         .child(timer.label())
-        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .tooltip(move |window, cx| {
+            Tooltip::new(cache_tooltip(timer, &cache, now)).build(window, cx)
+        })
         .into_any_element()
 }
 

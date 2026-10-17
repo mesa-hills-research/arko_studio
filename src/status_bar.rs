@@ -467,14 +467,7 @@ impl StatusBar {
                         .label(label)
                         .tooltip(figures::cost_tooltip(reading)),
                 )
-                .content(move |_, _, cx| {
-                    let bar = this.read(cx);
-                    let reading = bar
-                        .status(cx)
-                        .map(|(reading, _)| reading)
-                        .unwrap_or_default();
-                    CostDetails::new(bar.cost.clone(), &reading)
-                })
+                .content(move |_, _, cx| CostDetails::new(this.read(cx).cost.clone()))
                 .into_any_element(),
         )
     }
@@ -615,16 +608,12 @@ impl Render for StatusBar {
 #[derive(IntoElement)]
 pub struct CostDetails {
     report: Option<CostReport>,
-    reading: Arc<Reading>,
 }
 
 impl CostDetails {
     /// `report` as `/cost` says it, `None` while it is read.
-    pub fn new(report: Option<CostReport>, reading: &Arc<Reading>) -> Self {
-        Self {
-            report,
-            reading: reading.clone(),
-        }
+    pub fn new(report: Option<CostReport>) -> Self {
+        Self { report }
     }
 }
 
@@ -730,7 +719,6 @@ impl RenderOnce for CostDetails {
                 v_flex().gap_2().children(lines).into_any_element()
             }
         };
-        let _ = &self.reading;
         v_flex()
             .id("cost-details")
             .test_support()
