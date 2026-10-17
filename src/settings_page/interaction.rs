@@ -420,6 +420,12 @@ fn a_model_that_needs_a_key_opens_its_row(cx: &mut TestAppContext) {
         assert!(focus.is_focused(window));
         assert!(window.try_find("account-openai").is_some());
     });
+    // Enter on the row does what its button does: the key's dialog.
+    act(cx, window, |window, cx| window.press("enter", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        assert!(window.try_find("key-form").is_some());
+    });
     assert_eq!(
         super::accounts::account_for("Claude Code, on your Claude plan"),
         Some("claude-code")

@@ -126,8 +126,15 @@ impl AccountsPage {
     }
 
     /// The row's controls of `account`, focusable, and marked when the page
-    /// points at it.
-    fn row_field(&self, account: &'static str, controls: AnyElement, cx: &App) -> AnyElement {
+    /// points at it. With the keyboard on the row, Enter or Space does
+    /// `primary`, what its main button does (Add…, Choose file…).
+    fn row_field(
+        &self,
+        account: &'static str,
+        controls: AnyElement,
+        primary: impl Fn(&mut Window, &mut App) + 'static,
+        cx: &App,
+    ) -> AnyElement {
         let focus = self.focus_of(account);
         let marked = self.target == Some(account);
         let theme = cx.theme();
@@ -135,7 +142,20 @@ impl AccountsPage {
         h_flex()
             .id(SharedString::from(format!("account-{account}")))
             .test_support()
-            .when_some(focus, |this, focus| this.track_focus(&focus))
+            .when_some(focus, |this, focus| {
+                this.track_focus(&focus)
+                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                        let keystroke = &event.keystroke;
+                        // On the row itself: a button in it takes its own keys.
+                        if focus.is_focused(window)
+                            && !keystroke.modifiers.modified()
+                            && matches!(keystroke.key.as_str(), "enter" | "space")
+                        {
+                            cx.stop_propagation();
+                            primary(window, cx);
+                        }
+                    })
+            })
             .rounded(radius)
             .p_0p5()
             .when(marked, |this| this.border_1().border_color(ring))
@@ -563,6 +583,10 @@ impl AccountsPage {
             key.provider,
             SettingField::render(move |_, _, cx| {
                 let (add, remove) = (add.clone(), remove.clone());
+                let asking = add.clone();
+                let primary = move |window: &mut Window, cx: &mut App| {
+                    AccountsPage::ask_for_key(&asking, provider, window, cx)
+                };
                 let controls = h_flex()
                     .gap_1()
                     .when(removable, |this| {
@@ -586,7 +610,7 @@ impl AccountsPage {
                             }),
                     )
                     .into_any_element();
-                page.read(cx).row_field(provider, controls, cx)
+                page.read(cx).row_field(provider, controls, primary, cx)
             }),
         )
         .description(description)
@@ -632,6 +656,7 @@ impl AccountsPage {
                 "ChatGPT login",
                 SettingField::render(move |_, _, cx| {
                     let choose = choose.clone();
+                    let choosing = choose.clone();
                     let button = Button::new("choose-login")
                         .outline()
                         .small()
@@ -640,7 +665,12 @@ impl AccountsPage {
                             AccountsPage::choose_login(&choose, window, cx)
                         })
                         .into_any_element();
-                    login_page.read(cx).row_field(CHATGPT, button, cx)
+                    login_page.read(cx).row_field(
+                        CHATGPT,
+                        button,
+                        move |window, cx| AccountsPage::choose_login(&choosing, window, cx),
+                        cx,
+                    )
                 }),
             )
             .description(login)
@@ -649,6 +679,7 @@ impl AccountsPage {
                 "Claude Code",
                 SettingField::render(move |_, _, cx| {
                     let check = check.clone();
+                    let checking_again = check.clone();
                     let button = Button::new("check-claude-code")
                         .outline()
                         .small()
@@ -658,7 +689,12 @@ impl AccountsPage {
                             check.update(cx, |page, cx| page.check_again(cx));
                         })
                         .into_any_element();
-                    claude_page.read(cx).row_field(CLAUDE_CODE, button, cx)
+                    claude_page.read(cx).row_field(
+                        CLAUDE_CODE,
+                        button,
+                        move |_, cx| checking_again.update(cx, |page, cx| page.check_again(cx)),
+                        cx,
+                    )
                 }),
             )
             .description(claude)
