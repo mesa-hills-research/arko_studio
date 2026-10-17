@@ -254,7 +254,7 @@ impl Sidebar {
                     this.rebuild(cx)
                 }
             }),
-            // The running sessions' indicators; a session created here gets
+            // The running sessions' indicators. A session created here gets
             // its row.
             cx.observe_global::<LiveSessions>(|this, cx| {
                 let ids = LiveSessions::ids(cx);
@@ -637,7 +637,7 @@ impl Sidebar {
         if title.is_empty() || self.entry(id).is_some_and(|entry| entry.title == title) {
             return;
         }
-        // Shown at once; the listing that follows the save confirms it.
+        // Shown at once. The listing that follows the save confirms it.
         if let Some(entry) = self.sessions.iter_mut().find(|entry| &entry.id == id) {
             entry.title = title.clone();
         }

@@ -1,6 +1,6 @@
 //! End-to-end tests: the app's windows on arko's real engine, its sessions
 //! answered by arko's mock model server. The engine runs on threads of its
-//! own, in real time; `wait_until` lets the app follow it.
+//! own, in real time, and `wait_until` lets the app follow it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -234,7 +234,7 @@ fn the_agents_question_is_answered_from_the_composer(cx: &mut TestAppContext) {
         cx.read(|cx| view.read(cx).placeholder(cx)),
         "Answer the question above"
     );
-    // Later folds it into the composer's footer; the composer still answers.
+    // Later folds it into the composer's footer, and the composer still answers.
     act(cx, app.window, |window, cx| {
         window.click("question-later", cx)
     });

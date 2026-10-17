@@ -289,8 +289,8 @@ fn missing_credentials_are_entered_in_a_dialog(cx: &mut TestAppContext) {
         assert!(!window.has_active_dialog(cx))
     });
 
-    // Closed without an answer, it waits: the strip brings it back; Cancel
-    // tells the engine.
+    // Closed without an answer, it waits: the strip brings it back, and
+    // Cancel tells the engine.
     let mut answer = cx.update(|cx| session.update(cx, |session, cx| session.ask(need(), cx)));
     act(cx, window, |window, cx| window.close_dialog(cx));
     act(cx, window, |window, cx| window.click("prompt-show", cx));

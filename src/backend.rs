@@ -3,9 +3,9 @@
 //! The interface asks a [`Backend`] for the sessions in Arko's folder, acts
 //! on them, and starts them. Its calls block (they read and write files), so
 //! the interface makes them on a background thread and applies the answers
-//! on the UI thread; [`Backend::start`] returns at once, the session opening
+//! on the UI thread. [`Backend::start`] returns at once, the session opening
 //! on threads of its own. [`ArkoBackend`] wraps arko's library
-//! (`arko::sessions`, `arko::spawn`); [`FakeBackend`] answers from memory,
+//! (`arko::sessions`, `arko::spawn`). [`FakeBackend`] answers from memory,
 //! for tests whose sessions don't need to run.
 
 use std::path::{Path, PathBuf};
@@ -89,14 +89,14 @@ pub struct SessionEntry {
     /// The main agent's model, as arko describes it.
     pub model: String,
     pub created: SystemTime,
-    /// When it was last worked in; `None` before its first message.
+    /// When it was last worked in, `None` before its first message.
     pub last_active: Option<SystemTime>,
     pub conversations: Vec<ConversationEntry>,
     /// Who has it open, when someone does.
     pub holder: Option<Holder>,
     /// Whether it has started workers, running now or finished: its
-    /// window then offers the workers panel. (The listing doesn't know; an
-    /// open session's status says.)
+    /// window then offers the workers panel. (The listing doesn't know it,
+    /// an open session's status says.)
     pub had_workers: bool,
 }
 
@@ -133,7 +133,7 @@ impl SessionEntry {
 /// Why a backend call failed, in words for the user.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendError {
-    /// The session is open elsewhere; `None` when an older arko holds it
+    /// The session is open elsewhere, `None` when an older arko holds it
     /// without saying who it is.
     Locked {
         holder: Option<Holder>,
@@ -185,9 +185,9 @@ pub struct DeletePlan {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewSession {
     pub mode: Mode,
-    /// The folder an agent session works in; chats have none.
+    /// The folder an agent session works in. Chats have none.
     pub folder: Option<PathBuf>,
-    /// The main agent's model as `/model` takes it; `None`: arko's default
+    /// The main agent's model as `/model` takes it. `None`: arko's default
     /// (the last session's, else one the credentials allow).
     pub model: Option<String>,
     /// `None`: the model's default.
@@ -216,7 +216,7 @@ pub enum Launch {
 pub struct ModelGroup {
     /// As the picker heads it: "Claude Code, on your Claude plan".
     pub name: String,
-    /// What it needs that isn't there; its models can't be chosen.
+    /// What it needs that isn't there. Its models can't be chosen.
     pub needs: Option<String>,
     pub models: Vec<ModelChoice>,
 }
@@ -309,7 +309,7 @@ pub trait Backend: Send + Sync + 'static {
 
     /// Saves an API key (`provider` as `/keys add` names it: `anthropic`)
     /// in Arko's folder, where every open session finds it. `Ok` says what
-    /// was done; `Err` why not.
+    /// was done, `Err` why not.
     fn add_key(&self, provider: &str, value: &str) -> Result<String, String>;
 
     /// Uses the Codex auth file at `path` for the ChatGPT login.
@@ -382,8 +382,8 @@ impl ArkoBackend {
                         options.workspace = new.folder;
                     }
                     // A chat works in no folder of the user's: Arko keeps it in
-                    // the session's own. Its custom instructions come with
-                    // Settings › Sessions (stage 4).
+                    // the session's own.
+                    // TODO: a chat's custom instructions, once Settings has them.
                     Mode::Chat => options.mode = arko::sessions::Mode::Chat,
                 }
                 options.model = new.model;

@@ -930,11 +930,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &menus::Minimize, window, _| window.minimize_window()))
             .on_action(cx.listener(|_, _: &menus::Zoom, window, _| window.zoom_window()))
             .on_action(cx.listener(|_, _: &menus::SessionInfo, window, cx| {
-                // HOOK(stage 3): the session info popover.
+                // TODO: the session info popover.
                 not_yet("Session info", window, cx)
             }))
             .on_action(cx.listener(|_, _: &menus::BranchSession, window, cx| {
-                // HOOK(engine): branching (D6).
+                // TODO: branching, once the engine branches sessions.
                 not_yet("Branching", window, cx)
             }))
             .on_action(cx.listener(|this, _: &menus::StopTurn, window, cx| {

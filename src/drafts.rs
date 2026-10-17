@@ -1,7 +1,7 @@
 //! What the user typed in each session's composer and hasn't sent: kept
 //! when they switch sessions and across restarts, in
-//! `<arko folder>/studio-drafts.json`. Typing changes them in memory; the
-//! file is written after a pause, on a background thread, never per key.
+//! `<arko folder>/studio-drafts.json`. Typing changes them in memory, and
+//! the file is written after a pause, on a background thread, never per key.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -73,7 +73,7 @@ pub fn get(key: &str, cx: &App) -> Option<String> {
     cx.global::<Drafts>().drafts.get(key).cloned()
 }
 
-/// Keeps `text` as the draft of `key`; empty text forgets it.
+/// Keeps `text` as the draft of `key`. Empty text forgets it.
 pub fn set(key: &str, text: &str, cx: &mut App) {
     let drafts = cx.global::<Drafts>();
     let same = match drafts.drafts.get(key) {

@@ -35,7 +35,7 @@ pub fn quit(window: &mut Window, cx: &mut App) {
     close(LiveSessions::all(cx), true, window, cx);
 }
 
-/// Closes `sessions`; with `quitting`, quits the app once they all ended.
+/// Closes `sessions`, and with `quitting` quits the app once they all ended.
 pub fn close(
     sessions: Vec<Entity<LiveSession>>,
     quitting: bool,

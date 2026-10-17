@@ -24,7 +24,7 @@ impl InputHistory {
     }
 }
 
-/// Reads the history of Arko's folder `root` on a background thread; with
+/// Reads the history of Arko's folder `root` on a background thread. With
 /// `None` it lives in memory (tests).
 pub fn init(root: Option<PathBuf>, cx: &mut App) {
     let path = root.as_deref().map(arko::history::path_in);

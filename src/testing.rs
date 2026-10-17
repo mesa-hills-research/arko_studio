@@ -52,7 +52,7 @@ impl Mock {
         }
     }
 
-    /// Gives every session the server's client; a new one runs luna with
+    /// Gives every session the server's client. A new one runs luna with
     /// plain-text replies.
     pub fn configure(&self) -> Configure {
         let client = Arc::new(self.server.as_ref().unwrap().client());
@@ -100,7 +100,7 @@ pub fn reply(id: &str, text: &str) -> Answer {
 }
 
 /// Creates a real session in Arko's folder `root`, working in `workspace`,
-/// whose first message is `message`; it is closed again.
+/// whose first message is `message`, and closes it again.
 pub fn create_session(root: &Path, workspace: &Path, message: &str) -> SessionId {
     let mock = Mock::start(|_, _| reply("a1", "Done."));
     let mut options = arko::Options {

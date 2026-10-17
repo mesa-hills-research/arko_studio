@@ -80,7 +80,7 @@ pub struct Startup {
     themes_folder: Option<ThemesFolder>,
     drafts: BTreeMap<String, String>,
     /// Arko's folder, where the drafts, the input history and the writing
-    /// aids' vocabulary are kept; `None` keeps them in memory (tests).
+    /// aids' vocabulary are kept. `None` keeps them in memory (tests).
     arko: Option<PathBuf>,
 }
 

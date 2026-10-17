@@ -52,7 +52,7 @@ fn shown(model: &str) -> String {
     arko::models::display_name(model)
 }
 
-/// The provider whose key `need` asks for; `None` for the others.
+/// The provider whose key `need` asks for, `None` for the others.
 pub fn key_provider(need: &arko::Need) -> Option<&'static str> {
     match need {
         arko::Need::AnthropicKey { .. } => Some("anthropic"),
@@ -652,7 +652,7 @@ pub fn confirm_stop(
                 "Stop this session’s work?"
             })
             .description(
-                "Background jobs stop for good. Workers stop too; resuming the session lets the agent continue them.",
+                "Background jobs stop for good. Workers stop too, and resuming the session lets the agent continue them.",
             )
             .content(move |content, _, _| {
                 let work = work.clone();

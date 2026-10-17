@@ -7,7 +7,7 @@
 //! drained on background tasks and applied on the UI thread at most once a
 //! frame, so the engine never waits for the interface and a burst of
 //! updates is one change. Switching the window to another session leaves
-//! this one running; the sidebar shows what it does.
+//! this one running, and the sidebar shows what it does.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -110,7 +110,7 @@ pub enum Phase {
     Open,
     /// A sample session that shows but doesn't run (the fake backend).
     Sample,
-    /// Asked to quit; the engine stops what it started.
+    /// Asked to quit: the engine stops what it started.
     Closing,
     /// Its engine shut down.
     Ended,
@@ -132,7 +132,7 @@ pub struct Link {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiveEvent {
     Opened,
-    /// It didn't open; `None` when the user cancelled.
+    /// It didn't open (`None` when the user cancelled).
     Failed(Option<String>),
     /// It asks for credentials or MCP approval: [`LiveSession::prompt`].
     Prompt,
@@ -180,7 +180,7 @@ pub enum PromptAnswer {
     /// Don't open the session.
     Cancel,
     /// Start the MCP servers (`Some(true)`), not (`Some(false)`), both
-    /// remembered by arko; `None`: not this time, asked again next time.
+    /// remembered by arko. `None`: not this time, asked again next time.
     Mcp(Option<bool>),
 }
 
@@ -651,7 +651,7 @@ impl LiveSession {
     }
 
     /// What switching to `to` costs (the conversation re-read without its
-    /// cache), worked out off the UI thread; `None` when not known.
+    /// cache), worked out off the UI thread, `None` when not known.
     pub fn switch_cost(&self, to: Mode, cx: &App) -> Task<Option<arko::details::SwitchCost>> {
         let Some(details) = self.link.as_ref().map(|link| link.details.clone()) else {
             return Task::ready(None);
@@ -735,8 +735,8 @@ impl LiveSession {
     /// Whether the conversation has started: the main agent keeps its
     /// model from then on.
     pub fn has_started(&self) -> bool {
-        // A new session is created by its first message; a sample session is
-        // an old one.
+        // A new session is created by its first message, and a sample
+        // session is an old one.
         self.reading.models.started || self.id.is_none() || self.phase == Phase::Sample
     }
 
@@ -951,7 +951,7 @@ mod tests {
     use gpui_kit::{AppContext as _, TestAppContext};
 
     /// A turn that ends while no window shows the session leaves it
-    /// unseen; a question that closes without this app's answer was
+    /// unseen. A question that closes without this app's answer was
     /// answered elsewhere.
     #[gpui_kit::test]
     fn turns_and_questions_are_told_as_they_change(cx: &mut TestAppContext) {

@@ -45,7 +45,7 @@ pub struct Draft {
     pub mode: Mode,
     /// The folder chosen with Change…. `None` follows the most recent one.
     pub folder: Option<PathBuf>,
-    /// The model chosen in the chip's popover; `None`: the default.
+    /// The model chosen in the chip's popover. `None`: the default.
     pub model: Option<String>,
     pub effort: Option<String>,
 }
@@ -586,7 +586,7 @@ impl SessionView {
     /// Attach: in an agent session, the files' paths go in the text.
     fn attach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode(cx) == Mode::Chat {
-            // HOOK(engine): images with a message (D3).
+            // TODO: images with a message, once the engine sends them.
             window.push_notification("Attaching images comes with a later version.", cx);
             return;
         }
@@ -617,7 +617,7 @@ impl SessionView {
     }
 
     /// The chip's text: the mode, and the model where there's room ("Agent
-    /// · Opus 5.5 · high"); on narrow windows the model alone.
+    /// · Opus 5.5 · high"), on narrow windows the model alone.
     pub fn chip_label(&self, cx: &App) -> String {
         let mode = self.mode(cx).label();
         let (model, effort) = match &self.session {
@@ -932,7 +932,7 @@ impl SessionView {
             .into_any_element()
     }
 
-    /// Chat or Agent: a new session just switches; an open one asks first
+    /// Chat or Agent: a new session just switches, an open one asks first
     /// (what changes, what it costs, the folder), between turns.
     pub fn choose_mode(&mut self, to: Mode, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone() else {
@@ -1131,7 +1131,7 @@ impl SessionView {
             Phase::Opening if session.id().is_none() => "Starting the session…".into(),
             Phase::Opening => "Opening the session…".into(),
             Phase::Open | Phase::Closing => {
-                // HOOK(transcript): the transcript view (A2-transcript).
+                // TODO: the transcript.
                 format!("{} · {}", session.title(), session.model()).into()
             }
             Phase::Sample => "A sample session: it shows, but doesn’t run.".into(),

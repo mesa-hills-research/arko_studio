@@ -39,7 +39,7 @@ pub const PASTE_TOKEN_BYTES: usize = 2048;
 /// The most rows the slash menu lists at once.
 const MENU_ROWS: usize = 8;
 
-/// The screen commands the app runs itself; the rest of them belong to the
+/// The screen commands the app runs itself. The rest of them belong to the
 /// terminal's full-screen view.
 const APP_COMMANDS: &[&str] = &["/view", "/settings"];
 
@@ -501,7 +501,7 @@ impl Composer {
         }
     }
 
-    /// Walks the history one step back (`up`) or forward; `false` when
+    /// Walks the history one step back (`up`) or forward, `false` when
     /// there is nowhere to go.
     fn walk_history(&mut self, up: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let entries = crate::history::InputHistory::entries(cx);
@@ -554,7 +554,7 @@ impl Composer {
     }
 
     fn on_enter(&mut self, enter: &Enter, window: &mut Window, cx: &mut Context<Self>) {
-        // A chord that sends reaches the view through `PressEnter`; one that
+        // A chord that sends reaches the view through `PressEnter`. One that
         // breaks a line chooses from the menu instead while it is open.
         let sends = self
             .textarea
@@ -792,7 +792,7 @@ mod tests {
         let reading = Reading::default();
         let menu = slash_menu("/s", &reading).unwrap();
         let names: Vec<&str> = menu.items.iter().map(|item| item.label.as_ref()).collect();
-        // The session's commands and the app's /settings; not the screen's.
+        // The session's commands and the app's /settings, without the screen's.
         assert_eq!(names, ["/stop-workers", "/settings", "/skills", "/session"]);
         assert_eq!(menu.range, 0..2);
         assert!(slash_menu("/x", &reading).is_none());

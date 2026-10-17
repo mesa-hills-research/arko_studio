@@ -556,7 +556,7 @@ fn input_page() -> SettingPage {
                     defaults.send_key,
                 )
                 .description(format!(
-                    "The key that sends a message; the other one adds a line. {modifier}Enter always sends too."
+                    "The key that sends a message, while the other one adds a line. {modifier}Enter always sends too."
                 )),
             ),
             SettingGroup::new().title("Typing").items([
@@ -623,7 +623,7 @@ fn input_page() -> SettingPage {
                     .default_value(defaults.paste_token_lines as f64),
                 )
                 .description(
-                    "Pastes longer than this many lines (or 2 KB) become one token; click it to open it into the text.",
+                    "Pastes longer than this many lines (or 2 KB) become one token. Click it to open it into the text.",
                 ),
             ),
         ])
@@ -665,8 +665,8 @@ fn notifications_page() -> SettingPage {
         ]))
 }
 
-/// Sessions: asking before quitting works; the defaults for new sessions
-/// come later.
+/// Sessions: asking before quitting works, and the defaults for new
+/// sessions come later.
 fn sessions_page() -> SettingPage {
     let defaults = prefs::SessionPrefs::default();
     SettingPage::new(PAGES[3])
