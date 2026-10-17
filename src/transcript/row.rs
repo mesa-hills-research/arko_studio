@@ -218,7 +218,8 @@ pub(super) fn render(
         Gap::Turn => 1.75,
     };
     // The row the keyboard is on shows a ring, laid over it: nothing moves.
-    let ring = this.is_cursor(row.key, window, cx).then(|| {
+    let cursor = this.is_cursor(row.key, window, cx);
+    let ring = cursor.then(|| {
         let theme = cx.theme();
         div()
             .absolute()
@@ -230,11 +231,19 @@ pub(super) fn render(
             .border_color(theme.ring)
             .rounded(theme.radius)
     });
+    // To assistive technology, a list item it can move through: the one
+    // the keyboard is on is the one in focus.
+    let label = this.row_label(row.key);
+    let expanded = this.row_expanded(row.key);
     // The reading column: centred and at most ~46 rem wide, with the side
     // padding inside it, so narrow windows read edge to edge.
     div()
         .id(element_id(row.key))
         .test_support()
+        .role(Role::ListItem)
+        .aria_label(label)
+        .when_some(expanded, |this, expanded| this.aria_expanded(expanded))
+        .when(cursor, |this| this.aria_active_descendant())
         .w_full()
         .pt(rems(gap))
         .flex()

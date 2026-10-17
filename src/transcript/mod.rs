@@ -1305,6 +1305,8 @@ impl Render for TranscriptView {
         let root = div()
             .id("transcript")
             .test_support()
+            .role(Role::List)
+            .aria_label("Conversation")
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle);
         let root = Self::on_row_keys(root, cx);

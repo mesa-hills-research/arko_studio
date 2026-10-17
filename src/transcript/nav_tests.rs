@@ -298,3 +298,44 @@ fn f6_goes_to_the_rows_and_esc_comes_back(cx: &mut TestAppContext) {
         cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
     });
 }
+
+/// Assistive technology hears the transcript as a list, each row with a
+/// short label and whether it is open, and the row the keyboard is on as
+/// the one in focus.
+#[gpui_kit::test]
+fn the_rows_are_a_list_with_labels_for_assistive_technology(cx: &mut TestAppContext) {
+    let rows = open(cx, short(), 900.);
+    rows.focus(cx);
+    while !matches!(rows.cursor(cx), Some(RowKey::Call(_))) {
+        rows.press(cx, "up");
+    }
+    let call = rows.cursor(cx).unwrap();
+    let user = rows
+        .rows(cx)
+        .into_iter()
+        .find(|key| matches!(key, RowKey::User(_)))
+        .unwrap();
+    cx.update_window(rows.window, |_, window, _| {
+        let list = window.find("transcript");
+        assert_eq!(list.role(), Some(gpui_kit::Role::List));
+        assert_eq!(list.label(), Some("Conversation"));
+        let row = window.find(crate::transcript::row::element_id(call));
+        assert_eq!(row.role(), Some(gpui_kit::Role::ListItem));
+        assert_eq!(row.label(), Some("$ cargo test"));
+        assert_eq!(row.expanded(), Some(false));
+        let message = window.find(crate::transcript::row::element_id(user));
+        assert_eq!(message.label(), Some("You, Run the tests."));
+        assert_eq!(message.expanded(), None);
+    })
+    .unwrap();
+    rows.press(cx, "enter");
+    cx.update_window(rows.window, |_, window, _| {
+        assert_eq!(
+            window
+                .find(crate::transcript::row::element_id(call))
+                .expanded(),
+            Some(true)
+        );
+    })
+    .unwrap();
+}

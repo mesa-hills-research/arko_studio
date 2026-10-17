@@ -28,7 +28,83 @@ actions!(
     ]
 );
 
+/// The longest a row's label says of its text, in characters.
+const LABEL_CHARS: usize = 120;
+
+/// The first line of `text` with words in it, at most [`LABEL_CHARS`]
+/// long.
+fn first_line(text: &str) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    match line.char_indices().nth(LABEL_CHARS) {
+        Some((end, _)) => format!("{}…", &line[..end]),
+        None => line.to_string(),
+    }
+}
+
 impl TranscriptView {
+    /// What assistive technology says of row `key`: whose it is or what,
+    /// and the start of its text.
+    pub(super) fn row_label(&self, key: RowKey) -> SharedString {
+        let Some(item) = self.model.entry(key.entry()).map(|entry| &entry.item) else {
+            return SharedString::default();
+        };
+        let label = match key {
+            RowKey::User(_) => format!("You, {}", first_line(&item.text)),
+            RowKey::Block { id, block, .. } => {
+                let text = self
+                    .ui
+                    .get(&id)
+                    .and_then(|ui| ui.doc.as_ref())
+                    .and_then(|doc| doc.text.get(doc.blocks.get(block)?.range.clone()?))
+                    .map(first_line)
+                    .unwrap_or_default();
+                match (item.kind, block) {
+                    (Kind::Thinking, _) => format!("Thinking, {text}"),
+                    (_, 0) => format!("Arko, {text}"),
+                    _ => text,
+                }
+            }
+            RowKey::Thinking(_) => "Thinking".to_string(),
+            RowKey::Call(_) => match item.status {
+                Some(arko::remote::CallStatus::Failed) => {
+                    format!("{}, failed", first_line(&item.text))
+                }
+                _ => first_line(&item.text),
+            },
+            RowKey::Group(first) => {
+                let calls = super::model::run_of(&self.model, first, self.settings.view).len();
+                format!("{calls} calls")
+            }
+            RowKey::Count(_) => "Calls".to_string(),
+            RowKey::Actions(_) => "Actions".to_string(),
+            RowKey::Refresh(_) => "Kept the cache warm".to_string(),
+            RowKey::Worker(_) => format!(
+                "Worker {}, {}",
+                item.worker.as_deref().unwrap_or_default(),
+                first_line(&item.text)
+            ),
+            RowKey::Separator(_) | RowKey::Notice(_) | RowKey::Output(_) | RowKey::Turn(_) => {
+                first_line(&item.text)
+            }
+        };
+        label.into()
+    }
+
+    /// Whether row `key` is open, for a row that opens and closes.
+    pub(super) fn row_expanded(&self, key: RowKey) -> Option<bool> {
+        let expanded = |id: u64| self.ui.get(&id).and_then(|ui| ui.expanded);
+        match key {
+            RowKey::Call(id) => Some(expanded(id).unwrap_or(false)),
+            RowKey::Thinking(id) => Some(expanded(id).unwrap_or(self.thinking_open_by_default())),
+            RowKey::Group(first) => Some(self.group_open(first)),
+            _ => None,
+        }
+    }
+
     /// The row the keyboard is on, by its index.
     pub(super) fn cursor_index(&self) -> Option<usize> {
         let cursor = self.cursor?;
