@@ -45,17 +45,12 @@ pub fn shown_in_front(session: &Entity<LiveSession>, cx: &App) -> bool {
         .is_some_and(|active| windows_showing(session, cx).contains(&active))
 }
 
-/// The window to tell the user of `session` in: the active one showing
-/// it, else any showing it, else the active one, else the first.
+/// The window to tell the user of `session` in: the one in front while the
+/// app has the focus (where the user looks), else one showing the session
+/// (which a notification's click brings forward), else the first.
 pub fn window_for(session: &Entity<LiveSession>, cx: &App) -> Option<AnyWindowHandle> {
-    let showing = windows_showing(session, cx);
-    let active = cx.active_window();
-    showing
-        .iter()
-        .find(|window| Some(**window) == active)
-        .or(showing.first())
-        .copied()
-        .or(active)
+    cx.active_window()
+        .or_else(|| windows_showing(session, cx).first().copied())
         .or_else(|| cx.windows().first().copied())
 }
 
@@ -367,6 +362,54 @@ mod tests {
             .update_window(window, |_, window, cx| window.notifications(cx).len())
             .unwrap();
         assert_eq!(after, before + 1);
+        assert!(cx.shown_system_notifications().is_empty());
+    }
+
+    /// With the session on screen in a window behind the one in front, its
+    /// cache reminder comes up in front, where the user looks.
+    #[gpui_kit::test]
+    fn a_reminder_comes_up_in_the_window_in_front(cx: &mut TestAppContext) {
+        use crate::cache_reminders::ReminderClock;
+        use arko::remote::CacheStatus;
+        use std::time::Duration;
+
+        const NOW: i64 = 1_800_000_000_000;
+        start(cx);
+        let (front, _) = open(cx, 1300.);
+        let (behind, workspace) = open(cx, 1300.);
+        cx.update(|cx| cx.set_global(ReminderClock(std::rc::Rc::new(|| NOW))));
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        cx.update_window(behind, |_, window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_session(session.clone(), window, cx)
+            })
+        })
+        .unwrap();
+        // 50 s of a 5-minute cache left: the last reminder is due.
+        let reading = Reading {
+            cache: CacheStatus {
+                lifetime: Some(Duration::from_secs(300)),
+                refreshed_at: Some(NOW - 250_000),
+                ..CacheStatus::default()
+            },
+            ..Reading::default()
+        };
+        session.update(cx, |session, cx| {
+            session.set_touched_at(NOW);
+            session.set_status(reading, Activity::default(), cx)
+        });
+        activate(front, cx);
+        let count = |window, cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| window.notifications(cx).len())
+                .unwrap()
+        };
+        let before = (count(front, cx), count(behind, cx));
+        cx.update(|cx| crate::cache_reminders::watch(&session, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            (count(front, cx), count(behind, cx)),
+            (before.0 + 1, before.1)
+        );
         assert!(cx.shown_system_notifications().is_empty());
     }
 
