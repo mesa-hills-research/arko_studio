@@ -131,6 +131,8 @@ pub struct WorkersPanel {
     seen: HashSet<String>,
     /// Each worker's row, by its id.
     row_views: HashMap<String, Entity<WorkerRow>>,
+    /// Whether the panel shows.
+    shown: bool,
     scroll: ScrollHandle,
     clock: Clock,
     /// Draws again while a time on show goes on.
@@ -168,6 +170,7 @@ impl WorkersPanel {
             finished_open: false,
             seen: HashSet::new(),
             row_views: HashMap::new(),
+            shown: false,
             scroll: ScrollHandle::new(),
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
@@ -181,17 +184,36 @@ impl WorkersPanel {
         if self.session.as_ref().map(Entity::entity_id) == session.as_ref().map(Entity::entity_id) {
             return;
         }
-        self._session = session
-            .as_ref()
-            .map(|session| cx.observe(session, |this, session, cx| this.pull(&session, cx)));
-        self.session = session.clone();
-        match session {
-            Some(session) => self.pull(&session, cx),
+        self.session = session;
+        self.follow(cx);
+    }
+
+    /// Says whether the panel shows: it follows its session's workers only
+    /// then.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.shown != shown {
+            self.shown = shown;
+            self.follow(cx);
+        }
+    }
+
+    /// Follows the session's workers while the panel shows.
+    fn follow(&mut self, cx: &mut Context<Self>) {
+        self._session = None;
+        match self.session.clone() {
+            Some(session) if self.shown => {
+                self._session =
+                    Some(cx.observe(&session, |this, session, cx| this.pull(&session, cx)));
+                self.pull(&session, cx);
+            }
+            Some(_) => {}
             None => self.set_source(PanelSource::default(), cx),
         }
     }
 
     fn pull(&mut self, session: &Entity<LiveSession>, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        PULLS.with(|pulls| pulls.set(pulls.get() + 1));
         let source = PanelSource::of(session.read(cx), session.entity_id());
         self.set_source(source, cx);
     }
@@ -1091,6 +1113,8 @@ thread_local! {
     /// How many times each worker's row was drawn.
     static ROWS_DRAWN: std::cell::RefCell<std::collections::HashMap<String, usize>> =
         std::cell::RefCell::default();
+    /// How many times the panel read its session's workers.
+    static PULLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl Render for WorkersPanel {

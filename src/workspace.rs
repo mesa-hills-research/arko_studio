@@ -296,6 +296,8 @@ impl Workspace {
             false => self.sheet == Some(Edge::Panel),
         };
         let workers = (had_workers || workers_open).then_some(workers_open);
+        self.workers
+            .update(cx, |panel, cx| panel.set_shown(workers_open, cx));
         self.title_bar.update(cx, |bar, cx| {
             bar.set_session(Some(title.clone()), folder, cx);
             bar.set_sidebar_open(open, cx);

@@ -441,3 +441,50 @@ fn a_spinner_draws_only_its_own_row(cx: &mut TestAppContext) {
     assert_eq!(drawn.get("r2"), None, "{drawn:?}");
     assert_eq!(drawn.get("r3"), None, "{drawn:?}");
 }
+
+/// The panel reads its session's workers only while it shows.
+#[gpui_kit::test]
+fn a_closed_panel_leaves_the_sessions_workers_alone(cx: &mut TestAppContext) {
+    use crate::testing::{Mock, reply, wait_until};
+    use crate::tests::{act, open};
+
+    let mock = Mock::start(|_, _| reply("a1", "Done."));
+    let temp = tempfile::tempdir().unwrap();
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    cx.executor().allow_parking();
+    let backend = Arc::new(
+        crate::backend::ArkoBackend::new(temp.path().join("arko")).with_configure(mock.configure()),
+    );
+    cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    let (window, workspace) = open(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    cx.update(|cx| view.update(cx, |view, cx| view.set_draft_folder(work.clone(), cx)));
+    let pulls = || super::PULLS.with(|pulls| pulls.get());
+    let before = pulls();
+    act(cx, window, |window, cx| window.input("Hello.", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    wait_until(cx, "the reply", |cx| {
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.read(|cx| {
+            view.read(cx).transcript(cx).is_some_and(|transcript| {
+                transcript.read(cx).last_reply().is_some()
+                    && transcript.read(cx).busy_reason().is_none()
+            })
+        })
+    });
+    assert_eq!(pulls(), before, "the panel is closed");
+    // Opened, it reads them, and follows them from then on.
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ToggleWorkersPanel), cx)
+    });
+    assert!(pulls() > before);
+    act(cx, window, |window, cx| {
+        let sessions = crate::live::LiveSessions::all(cx);
+        crate::quit::close(sessions, false, window, cx);
+    });
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
+    });
+}
