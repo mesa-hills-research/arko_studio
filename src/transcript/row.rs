@@ -1052,21 +1052,18 @@ impl TranscriptView {
             return None;
         }
         let theme = cx.theme();
-        let fit = size(px(THUMBNAIL.0 * 16.), px(THUMBNAIL.1 * 16.));
         let entry = item.id;
         Some(
             h_flex()
                 .flex_wrap()
                 .gap_2()
                 .children(item.images.iter().map(|image| {
-                    let source = self
-                        .image(image.id)
-                        .map(|bytes| LruImageCache::source(&self.image_cache, bytes, Some(fit)));
                     let view = view.downgrade();
                     let id = image.id;
                     Thumbnail {
                         id: ElementId::Name(format!("image-{entry}-{id}").into()),
-                        source,
+                        image: self.image(id),
+                        cache: self.image_cache.clone(),
                         caption: super::image_caption(&image.label, image.bytes).into(),
                         on_open: Rc::new(move |window, cx| {
                             view.update(cx, |this, cx| this.open_image(entry, id, window, cx))
@@ -1413,7 +1410,7 @@ impl RenderOnce for HoverActions {
 }
 
 /// A thumbnail's size, in rem: up to four fit the reading column.
-const THUMBNAIL: (f32, f32) = (10., 7.5);
+pub(super) const THUMBNAIL: (f32, f32) = (10., 7.5);
 
 /// What a click on a thumbnail or a toggle does.
 type Callback = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -1424,7 +1421,8 @@ type Callback = Rc<dyn Fn(&mut Window, &mut App)>;
 struct Thumbnail {
     id: ElementId,
     /// `None` when the session's store no longer keeps the image.
-    source: Option<ImageSource>,
+    image: Option<Arc<Image>>,
+    cache: Entity<LruImageCache>,
     caption: SharedString,
     on_open: Callback,
 }
@@ -1460,8 +1458,16 @@ impl RenderOnce for Thumbnail {
             .bg(theme.muted)
             .focus(|this| this.border_color(theme.ring))
             .tooltip(move |window, cx| Tooltip::new(caption.clone()).build(window, cx))
-            .map(|this| match self.source {
-                Some(source) => this.child(img(source).size_full().object_fit(ObjectFit::Contain)),
+            .map(|this| match self.image {
+                Some(image) => {
+                    // Decoded at the tile's size, which the rem sets (the UI
+                    // font size and the zoom); the cache applies the
+                    // screen's scale.
+                    let rem = window.rem_size();
+                    let fit = size(rem * THUMBNAIL.0, rem * THUMBNAIL.1);
+                    let source = LruImageCache::source(&self.cache, image, Some(fit));
+                    this.child(img(source).size_full().object_fit(ObjectFit::Contain))
+                }
                 None => this
                     .text_xs()
                     .text_color(theme.muted_foreground)

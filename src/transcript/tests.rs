@@ -1037,6 +1037,133 @@ fn images_show_as_thumbnails_that_open_the_viewer(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn images_are_read_from_the_store_as_they_show(cx: &mut TestAppContext) {
+    use arko::images::ImageRef;
+    use gpui_kit::component::WindowExt as _;
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+    use std::rc::Rc;
+
+    start(cx);
+    let feed = Feed::new("main");
+    let calls = (1..=40u64)
+        .map(|id| {
+            let mut call = arko::remote::Item::new(Kind::Call, format!("read shots/{id}.png"));
+            call.id = id;
+            call.tool = Some("read_file".into());
+            call.status = Some(CallStatus::Ok);
+            call.images = vec![ImageRef {
+                id,
+                mime: "image/png".into(),
+                label: format!("shots/{id}.png"),
+                bytes: PNG.len(),
+            }];
+            call
+        })
+        .collect();
+    feed.restore(calls);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let store: Rc<RefCell<HashSet<u64>>> = Rc::new(RefCell::new((1..=40).collect()));
+    let kept = store.clone();
+    view.update(cx, |view, cx| {
+        view.set_image_lookup(
+            move |id| {
+                kept.borrow()
+                    .contains(&id)
+                    .then(|| (Arc::<[u8]>::from(PNG), "image/png".to_string()))
+            },
+            cx,
+        )
+    });
+    settle(cx, window);
+    let copies = |cx: &mut TestAppContext| -> Vec<u64> {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            let copies = view.image_copies.borrow();
+            copies.images.iter().map(|(id, _)| *id).collect()
+        })
+    };
+    // The tiles drawn, at the end of the conversation.
+    let drawn = copies(cx);
+    assert!(!drawn.is_empty() && drawn.len() < 10, "{drawn:?}");
+    assert!(drawn.contains(&40));
+    // The viewer, which can browse all 40, reads only the one it shows.
+    cx.update_window(window, |_, window, cx| {
+        window.click(SharedString::from("image-40-40"), cx);
+        assert!(window.has_active_image_viewer(cx));
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(copies(cx).len(), drawn.len());
+    // The store lets an image go: its tile says so, and its copy goes.
+    store.borrow_mut().remove(&40);
+    view.update(cx, |_, cx| cx.notify());
+    settle(cx, window);
+    assert!(!copies(cx).contains(&40));
+}
+
+#[gpui_kit::test]
+fn thumbnails_are_decoded_for_the_zoom(cx: &mut TestAppContext) {
+    use arko::images::ImageRef;
+
+    start(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.zoom = 1.5));
+    let feed = Feed::new("main");
+    let mut user = arko::remote::Item::new(Kind::User, "This icon");
+    user.id = 1;
+    user.images = vec![ImageRef {
+        id: 1,
+        mime: "image/png".into(),
+        label: "icon.png".into(),
+        bytes: PNG.len(),
+    }];
+    feed.restore(vec![user]);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    view.update(cx, |view, cx| {
+        view.set_image_lookup(
+            |_| Some((Arc::<[u8]>::from(PNG), "image/png".to_string())),
+            cx,
+        )
+    });
+    settle(cx, window);
+    let (rem, scale) = cx
+        .update_window(window, |_, window, _| {
+            (f32::from(window.rem_size()), window.scale_factor())
+        })
+        .unwrap();
+    assert!(rem > 16., "{rem}");
+    // The 256 px icon, fit in a tile 7.5 rem high on the screen, and never
+    // made larger than it is.
+    let side = (super::row::THUMBNAIL.1 * rem * scale).min(256.) as usize;
+    let used = cx.read(|cx| view.read(cx).image_cache.read(cx).used_bytes());
+    assert_eq!(used, side * side * 4);
+}
+
+#[test]
+fn image_copies_keep_the_latest_within_their_budget() {
+    use super::{IMAGE_COPIES, ImageCopies, ImageLookup};
+    use gpui_kit::ImageFormat;
+    use std::rc::Rc;
+
+    // Ten images of 4 MB: the copies keep the last ones drawn, within
+    // 32 MB.
+    let lookup: ImageLookup =
+        Rc::new(|id| Some((Arc::from(vec![id as u8; 4 << 20]), ImageFormat::Png)));
+    let mut copies = ImageCopies::default();
+    for id in 1..=10 {
+        assert!(copies.get(id, &lookup).is_some());
+    }
+    assert!(copies.bytes <= IMAGE_COPIES, "{}", copies.bytes);
+    let kept: Vec<u64> = copies.images.iter().map(|(id, _)| *id).collect();
+    assert_eq!(kept, [3, 4, 5, 6, 7, 8, 9, 10]);
+    // Drawn again, an image is the latest, and the oldest goes next.
+    copies.get(3, &lookup);
+    copies.get(11, &lookup);
+    let kept: Vec<u64> = copies.images.iter().map(|(id, _)| *id).collect();
+    assert_eq!(kept, [5, 6, 7, 8, 9, 10, 3, 11]);
+}
+
+#[gpui_kit::test]
 fn a_failed_responses_text_is_taken_back_and_its_retry_streams_anew(cx: &mut TestAppContext) {
     start(cx);
     let feed = Feed::new("main");
