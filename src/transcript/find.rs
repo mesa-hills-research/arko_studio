@@ -291,6 +291,8 @@ pub(crate) struct Find {
     /// The block whose view shows the current match when it draws next:
     /// set as the find lands, never as it searches again.
     reveal: Option<(u64, usize)>,
+    /// The plain-text match to reveal when its actual line is laid out.
+    plain_reveal: std::rc::Rc<plain::Reveal>,
     /// The entry the find lands on once its rows are ready, and which of
     /// its matches.
     pending: Option<(u64, usize)>,
@@ -890,6 +892,9 @@ impl TranscriptView {
     /// Scrolls to `found`, by as little as it takes, and has its block's
     /// view show its line when it draws.
     fn go_to(&mut self, found: &Match, cx: &mut Context<Self>) {
+        if let Some(find) = self.find.as_mut() {
+            find.plain_reveal.set(None);
+        }
         // An older entry not ready to show: it is made ready, and the find
         // lands once its rows are.
         if self.loaded_from.is_some_and(|from| found.entry < from) {
@@ -923,32 +928,17 @@ impl TranscriptView {
                     find.touched.insert(found.entry);
                 }
             }
+            // Plain text scrolls to the line the match is laid out on,
+            // once its row draws (see `FoundText`).
             _ => {
-                // Plain text has no place for its lines: the match's share
-                // of the text says how far down the row it is.
-                let length = self.place_length(found).max(1);
-                let share = found.range.start as f32 / length as f32;
-                self.list.reveal_within(ix, share);
+                self.list.hold_place(ix);
+                if !self.list.on_screen().contains(&ix) {
+                    self.list.reveal(ix);
+                }
+                if let Some(find) = self.find.as_mut() {
+                    find.plain_reveal.set(find.current);
+                }
             }
-        }
-    }
-
-    /// How long the text of `found`'s place is, as its row shows it.
-    fn place_length(&self, found: &Match) -> usize {
-        let Some(entry) = self.model.entry(found.entry) else {
-            return 0;
-        };
-        match found.place {
-            Place::Parameters | Place::Output => self
-                .full_text(found)
-                .map_or(0, |text| shown_prefix(&text).max(found.range.end)),
-            Place::Source(block) => self
-                .ui
-                .get(&found.entry)
-                .and_then(|ui| ui.doc.as_ref())
-                .and_then(|doc| doc.blocks.get(block)?.range.clone())
-                .map_or(0, |range| range.len()),
-            _ => entry.item.text.len(),
         }
     }
 
@@ -1333,9 +1323,23 @@ impl TranscriptView {
                 )
             })
             .collect();
-        StyledText::new(text)
-            .with_highlights(highlights)
-            .into_any_element()
+        let text = StyledText::new(text).with_highlights(highlights);
+        if let Some(find) = &self.find
+            && let Some(key) = find
+                .current
+                .filter(|key| key.entry == entry && key.place == place)
+            && let Some(found) = self.current_match()
+        {
+            return plain::FoundText::new(
+                text,
+                key,
+                found.range.start,
+                find.plain_reveal.clone(),
+                self.list.handle(),
+            )
+            .into_any_element();
+        }
+        text.into_any_element()
     }
 }
 
@@ -1344,6 +1348,9 @@ pub(super) fn match_colors(cx: &App) -> (Hsla, Hsla) {
     let theme = cx.theme();
     (theme.search_match, theme.search_match_active)
 }
+
+#[path = "find_text.rs"]
+mod plain;
 
 #[cfg(test)]
 #[path = "find_tests.rs"]

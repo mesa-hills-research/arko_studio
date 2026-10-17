@@ -9,7 +9,7 @@ use arko_agents::AgentEvent;
 use arko_workflows::WorkflowEvent;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Entity, Point, TestAppContext, WindowBounds,
+    AnyWindowHandle, AppContext as _, Bounds, Entity, Pixels, Point, TestAppContext, WindowBounds,
     WindowOptions, px, size,
 };
 use serde_json::Value;
@@ -466,6 +466,85 @@ fn changing_scope_rejects_an_older_background_search(cx: &mut TestAppContext) {
     let status = cx.read(|cx| view.read(cx).find_status());
     assert!(!status.searching);
     assert_eq!(status.total, 0);
+}
+
+/// The find scrolls a plain-text match to the line it is laid out on, so a
+/// match after many short lines lands on screen, whatever its share of the
+/// row's bytes. That holds with Unicode, wrapping, an attachment above the
+/// text and zoom, going down to a match and back up to one.
+#[gpui_kit::test]
+fn plain_matches_reveal_their_shaped_line_with_wrapping_images_and_zoom(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    let mut item = arko::remote::Item::new(
+        arko::remote::Kind::User,
+        format!(
+            "A first needle.\n{}{}needle\n{}",
+            "é\n".repeat(250),
+            "uneven Unicode 日本語 ".repeat(30),
+            "long tail ".repeat(600)
+        ),
+    );
+    item.id = 1;
+    item.delivery = Some(Delivery::Turn);
+    item.images.push(arko::images::ImageRef {
+        id: 1,
+        mime: "image/png".into(),
+        label: "diagram.png".into(),
+        bytes: 10,
+    });
+    feed.restore(vec![item]);
+    let (window, view) = open_feed(cx, &feed, View::Full, 600.);
+    // Where the current match's line was painted, and how far down its row
+    // the screen starts.
+    let landed = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            let line = view.find.as_ref().unwrap().plain_reveal.line.get();
+            (line.unwrap(), view.list.top().offset_in_item)
+        })
+    };
+    let on_screen = |line: Bounds<Pixels>| line.top() >= px(0.) && line.bottom() <= px(600.);
+    for (width, zoom) in [(800., 1.), (400., 1.5)] {
+        cx.simulate_window_resize(window, size(px(width), px(600.)));
+        cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.zoom = zoom));
+        settle(cx, window);
+        // From the end of the transcript, the find lands on the match after
+        // the short lines, thousands of pixels down the row.
+        view.update(cx, |view, cx| {
+            view.clear_find(cx);
+            view.list.scroll_to_end();
+            view.find("needle", cx);
+        });
+        settle(cx, window);
+        let (line, offset) = landed(cx);
+        assert!(offset > px(5000.), "{width} {zoom} {offset:?}");
+        assert!(on_screen(line), "down {width} {zoom} {line:?}");
+        // The reader scrolls away, and the find leaves the screen there.
+        view.update(cx, |view, cx| {
+            view.list.scroll_by(px(-200.));
+            cx.notify();
+        });
+        settle(cx, window);
+        let before = top(cx, &view);
+        settle(cx, window);
+        let after = top(cx, &view);
+        assert_eq!(after.item_ix, before.item_ix);
+        assert_eq!(
+            after.offset_in_item, before.offset_in_item,
+            "the reveal is consumed once"
+        );
+        // Up to the first match, above the screen, then down again.
+        view.update(cx, |view, cx| view.find_next(true, cx));
+        settle(cx, window);
+        let (line, offset) = landed(cx);
+        assert!(offset < px(600.), "{width} {zoom} {offset:?}");
+        assert!(on_screen(line), "up {width} {zoom} {line:?}");
+        view.update(cx, |view, cx| view.find_next(true, cx));
+        settle(cx, window);
+        let (line, offset) = landed(cx);
+        assert!(offset > px(5000.), "{width} {zoom} {offset:?}");
+        assert!(on_screen(line), "down again {width} {zoom} {line:?}");
+    }
 }
 
 fn top(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> gpui_kit::ListOffset {

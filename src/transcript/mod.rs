@@ -1291,9 +1291,6 @@ impl Render for TranscriptView {
         if !self.list.is_scrolled_up() {
             self.new_while_away = 0;
         }
-        if self.list.reveal_pending() {
-            window.request_animation_frame();
-        }
         self.animated = self.latest_running();
         let new = self.new_while_away;
         // Reached by Tab, the transcript shows that it has the focus, with a

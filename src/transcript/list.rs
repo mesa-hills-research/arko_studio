@@ -24,19 +24,18 @@ const JUMP_BUTTON_TRANSITION: Duration = Duration::from_millis(200);
 /// reader is.
 pub(super) struct RowList {
     state: ListState,
-    /// A place in a row to show once the row is measured: its index, and
-    /// how far down it the place is.
-    pending: std::cell::Cell<Option<(usize, f32, u8)>>,
 }
 
 impl RowList {
     pub fn new() -> Self {
         let state = ListState::new(0, ListAlignment::Top, OVERDRAW);
         state.set_follow_mode(FollowMode::Tail);
-        Self {
-            state,
-            pending: std::cell::Cell::new(None),
-        }
+        Self { state }
+    }
+
+    /// The list's state, for an element in a row that scrolls it.
+    pub(super) fn handle(&self) -> ListState {
+        self.state.clone()
     }
 
     /// Whether the reader has scrolled away from the latest row.
@@ -142,45 +141,6 @@ impl RowList {
             Some(_) => {}
             None => self.scroll_to(ix, px(0.)),
         }
-    }
-
-    /// Scrolls the place `share` of the way down row `ix` into view, when
-    /// it isn't: a third of the way down the screen. A row not measured yet
-    /// goes to the top of the screen, and the place shows once it is.
-    pub fn reveal_within(&self, ix: usize, share: f32) {
-        self.pending.set(None);
-        if self.state.bounds_for_item(ix).is_none() {
-            self.scroll_to(ix, px(0.));
-        }
-        let Some(bounds) = self.state.bounds_for_item(ix) else {
-            self.pending.set(Some((ix, share, 0)));
-            return;
-        };
-        let viewport = self.state.viewport_bounds();
-        let place = bounds.top() + bounds.size.height * share.clamp(0., 1.);
-        // Room for the line the place is on.
-        let line = px(24.);
-        if place < viewport.top() || place + line > viewport.bottom() {
-            self.state
-                .scroll_by(place - (viewport.top() + viewport.size.height / 3.));
-        }
-    }
-
-    /// Shows the place [`Self::reveal_within`] waits for, once its row is
-    /// measured. Returns whether it still waits: the next frame measures
-    /// the row (a few frames at most).
-    pub fn reveal_pending(&self) -> bool {
-        let Some((ix, share, frames)) = self.pending.take() else {
-            return false;
-        };
-        if self.state.bounds_for_item(ix).is_some() {
-            self.reveal_within(ix, share);
-            return false;
-        }
-        if frames < 3 {
-            self.pending.set(Some((ix, share, frames + 1)));
-        }
-        frames < 3
     }
 
     /// Stops following the latest row where the screen is now, until the
