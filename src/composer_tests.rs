@@ -627,3 +627,44 @@ fn at_mentions_a_file_of_the_agents_folder_as_a_token(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(cx.read(|cx| composer.read(cx).menu().is_none()));
 }
+
+/// The files for an @-mention are ranked off the UI thread: until the new
+/// ranking comes, the list of what was typed before stays, and the latest
+/// words' files are the ones that show.
+#[gpui_kit::test]
+fn an_at_mentions_files_are_ranked_off_the_ui_thread_latest_first(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    let root = folder.path().to_path_buf();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    for file in ["src/main.rs", "src/parse.rs", "README.md"] {
+        std::fs::write(root.join(file), "").unwrap();
+    }
+    let (_, window, workspace) = start(cx);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    cx.update(|cx| view.update(cx, |view, cx| view.set_draft_folder(root.clone(), cx)));
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    act(cx, window, |window, cx| window.input("see @ma", cx));
+    crate::testing::wait_until(cx, "the files", |cx| {
+        cx.read(|cx| composer.read(cx).menu().is_some())
+    });
+    let first = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            composer
+                .read(cx)
+                .menu()
+                .map(|menu| (menu.items[0].insert.clone(), menu.range.clone()))
+        })
+    };
+    assert_eq!(first(cx), Some(("src/main.rs".to_string(), 4..7)));
+    // Two quick changes, nothing run in the background yet: the list stays,
+    // over the words as they are now.
+    cx.update_window(window, |_, window, cx| {
+        window.press("backspace", cx);
+        window.press("backspace", cx);
+        window.input("pa", cx);
+    })
+    .unwrap();
+    assert_eq!(first(cx), Some(("src/main.rs".to_string(), 4..7)));
+    cx.run_until_parked();
+    assert_eq!(first(cx), Some(("src/parse.rs".to_string(), 4..7)));
+}

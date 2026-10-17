@@ -279,6 +279,34 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
     })
 }
 
+/// The menu of the files `ranked` for an @-mention over `range`, if any.
+fn mention_list(ranked: Vec<crate::mentions::Ranked>, range: Range<usize>) -> Option<SlashMenu> {
+    let items: Vec<MenuItem> = ranked
+        .into_iter()
+        .map(|ranked| {
+            let (folder, name) = match ranked.path.rsplit_once('/') {
+                Some((folder, name)) => (folder.to_string(), name.to_string()),
+                None => (String::new(), ranked.path.clone()),
+            };
+            MenuItem {
+                insert: ranked.path,
+                label: name.into(),
+                hint: SharedString::default(),
+                about: folder.into(),
+                more: true,
+            }
+        })
+        .collect();
+    (!items.is_empty()).then_some(SlashMenu {
+        items,
+        selected: 0,
+        range,
+        kind: MenuKind::Mention,
+        // Enter takes the file, never sends.
+        complete: false,
+    })
+}
+
 /// Whether ↑ in the empty composer edits the latest message.
 type EditsLast = Rc<dyn Fn(&App) -> bool>;
 
@@ -312,6 +340,9 @@ pub struct Composer {
     /// The files listed there, and when.
     files: Option<(PathBuf, std::time::Instant, Arc<Vec<String>>)>,
     listing: Option<Task<()>>,
+    /// The files ranked for what follows the "@", off the UI thread. A
+    /// newer query replaces it, so the latest one's files show.
+    ranking: Option<Task<()>>,
     /// Mentions inserted so far, for their tokens' ids.
     mentioned: u32,
     /// The model the images go to, which says which it can't take.
@@ -363,6 +394,7 @@ impl Composer {
             mention_folder: None,
             files: None,
             listing: None,
+            ranking: None,
             mentioned: 0,
             image_model: None,
             _subscriptions: subscriptions,
@@ -685,21 +717,31 @@ impl Composer {
     /// The menu for the text as it stands: a command's, else the files an
     /// "@" before the caret mentions.
     fn refresh_menu(&mut self, text: &str, cx: &mut Context<Self>) {
+        // A mention's list stays up while the files for what is typed now
+        // are ranked.
+        let shown = self.menu.take_if(|menu| menu.kind == MenuKind::Mention);
         self.update_menu(text);
-        if self.menu.is_none() && self.dismissed.as_deref() != Some(text) {
-            self.menu = self.mention_menu(text, cx);
+        if self.menu.is_some() || self.dismissed.as_deref() == Some(text) {
+            self.ranking = None;
+            return;
         }
+        self.menu = self.mention_menu(text, shown, cx);
     }
 
-    /// The files an "@" before the caret mentions, best first, once the
-    /// session's folder is listed (in the background, the first time).
-    fn mention_menu(&mut self, text: &str, cx: &mut Context<Self>) -> Option<SlashMenu> {
-        let folder = self.mention_folder.clone()?;
-        let caret = self.textarea.read(cx).selected_range();
-        if !caret.is_empty() {
+    /// The files an "@" before the caret mentions, once the session's
+    /// folder is listed (in the background, the first time). They are
+    /// ranked off the UI thread: until they come, `shown` (the list of
+    /// what was typed before) stays, over what is typed now.
+    fn mention_menu(
+        &mut self,
+        text: &str,
+        shown: Option<SlashMenu>,
+        cx: &mut Context<Self>,
+    ) -> Option<SlashMenu> {
+        let Some((folder, range, typed)) = self.mention_typed(text, cx) else {
+            self.ranking = None;
             return None;
-        }
-        let (range, typed) = crate::mentions::typed(text, caret.end)?;
+        };
         let listed = self
             .files
             .as_ref()
@@ -718,30 +760,58 @@ impl Composer {
                 return None;
             }
         };
-        let items: Vec<MenuItem> = crate::mentions::rank(&files, typed, MENTION_ROWS)
-            .into_iter()
-            .map(|ranked| {
-                let (folder, name) = match ranked.path.rsplit_once('/') {
-                    Some((folder, name)) => (folder.to_string(), name.to_string()),
-                    None => (String::new(), ranked.path.clone()),
-                };
-                MenuItem {
-                    insert: ranked.path,
-                    label: name.into(),
-                    hint: SharedString::default(),
-                    about: folder.into(),
-                    more: true,
-                }
-            })
-            .collect();
-        (!items.is_empty()).then_some(SlashMenu {
-            items,
-            selected: 0,
-            range,
-            kind: MenuKind::Mention,
-            // Enter takes the file, never sends.
-            complete: false,
+        self.rank_mentions(files, typed, range.clone(), cx);
+        shown.map(|mut menu| {
+            menu.range = range;
+            menu
         })
+    }
+
+    /// The folder, the bytes from the "@" to the caret, and what follows
+    /// the "@", while a mention is typed.
+    fn mention_typed(&self, text: &str, cx: &App) -> Option<(PathBuf, Range<usize>, String)> {
+        let folder = self.mention_folder.clone()?;
+        let caret = self.textarea.read(cx).selected_range();
+        if !caret.is_empty() {
+            return None;
+        }
+        let (range, typed) = crate::mentions::typed(text, caret.end)?;
+        Some((folder, range, typed.to_string()))
+    }
+
+    /// Ranks `files` for `typed` on a background thread, then shows them,
+    /// if the same mention is still being typed. A newer call drops this
+    /// one's task, so only the latest query's files ever show.
+    fn rank_mentions(
+        &mut self,
+        files: Arc<Vec<String>>,
+        typed: String,
+        range: Range<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        let ranking = cx.background_spawn({
+            let typed = typed.clone();
+            async move { crate::mentions::rank(&files, &typed, MENTION_ROWS) }
+        });
+        self.ranking = Some(cx.spawn(async move |this, cx| {
+            let ranked = ranking.await;
+            this.update(cx, |this, cx| {
+                this.ranking = None;
+                let text = this.text(cx);
+                let now = this.mention_typed(&text, cx);
+                let same = now.is_some_and(|(_, now, words)| now == range && words == typed);
+                let command = this
+                    .menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.kind == MenuKind::Command);
+                if !same || command || this.dismissed.as_deref() == Some(text.as_str()) {
+                    return;
+                }
+                this.menu = mention_list(ranked, range);
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// Lists the files of `folder` off the UI thread, then shows the menu
@@ -764,7 +834,7 @@ impl Composer {
                 this.files = Some((folder, std::time::Instant::now(), Arc::new(files)));
                 let text = this.text(cx);
                 if this.menu.is_none() && this.dismissed.as_deref() != Some(text.as_str()) {
-                    this.menu = this.mention_menu(&text, cx);
+                    this.menu = this.mention_menu(&text, None, cx);
                     cx.notify();
                 }
             })
