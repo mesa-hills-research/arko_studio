@@ -476,6 +476,14 @@ impl Workspace {
                 self.sidebar.update(cx, |sidebar, cx| sidebar.refresh(cx));
                 self.sync_chrome(window, cx);
             }
+            LiveEvent::QuestionClosed {
+                answered_here: false,
+            } if session.read(cx).is_working() => {
+                window.push_notification(
+                    Notification::info("The question was answered elsewhere."),
+                    cx,
+                );
+            }
             // `/exit` typed with jobs or workers running: closing asks first.
             // (A close the app started asks through its own dialog.)
             LiveEvent::QuitAsked if *session.read(cx).phase() != Phase::Closing => {
@@ -522,6 +530,7 @@ impl Workspace {
                 self.show(Some(session.clone()), window, cx);
                 self.sidebar.update(cx, |sidebar, cx| sidebar.refresh(cx));
             }
+            SessionViewEvent::OpenAccounts => self.open_accounts(window, cx),
             SessionViewEvent::ShowPrompt => {
                 if let Some(session) = &self.session {
                     prompts::show(session, window, cx);

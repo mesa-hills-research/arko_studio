@@ -8,11 +8,15 @@
 //! or a command the app runs itself.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::kbd::Kbd;
+use gpui_kit::component::text::TextView;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
+    WindowExt as _,
     button::{Button, ButtonVariants as _, Toggle, ToggleGroup},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -26,10 +30,13 @@ use crate::backend::{Mode, ModelChoices, NewSession, SessionEntry, SharedBackend
 use crate::composer::{Composer, ComposerEvent};
 use crate::layout::WidthClass;
 use crate::live::{LiveSession, Phase, PromptKind};
-use crate::prefs;
+use crate::{drafts, menus, prefs};
 
 /// How many recent folders Change… offers.
 const RECENT_FOLDERS: usize = 8;
+
+/// How long typing rests before the draft is kept.
+const DRAFT_REST: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// A new session, before its first message: how it will work, where and on
 /// which model.
@@ -48,6 +55,8 @@ pub struct Draft {
 pub enum SessionViewEvent {
     /// A new session started with its first message: the window shows it.
     Created(Entity<LiveSession>),
+    /// Open Settings › Models & accounts.
+    OpenAccounts,
     /// Show the session's waiting prompt again.
     ShowPrompt,
 }
@@ -68,15 +77,29 @@ pub struct SessionView {
     composer: Entity<Composer>,
     composer_empty: bool,
     width: WidthClass,
+    /// The question collapsed with Later.
+    later: Option<u64>,
+    /// The composer's rows while expanded.
+    expanded_rows: Option<usize>,
+    model_filter: Entity<InputState>,
     _session: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
     _models: Option<Task<()>>,
+    _draft: Option<Task<()>>,
 }
 
 impl SessionView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| Composer::new(window, cx));
-        let subscriptions = vec![cx.subscribe_in(&composer, window, Self::on_composer_event)];
+        let model_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find a model"));
+        let subscriptions = vec![
+            cx.subscribe_in(&composer, window, Self::on_composer_event),
+            cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
+                this.sync_expanded(window, cx)
+            }),
+            cx.observe_window_bounds(window, |this, window, cx| this.sync_expanded(window, cx)),
+            cx.observe(&model_filter, |_, _, cx| cx.notify()),
+        ];
         let mut this = Self {
             session: None,
             draft: Draft::default(),
@@ -86,10 +109,16 @@ impl SessionView {
             composer,
             composer_empty: true,
             width: WidthClass::Wide,
+            later: None,
+            expanded_rows: None,
+            model_filter,
             _session: Vec::new(),
             _subscriptions: subscriptions,
             _models: None,
+            _draft: None,
         };
+        this.restore_draft(window, cx);
+        this.sync_expanded(window, cx);
         this.sync_composer(window, cx);
         this.list_models(cx);
         this
@@ -112,6 +141,18 @@ impl SessionView {
     pub fn set_draft_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
         self.draft.folder = Some(folder);
         self.list_models(cx);
+        cx.notify();
+    }
+
+    /// Starts the new session on `model` (as `/model` takes it).
+    pub fn set_draft_model(
+        &mut self,
+        model: String,
+        effort: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.draft.model = Some(model);
+        self.draft.effort = effort;
         cx.notify();
     }
 
@@ -221,7 +262,34 @@ impl SessionView {
         })
     }
 
-    /// Shows `session`, or a new session when `None`.
+    /// The key the composer's draft is kept under.
+    fn draft_key(&self, cx: &App) -> Option<String> {
+        match &self.session {
+            None => Some(drafts::NEW_SESSION.to_string()),
+            Some(session) => session.read(cx).id().map(|id| id.0.clone()),
+        }
+    }
+
+    fn keep_draft(&mut self, cx: &mut Context<Self>) {
+        self._draft = None;
+        if let Some(key) = self.draft_key(cx) {
+            let text = self.composer.read(cx).expanded_text(cx);
+            drafts::set(&key, &text, cx);
+        }
+    }
+
+    fn restore_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self
+            .draft_key(cx)
+            .and_then(|key| drafts::get(&key, cx))
+            .unwrap_or_default();
+        self.composer
+            .update(cx, |composer, cx| composer.set_text(&text, window, cx));
+        self.composer_empty = text.is_empty();
+    }
+
+    /// Shows `session`, or a new session when `None`. The composer keeps
+    /// the draft of the one it leaves and brings back the one it shows.
     pub fn set_session(
         &mut self,
         session: Option<Entity<LiveSession>>,
@@ -231,10 +299,12 @@ impl SessionView {
         if self.session.as_ref().map(Entity::entity_id) == session.as_ref().map(Entity::entity_id) {
             return;
         }
+        self.keep_draft(cx);
         if let Some(old) = self.session.take() {
             old.update(cx, |old, cx| old.set_shown(false, cx));
         }
         self._session.clear();
+        self.later = None;
         self.session = session;
         if let Some(session) = &self.session {
             session.update(cx, |session, cx| session.set_shown(true, cx));
@@ -244,6 +314,7 @@ impl SessionView {
                     cx.notify();
                 }));
         }
+        self.restore_draft(window, cx);
         self.sync_composer(window, cx);
         cx.notify();
     }
@@ -273,31 +344,62 @@ impl SessionView {
             .map_or(self.draft.mode, |session| session.read(cx).mode())
     }
 
+    /// The question the composer answers: the agent's, unless collapsed.
+    fn question(&self, cx: &App) -> Option<(u64, SharedString)> {
+        let question = self.session.as_ref()?.read(cx).question()?;
+        Some((question.id, question.text.clone().into()))
+    }
+
     /// What the composer says while empty.
     pub fn placeholder(&self, cx: &App) -> &'static str {
         let Some(session) = &self.session else {
             return "Message Arko";
         };
         let session = session.read(cx);
-        if session.is_working() {
+        if let Some(question) = session.question() {
+            if self.later == Some(question.id) {
+                "Answer Arko’s question"
+            } else {
+                "Answer the question above"
+            }
+        } else if session.is_working() {
             "Add to the task — Arko is working"
         } else {
             "Message Arko"
         }
     }
 
-    /// Gives the composer the session's state: its placeholder, whether Esc
-    /// stops a turn.
+    /// Gives the composer the session's state: its placeholder, what the
+    /// slash menu completes, whether Esc stops a turn.
     fn sync_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let placeholder = self.placeholder(cx);
-        let working = self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.read(cx).is_working());
+        let (reading, working) = match &self.session {
+            Some(session) => {
+                let session = session.read(cx);
+                (session.reading().clone(), session.is_working())
+            }
+            None => (Arc::default(), false),
+        };
         self.composer.update(cx, |composer, cx| {
             composer.set_placeholder(placeholder, window, cx);
-            composer.set_working(working);
+            composer.set_session_state(reading, working);
         });
+    }
+
+    /// The composer's height follows the Expand setting: about 45% of the
+    /// window, or growing with its text.
+    fn sync_expanded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = prefs::get(cx).input.composer_expanded.then(|| {
+            let line = f32::from(window.rem_size()) * 1.5;
+            let tall = f32::from(window.viewport_size().height) * 0.45;
+            ((tall / line).floor() as usize).max(3)
+        });
+        if rows != self.expanded_rows {
+            self.expanded_rows = rows;
+            self.composer
+                .update(cx, |composer, cx| composer.set_rows(rows, cx));
+            cx.notify();
+        }
     }
 
     fn on_composer_event(
@@ -316,6 +418,11 @@ impl SessionView {
                     self.composer_empty = empty;
                     cx.notify();
                 }
+                // The draft is kept once typing rests.
+                self._draft = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(DRAFT_REST).await;
+                    this.update(cx, |this, cx| this.keep_draft(cx)).ok();
+                }));
             }
         }
     }
@@ -325,28 +432,70 @@ impl SessionView {
         self.composer.update(cx, |composer, cx| composer.send(cx));
     }
 
-    /// Sends `text`: starts a new session with it, or gives it to the open
-    /// session as a message (a note while a turn runs). The composer
-    /// empties once it is taken.
+    /// Sends `text`: runs the app's own commands, starts a new session with
+    /// it, or gives it to the open session as a message, a note or an
+    /// answer. The composer empties once it is taken.
     pub fn send(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        let trimmed = text.trim();
+        if self.app_command(trimmed, window, cx) {
+            self.composer
+                .update(cx, |composer, cx| composer.sent(&text, window, cx));
+            return;
+        }
         let result = match &self.session {
             None => self.start_session(text.clone(), cx),
             Some(session) => {
-                let input = arko::Input::Message(arko::Message {
-                    text: text.clone(),
-                    images: Vec::new(),
-                });
+                let input = match session.read(cx).question() {
+                    Some(question) => arko::Input::Answer {
+                        question: question.id,
+                        text: text.clone(),
+                    },
+                    None => arko::Input::Message(arko::Message {
+                        text: text.clone(),
+                        images: Vec::new(),
+                    }),
+                };
                 session.update(cx, |session, cx| session.send(input, cx))
             }
         };
         match result {
             Ok(()) => {
                 self.composer
-                    .update(cx, |composer, cx| composer.sent(window, cx));
+                    .update(cx, |composer, cx| composer.sent(&text, window, cx));
+                self.keep_draft(cx);
                 self.composer_empty = true;
                 cx.notify();
             }
             Err(why) => window.push_notification(why, cx),
+        }
+    }
+
+    /// Runs the commands the app handles itself; `false` for the others.
+    fn app_command(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let mut words = text.split_whitespace();
+        match (words.next(), words.next(), words.next()) {
+            (Some("/view"), Some(view), None) => {
+                let view = match view {
+                    "full" => prefs::TranscriptView::Full,
+                    "quiet" => prefs::TranscriptView::Quiet,
+                    "messages" => prefs::TranscriptView::Messages,
+                    _ => return false,
+                };
+                prefs::update(cx, |prefs| prefs.view = view);
+                true
+            }
+            (Some("/settings"), None, None) => {
+                window.dispatch_action(Box::new(menus::OpenSettings), cx);
+                true
+            }
+            // A new session's model, before it starts.
+            (Some("/model"), Some(model), effort)
+                if self.session.is_none() && model != "worker" =>
+            {
+                self.set_draft_model(model.to_string(), effort.map(str::to_string), cx);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -370,6 +519,7 @@ impl SessionView {
             images: Vec::new(),
         });
         let session = LiveSession::create(new, first, cx);
+        drafts::set(drafts::NEW_SESSION, "", cx);
         self.draft.model = None;
         self.draft.effort = None;
         cx.emit(SessionViewEvent::Created(session));
@@ -412,9 +562,37 @@ impl SessionView {
         }
     }
 
-    /// Attach comes with the composer's tools.
+    /// Attach: in an agent session, the files' paths go in the text.
     fn attach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        not_yet("Attaching files", window, cx);
+        if self.mode(cx) == Mode::Chat {
+            // HOOK(engine): images with a message (D3).
+            window.push_notification("Attaching images comes with a later version.", cx);
+            return;
+        }
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        let composer = self.composer.downgrade();
+        cx.spawn_in(window, async move |_, cx| {
+            if let Ok(Ok(Some(paths))) = paths.await {
+                let text: Vec<String> = paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect();
+                composer
+                    .update_in(cx, |composer, window, cx| {
+                        composer.textarea().update(cx, |textarea, cx| {
+                            textarea.insert(format!("{} ", text.join(" ")), window, cx)
+                        });
+                        composer.focus(window, cx);
+                    })
+                    .ok();
+            }
+        })
+        .detach();
     }
 
     /// The chip's text: the mode, and the model where there's room ("Agent
@@ -475,15 +653,152 @@ impl SessionView {
 
     fn render_mode_popover(
         &mut self,
-        _: Entity<gpui_kit::component::popover::PopoverState>,
+        popover: Entity<gpui_kit::component::popover::PopoverState>,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let theme = cx.theme().clone();
         let mode = self.mode(cx);
+        let started = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.read(cx).has_started());
         let view = cx.entity().downgrade();
+        let filter = self.model_filter.read(cx).value().to_lowercase();
+
+        // The models: the new session's, or the open session's from its
+        // status (the workers' only, once its conversation started).
+        let (choices, current, workers_only) = match &self.session {
+            None => (
+                self.models
+                    .as_ref()
+                    .map(|(_, models)| models.clone())
+                    .unwrap_or_default(),
+                self.draft_model(),
+                false,
+            ),
+            Some(session) => {
+                let models = session.read(cx).reading().models.clone();
+                let groups = arko::models::menu(&models, |name| {
+                    arko::models::needs(&models.reachable, name)
+                });
+                let current = if started {
+                    Some(models.workers.clone())
+                } else {
+                    Some(models.main.clone())
+                };
+                (
+                    ModelChoices::from_arko(groups, None),
+                    current.filter(|model| !model.is_empty()),
+                    started,
+                )
+            }
+        };
+        let has_workers = match &self.session {
+            Some(session) => session.read(cx).reading().models.has_workers,
+            None => true,
+        };
+        let session_without_models = self.session.is_some() && choices.groups.is_empty();
+
+        let rows = choices
+            .groups
+            .iter()
+            .enumerate()
+            .filter_map(|(group_ix, group)| {
+                let models: Vec<_> = group
+                    .models
+                    .iter()
+                    .filter(|model| {
+                        filter.is_empty()
+                            || model.name.to_lowercase().contains(&filter)
+                            || model.alias.to_lowercase().contains(&filter)
+                            || arko::models::display_name(&model.name)
+                                .to_lowercase()
+                                .contains(&filter)
+                    })
+                    .cloned()
+                    .collect();
+                if models.is_empty() {
+                    return None;
+                }
+                let usable = group.needs.is_none();
+                let needs = group.needs.clone();
+                Some(
+                    v_flex()
+                        .gap_0p5()
+                        .child(
+                            div()
+                                .pt_1()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(group.name.clone()),
+                        )
+                        .when_some(needs.clone(), |this, needs| {
+                            this.child(
+                                Button::new(("model-needs", group_ix))
+                                    .link()
+                                    .xsmall()
+                                    .label(format!("Needs {needs}"))
+                                    .tooltip("Settings › Models & accounts")
+                                    .on_click({
+                                        let view = view.clone();
+                                        move |_, _, cx| {
+                                            view.update(cx, |_, cx| {
+                                                cx.emit(SessionViewEvent::OpenAccounts)
+                                            })
+                                            .ok();
+                                        }
+                                    }),
+                            )
+                        })
+                        .children(models.into_iter().enumerate().map(|(ix, model)| {
+                            let checked = current.as_deref() == Some(model.name.as_str());
+                            let name = model.name.clone();
+                            let view = view.clone();
+                            let popover = popover.clone();
+                            Button::new(SharedString::from(format!("model-{group_ix}-{ix}")))
+                                .ghost()
+                                .small()
+                                .w_full()
+                                .justify_start()
+                                .disabled(!usable || (started && !workers_only))
+                                .when(checked, |this| this.icon(IconName::Check))
+                                .label(arko::models::display_name(&model.name))
+                                .on_click(move |_, window, cx| {
+                                    let name = name.clone();
+                                    view.update(cx, |view, cx| {
+                                        view.choose_model(name, workers_only, window, cx)
+                                    })
+                                    .ok();
+                                    popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+                                })
+                        }))
+                        .into_any_element(),
+                )
+            });
+        let rows: Vec<AnyElement> = rows.collect();
+
+        let effort_row = (!workers_only)
+            .then(|| current.clone())
+            .flatten()
+            .map(|model| {
+                let efforts = arko::commands::dynamic_choices(
+                    &arko::remote::Reading::default(),
+                    "/model",
+                    &[model.as_str()],
+                );
+                let chosen = match &self.session {
+                    None => self.draft.effort.clone(),
+                    Some(session) => Some(session.read(cx).reading().models.main_effort.clone()),
+                };
+                (model, efforts, chosen)
+            })
+            .filter(|(_, efforts, _)| !efforts.is_empty());
+
         v_flex()
             .id("mode-choice")
             .w(rems(18.))
+            .max_h(rems(28.))
             .gap_2()
             .child(
                 ToggleGroup::new("mode")
@@ -515,7 +830,117 @@ impl SessionView {
                         }
                     }),
             )
+            .when(started && !session_without_models, |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("The main agent keeps its model once the conversation has started."),
+                )
+            })
+            .when(workers_only && has_workers, |this| {
+                this.child(div().text_xs().font_medium().child("Model for new workers"))
+            })
+            .when(!workers_only || has_workers, |this| {
+                this.child(Input::new(&self.model_filter).small().cleanable(true))
+                    .child(
+                        v_flex()
+                            .id("model-list")
+                            .test_support()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .children(rows),
+                    )
+            })
+            .when_some(effort_row, |this, (model, efforts, chosen)| {
+                let view = view.clone();
+                this.child(
+                    h_flex()
+                        .gap_1()
+                        .flex_wrap()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("Effort"),
+                        )
+                        .children(efforts.into_iter().map(move |effort| {
+                            let checked = chosen.as_deref() == Some(effort.as_str());
+                            let view = view.clone();
+                            let model = model.clone();
+                            Button::new(SharedString::from(format!("effort-{effort}")))
+                                .xsmall()
+                                .when(checked, |this| this.primary())
+                                .when(!checked, |this| this.ghost())
+                                .disabled(started)
+                                .label(effort.clone())
+                                .on_click(move |_, window, cx| {
+                                    let (model, effort) = (model.clone(), effort.clone());
+                                    view.update(cx, |view, cx| {
+                                        view.choose_effort(model, effort, window, cx)
+                                    })
+                                    .ok();
+                                })
+                        })),
+                )
+            })
             .into_any_element()
+    }
+
+    fn choose_model(
+        &mut self,
+        model: String,
+        workers: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match &self.session {
+            None => self.set_draft_model(model, None, cx),
+            Some(session) => {
+                let command = if workers {
+                    format!("/model worker {model}")
+                } else {
+                    format!("/model {model}")
+                };
+                self.run_command(session.clone(), command, window, cx);
+            }
+        }
+    }
+
+    fn choose_effort(
+        &mut self,
+        model: String,
+        effort: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match &self.session {
+            None => self.set_draft_model(model, Some(effort), cx),
+            Some(session) => self.run_command(
+                session.clone(),
+                format!("/model {model} {effort}"),
+                window,
+                cx,
+            ),
+        }
+    }
+
+    /// Sends a command line to the session, as the terminal would.
+    fn run_command(
+        &mut self,
+        session: Entity<LiveSession>,
+        command: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = arko::Input::Message(arko::Message {
+            text: command,
+            images: Vec::new(),
+        });
+        if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
+            window.push_notification(why, cx);
+        }
     }
 
     /// The one quiet line in a new session's empty transcript, with
@@ -606,6 +1031,58 @@ impl SessionView {
             .into_any_element()
     }
 
+    /// The question card, pinned above the composer while the agent waits
+    /// on an answer.
+    fn render_question(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (id, text) = self.question(cx)?;
+        if self.later == Some(id) {
+            return None;
+        }
+        let theme = cx.theme();
+        Some(
+            v_flex()
+                .id("question-card")
+                .test_support()
+                .mb_2()
+                .p_3()
+                .gap_2()
+                .bg(theme.secondary)
+                .text_color(theme.secondary_foreground)
+                .border_1()
+                .border_color(theme.border)
+                .rounded(theme.radius_lg)
+                .child(
+                    h_flex()
+                        .items_start()
+                        .gap_2()
+                        .child(
+                            Icon::new(gpui_kit::assets::IconName::MessageCircleQuestionMark)
+                                .text_color(theme.warning)
+                                .flex_none(),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .child(TextView::markdown(("question", id as usize), text)),
+                        )
+                        .child(
+                            Button::new("question-later")
+                                .ghost()
+                                .xsmall()
+                                .label("Later")
+                                .tooltip("Keep the question in the composer’s footer")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.later = Some(id);
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// A strip above the composer while the session waits for credentials
     /// or an approval the user put off.
     fn render_prompt(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -645,6 +1122,11 @@ impl SessionView {
             .session
             .as_ref()
             .is_some_and(|session| session.read(cx).is_working());
+        let later_question = self
+            .question(cx)
+            .filter(|(id, _)| self.later == Some(*id))
+            .map(|(id, _)| id);
+        let expanded = prefs::get(cx).input.composer_expanded;
         let send_key = prefs::get(cx).input.send_key;
         let send_chord = Keystroke::parse(crate::composer::send_chord(send_key)).ok();
         let _ = window;
@@ -659,7 +1141,31 @@ impl SessionView {
             .border_color(theme.input)
             .rounded(theme.radius_lg)
             .bg(theme.background)
-            .child(self.composer.clone())
+            .child(
+                h_flex()
+                    .items_start()
+                    .gap_1()
+                    .child(div().flex_1().min_w_0().child(self.composer.clone()))
+                    .child(
+                        Button::new("expand-composer")
+                            .ghost()
+                            .xsmall()
+                            .compact()
+                            .icon(Icon::new(if expanded {
+                                gpui_kit::assets::IconName::Minimize2
+                            } else {
+                                gpui_kit::assets::IconName::Maximize2
+                            }))
+                            .tooltip_with_action(
+                                if expanded { "Shrink" } else { "Expand" },
+                                &menus::ExpandComposer,
+                                None,
+                            )
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(menus::ExpandComposer), cx)
+                            }),
+                    ),
+            )
             .child(
                 h_flex()
                     .w_full()
@@ -674,6 +1180,25 @@ impl SessionView {
                             .on_click(cx.listener(|this, _, window, cx| this.attach(window, cx))),
                     )
                     .child(chip)
+                    .when_some(later_question, |this, _| {
+                        this.child(
+                            Button::new("question-chip")
+                                .ghost()
+                                .small()
+                                .icon(
+                                    Icon::new(
+                                        gpui_kit::assets::IconName::MessageCircleQuestionMark,
+                                    )
+                                    .text_color(theme.warning),
+                                )
+                                .label("Question")
+                                .tooltip("Show the agent’s question")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.later = None;
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .child(div().flex_1())
                     .map(|this| {
                         // The tooltips name the keys: Esc stops, the send key sends.
@@ -788,6 +1313,7 @@ pub fn not_yet(what: &str, window: &mut Window, cx: &mut App) {
 impl Render for SessionView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let narrow = self.width == WidthClass::Narrow;
+        let question = self.render_question(cx);
         let prompt = self.render_prompt(cx);
         let theme = cx.theme();
         v_flex()
@@ -818,6 +1344,7 @@ impl Render for SessionView {
                         v_flex()
                             .pb_3()
                             .children(prompt)
+                            .children(question)
                             .child(self.render_composer(window, cx)),
                     ),
             )

@@ -155,7 +155,7 @@ fn a_first_message_starts_a_session_and_its_reply_arrives(cx: &mut TestAppContex
     assert_eq!(app.composer_text(cx), "");
     app.wait_for_text(cx, "Seven pears.");
     assert!(mock.was_sent("Count the pears."));
-    // It's in Arko's folder, and listed in the sidebar.
+    // It's in Arko's folder, listed in the sidebar and kept in the history.
     wait_until(cx, "the sidebar to list it", |cx| {
         cx.read(|cx| {
             app.workspace
@@ -170,6 +170,10 @@ fn a_first_message_starts_a_session_and_its_reply_arrives(cx: &mut TestAppContex
     let sessions = arko::sessions::list(&app.root);
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].workspace.as_deref(), Some(app.work.as_path()));
+    assert_eq!(
+        cx.read(|cx| crate::history::InputHistory::entries(cx).to_vec()),
+        ["Count the pears."]
+    );
     app.close_all(cx);
     assert!(
         arko::sessions::list(&app.root)[0].holder.is_none(),
@@ -199,6 +203,75 @@ fn escape_stops_a_turn_and_send_comes_back(cx: &mut TestAppContext) {
         assert!(window.try_find("send").is_some());
     });
     assert!(!app.feed(cx).iter().any(|item| item.contains("Too late.")));
+    app.close_all(cx);
+}
+
+#[gpui_kit::test]
+fn the_agents_question_is_answered_from_the_composer(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, body| {
+        if body.contains("Two spaces.") {
+            answer("Indented with two spaces.", Duration::ZERO)
+        } else {
+            let call = arko::testing::tool_call(
+                "q1",
+                "ask_user",
+                serde_json::json!({ "questions": "Tabs or spaces?" }),
+            );
+            Box::pin(async move { call })
+        }
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Indent the file.");
+    wait_until(cx, "the question card", |cx| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("question-card").is_some()
+        })
+        .unwrap()
+    });
+    let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
+    assert_eq!(
+        cx.read(|cx| view.read(cx).placeholder(cx)),
+        "Answer the question above"
+    );
+    // Later folds it into the composer's footer; the composer still answers.
+    act(cx, app.window, |window, cx| {
+        window.click("question-later", cx)
+    });
+    act(cx, app.window, |window, _| {
+        assert!(window.try_find("question-card").is_none());
+        assert!(window.try_find("question-chip").is_some());
+    });
+    app.send(cx, "Two spaces.");
+    app.wait_for_text(cx, "Indented with two spaces.");
+    act(cx, app.window, |window, _| {
+        assert!(window.try_find("question-chip").is_none());
+    });
+    app.close_all(cx);
+}
+
+#[gpui_kit::test]
+fn a_slash_command_is_completed_from_the_menu_and_runs(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, _| answer("Hello.", Duration::ZERO));
+    let app = start(cx, &mock);
+    app.send(cx, "Say hello.");
+    app.wait_for_text(cx, "Hello.");
+    act(cx, app.window, |window, cx| window.input("/co", cx));
+    act(cx, app.window, |window, _| {
+        assert!(window.try_find("slash-menu").is_some());
+        assert!(window.try_find(("slash-item", 0usize)).is_some());
+    });
+    act(cx, app.window, |window, cx| window.press("tab", cx));
+    assert_eq!(app.composer_text(cx), "/cost");
+    // The command is complete: Enter sends it, and the session answers.
+    act(cx, app.window, |window, cx| window.press("enter", cx));
+    assert_eq!(app.composer_text(cx), "");
+    app.wait_for_text(cx, "/cost");
+    wait_until(cx, "the cost", |cx| {
+        app.feed(cx)
+            .iter()
+            .any(|item| item.contains('$') || item.to_lowercase().contains("cost"))
+    });
     app.close_all(cx);
 }
 

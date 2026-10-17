@@ -13,7 +13,9 @@ mod bundled_themes;
 pub mod chrome;
 pub mod commands;
 pub mod composer;
+pub mod drafts;
 pub mod fonts;
+pub mod history;
 pub mod layout;
 pub mod live;
 pub mod menus;
@@ -31,6 +33,7 @@ pub mod theme_picker;
 pub mod title_bar;
 pub mod workers_panel;
 pub mod workspace;
+pub mod writing;
 
 #[cfg(test)]
 mod composer_tests;
@@ -42,6 +45,7 @@ mod testing;
 mod tests;
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -62,8 +66,8 @@ pub const APP_ID: &str = "com.mesahillsresearch.ArkoStudio";
 
 pub const COPYRIGHT: &str = "Copyright © 2026 Luke Erickson";
 
-/// What the app reads before its first window: the preferences, the themes
-/// and the fonts, and the backend it runs on.
+/// What the app reads before its first window: the preferences, the drafts,
+/// the themes and the fonts, and the backend it runs on.
 pub struct Startup {
     prefs: PrefsStore,
     themes: Themes,
@@ -74,6 +78,10 @@ pub struct Startup {
     home: Option<PathBuf>,
     /// The user's themes, watched while the app runs.
     themes_folder: Option<ThemesFolder>,
+    drafts: BTreeMap<String, String>,
+    /// Arko's folder, where the drafts, the input history and the writing
+    /// aids' vocabulary are kept; `None` keeps them in memory (tests).
+    arko: Option<PathBuf>,
 }
 
 enum Themes {
@@ -102,6 +110,8 @@ impl Startup {
             backend: Arc::new(ArkoBackend::new(&arko)),
             home: session_view::home_from_env(),
             themes_folder: Some(ThemesFolder::Watch(paths::themes_folder(&arko))),
+            drafts: drafts::load(&drafts::file(&arko)),
+            arko: Some(arko),
         }
     }
 
@@ -117,6 +127,8 @@ impl Startup {
             backend,
             home: Some(PathBuf::from("/home/ada")),
             themes_folder: None,
+            drafts: BTreeMap::new(),
+            arko: None,
         }
     }
 
@@ -138,6 +150,12 @@ impl Startup {
         self.prefs = PrefsStore::new(prefs, None);
         self
     }
+
+    /// Starts with these drafts (tests).
+    pub fn with_drafts(mut self, drafts: BTreeMap<String, String>) -> Self {
+        self.drafts = drafts;
+        self
+    }
 }
 
 /// Sets the app up, before its first window.
@@ -152,6 +170,13 @@ pub fn init(startup: Startup, cx: &mut App) {
     cx.set_global(SharedBackend(startup.backend));
     cx.set_global(session_view::HomeFolder(startup.home));
     live::init(cx);
+    writing::init(startup.arko.as_deref(), cx);
+    history::init(startup.arko.clone(), cx);
+    drafts::init(
+        startup.drafts,
+        startup.arko.as_deref().map(drafts::file),
+        cx,
+    );
     let themes = match startup.themes {
         Themes::Ready(themes) => themes,
         Themes::Loading(thread) => thread

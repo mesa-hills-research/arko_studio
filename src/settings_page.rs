@@ -537,12 +537,6 @@ fn send_key_options() -> &'static [(SendKey, &'static str)] {
     }
 }
 
-/// Says why a setting can't be changed yet, after what it does.
-fn pending(item: SettingItem, description: &str) -> SettingItem {
-    item.description(format!("{description} Not available yet."))
-        .disabled(true)
-}
-
 fn input_page() -> SettingPage {
     let defaults = prefs::Input::default();
     let modifier = if cfg!(target_os = "macos") {
@@ -550,8 +544,6 @@ fn input_page() -> SettingPage {
     } else {
         "Ctrl+"
     };
-    // Spell check, word suggestions and paste tokens come with the
-    // composer's tools: until then they show what they'll do, unavailable.
     SettingPage::new(PAGES[1])
         .icon(IconName::ALargeSmall)
         .groups([
@@ -575,29 +567,26 @@ fn input_page() -> SettingPage {
                     |prefs, on| prefs.input.smooth_typing = on,
                     defaults.smooth_typing,
                 ),
-                pending(
-                    switch(
-                        "Spell check",
-                        "",
-                        |prefs| prefs.input.spell_check,
-                        |prefs, on| prefs.input.spell_check = on,
-                        defaults.spell_check,
-                    ),
+                switch(
+                    "Spell check",
                     "Underlines misspelled words (English).",
+                    |prefs| prefs.input.spell_check,
+                    |prefs, on| prefs.input.spell_check = on,
+                    defaults.spell_check,
                 ),
-                pending(
-                    choice(
-                        "Word suggestions",
-                        &[
-                            (Suggestions::Off, "Off"),
-                            (Suggestions::Quiet, "Quiet"),
-                            (Suggestions::Eager, "Eager"),
-                        ],
-                        |prefs| prefs.input.suggestions,
-                        |prefs, value| prefs.input.suggestions = value,
-                        defaults.suggestions,
-                    ),
-                    "Completes words you’ve typed before. Tab accepts.",
+                choice(
+                    "Word suggestions",
+                    &[
+                        (Suggestions::Off, "Off"),
+                        (Suggestions::Quiet, "Quiet"),
+                        (Suggestions::Eager, "Eager"),
+                    ],
+                    |prefs| prefs.input.suggestions,
+                    |prefs, value| prefs.input.suggestions = value,
+                    defaults.suggestions,
+                )
+                .description(
+                    "Completes words from what you’ve typed in Arko Studio, never from pasted text or replies. Tab accepts.",
                 ),
                 choice(
                     "Keybindings",
@@ -614,7 +603,7 @@ fn input_page() -> SettingPage {
                     "How the composer’s keys move and edit: your platform’s, Emacs’s or Vim’s.",
                 ),
             ]),
-            SettingGroup::new().title("Pasting").item(pending(
+            SettingGroup::new().title("Pasting").item(
                 SettingItem::new(
                     "Paste as a token",
                     SettingField::number_input(
@@ -632,9 +621,11 @@ fn input_page() -> SettingPage {
                         },
                     )
                     .default_value(defaults.paste_token_lines as f64),
+                )
+                .description(
+                    "Pastes longer than this many lines (or 2 KB) become one token; click it to open it into the text.",
                 ),
-                "Pastes longer than this many lines become one token you can open.",
-            )),
+            ),
         ])
 }
 
