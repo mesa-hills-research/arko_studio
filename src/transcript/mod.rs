@@ -9,6 +9,9 @@
 //! assistant's text is one Markdown document per entry, shown as one row per
 //! top-level block, so a long answer only lays out the blocks on screen and
 //! a finished block is never parsed again.
+//!
+//! Mount it with [`TranscriptView::cached`], so that what happens around it
+//! (a keystroke in the composer) doesn't draw it again.
 
 mod inbox;
 mod model;
@@ -23,6 +26,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use arko::remote::{CallStatus, Feed, Kind};
+use gpui_kit::base::image_cache::LruImageCache;
 use gpui_kit::base::{SelectableText, TextSelection};
 use gpui_kit::component::diff_view::DiffViewState;
 use gpui_kit::component::input;
@@ -41,6 +45,18 @@ pub const CONTEXT: &str = "Transcript";
 
 /// Code blocks show this many lines until the reader asks for all of them.
 pub const CODE_LINES: usize = 40;
+
+/// How much decoded image data a transcript keeps (thumbnails, Markdown's
+/// embedded images).
+const IMAGE_BUDGET: usize = 64 * 1024 * 1024;
+
+/// The latest entries made ready to show when a transcript starts over (a
+/// session opens, another conversation): the reader sees the end of it at
+/// once, and the older entries are made ready a few at a time.
+const FIRST_ENTRIES: usize = 200;
+/// Older entries made ready per frame after the first: each is a Markdown
+/// parse at most, so a frame stays well under 16 ms.
+const ENTRIES_PER_FRAME: usize = 100;
 
 /// What the transcript asks of the views around it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,12 +143,16 @@ pub struct TranscriptView {
     hovered: Option<u64>,
     /// Entries that came while the reader was scrolled up.
     new_while_away: usize,
+    /// The oldest entry ready to show, while older ones wait to be made
+    /// ready ([`FIRST_ENTRIES`]).
+    loaded_from: Option<u64>,
     /// Where to scroll once the rows are built (the Messages view's
     /// counts open the Full view at their calls).
     scroll_to: Option<RowKey>,
     clock: Clock,
     /// Draws again every second while a call or a worker runs.
     ticker: Option<Task<()>>,
+    image_cache: Entity<LruImageCache>,
     renders: usize,
     _prefs: Subscription,
 }
@@ -174,9 +194,11 @@ impl TranscriptView {
             settings,
             hovered: None,
             new_while_away: 0,
+            loaded_from: None,
             scroll_to: None,
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
+            image_cache: LruImageCache::new(IMAGE_BUDGET, cx),
             renders: 0,
             _prefs: observe_prefs,
         };
@@ -184,6 +206,14 @@ impl TranscriptView {
         this.model.load(snapshot, &mut changes);
         this.follow(changes, cx);
         this
+    }
+
+    /// The view to put in the window: cached, so that it draws again only
+    /// when something in it changed, not whenever the view around it does.
+    pub fn cached(this: &Entity<Self>) -> AnyElement {
+        this.clone()
+            .cached(StyleRefinement::default().size_full())
+            .into_any_element()
     }
 
     pub fn filter(&self) -> &AgentFilter {
@@ -259,9 +289,11 @@ impl TranscriptView {
             self.ui.clear();
             self.hovered = None;
             let ids: Vec<u64> = self.model.entries().iter().map(|e| e.item.id).collect();
-            for id in ids {
-                self.add_ui(id, cx);
+            let start = ids.len().saturating_sub(FIRST_ENTRIES);
+            for id in &ids[start..] {
+                self.add_ui(*id, cx);
             }
+            self.loaded_from = ids.get(start).copied().filter(|_| start > 0);
             self.rows.clear();
             self.scroller
                 .update(cx, |scroller, cx| scroller.reset(0, cx));
@@ -291,6 +323,24 @@ impl TranscriptView {
         self.refresh_rows(cx);
         self.tick_while_running(cx);
         cx.notify();
+    }
+
+    /// Makes the next older entries ready to show, if some wait. Returns
+    /// whether more wait still.
+    fn load_older(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(from) = self.loaded_from else {
+            return false;
+        };
+        let end = self.model.position(from).unwrap_or_else(|ix| ix);
+        let start = end.saturating_sub(ENTRIES_PER_FRAME);
+        let entries = self.model.entries();
+        let ids: Vec<u64> = entries[start..end].iter().map(|e| e.item.id).collect();
+        self.loaded_from = entries.get(start).map(|e| e.item.id).filter(|_| start > 0);
+        for id in ids {
+            self.add_ui(id, cx);
+        }
+        self.refresh_rows(cx);
+        self.loaded_from.is_some()
     }
 
     /// Makes what an entry's rows need: a Markdown document for text.
@@ -449,6 +499,7 @@ impl TranscriptView {
                 blocks: &blocks,
                 expanded: &expanded,
                 source: &source,
+                first: self.loaded_from,
             },
         );
         let old = &self.rows;
@@ -687,43 +738,50 @@ fn warm_up_languages(cx: &mut App) {
 }
 
 impl Render for TranscriptView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders += 1;
         self.apply_pending(cx);
+        if self.load_older(cx) {
+            // The rows of older entries go above the reader: nothing moves.
+            window.request_animation_frame();
+        }
         let scrolled_up = self.scroller.read(cx).is_scrolled_up();
         if !scrolled_up {
             self.new_while_away = 0;
         }
         let new = self.new_while_away;
         let view = cx.entity().downgrade();
-        div()
-            .id("transcript")
-            .key_context(CONTEXT)
-            .track_focus(&self.focus_handle)
-            .size_full()
-            .on_action(cx.listener(Self::copy))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    if !this.focus_handle.contains_focused(window, cx) {
-                        this.focus_handle.focus(window, cx);
-                    }
-                }),
-            )
-            .child(
-                MessageScroller::new(
-                    "transcript-rows",
-                    self.scroller.clone(),
-                    move |ix, window, cx| row::render(&view, ix, window, cx),
+        image_cache(self.image_cache.clone()).size_full().child(
+            div()
+                .id("transcript")
+                .key_context(CONTEXT)
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .on_action(cx.listener(Self::copy))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        if !this.focus_handle.contains_focused(window, cx) {
+                            this.focus_handle.focus(window, cx);
+                        }
+                    }),
                 )
-                .with_row_style(StyleRefinement::default().px_0().pb_0())
-                .with_jump_button_label("Jump to latest")
-                .when(new > 0, |scroller| {
-                    scroller
-                        .with_jump_button_renderer(move |button| button.label(format!("{new} new")))
-                })
-                .size_full(),
-            )
+                .child(
+                    MessageScroller::new(
+                        "transcript-rows",
+                        self.scroller.clone(),
+                        move |ix, window, cx| row::render(&view, ix, window, cx),
+                    )
+                    .with_row_style(StyleRefinement::default().px_0().pb_0())
+                    .with_jump_button_label("Jump to latest")
+                    .when(new > 0, |scroller| {
+                        scroller.with_jump_button_renderer(move |button| {
+                            button.label(format!("{new} new"))
+                        })
+                    })
+                    .size_full(),
+                ),
+        )
     }
 }
 

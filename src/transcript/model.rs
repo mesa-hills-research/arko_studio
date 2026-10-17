@@ -451,6 +451,9 @@ pub(crate) struct Layout<'a> {
     pub expanded: &'a dyn Fn(u64) -> Option<bool>,
     /// Whether an entry's text shows as its source.
     pub source: &'a dyn Fn(u64) -> bool,
+    /// The oldest entry ready to show, when older ones are still being made
+    /// ready: the rows start there.
+    pub first: Option<u64>,
 }
 
 struct Rows<'a> {
@@ -558,7 +561,9 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
         previous: None,
         layout,
     };
-    let mut ix = 0;
+    let mut ix = layout
+        .first
+        .map_or(0, |first| model.position(first).unwrap_or_else(|ix| ix));
     while ix < entries.len() {
         let entry = &entries[ix];
         match show(filter, view, &entry.item) {
@@ -653,6 +658,7 @@ mod tests {
             blocks: &|_| (1, 0),
             expanded: &|_| None,
             source: &|_| false,
+            first: None,
         }
     }
 
@@ -894,6 +900,21 @@ mod tests {
         assert_eq!(run_of(&model, 6, View::Messages), [5, 6, 8, 9]);
         // Full shows every call and the thinking, folded.
         assert_eq!(keys(&model, View::Full).len(), 11);
+    }
+
+    #[test]
+    fn rows_start_at_the_first_entry_ready() {
+        let model = model(vec![
+            item(1, Kind::User, "main", "first"),
+            item(2, Kind::User, "main", "second"),
+            item(3, Kind::User, "main", "third"),
+        ]);
+        let from_two = Layout {
+            first: Some(2),
+            ..layout(View::Full)
+        };
+        let keys: Vec<RowKey> = rows(&model, &from_two).iter().map(|r| r.key).collect();
+        assert_eq!(keys, [RowKey::User(2), RowKey::User(3)]);
     }
 
     #[test]

@@ -11,8 +11,9 @@ use arko_agents::AgentEvent;
 use arko_workflows::WorkflowEvent;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Entity, Point, SharedString, TestAppContext,
-    WindowBounds, WindowOptions, px, size,
+    AnyWindowHandle, AppContext as _, Bounds, Context, Entity, IntoElement, ParentElement as _,
+    Point, Render, SharedString, Styled as _, TestAppContext, Window, WindowBounds, WindowOptions,
+    div, px, size,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -375,6 +376,37 @@ fn the_view_follows_the_bottom_until_the_reader_scrolls_up(cx: &mut TestAppConte
 }
 
 #[gpui_kit::test]
+fn a_long_transcript_shows_its_end_first_and_the_rest_a_chunk_a_frame(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    for ix in 0..450 {
+        feed.user(&format!("message {ix}"), Source::App, Delivery::Turn);
+    }
+    let opened = feed.clone();
+    let (window, view) = cx
+        .update(|cx| {
+            gpui_kit::open_window(options(800., 400.), cx, |window, cx| {
+                cx.new(|cx| TranscriptView::new(&opened, AgentFilter::Main, window, cx))
+            })
+        })
+        .unwrap();
+    let rows = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).row_count());
+    // The latest 200 at once (and a hundred more with each frame drawn
+    // since: opening the window drew one).
+    let first = rows(cx);
+    assert!((200..450).contains(&first), "{first}");
+    assert_eq!((first - 200) % 100, 0);
+    cx.update_window(window, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(rows(cx), first + 100, "a hundred more each frame");
+    settle(cx, window);
+    assert_eq!(rows(cx), 450);
+    // The reader stayed at the latest message all along.
+    assert!(cx.read(|cx| view.read(cx).is_following(cx)));
+    assert!(row_top(cx, window, RowKey::User(item_ids(&feed)[449].0)).is_some());
+}
+
+#[gpui_kit::test]
 fn a_truncate_and_another_conversation_drop_rows(cx: &mut TestAppContext) {
     start(cx);
     let feed = Feed::new("main");
@@ -709,4 +741,79 @@ fn a_selection_across_rows_copies_with_the_keyboard(cx: &mut TestAppContext) {
         .unwrap_or_default();
     assert!(copied.contains("General Kenobi."), "{copied:?}");
     assert!(copied.contains("bold"), "{copied:?}");
+}
+
+/// A window with a sibling of the transcript, as the composer is.
+struct Column {
+    sibling: Entity<Sibling>,
+    transcript: Entity<TranscriptView>,
+}
+
+struct Sibling {
+    keystrokes: usize,
+}
+
+impl Render for Sibling {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().child(format!("{} keystrokes", self.keystrokes))
+    }
+}
+
+impl Render for Column {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .child(
+                div()
+                    .h(px(500.))
+                    .child(TranscriptView::cached(&self.transcript)),
+            )
+            .child(self.sibling.clone())
+    }
+}
+
+#[gpui_kit::test]
+fn a_keystroke_beside_the_transcript_does_not_draw_it(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Hello", Source::App, Delivery::Turn);
+    feed.reply("Hi! **How** can I help?");
+    let (window, column) = cx
+        .update(|cx| {
+            gpui_kit::open_window(options(800., 720.), cx, |window, cx| {
+                let transcript =
+                    cx.new(|cx| TranscriptView::new(&feed, AgentFilter::Main, window, cx));
+                let sibling = cx.new(|_| Sibling { keystrokes: 0 });
+                cx.new(|_| Column {
+                    sibling,
+                    transcript,
+                })
+            })
+        })
+        .unwrap();
+    let draw = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    };
+    for _ in 0..3 {
+        draw(cx);
+    }
+    let (sibling, transcript) = cx.read(|cx| {
+        let column = column.read(cx);
+        (column.sibling.clone(), column.transcript.clone())
+    });
+    let before = cx.read(|cx| transcript.read(cx).render_count());
+    for _ in 0..20 {
+        sibling.update(cx, |sibling, cx| {
+            sibling.keystrokes += 1;
+            cx.notify();
+        });
+        draw(cx);
+    }
+    assert_eq!(cx.read(|cx| transcript.read(cx).render_count()), before);
+    // What changes in the transcript draws it.
+    feed.user("More", Source::App, Delivery::Turn);
+    draw(cx);
+    assert!(cx.read(|cx| transcript.read(cx).render_count()) > before);
 }
