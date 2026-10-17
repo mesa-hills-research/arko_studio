@@ -219,6 +219,15 @@ impl Render for CredentialsForm {
         v_flex()
             .id("credentials-form")
             .test_support()
+            // Enter in the key's field saves it, as the button does (the
+            // dialog would close unanswered).
+            .when(takes_key, |this| {
+                this.on_action(cx.listener(
+                    |this, _: &gpui_kit::base::actions::Confirm, window, cx| {
+                        this.save_key(window, cx)
+                    },
+                ))
+            })
             .gap_3()
             .child(
                 div()

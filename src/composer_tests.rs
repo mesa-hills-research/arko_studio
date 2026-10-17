@@ -382,9 +382,8 @@ fn missing_credentials_are_entered_in_a_dialog(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| {
         window.input("sk-ant-test-0123456789", cx)
     });
-    act(cx, window, |window, cx| {
-        window.click("credentials-save", cx)
-    });
+    // Enter in the field saves, as the button does.
+    act(cx, window, |window, cx| window.press("enter", cx));
     assert_eq!(
         backend.added_keys(),
         [(
