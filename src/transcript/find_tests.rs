@@ -315,3 +315,83 @@ fn mod_f_opens_the_find_bar_and_esc_gives_the_keyboard_back(cx: &mut TestAppCont
         cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
     });
 }
+
+/// `feed`'s transcript in a window `height` high, its rows all ready.
+fn open_feed(
+    cx: &mut TestAppContext,
+    feed: &Feed,
+    view: View,
+    height: f32,
+) -> (AnyWindowHandle, Entity<TranscriptView>) {
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = view));
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: Point::default(),
+            size: size(px(800.), px(height)),
+        })),
+        ..Default::default()
+    };
+    let opened = cx
+        .update(|cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| TranscriptView::new(feed, AgentFilter::Main, window, cx))
+            })
+        })
+        .unwrap();
+    settle(cx, opened.0);
+    opened
+}
+
+fn top(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> gpui_kit::ListOffset {
+    cx.read(|cx| view.read(cx).list.top())
+}
+
+/// The reader scrolls away from the match while text streams with the find
+/// bar open: the find searches the new text, and the reader stays where
+/// they scrolled.
+#[gpui_kit::test]
+fn the_find_leaves_the_reader_where_they_scrolled_while_text_streams(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    feed.user("Explain.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let mut text = String::from("Intro.\n\n```rust\n");
+    for line in 0..200 {
+        if line == 100 {
+            text.push_str("let needle = 100;\n");
+        } else {
+            text.push_str(&format!("let line_{line} = {line};\n"));
+        }
+    }
+    text.push_str("```\n\nThen more.\n\n");
+    say(&feed, &text);
+    let (window, view) = open_feed(cx, &feed, View::Full, 600.);
+    assert_eq!(find(cx, window, &view, "needle").total, 1);
+    settle(cx, window);
+    view.update(cx, |view, cx| {
+        view.list.scroll_by(px(-300.));
+        cx.notify();
+    });
+    settle(cx, window);
+    let reading = top(cx, &view);
+    for n in 0..3 {
+        say(&feed, &format!("More needle text {n}. "));
+        settle(cx, window);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(300));
+        settle(cx, window);
+        let now = top(cx, &view);
+        assert_eq!(
+            (now.item_ix, now.offset_in_item),
+            (reading.item_ix, reading.offset_in_item),
+            "after {n} more"
+        );
+    }
+    // The new words were found as they came.
+    assert_eq!(
+        cx.read(|cx| view.read(cx).find_status()).total,
+        4,
+        "the code's and three more"
+    );
+}

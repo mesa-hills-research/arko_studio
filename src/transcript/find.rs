@@ -63,6 +63,9 @@ pub(crate) struct Find {
     pub highlighted: HashSet<(u64, usize)>,
     /// The transcript changed since the search: it runs again.
     pub stale: bool,
+    /// The block whose view shows the current match when it draws next:
+    /// set as the find lands, never as it searches again.
+    pub reveal: Option<(u64, usize)>,
     pub _again: Option<Task<()>>,
 }
 
@@ -256,10 +259,10 @@ impl TranscriptView {
                 .or_default()
                 .push(index);
         }
-        let highlighted = self
+        let (highlighted, reveal) = self
             .find
             .take()
-            .map(|find| find.highlighted)
+            .map(|find| (find.highlighted, find.reveal))
             .unwrap_or_default();
         self.find = Some(Find {
             query: query.to_string(),
@@ -268,6 +271,7 @@ impl TranscriptView {
             current: None,
             highlighted,
             stale: false,
+            reveal,
             _again: None,
         });
     }
@@ -338,6 +342,9 @@ impl TranscriptView {
             };
             if let Some(ix) = key {
                 self.list.scroll_to(ix, px(0.));
+            }
+            if let (Place::Block(block), Some(find)) = (found.place, self.find.as_mut()) {
+                find.reveal = Some((found.entry, block));
             }
         }
         self.highlight(cx);
@@ -458,16 +465,17 @@ impl TranscriptView {
     }
 
     /// Paints the matches of block `block` of the entry `entry` on its
-    /// view, the current one stronger. The view's own text is searched, so
+    /// view, the current one stronger, and shows the current match's line
+    /// if the find just landed there. The view's own text is searched, so
     /// the ranges are its own.
     pub(super) fn highlight_block(
-        &self,
+        &mut self,
         entry: u64,
         block: usize,
         view: &Entity<gpui_kit::component::text::TextViewState>,
         cx: &mut App,
     ) {
-        let Some(find) = &self.find else {
+        let Some(find) = &mut self.find else {
             return;
         };
         let Some(indices) = find.places.get(&(entry, Place::Block(block))) else {
@@ -477,6 +485,12 @@ impl TranscriptView {
             .iter()
             .find(|index| Some(**index) == find.current)
             .map(|index| find.matches[*index].ordinal);
+        // Searching again (while text streams) leaves the reader where they
+        // are: only landing reveals.
+        let reveal = current.is_some() && find.reveal == Some((entry, block));
+        if reveal {
+            find.reveal = None;
+        }
         let (all, strong) = match_colors(cx);
         let query = find.query.clone();
         view.update(cx, |view, cx| {
@@ -491,7 +505,7 @@ impl TranscriptView {
                 RangeHighlight::new(range.clone(), color)
             });
             let _ = view.set_range_highlights(highlights, cx);
-            if let Some(range) = current.and_then(|ordinal| ranges.get(ordinal)) {
+            if reveal && let Some(range) = current.and_then(|ordinal| ranges.get(ordinal)) {
                 let _ = view.reveal_range(range.clone(), cx);
             }
         });
