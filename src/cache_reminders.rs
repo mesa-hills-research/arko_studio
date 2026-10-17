@@ -21,7 +21,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::cache_timer::{answer_choices, expires_at, refresh_choices, requests_run};
+use crate::cache_timer::{answer_choices, expires_at, expiry_cost, refresh_choices, requests_run};
 use crate::figures::{self, clock};
 use crate::live::{LiveEvent, LiveSession};
 use crate::status_bar::{Clock, tabular_figures};
@@ -302,17 +302,14 @@ impl CacheReminders {
         let Some(expires) = expires_at(&cache) else {
             return;
         };
-        let choices = if asking {
-            answer_choices(&cache)
-        } else {
-            refresh_choices(&cache)
+        // The first reminder has no Refresh: it says what the lapse costs.
+        let choices = match (asking, last) {
+            (true, _) => answer_choices(&cache),
+            (false, true) => refresh_choices(&cache),
+            (false, false) => expiry_cost(&cache).unwrap_or_default(),
         };
         let key = self.key;
-        let headline = if last {
-            "The prompt cache expires in a minute"
-        } else {
-            "The prompt cache expires in 5 minutes"
-        };
+        let headline = headline(expires - now(cx));
         let quiet = std::mem::take(&mut self.quiet);
         let system = !quiet && !notify::app_focused(cx);
         let this = cx.entity().downgrade();
@@ -327,8 +324,8 @@ impl CacheReminders {
                 if system {
                     window.push_notification(
                         Notification::new()
-                            .title(headline)
-                            .message(format!("{title}. {choices}"))
+                            .title(headline.clone())
+                            .message(lines(&title, &choices))
                             .on_click({
                                 let opens = opens.clone();
                                 move |_, window, cx| notify::open_in(&opens, window, cx)
@@ -346,7 +343,13 @@ impl CacheReminders {
                         .id1::<CacheReminder>(ElementId::Integer(key))
                         .with_type(NotificationType::Warning)
                         .title(headline)
-                        .message(format!("{title}. {choices}"))
+                        .content(move |_, _, _| {
+                            ReminderText {
+                                title: title.clone(),
+                                text: choices.clone(),
+                            }
+                            .into_any_element()
+                        })
                         .on_click(move |_, window, cx| notify::open_in(&opens, window, cx)),
                 };
                 window.push_notification(note, cx);
@@ -401,6 +404,53 @@ impl CacheReminders {
             })
             .ok();
         }));
+    }
+}
+
+/// A reminder's headline, `left` milliseconds before the cache lapses: "The
+/// prompt cache expires in 5 minutes", "… in a minute".
+pub fn headline(left: i64) -> String {
+    match (left.max(0) + 59_999) / 60_000 {
+        0 | 1 => "The prompt cache expires in a minute".to_string(),
+        minutes => format!("The prompt cache expires in {minutes} minutes"),
+    }
+}
+
+/// A reminder's text for the OS's notifications: the session's title on a
+/// line of its own (it may end in a full stop or a question mark), then
+/// `text`.
+pub fn lines(title: &str, text: &str) -> String {
+    if text.is_empty() {
+        title.to_string()
+    } else {
+        format!("{title}\n{text}")
+    }
+}
+
+/// The first reminder's text: the session's title, and what the lapse
+/// costs under it.
+#[derive(IntoElement)]
+struct ReminderText {
+    title: String,
+    text: String,
+}
+
+impl RenderOnce for ReminderText {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        v_flex()
+            .id("cache-reminder-text")
+            .test_support()
+            .gap_0p5()
+            .text_sm()
+            .child(div().truncate().child(self.title))
+            .when(!self.text.is_empty(), |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(self.text),
+                )
+            })
     }
 }
 
@@ -791,6 +841,30 @@ mod tests {
         assert!(!reminded.shows(cx, "cache-countdown"));
     }
 
+    /// The headline says the minutes left, and a title ending in a full
+    /// stop or a question mark stands on its own line.
+    #[test]
+    fn reminders_read_well() {
+        assert_eq!(
+            super::headline(EARLY_MS),
+            "The prompt cache expires in 5 minutes"
+        );
+        // Late, after the computer slept.
+        assert_eq!(
+            super::headline(3 * 60_000 - 500),
+            "The prompt cache expires in 3 minutes"
+        );
+        assert_eq!(
+            super::headline(FINAL_MS),
+            "The prompt cache expires in a minute"
+        );
+        assert_eq!(
+            super::lines("Why does it fail?", "Refresh ≈ $0.04"),
+            "Why does it fail?\nRefresh ≈ $0.04"
+        );
+        assert_eq!(super::lines("Count the pears.", ""), "Count the pears.");
+    }
+
     /// A failed refresh says why once: the session's sentence as it is,
     /// the app's own after what failed.
     #[test]
@@ -908,6 +982,11 @@ mod tests {
             }
         );
         assert_eq!(reminded.notes(cx), 1);
+        // The session's title, and what the lapse costs. Refresh comes with
+        // the last one.
+        assert!(reminded.shows(cx, "cache-reminder-text"));
+        let key = cx.read(|cx| reminded.session.read(cx).key());
+        assert!(!reminded.shows(cx, ("refresh-cache", key)));
         reminded.advance(cx, 4 * 60_000);
         assert!(reminded.sent(cx).last);
         assert!(reminded.shows(cx, "cache-countdown"));
