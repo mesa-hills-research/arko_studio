@@ -591,6 +591,31 @@ fn the_layout_buttons_sit_together_and_the_workers_one_comes_with_workers(cx: &m
 }
 
 #[gpui_kit::test]
+fn a_new_session_picks_chat_or_agent_in_its_empty_transcript(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let line = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).draft_line());
+    act(cx, window, |window, _| {
+        assert!(window.try_find("empty-mode-switch").is_some());
+        assert!(window.try_find("empty-mode-about").is_some());
+    });
+    act(cx, window, |window, cx| window.click("empty-mode-chat", cx));
+    assert_eq!(line(cx).as_deref(), Some("New chat"));
+    // ←/→ switch while the switch has focus.
+    act(cx, window, |window, cx| window.press("right", cx));
+    assert_eq!(line(cx).as_deref(), Some("New agent session in ~/src/arko"));
+    act(cx, window, |window, cx| window.press("left", cx));
+    assert_eq!(line(cx).as_deref(), Some("New chat"));
+    // An open session has it in the chip's popover only.
+    let row = row_of(&workspace, "Split the engine out of main.rs", cx);
+    act(cx, window, |window, cx| window.click(("row", row), cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("empty-mode-switch").is_none())
+    });
+}
+
+#[gpui_kit::test]
 fn a_new_session_says_where_it_will_run_and_the_chip_switches_it(cx: &mut TestAppContext) {
     start(cx);
     let (window, workspace) = open(cx, 1300.);

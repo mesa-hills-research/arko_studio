@@ -8,6 +8,7 @@
 //! or a command the app runs itself.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::input::{Input, InputState};
@@ -16,8 +17,8 @@ use gpui_kit::component::text::TextView;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
-    WindowExt as _,
-    button::{Button, ButtonVariants as _, Toggle, ToggleGroup},
+    ThemeStyled as _, WindowExt as _,
+    button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
     popover::Popover,
@@ -99,6 +100,10 @@ pub struct SessionView {
     /// The composer's rows while expanded.
     expanded_rows: Option<usize>,
     model_filter: Entity<InputState>,
+    /// The Chat | Agent switch in a new session's empty transcript, and the
+    /// one in the chip's popover.
+    mode_focus: FocusHandle,
+    mode_menu_focus: FocusHandle,
     _session: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
     _models: Option<Task<()>>,
@@ -162,6 +167,8 @@ impl SessionView {
             later: None,
             expanded_rows: None,
             model_filter,
+            mode_focus: cx.focus_handle().tab_stop(true),
+            mode_menu_focus: cx.focus_handle().tab_stop(true),
             _session: Vec::new(),
             _subscriptions: subscriptions,
             _models: None,
@@ -920,11 +927,10 @@ impl SessionView {
     fn render_mode_popover(
         &mut self,
         popover: Entity<gpui_kit::component::popover::PopoverState>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().clone();
-        let mode = self.mode(cx);
         let started = self
             .session
             .as_ref()
@@ -1073,44 +1079,27 @@ impl SessionView {
             .w(rems(18.))
             .max_h(rems(28.))
             .gap_2()
-            .child(
-                ToggleGroup::new("mode")
-                    .segmented()
-                    .small()
-                    // An open session switches between turns only.
-                    .disabled(!can_switch)
-                    .child(
-                        Toggle::new("mode-chat")
-                            .label("Chat")
-                            .checked(mode == Mode::Chat),
-                    )
-                    .child(
-                        Toggle::new("mode-agent")
-                            .label("Agent")
-                            .checked(mode == Mode::Agent),
-                    )
-                    .on_click({
-                        let view = view.clone();
-                        let popover = popover.clone();
-                        move |checks, window, cx| {
-                            // The toggle whose state changed is the one clicked.
-                            let clicked = if checks[0] != (mode == Mode::Chat) {
-                                Mode::Chat
-                            } else {
-                                Mode::Agent
-                            };
-                            let open = view
-                                .update(cx, |view, _| view.session.is_some())
-                                .unwrap_or(false);
-                            // An open session asks in a dialog.
-                            if open {
-                                popover.update(cx, |popover, cx| popover.dismiss(window, cx));
-                            }
-                            view.update(cx, |view, cx| view.choose_mode(clicked, window, cx))
-                                .ok();
+            .child(self.render_mode_switch(
+                "mode",
+                &self.mode_menu_focus,
+                Rc::new({
+                    let view = view.clone();
+                    let popover = popover.clone();
+                    move |to, window, cx| {
+                        let open = view
+                            .update(cx, |view, _| view.session.is_some())
+                            .unwrap_or(false);
+                        // An open session asks in a dialog.
+                        if open {
+                            popover.update(cx, |popover, cx| popover.dismiss(window, cx));
                         }
-                    }),
-            )
+                        view.update(cx, |view, cx| view.choose_mode(to, window, cx))
+                            .ok();
+                    }
+                }),
+                window,
+                cx,
+            ))
             .when(self.session.is_some() && !can_switch, |this| {
                 this.child(
                     div()
@@ -1311,6 +1300,137 @@ impl SessionView {
         }
     }
 
+    /// Chat | Agent: an outlined track with the chosen mode filled, each
+    /// with its icon, and a line on what the chosen mode does. ←/→ switch
+    /// while it has focus. `on_pick` hears the mode chosen. An open session
+    /// switches between turns only.
+    fn render_mode_switch(
+        &self,
+        prefix: &'static str,
+        focus: &FocusHandle,
+        on_pick: PickMode,
+        window: &Window,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let mode = self.mode(cx);
+        let (can_switch, started) = match &self.session {
+            None => (true, false),
+            Some(session) => {
+                let session = session.read(cx);
+                (
+                    *session.phase() == Phase::Open && !session.is_working(),
+                    session.has_started(),
+                )
+            }
+        };
+        let focused = focus.is_focused(window) && window.last_input_was_keyboard();
+        // The chosen mode stands out from the track: the window's background
+        // on a light theme, lighter than the track on a dark one.
+        let chosen = if theme.is_dark() {
+            theme.foreground.opacity(0.16)
+        } else {
+            theme.background
+        };
+        let segment = |value: Mode, label: &'static str, icon: gpui_kit::assets::IconName| {
+            let checked = mode == value;
+            let on_pick = on_pick.clone();
+            h_flex()
+                .id(SharedString::from(format!(
+                    "{prefix}-{}",
+                    label.to_lowercase()
+                )))
+                .test_support()
+                .role(Role::RadioButton)
+                .aria_label(label)
+                .aria_toggled(if checked {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
+                .aria_selected(checked)
+                .when(checked, |this| this.aria_active_descendant())
+                .h(rems(1.75))
+                .px_3()
+                .gap_1p5()
+                .items_center()
+                .justify_center()
+                .rounded(theme.radius)
+                .border_1()
+                .text_sm()
+                .child(Icon::new(icon).small())
+                .child(label)
+                .map(|this| {
+                    if checked {
+                        this.bg(chosen)
+                            .border_color(theme.border)
+                            .text_color(theme.foreground)
+                            .font_medium()
+                            .shadow_xs()
+                    } else {
+                        this.border_color(theme.transparent)
+                            .text_color(theme.muted_foreground)
+                    }
+                })
+                .when(!can_switch, |this| this.opacity(0.6))
+                .when(can_switch && !checked, |this| {
+                    this.cursor_pointer()
+                        .hover(|style| style.text_color(theme.foreground))
+                        .on_click(move |_, window, cx| on_pick(value, window, cx))
+                })
+        };
+        v_flex()
+            .items_center()
+            .gap_1()
+            .child(
+                h_flex()
+                    .id(SharedString::from(format!("{prefix}-switch")))
+                    .test_support()
+                    .track_focus(focus)
+                    .role(Role::RadioGroup)
+                    .aria_label("Mode")
+                    .p(px(2.))
+                    .gap(px(2.))
+                    .rounded(theme.radius + px(2.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.muted)
+                    .on_key_down({
+                        let on_pick = on_pick.clone();
+                        move |event: &KeyDownEvent, window, cx| {
+                            let to = match event.keystroke.key.as_str() {
+                                "left" => Mode::Chat,
+                                "right" => Mode::Agent,
+                                _ => return,
+                            };
+                            cx.stop_propagation();
+                            if can_switch && to != mode {
+                                on_pick(to, window, cx);
+                            }
+                        }
+                    })
+                    .when(focused, |this| this.focus_ring_style(window, cx))
+                    .child(segment(
+                        Mode::Chat,
+                        "Chat",
+                        gpui_kit::assets::IconName::MessageSquare,
+                    ))
+                    .child(segment(
+                        Mode::Agent,
+                        "Agent",
+                        gpui_kit::assets::IconName::Bot,
+                    )),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("{prefix}-about")))
+                    .test_support()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(mode_description(mode, started)),
+            )
+    }
+
     /// The one quiet line in a new session's empty transcript, with
     /// Change… for an agent session's folder.
     fn render_draft_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1373,10 +1493,26 @@ impl SessionView {
 
     /// What the transcript's place shows while there is no transcript: a new
     /// session's line, or the session's state.
-    fn render_state(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_state(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let Some(session) = &self.session else {
-            return self.render_draft_line(cx).into_any_element();
+            // The first choice of a new session: Chat or Agent, then where.
+            let view = cx.entity().downgrade();
+            return v_flex()
+                .items_center()
+                .gap_3()
+                .child(self.render_mode_switch(
+                    "empty-mode",
+                    &self.mode_focus,
+                    Rc::new(move |to, window, cx| {
+                        view.update(cx, |view, cx| view.choose_mode(to, window, cx))
+                            .ok();
+                    }),
+                    window,
+                    cx,
+                ))
+                .child(self.render_draft_line(cx))
+                .into_any_element();
         };
         let session = session.read(cx);
         let text: SharedString = match session.phase() {
@@ -1667,6 +1803,23 @@ pub fn home_from_env() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Hears the mode picked on a Chat | Agent switch.
+type PickMode = Rc<dyn Fn(Mode, &mut Window, &mut App)>;
+
+/// What `mode` does, as the line under the Chat | Agent switch says it,
+/// and for a `started` conversation what switching costs.
+pub fn mode_description(mode: Mode, started: bool) -> String {
+    let what = match mode {
+        Mode::Chat => "Chat: conversation only, no tools.",
+        Mode::Agent => "Agent: works in a folder with tools and workers.",
+    };
+    if started {
+        format!("{what} Switching re-reads the conversation without its cache.")
+    } else {
+        what.to_string()
+    }
+}
+
 /// `folder` as people read it: under the home folder as `~/…` on macOS and
 /// Linux, in full on Windows.
 pub fn shown_folder(folder: &Path, home: Option<&Path>) -> String {
@@ -1695,7 +1848,7 @@ impl Render for SessionView {
         // the wheel and the scrollbar work across it), and draws again only
         // when it changes.
         let transcript = self.transcript(cx).map(TranscriptView::cached);
-        let state = transcript.is_none().then(|| self.render_state(cx));
+        let state = transcript.is_none().then(|| self.render_state(window, cx));
         let theme = cx.theme();
         v_flex()
             .id("session-view")
@@ -1739,11 +1892,23 @@ impl Render for SessionView {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{recent_folders, shown_folder_from};
+    use super::{mode_description, recent_folders, shown_folder_from};
     use crate::backend::Backend as _;
     use crate::backend::{FakeBackend, Mode, SessionEntry};
     use std::path::{Path, PathBuf};
     use std::time::SystemTime;
+
+    #[test]
+    fn the_mode_line_says_what_the_mode_does_and_what_switching_costs() {
+        assert_eq!(
+            mode_description(Mode::Chat, false),
+            "Chat: conversation only, no tools."
+        );
+        assert_eq!(
+            mode_description(Mode::Agent, true),
+            "Agent: works in a folder with tools and workers. Switching re-reads the conversation without its cache."
+        );
+    }
 
     #[test]
     fn recent_folders_are_agent_folders_latest_first_each_once() {
