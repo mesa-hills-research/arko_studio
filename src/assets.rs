@@ -8,8 +8,9 @@ use gpui_kit::{AssetSource, Result, SharedString};
 // The composer's and the dialogs' (Plug and MessageCircleQuestionMark come
 // with the transcript's).
 gpui_kit::assets::icon_assets!(pub ExtraIcons, [Paperclip, Maximize2, Minimize2, MessageSquare, KeyRound]);
-// The transcript's: tool icons and the question label.
-gpui_kit::assets::icon_assets!(pub TranscriptIcons, [FilePen, FolderTree, Plug, Wrench, MessageCircleQuestionMark]);
+// The transcript's: tool icons, the question label, and Edit, Branch and
+// Regenerate.
+gpui_kit::assets::icon_assets!(pub TranscriptIcons, [FilePen, FolderTree, Plug, Wrench, MessageCircleQuestionMark, SquarePen, GitBranch, RotateCcw]);
 // The status bar's cache timer.
 gpui_kit::assets::icon_assets!(pub StatusIcons, [Timer]);
 
@@ -53,6 +54,10 @@ mod tests {
             IconName::Maximize2,
             IconName::Plus,
             IconName::Timer,
+            // A message's Edit and Branch, and Regenerate.
+            IconName::SquarePen,
+            IconName::GitBranch,
+            IconName::RotateCcw,
         ] {
             assert!(
                 Assets.load(&icon.path()).unwrap().is_some(),
