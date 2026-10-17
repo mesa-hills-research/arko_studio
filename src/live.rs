@@ -310,6 +310,9 @@ pub struct LiveSession {
     #[cfg(test)]
     applied: usize,
     _tasks: Vec<Task<()>>,
+    /// The tasks draining the feed it has open: dropped with that feed.
+    _feed: Vec<Task<()>>,
+    _rename: Option<Task<()>>,
 }
 
 impl EventEmitter<LiveEvent> for LiveSession {}
@@ -341,6 +344,8 @@ impl LiveSession {
             #[cfg(test)]
             applied: 0,
             _tasks: Vec::new(),
+            _feed: Vec::new(),
+            _rename: None,
         }
     }
 
@@ -503,7 +508,8 @@ impl LiveSession {
     ) {
         let drained = Arc::new(Mutex::new(Drained::default()));
         let wake = Arc::new(Notify::new());
-        self._tasks.push(cx.background_spawn({
+        self._feed.clear();
+        self._feed.push(cx.background_spawn({
             let (drained, wake) = (drained.clone(), wake.clone());
             async move {
                 // Subscribing copies the session's history so far: never on
@@ -539,7 +545,7 @@ impl LiveSession {
                 }
             }
         }));
-        self._tasks.push(cx.background_spawn({
+        self._feed.push(cx.background_spawn({
             let (drained, wake) = (drained.clone(), wake.clone());
             async move {
                 while status.changed().await.is_ok() {
@@ -549,7 +555,7 @@ impl LiveSession {
                 }
             }
         }));
-        self._tasks.push(cx.background_spawn({
+        self._feed.push(cx.background_spawn({
             let (drained, wake) = (drained.clone(), wake.clone());
             async move {
                 while let Some(ask) = quit_asks.recv().await {
@@ -558,7 +564,7 @@ impl LiveSession {
                 }
             }
         }));
-        self._tasks.push(cx.spawn(async move |this, cx| {
+        self._feed.push(cx.spawn(async move |this, cx| {
             loop {
                 wake.notified().await;
                 let batch = std::mem::take(&mut *lock(&drained));
@@ -643,8 +649,11 @@ impl LiveSession {
         let Some(id) = self.id.clone() else {
             return self.ended(cx);
         };
+        // The old feed goes, and the tasks that drained it.
         self.link = None;
+        self._feed.clear();
         self.activity = Activity::default();
+        self.answered = None;
         self.launch(Start::Resume(id), cx);
         cx.notify();
     }
@@ -700,6 +709,7 @@ impl LiveSession {
 
     fn ended(&mut self, cx: &mut Context<Self>) {
         self.phase = Phase::Ended;
+        self._feed.clear();
         self.activity = Activity::default();
         self.quit_ask = None;
         LiveSessions::remove(cx.entity_id(), self.id.as_ref(), cx);
@@ -839,12 +849,18 @@ impl LiveSession {
             self.title = title.trim().to_string().into();
             cx.notify();
         }
-        self._tasks.push(cx.spawn(async move |this, cx| {
+        self._rename = Some(cx.spawn(async move |this, cx| {
             if let Ok(Err(why)) = answer.await {
                 this.update(cx, |_, cx| cx.emit(LiveEvent::Refused(why)))
                     .ok();
             }
         }));
+    }
+
+    /// How many tasks drain its feeds (tests): one feed's worth.
+    #[cfg(test)]
+    pub(crate) fn feed_tasks(&self) -> usize {
+        self._feed.len()
     }
 
     /// Asks the user as the engine's prompter does (tests).

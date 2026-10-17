@@ -750,6 +750,9 @@ fn an_agent_session_switches_to_chat_after_saying_what_it_costs(cx: &mut TestApp
         app.shown(cx).map(|shown| shown.entity_id()),
         Some(session.entity_id())
     );
+    // The first feed went, with the tasks that drained it.
+    let feed_tasks = cx.read(|cx| session.read(cx).feed_tasks());
+    assert_eq!(feed_tasks, 4);
     // The reopened session's feed has a transcript of its own, with the
     // conversation so far.
     app.wait_for_rows(cx, 2);
