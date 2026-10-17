@@ -23,8 +23,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use arko::remote::{CallStatus, Feed, Kind};
-use gpui_kit::base::SelectableText;
+use gpui_kit::base::{SelectableText, TextSelection};
 use gpui_kit::component::diff_view::DiffViewState;
+use gpui_kit::component::input;
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::text::{TextBlockContent, TextBlockId, TextViewState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -34,6 +35,9 @@ use crate::prefs;
 
 pub use model::AgentFilter;
 use model::{Changes, Layout, Model, Row, RowKey};
+
+/// The key context of the transcript, for its key bindings.
+pub const CONTEXT: &str = "Transcript";
 
 /// Code blocks show this many lines until the reader asks for all of them.
 pub const CODE_LINES: usize = 40;
@@ -52,6 +56,8 @@ pub enum TranscriptEvent {
 /// The transcript's copy of the preferences it follows.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Settings {
+    view: prefs::TranscriptView,
+    render_markdown: bool,
     stream_fade: bool,
     expand_thinking: bool,
 }
@@ -59,6 +65,8 @@ struct Settings {
 impl Settings {
     fn of(prefs: &prefs::Prefs) -> Self {
         Self {
+            view: prefs.view,
+            render_markdown: prefs.appearance.render_markdown,
             stream_fade: prefs.appearance.stream_fade,
             expand_thinking: prefs.appearance.expand_thinking,
         }
@@ -92,9 +100,11 @@ struct Block {
 #[derive(Default)]
 struct EntryUi {
     doc: Option<Doc>,
-    /// A call's details or a thinking's text, opened or closed by the
-    /// reader. `None` follows the defaults.
+    /// A call's details, a thinking's text or a group of calls, opened or
+    /// closed by the reader. `None` follows the defaults.
     expanded: Option<bool>,
+    /// The text shows as its Markdown source ("View Source").
+    source: bool,
     /// Code blocks shown whole, by block index.
     uncapped: HashSet<usize>,
     /// An edit's diff, made when its details first open.
@@ -111,9 +121,15 @@ pub struct TranscriptView {
     ui: HashMap<u64, EntryUi>,
     rows: Vec<Row>,
     scroller: Entity<MessageScrollerState>,
+    focus_handle: FocusHandle,
     settings: Settings,
+    /// The reply whose hover actions show.
+    hovered: Option<u64>,
     /// Entries that came while the reader was scrolled up.
     new_while_away: usize,
+    /// Where to scroll once the rows are built (the Messages view's
+    /// counts open the Full view at their calls).
+    scroll_to: Option<RowKey>,
     clock: Clock,
     /// Draws again every second while a call or a worker runs.
     ticker: Option<Task<()>>,
@@ -122,6 +138,12 @@ pub struct TranscriptView {
 }
 
 impl EventEmitter<TranscriptEvent> for TranscriptView {}
+
+impl Focusable for TranscriptView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
 
 impl TranscriptView {
     /// The transcript of `feed`'s session, as `filter` says whose.
@@ -132,7 +154,9 @@ impl TranscriptView {
         let observe_prefs = cx.observe_global::<prefs::PrefsStore>(|this, cx| {
             let settings = Settings::of(prefs::get(cx));
             if settings != this.settings {
-                let rows_change = settings.expand_thinking != this.settings.expand_thinking;
+                let rows_change = settings.view != this.settings.view
+                    || settings.render_markdown != this.settings.render_markdown
+                    || settings.expand_thinking != this.settings.expand_thinking;
                 this.settings = settings;
                 if rows_change {
                     this.refresh_rows(cx);
@@ -146,8 +170,11 @@ impl TranscriptView {
             ui: HashMap::new(),
             rows: Vec::new(),
             scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
+            focus_handle: cx.focus_handle(),
             settings,
+            hovered: None,
             new_while_away: 0,
+            scroll_to: None,
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
             renders: 0,
@@ -185,8 +212,8 @@ impl TranscriptView {
     }
 
     /// Opens or closes the details of the feed item `item`: a call's
-    /// parameters and output, a thinking's text. (Find opens the row it
-    /// lands on.)
+    /// parameters and output, a thinking's text, a group of calls. (Find
+    /// opens the row it lands on.)
     pub fn set_expanded(&mut self, item: u64, open: bool, cx: &mut Context<Self>) {
         let current = self.ui.get(&item).and_then(|ui| ui.expanded);
         let default = self
@@ -230,6 +257,7 @@ impl TranscriptView {
         }
         if changes.reset {
             self.ui.clear();
+            self.hovered = None;
             let ids: Vec<u64> = self.model.entries().iter().map(|e| e.item.id).collect();
             for id in ids {
                 self.add_ui(id, cx);
@@ -404,6 +432,7 @@ impl TranscriptView {
     /// Rebuilds the rows from the model, and tells the list what changed:
     /// rows kept at the start and the end keep their place and height.
     fn refresh_rows(&mut self, cx: &mut Context<Self>) {
+        let render_markdown = self.settings.render_markdown;
         let ui = &self.ui;
         let blocks = |id: u64| {
             ui.get(&id)
@@ -411,12 +440,15 @@ impl TranscriptView {
                 .map_or((0, 0), |doc| (doc.blocks.len(), doc.generation))
         };
         let expanded = |id: u64| ui.get(&id).and_then(|ui| ui.expanded);
+        let source = |id: u64| !render_markdown || ui.get(&id).is_some_and(|ui| ui.source);
         let rows = model::rows(
             &self.model,
             &Layout {
+                view: self.settings.view,
                 expand_thinking: self.settings.expand_thinking,
                 blocks: &blocks,
                 expanded: &expanded,
+                source: &source,
             },
         );
         let old = &self.rows;
@@ -451,6 +483,13 @@ impl TranscriptView {
                 scroller.remeasure_items(ix..ix + 1, cx);
             }
         });
+        if let Some(key) = self.scroll_to
+            && let Some(ix) = self.rows.iter().position(|row| row.key == key)
+        {
+            self.scroll_to = None;
+            self.scroller
+                .update(cx, |scroller, cx| scroller.scroll_to_item(ix, cx));
+        }
     }
 
     /// Draws every second while something shows a running time.
@@ -498,7 +537,7 @@ impl TranscriptView {
     // ----- what the reader does -----
 
     /// Opens or closes an entry's disclosure: a call's details, a thinking's
-    /// text.
+    /// text, a group of calls.
     fn toggle(&mut self, id: u64, open_by_default: bool, cx: &mut Context<Self>) {
         let diff = self
             .ui
@@ -524,6 +563,13 @@ impl TranscriptView {
         cx.notify();
     }
 
+    fn toggle_source(&mut self, id: u64, cx: &mut Context<Self>) {
+        let ui = self.ui.entry(id).or_default();
+        ui.source = !ui.source;
+        self.refresh_rows(cx);
+        cx.notify();
+    }
+
     fn toggle_code(&mut self, id: u64, block: usize, cx: &mut Context<Self>) {
         let ui = self.ui.entry(id).or_default();
         if !ui.uncapped.remove(&block) {
@@ -539,6 +585,24 @@ impl TranscriptView {
         cx.notify();
     }
 
+    fn set_hovered(&mut self, id: u64, hovered: bool, cx: &mut Context<Self>) {
+        let before = self.hovered;
+        if hovered {
+            self.hovered = Some(id);
+        } else if self.hovered == Some(id) {
+            self.hovered = None;
+        }
+        if self.hovered != before {
+            cx.notify();
+        }
+    }
+
+    /// The Messages view's count of a run: opens the Full view there.
+    fn open_run(&mut self, first: u64, cx: &mut Context<Self>) {
+        self.scroll_to = Some(RowKey::Call(first));
+        prefs::update(cx, |prefs| prefs.view = prefs::TranscriptView::Full);
+    }
+
     fn open_worker(&mut self, worker: SharedString, cx: &mut Context<Self>) {
         cx.emit(TranscriptEvent::OpenWorker(worker));
     }
@@ -548,14 +612,50 @@ impl TranscriptView {
         self.rows.iter().position(|row| match row.key {
             RowKey::Separator(row)
             | RowKey::User(row)
+            | RowKey::Actions(row)
             | RowKey::Thinking(row)
             | RowKey::Call(row)
+            | RowKey::Group(row)
+            | RowKey::Count(row)
             | RowKey::Notice(row)
             | RowKey::Output(row)
             | RowKey::Turn(row)
             | RowKey::Worker(row) => row == id,
             RowKey::Block { id: row, .. } => row == id,
         })
+    }
+
+    /// Copies what is selected in the transcript (Mod+C).
+    fn copy(&mut self, _: &input::Copy, window: &mut Window, cx: &mut Context<Self>) {
+        let text = TextSelection::selected_text(window, cx);
+        if text.trim().is_empty() {
+            cx.propagate();
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    /// The text of an entry: as Markdown, or as the reader sees it.
+    fn entry_text(&self, id: u64, markdown: bool, cx: &App) -> Option<String> {
+        let entry = self.model.entry(id)?;
+        if markdown {
+            return Some(entry.item.text.trim().to_string());
+        }
+        let doc = self.ui.get(&id)?.doc.as_ref()?;
+        Some(
+            doc.state
+                .read(cx)
+                .rendered_text()
+                .as_str()
+                .trim()
+                .to_string(),
+        )
+    }
+
+    fn copy_entry(&mut self, id: u64, markdown: bool, cx: &mut Context<Self>) {
+        if let Some(text) = self.entry_text(id, markdown, cx) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
     }
 }
 
@@ -596,19 +696,34 @@ impl Render for TranscriptView {
         }
         let new = self.new_while_away;
         let view = cx.entity().downgrade();
-        div().id("transcript").size_full().child(
-            MessageScroller::new(
-                "transcript-rows",
-                self.scroller.clone(),
-                move |ix, window, cx| row::render(&view, ix, window, cx),
+        div()
+            .id("transcript")
+            .key_context(CONTEXT)
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .on_action(cx.listener(Self::copy))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if !this.focus_handle.contains_focused(window, cx) {
+                        this.focus_handle.focus(window, cx);
+                    }
+                }),
             )
-            .with_row_style(StyleRefinement::default().px_0().pb_0())
-            .with_jump_button_label("Jump to latest")
-            .when(new > 0, |scroller| {
-                scroller.with_jump_button_renderer(move |button| button.label(format!("{new} new")))
-            })
-            .size_full(),
-        )
+            .child(
+                MessageScroller::new(
+                    "transcript-rows",
+                    self.scroller.clone(),
+                    move |ix, window, cx| row::render(&view, ix, window, cx),
+                )
+                .with_row_style(StyleRefinement::default().px_0().pb_0())
+                .with_jump_button_label("Jump to latest")
+                .when(new > 0, |scroller| {
+                    scroller
+                        .with_jump_button_renderer(move |button| button.label(format!("{new} new")))
+                })
+                .size_full(),
+            )
     }
 }
 

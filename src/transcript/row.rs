@@ -21,8 +21,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::model::{Gap, RowKey};
-use super::tool::Tool;
-use super::{CODE_LINES, TranscriptView, selectable};
+use super::tool::{self, Tool};
+use super::{AgentFilter, CODE_LINES, TranscriptView, selectable};
 
 /// The reading column's widest.
 const COLUMN: f32 = 46.;
@@ -149,11 +149,17 @@ pub(super) fn element_id(key: RowKey) -> ElementId {
             id,
             generation,
             block,
+            source,
         } => {
-            return ElementId::Name(format!("block-{id}-{generation}-{block}").into());
+            return ElementId::Name(
+                format!("block-{id}-{generation}-{block}-{}", u8::from(source)).into(),
+            );
         }
+        RowKey::Actions(id) => ("actions", id),
         RowKey::Thinking(id) => ("thinking", id),
         RowKey::Call(id) => ("call", id),
+        RowKey::Group(id) => ("group", id),
+        RowKey::Count(id) => ("count", id),
         RowKey::Notice(id) => ("notice", id),
         RowKey::Output(id) => ("output", id),
         RowKey::Turn(id) => ("turn", id),
@@ -244,10 +250,15 @@ impl TranscriptView {
     fn row(&self, key: RowKey, view: &Entity<Self>, cx: &App) -> AnyElement {
         match key {
             RowKey::Separator(id) => self.separator(id, cx),
-            RowKey::User(id) => self.user(id, cx),
-            RowKey::Block { id, block, .. } => self.block(id, block, view, cx),
+            RowKey::User(id) => self.user(id, view, cx),
+            RowKey::Block {
+                id, block, source, ..
+            } => self.block(id, block, source, view, cx),
+            RowKey::Actions(id) => self.actions(id, view, cx),
             RowKey::Thinking(id) => self.thinking(id, view, cx),
             RowKey::Call(id) => self.call(id, view, cx),
+            RowKey::Group(id) => self.group(id, view, cx),
+            RowKey::Count(id) => self.count(id, view, cx),
             RowKey::Notice(id) => self.notice(id, cx),
             RowKey::Output(id) => self.output(id, cx),
             RowKey::Turn(id) => self.turn(id, cx),
@@ -277,15 +288,20 @@ impl TranscriptView {
             .into_any_element()
     }
 
-    fn user(&self, id: u64, cx: &App) -> AnyElement {
+    fn user(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
         let theme = cx.theme();
         let Some(item) = self.item(id) else {
             return div().into_any_element();
         };
         let tags = user_tags(item);
         let text: SharedString = item.text.clone().into();
+        let group: SharedString = format!("user-{id}").into();
+        let copy_text = text.clone();
+        let _ = view;
         v_flex()
             .id(("user-message", id))
+            .group(group.clone())
+            .relative()
             .w_full()
             .gap_1()
             .px_3()
@@ -302,10 +318,31 @@ impl TranscriptView {
                 )
             })
             .child(selectable(("user-text", id), text))
+            // Copy shows on hover. TODO: Edit and Branch join it.
+            .child(
+                h_flex()
+                    .absolute()
+                    .top_1()
+                    .right_1()
+                    .opacity(0.)
+                    .group_hover(group, |this| this.opacity(1.))
+                    .child(
+                        Clipboard::new(("copy-user", id))
+                            .tooltip("Copy")
+                            .value(copy_text),
+                    ),
+            )
             .into_any_element()
     }
 
-    fn block(&self, id: u64, block: usize, view: &Entity<Self>, cx: &App) -> AnyElement {
+    fn block(
+        &self,
+        id: u64,
+        block: usize,
+        source: bool,
+        view: &Entity<Self>,
+        cx: &App,
+    ) -> AnyElement {
         let theme = cx.theme();
         let (Some(item), Some(ui)) = (self.item(id), self.ui.get(&id)) else {
             return div().into_any_element();
@@ -317,6 +354,7 @@ impl TranscriptView {
             return div().into_any_element();
         };
         let thinking = item.kind == Kind::Thinking;
+        let reply = item.kind == Kind::Reply;
         let label = (block == 0 && item.kind == Kind::Question).then(|| {
             h_flex()
                 .gap_1()
@@ -340,7 +378,27 @@ impl TranscriptView {
                         format!("From {from}")
                     })
             });
-        let body = {
+        let body = if source {
+            // As text: the block's Markdown source, in the code font when
+            // the reader asked for the source, as typed when Markdown is off.
+            let text = row
+                .range
+                .clone()
+                .and_then(|range| doc.text.get(range))
+                .unwrap_or_default()
+                .trim_end()
+                .to_string();
+            div()
+                .when(ui.source, |this| {
+                    this.font_family(theme.mono_font_family.clone())
+                        .text_size(theme.mono_font_size)
+                })
+                .child(selectable(
+                    SharedString::from(format!("source-{id}-{block}")),
+                    text,
+                ))
+                .into_any_element()
+        } else {
             let code = matches!(row.content, TextBlockContent::CodeBlock(_));
             let lines = if code {
                 row.range
@@ -401,11 +459,19 @@ impl TranscriptView {
                 }))
                 .into_any_element()
         };
+        let hover_view = view.downgrade();
         div()
             .id(SharedString::from(format!("block-body-{id}-{block}")))
             .w_full()
             .when(thinking, |this| {
                 this.text_color(theme.muted_foreground).text_sm()
+            })
+            .when(reply, |this| {
+                this.on_hover(move |hovered, _, cx| {
+                    hover_view
+                        .update(cx, |this, cx| this.set_hovered(id, *hovered, cx))
+                        .ok();
+                })
             })
             .children(label)
             .children(from)
@@ -413,9 +479,71 @@ impl TranscriptView {
             .into_any_element()
     }
 
+    /// The hover actions under a reply: they always take their space, so
+    /// showing them moves nothing.
+    fn actions(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
+        let theme = cx.theme();
+        let shown = self.hovered == Some(id);
+        let source = self.ui.get(&id).is_some_and(|ui| ui.source);
+        let button = |name: &'static str, label: &'static str| {
+            Button::new((name, id))
+                .ghost()
+                .xsmall()
+                .label(label)
+                .text_color(theme.muted_foreground)
+        };
+        let copy_view = view.downgrade();
+        let markdown_view = view.downgrade();
+        let source_view = view.downgrade();
+        let hover_view = view.downgrade();
+        h_flex()
+            .id(("reply-actions", id))
+            .w_full()
+            .gap_1()
+            .opacity(if shown { 1. } else { 0. })
+            .on_hover(move |hovered, _, cx| {
+                hover_view
+                    .update(cx, |this, cx| this.set_hovered(id, *hovered, cx))
+                    .ok();
+            })
+            .child(button("copy-reply", "Copy").on_click(move |_, _, cx| {
+                copy_view
+                    .update(cx, |this, cx| this.copy_entry(id, false, cx))
+                    .ok();
+            }))
+            .child(
+                button("copy-markdown", "Copy as Markdown").on_click(move |_, _, cx| {
+                    markdown_view
+                        .update(cx, |this, cx| this.copy_entry(id, true, cx))
+                        .ok();
+                }),
+            )
+            .when(self.settings.render_markdown, |this| {
+                this.child(
+                    button(
+                        "view-source",
+                        if source {
+                            "View Formatted"
+                        } else {
+                            "View Source"
+                        },
+                    )
+                    .on_click(move |_, _, cx| {
+                        source_view
+                            .update(cx, |this, cx| this.toggle_source(id, cx))
+                            .ok();
+                    }),
+                )
+            })
+            // TODO: Regenerate (the last reply) and Branch.
+            .into_any_element()
+    }
+
     /// Whether thinking shows open unless the reader chose.
     pub(super) fn thinking_open_by_default(&self) -> bool {
         self.settings.expand_thinking
+            && (self.settings.view == crate::prefs::TranscriptView::Full
+                || matches!(self.model.filter(), AgentFilter::Worker(_)))
     }
 
     fn thinking(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
@@ -641,6 +769,117 @@ impl TranscriptView {
         // TODO: thumbnails of the images a tool returned, once the feed
         // carries them.
         details.into_any_element()
+    }
+
+    fn group(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
+        let theme = cx.theme();
+        let members = super::model::run_of(&self.model, id, self.settings.view);
+        let entries = self.model.entries();
+        let calls: Vec<&Item> = members
+            .iter()
+            .map(|ix| &entries[*ix].item)
+            .filter(|item| item.kind == Kind::Call)
+            .collect();
+        let running = calls
+            .iter()
+            .rev()
+            .find(|item| item.status == Some(CallStatus::Running));
+        let failed = calls
+            .iter()
+            .filter(|item| item.status == Some(CallStatus::Failed))
+            .count();
+        let open = self.ui.get(&id).and_then(|ui| ui.expanded).unwrap_or(false);
+        let view = view.downgrade();
+        Button::new(("group-toggle", id))
+            .ghost()
+            .xsmall()
+            .w_full()
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_1p5()
+                    .text_color(theme.muted_foreground)
+                    .child(
+                        Icon::new(if open {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .xsmall(),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .child(tool::summary(calls.iter().copied())),
+                    )
+                    .when_some(running, |this, running| {
+                        this.child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .child(Spinner::new().xsmall())
+                                .child(div().min_w_0().truncate().child(
+                                    running.text.lines().next().unwrap_or_default().to_string(),
+                                )),
+                        )
+                    })
+                    .when(running.is_none(), |this| this.child(div().flex_1()))
+                    .when(failed > 0, |this| {
+                        this.child(
+                            h_flex()
+                                .flex_none()
+                                .gap_1()
+                                .text_color(theme.danger)
+                                .child(Icon::new(Lucide::CircleX).xsmall())
+                                .child(format!("{failed} failed")),
+                        )
+                    }),
+            )
+            .on_click(move |_, _, cx| {
+                view.update(cx, |this, cx| this.toggle(id, false, cx)).ok();
+            })
+            .into_any_element()
+    }
+
+    fn count(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
+        let theme = cx.theme();
+        let members = super::model::run_of(&self.model, id, self.settings.view);
+        let entries = self.model.entries();
+        let calls: Vec<&Item> = members.iter().map(|ix| &entries[*ix].item).collect();
+        let failed = calls
+            .iter()
+            .filter(|item| item.status == Some(CallStatus::Failed))
+            .count();
+        let running = calls
+            .iter()
+            .filter(|item| item.status == Some(CallStatus::Running))
+            .count();
+        let mut text = tool::summary(calls.iter().copied());
+        if running > 0 {
+            text.push_str(&format!(" · {running} running"));
+        }
+        let view = view.downgrade();
+        Button::new(("count", id))
+            .ghost()
+            .xsmall()
+            .text_color(theme.muted_foreground)
+            .tooltip("Show in the full transcript")
+            .child(text)
+            .when(failed > 0, |this| {
+                this.child(
+                    h_flex()
+                        .gap_1()
+                        .text_color(theme.danger)
+                        .child(Icon::new(Lucide::CircleX).xsmall())
+                        .child(format!("{failed} failed")),
+                )
+            })
+            .on_click(move |_, _, cx| {
+                view.update(cx, |this, cx| this.open_run(id, cx)).ok();
+            })
+            .into_any_element()
     }
 
     fn notice(&self, id: u64, cx: &App) -> AnyElement {

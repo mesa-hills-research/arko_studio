@@ -202,6 +202,10 @@ pub fn commands() -> Vec<Command> {
         Command::new(Transcript, "Quiet Transcript", ViewQuiet),
         Command::new(Transcript, "Messages Only", ViewMessages),
         Command::new(Transcript, "Next Transcript View", CycleView).keys(&["secondary-shift-o"]),
+        Command::new(Transcript, "Copy", gpui_kit::component::input::Copy)
+            .keys(&["secondary-c"])
+            .context(crate::transcript::CONTEXT)
+            .not_in_palette(),
         Command::new(View, "Toggle Sidebar", ToggleSidebar).keys(&["secondary-\\"]),
         Command::new(View, "Toggle Workers Panel", ToggleWorkersPanel)
             .keys(&["secondary-shift-\\"]),

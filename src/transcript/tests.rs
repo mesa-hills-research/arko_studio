@@ -21,7 +21,7 @@ use super::model::RowKey;
 use super::{AgentFilter, TranscriptEvent, TranscriptView};
 use crate::Startup;
 use crate::backend::FakeBackend;
-use crate::prefs;
+use crate::prefs::{self, TranscriptView as View};
 
 fn start(cx: &mut TestAppContext) {
     let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
@@ -169,6 +169,7 @@ fn a_turn_shows_as_rows_of_each_kind(cx: &mut TestAppContext) {
                 id: text,
                 generation: 0,
                 block: 0,
+                source: false
             },
             RowKey::Call(shell),
         ]
@@ -216,7 +217,9 @@ fn a_turn_shows_as_rows_of_each_kind(cx: &mut TestAppContext) {
                 id: reply,
                 generation: 0,
                 block: 0,
+                source: false
             },
+            RowKey::Actions(reply),
             RowKey::Turn(turn),
         ]
     );
@@ -313,7 +316,10 @@ fn finished_blocks_keep_their_rows_while_text_streams_and_ends(cx: &mut TestAppC
             .collect();
         assert_eq!(now, views);
     });
-    assert_eq!(keys(&view, cx), rows_before);
+    let mut expected = rows_before;
+    let reply = item_ids(&feed)[0].0;
+    expected.push(RowKey::Actions(reply));
+    assert_eq!(keys(&view, cx), expected);
 }
 
 /// Where the row `key` is drawn, if it is.
@@ -377,13 +383,13 @@ fn a_truncate_and_another_conversation_drop_rows(cx: &mut TestAppContext) {
     feed.user("second", Source::App, Delivery::Turn);
     feed.reply("two");
     let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
-    assert_eq!(keys(&view, cx).len(), 4);
+    assert_eq!(keys(&view, cx).len(), 6);
     let second = item_ids(&feed)[2].0;
     feed.truncate(second);
     settle(cx, window);
     let first = item_ids(&feed)[0].0;
     assert_eq!(keys(&view, cx)[0], RowKey::User(first));
-    assert_eq!(keys(&view, cx).len(), 2);
+    assert_eq!(keys(&view, cx).len(), 3);
     feed.conversation("Conversation 2 · Fonts");
     feed.user("third", Source::App, Delivery::Turn);
     settle(cx, window);
@@ -398,6 +404,55 @@ fn a_truncate_and_another_conversation_drop_rows(cx: &mut TestAppContext) {
         keys(&view, cx),
         [RowKey::Separator(marker), RowKey::User(third)]
     );
+}
+
+#[gpui_kit::test]
+fn the_views_show_more_or_less_of_the_same_feed(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Look around", Source::App, Delivery::Turn);
+    feed.turn_started();
+    for file in ["a.rs", "b.rs", "c.rs", "d.rs"] {
+        let id = call(&feed, "main", "read_file", &[("path", file.into())]);
+        result(&feed, "main", id, "read_file", "1 | fn main() {}\n");
+    }
+    feed.reply("Four files.");
+    feed.turn_ended("3 s", None);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let ids = item_ids(&feed);
+    let first_call = ids[1].0;
+    let full = keys(&view, cx);
+    assert_eq!(
+        full.iter()
+            .filter(|key| matches!(key, RowKey::Call(_)))
+            .count(),
+        4
+    );
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Quiet));
+    settle(cx, window);
+    let quiet = keys(&view, cx);
+    assert!(quiet.contains(&RowKey::Group(first_call)));
+    assert!(!quiet.iter().any(|key| matches!(key, RowKey::Call(_))));
+    // Opening the group shows its calls.
+    view.update(cx, |view, cx| view.toggle(first_call, false, cx));
+    settle(cx, window);
+    assert_eq!(
+        keys(&view, cx)
+            .iter()
+            .filter(|key| matches!(key, RowKey::Call(_)))
+            .count(),
+        4
+    );
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Messages));
+    settle(cx, window);
+    let messages = keys(&view, cx);
+    assert!(messages.contains(&RowKey::Count(first_call)));
+    assert!(!messages.iter().any(|key| matches!(key, RowKey::Turn(_))));
+    // Its count opens the full view at the calls.
+    view.update(cx, |view, cx| view.open_run(first_call, cx));
+    settle(cx, window);
+    assert_eq!(cx.read(|cx| prefs::get(cx).view), View::Full);
+    assert_eq!(keys(&view, cx), full);
 }
 
 #[gpui_kit::test]
@@ -420,11 +475,14 @@ fn thinking_shimmers_while_it_streams_then_says_how_long(cx: &mut TestAppContext
     say(&feed, "main", "Done thinking.");
     settle(cx, window);
     cx.read(|cx| assert!(!view.read(cx).model.is_streaming(0)));
-    // "Expand thinking" opens it by default.
+    // "Expand thinking" opens it by default in the Full view only.
     let (window, other) = open(cx, &feed, AgentFilter::Main, 720.);
     cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.expand_thinking = true));
     settle(cx, window);
     assert!(keys(&other, cx).iter().any(block(thinking, 0)));
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Quiet));
+    settle(cx, window);
+    assert!(!keys(&other, cx).iter().any(block(thinking, 0)));
 }
 
 #[gpui_kit::test]
@@ -571,4 +629,84 @@ fn long_code_blocks_show_forty_lines_until_asked(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
     cx.read(|cx| assert!(view.read(cx).ui[&reply].uncapped.contains(&1)));
+}
+
+#[gpui_kit::test]
+fn markdown_off_and_view_source_show_the_text_as_written(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.reply("**Bold** move.\n\n- a\n- b");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let reply = item_ids(&feed)[0].0;
+    let sources = |cx: &mut TestAppContext| {
+        keys(&view, cx)
+            .iter()
+            .filter_map(|key| match key {
+                RowKey::Block { source, .. } => Some(*source),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(sources(cx), [false, false]);
+    view.update(cx, |view, cx| view.toggle_source(reply, cx));
+    settle(cx, window);
+    assert_eq!(sources(cx), [true, true]);
+    view.update(cx, |view, cx| view.toggle_source(reply, cx));
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.render_markdown = false));
+    settle(cx, window);
+    assert_eq!(sources(cx), [true, true]);
+    // Copy gives the text as seen, Copy as Markdown as written.
+    view.update(cx, |view, cx| view.copy_entry(reply, true, cx));
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("**Bold** move.\n\n- a\n- b".to_string())
+    );
+    view.update(cx, |view, cx| view.copy_entry(reply, false, cx));
+    let plain = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap();
+    assert!(plain.starts_with("Bold move."), "{plain:?}");
+}
+
+#[gpui_kit::test]
+fn a_selection_across_rows_copies_with_the_keyboard(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Hello there", Source::App, Delivery::Turn);
+    feed.reply("General Kenobi.\n\nYou are a bold one.");
+    let (window, _view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let ids = item_ids(&feed);
+    let (user, reply) = (ids[0].0, ids[1].0);
+    let bounds = |cx: &mut TestAppContext, key: RowKey| {
+        cx.update_window(window, |_, window, _| {
+            window.find(super::row::element_id(key)).bounds()
+        })
+        .unwrap()
+    };
+    let first = bounds(cx, RowKey::User(user));
+    let last = bounds(
+        cx,
+        RowKey::Block {
+            id: reply,
+            generation: 0,
+            block: 1,
+            source: false,
+        },
+    );
+    cx.update_window(window, |_, window, cx| {
+        window.drag(
+            first.origin + gpui_kit::point(px(30.), first.size.height / 2.),
+            last.origin + gpui_kit::point(last.size.width - px(20.), last.size.height - px(4.)),
+            cx,
+        );
+        window.press("secondary-c", cx);
+    })
+    .unwrap();
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert!(copied.contains("General Kenobi."), "{copied:?}");
+    assert!(copied.contains("bold"), "{copied:?}");
 }
