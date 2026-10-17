@@ -14,6 +14,7 @@ pub mod chrome;
 pub mod commands;
 pub mod composer;
 pub mod drafts;
+pub mod editing;
 pub mod fonts;
 pub mod history;
 pub mod layout;

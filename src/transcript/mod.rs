@@ -68,9 +68,13 @@ pub enum TranscriptEvent {
     /// The reader opened a worker's card: show that worker in the workers
     /// panel.
     OpenWorker(SharedString),
-    // TODO: Edit, Regenerate and Branch of a message (by its item), once
-    // the app can edit a conversation. The hover actions of user messages
-    // and replies have room for them.
+    /// Edit the user's message, by its item.
+    Edit(u64),
+    /// Send the user's last message again for a new reply.
+    Regenerate,
+    /// Branch: a new session with the conversation before the user's
+    /// message, by its item.
+    Branch(u64),
 }
 
 /// The transcript's copy of the preferences it follows.
@@ -252,6 +256,49 @@ impl TranscriptView {
     /// How many times the view has drawn (for tests and measurements).
     pub fn render_count(&self) -> usize {
         self.renders
+    }
+
+    /// The user's latest message that can be edited (↑ in the empty
+    /// composer edits it).
+    pub fn last_message(&self) -> Option<u64> {
+        self.model.last_message()
+    }
+
+    /// The reply Regenerate replaces: the main agent's latest, after the
+    /// user's last message.
+    pub fn last_reply(&self) -> Option<u64> {
+        self.model.last_reply()
+    }
+
+    /// Where the user's message `id` is in the conversation.
+    pub fn message_index(&self, id: u64) -> Option<usize> {
+        self.model.entry(id)?.item.message_index
+    }
+
+    /// The text and the images of the user's message `id`.
+    pub fn message(&self, id: u64) -> Option<(String, Vec<arko::images::ImageRef>)> {
+        let item = &self.model.entry(id)?.item;
+        Some((item.text.clone(), item.images.clone()))
+    }
+
+    /// How many messages after the user's message `id` an edit of it
+    /// removes: the user's, and a reply per turn.
+    pub fn messages_after(&self, id: u64) -> usize {
+        self.model.messages_after(id)
+    }
+
+    /// Why the conversation can't be edited, sent again or branched now, if
+    /// it can't.
+    pub fn busy_reason(&self) -> Option<&'static str> {
+        self.model.busy_reason()
+    }
+
+    /// Whether the user's message `id` can be edited (or branched from).
+    pub fn is_editable(&self, id: u64) -> bool {
+        self.model
+            .entry(id)
+            .is_some_and(|entry| Model::is_changeable(&entry.item))
+            && matches!(self.model.filter(), AgentFilter::Main)
     }
 
     /// Opens or closes the details of the feed item `item`: a call's
@@ -695,6 +742,11 @@ impl TranscriptView {
 
     fn open_worker(&mut self, worker: SharedString, cx: &mut Context<Self>) {
         cx.emit(TranscriptEvent::OpenWorker(worker));
+    }
+
+    /// Asks to edit, send again or branch (a hover action).
+    fn change(&mut self, event: TranscriptEvent, cx: &mut Context<Self>) {
+        cx.emit(event);
     }
 
     /// The row an entry's first row is at.

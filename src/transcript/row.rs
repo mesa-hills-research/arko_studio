@@ -10,7 +10,7 @@ use gpui_kit::base::image_cache::LruImageCache;
 use gpui_kit::base::text::{TextView, TextViewMotion};
 use gpui_kit::component::text::TextBlockContent;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     clipboard::Clipboard,
     diff_view::{Diff, DiffView},
@@ -25,7 +25,7 @@ use gpui_kit::*;
 
 use super::model::{Gap, RowKey};
 use super::tool::{self, Tool};
-use super::{AgentFilter, CODE_LINES, TranscriptView, selectable};
+use super::{AgentFilter, CODE_LINES, TranscriptEvent, TranscriptView, selectable};
 
 /// The reading column's widest.
 const COLUMN: f32 = 46.;
@@ -314,7 +314,44 @@ impl TranscriptView {
         let text: SharedString = item.text.clone().into();
         let group: SharedString = format!("user-{id}").into();
         let copy_text = text.clone();
-        let _ = view;
+        let changes = self.is_editable(id).then(|| {
+            let busy = self.busy_reason();
+            // The engine branches from after the first message at the
+            // earliest: before it there is nothing to copy.
+            let first = item.message_index == Some(0);
+            let (edit_view, branch_view) = (view.downgrade(), view.downgrade());
+            let action = |name: &'static str, icon: Lucide| {
+                Button::new((name, id))
+                    .ghost()
+                    .xsmall()
+                    .compact()
+                    .icon(Icon::new(icon))
+            };
+            [
+                action("edit-message", Lucide::SquarePen)
+                    .disabled(busy.is_some())
+                    .tooltip(busy.unwrap_or("Edit"))
+                    .accessibility_label("Edit")
+                    .on_click(move |_, _, cx| {
+                        edit_view
+                            .update(cx, |this, cx| this.change(TranscriptEvent::Edit(id), cx))
+                            .ok();
+                    }),
+                action("branch-message", Lucide::GitBranch)
+                    .disabled(busy.is_some() || first)
+                    .tooltip(match busy {
+                        Some(busy) => busy,
+                        None if first => "Branch from a later message",
+                        None => "Branch: a new session with the conversation before this message",
+                    })
+                    .accessibility_label("Branch")
+                    .on_click(move |_, _, cx| {
+                        branch_view
+                            .update(cx, |this, cx| this.change(TranscriptEvent::Branch(id), cx))
+                            .ok();
+                    }),
+            ]
+        });
         v_flex()
             .id(("user-message", id))
             .group(group.clone())
@@ -336,14 +373,16 @@ impl TranscriptView {
             })
             .children(self.thumbnails(item, view, cx))
             .child(selectable(("user-text", id), text))
-            // Copy shows on hover. TODO: Edit and Branch join it.
+            // Copy, Edit and Branch show on hover.
             .child(
                 h_flex()
                     .absolute()
                     .top_1()
                     .right_1()
+                    .gap_0p5()
                     .opacity(0.)
                     .group_hover(group, |this| this.opacity(1.))
+                    .children(changes.into_iter().flatten())
                     .child(
                         Clipboard::new(("copy-user", id))
                             .tooltip("Copy")
@@ -514,6 +553,10 @@ impl TranscriptView {
         let markdown_view = view.downgrade();
         let source_view = view.downgrade();
         let hover_view = view.downgrade();
+        let regenerate_view = view.downgrade();
+        let last =
+            self.model.last_reply() == Some(id) && matches!(self.model.filter(), AgentFilter::Main);
+        let busy = self.busy_reason();
         h_flex()
             .id(("reply-actions", id))
             .w_full()
@@ -553,7 +596,18 @@ impl TranscriptView {
                     }),
                 )
             })
-            // TODO: Regenerate (the last reply) and Branch.
+            .when(last, |this| {
+                this.child(
+                    button("regenerate", "Regenerate")
+                        .disabled(busy.is_some())
+                        .tooltip(busy.unwrap_or("Send your last message again for a new reply"))
+                        .on_click(move |_, _, cx| {
+                            regenerate_view
+                                .update(cx, |this, cx| this.change(TranscriptEvent::Regenerate, cx))
+                                .ok();
+                        }),
+                )
+            })
             .into_any_element()
     }
 

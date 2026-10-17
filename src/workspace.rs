@@ -13,7 +13,7 @@ use crate::backend::{SessionEntry, SessionId};
 use crate::layout::WidthClass;
 use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase};
 use crate::prefs::{self, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
-use crate::session_view::{SessionView, SessionViewEvent, not_yet, recent_folders};
+use crate::session_view::{Branched, SessionView, SessionViewEvent, not_yet, recent_folders};
 use crate::settings_page::{CloseRequested, SettingsPage};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::title_bar::AppTitleBar;
@@ -542,6 +542,14 @@ impl Workspace {
                     prompts::show(session, window, cx);
                 }
             }
+            SessionViewEvent::OpenBranch(branched) => {
+                let Branched {
+                    entry,
+                    first,
+                    draft,
+                } = (**branched).clone();
+                self.open_branch(entry, first, draft, window, cx)
+            }
             SessionViewEvent::OpenWorker(id) => {
                 self.show_workers(window, cx);
                 self.workers
@@ -561,6 +569,39 @@ impl Workspace {
         } else if self.sheet != Some(Edge::Panel) {
             self.open_sheet(Edge::Panel, window, cx);
         }
+    }
+
+    /// Opens a branch of the shown session (it keeps running): it sends
+    /// `first` as its first message, or shows `draft` in its composer.
+    fn open_branch(
+        &mut self,
+        entry: SessionEntry,
+        first: Option<arko::Message>,
+        draft: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(draft) = &draft {
+            crate::drafts::set(&entry.id.0, draft, cx);
+        }
+        let session =
+            LiveSessions::find(&entry.id, cx).unwrap_or_else(|| LiveSession::resume(&entry, cx));
+        if let Phase::Failed(why) = session.read(cx).phase() {
+            window.push_notification(
+                Notification::error(format!("Couldn’t open the branch. {why}")),
+                cx,
+            );
+            return;
+        }
+        if let Some(first) = first {
+            let input = arko::Input::Message(first);
+            if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
+                window.push_notification(why, cx);
+            }
+        }
+        self.show(Some(session), window, cx);
+        self.sidebar.update(cx, |sidebar, cx| sidebar.refresh(cx));
+        self.after_choosing(window, cx);
     }
 
     /// What the workers panel asks.
@@ -1018,9 +1059,9 @@ impl Render for Workspace {
                 // TODO: the session info popover.
                 not_yet("Session info", window, cx)
             }))
-            .on_action(cx.listener(|_, _: &menus::BranchSession, window, cx| {
-                // TODO: branching, once the engine branches sessions.
-                not_yet("Branching", window, cx)
+            .on_action(cx.listener(|this, _: &menus::BranchSession, window, cx| {
+                this.session_view
+                    .update(cx, |view, cx| view.branch_from(None, window, cx));
             }))
             .on_action(cx.listener(|this, _: &menus::StopTurn, window, cx| {
                 this.session_view

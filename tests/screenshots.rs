@@ -474,3 +474,39 @@ fn workers_light() {
 fn workers_dark() {
     goldens().assert("workers-dark", &workers_window(ThemeMode::Dark));
 }
+
+/// The dialog that asks before an edit in an agent session removes the
+/// messages after the message, over a new window.
+fn edit_dialog_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::editing::{self, Change};
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(900.), px(560.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, _)| window)
+        })
+        .unwrap();
+    app.update_window(window, |_, window, cx| {
+        editing::confirm(Change::Edit, 3, true, window, cx, |_, _, _| {})
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn edit_dialog_light() {
+    goldens().assert("edit-dialog-light", &edit_dialog_window(ThemeMode::Light));
+}
+
+#[test]
+fn edit_dialog_dark() {
+    goldens().assert("edit-dialog-dark", &edit_dialog_window(ThemeMode::Dark));
+}

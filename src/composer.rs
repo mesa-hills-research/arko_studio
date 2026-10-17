@@ -119,6 +119,8 @@ pub enum ComposerEvent {
     /// Esc while the composer is in a mode Esc ends (editing a message,
     /// writing to a worker).
     Cancel,
+    /// ↑ in the empty composer while the latest message can be edited.
+    EditLast,
     /// The text changed.
     Edited,
 }
@@ -249,6 +251,9 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
     })
 }
 
+/// Whether ↑ in the empty composer edits the latest message.
+type EditsLast = Rc<dyn Fn(&App) -> bool>;
+
 /// The composer's field.
 pub struct Composer {
     textarea: Entity<TextareaState>,
@@ -272,6 +277,8 @@ pub struct Composer {
     working: bool,
     /// Esc ends a mode first ([`ComposerEvent::Cancel`]).
     cancellable: bool,
+    /// Whether ↑ in the empty composer edits the latest message now.
+    edits_last: Option<EditsLast>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -315,6 +322,7 @@ impl Composer {
             reading: Arc::default(),
             working: false,
             cancellable: false,
+            edits_last: None,
             _subscriptions: subscriptions,
         }
     }
@@ -411,9 +419,22 @@ impl Composer {
         self.cancellable = cancellable;
     }
 
+    /// Tells whether ↑ in the empty composer edits the latest message (else
+    /// it walks the input history), asked as the key comes.
+    pub fn set_edits_last(&mut self, edits_last: impl Fn(&App) -> bool + 'static) {
+        self.edits_last = Some(Rc::new(edits_last));
+    }
+
     /// The images the message takes along.
     pub fn images(&self) -> &[Attached] {
         &self.images
+    }
+
+    /// Replaces the images the message takes along.
+    pub fn set_images(&mut self, images: Vec<Attached>, cx: &mut Context<Self>) {
+        self.images = images;
+        cx.emit(ComposerEvent::Edited);
+        cx.notify();
     }
 
     /// Adds an image to the message.
@@ -699,6 +720,13 @@ impl Composer {
     fn on_move_up(&mut self, _: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
         if self.menu.is_some() {
             self.move_menu(-1, cx);
+            cx.stop_propagation();
+        } else if self.edits_last.as_ref().is_some_and(|edits| edits(cx))
+            && self.walk.is_none()
+            && self.images.is_empty()
+            && self.textarea.read(cx).value().is_empty()
+        {
+            cx.emit(ComposerEvent::EditLast);
             cx.stop_propagation();
         } else if self.at_edge(true, cx) && self.walk_history(true, window, cx) {
             cx.stop_propagation();
