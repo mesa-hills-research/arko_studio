@@ -458,7 +458,7 @@ impl Backend for ArkoBackend {
     }
 
     fn set_chatgpt_login(&self, path: &Path) -> Result<(), String> {
-        arko::accounts::set_chatgpt_login(path).map(|_| ())
+        arko::accounts::set_chatgpt_login(&self.root, path).map(|_| ())
     }
 }
 
