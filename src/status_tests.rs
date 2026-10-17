@@ -464,3 +464,74 @@ fn refresh_cache_asks_the_session(cx: &mut TestAppContext) {
         .unwrap();
     assert_eq!(after, before + 1, "it says why the cache wasn't refreshed");
 }
+
+/// On arko's engine: after a turn the bar shows the context and the cache
+/// timer, the session's info reads what /session says, and Refresh Cache
+/// asks the model to keep the cache warm.
+#[gpui_kit::test]
+fn the_bar_and_the_info_follow_a_session_on_the_engine(cx: &mut TestAppContext) {
+    use crate::testing::{Mock, reply, wait_until};
+
+    let mock = Mock::start(|index, _| reply(&format!("a{index}"), "Done."));
+    cx.executor().allow_parking();
+    let temp = tempfile::tempdir().unwrap();
+    let (root, work) = (temp.path().join("arko"), temp.path().join("work"));
+    std::fs::create_dir_all(&work).unwrap();
+    let backend =
+        Arc::new(crate::backend::ArkoBackend::new(&root).with_configure(mock.configure()));
+    cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    let (window, workspace) = open(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    cx.update(|cx| view.update(cx, |view, cx| view.set_draft_folder(work.clone(), cx)));
+    act(cx, window, |window, cx| {
+        window.input("Count the pears.", cx)
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    let bar = cx.read(|cx| workspace.read(cx).status_bar().clone());
+    let shown = {
+        let workspace = workspace.clone();
+        move |cx: &mut TestAppContext| cx.read(|cx| workspace.read(cx).live_session().cloned())
+    };
+    wait_until(cx, "the turn's end in the bar", |cx| {
+        let idle = shown(cx).is_some_and(|session| {
+            cx.read(|cx| {
+                let session = session.read(cx);
+                session.reading().context_tokens.is_some() && !session.is_working()
+            })
+        });
+        idle && cx.read(|cx| bar.read(cx).shown(cx).context.is_some())
+    });
+    let figures = cx.read(|cx| bar.read(cx).shown(cx));
+    assert!(
+        figures.context.as_ref().unwrap().0.starts_with("10 / "),
+        "{figures:?}"
+    );
+    // The model says how long its cache lasts: the timer counts.
+    assert!(figures.cache.is_some(), "{figures:?}");
+
+    // The info reads the session's facts as it opens.
+    let title_bar = cx.read(|cx| workspace.read(cx).title_bar().clone());
+    title_bar.update(cx, |bar, cx| bar.toggle_info(cx));
+    let info = cx.read(|cx| title_bar.read(cx).info().clone());
+    wait_until(cx, "the session's facts", |cx| {
+        cx.read(|cx| info.read(cx).facts().is_some())
+    });
+    let facts = cx.read(|cx| info.read(cx).facts().cloned().unwrap());
+    assert_eq!(facts.session.workspace, work);
+
+    // Refresh Cache: the model is asked again.
+    let asked = mock.bodies.lock().unwrap().len();
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::RefreshCache), cx)
+    });
+    wait_until(cx, "the refresh's request", |_| {
+        mock.bodies.lock().unwrap().len() > asked
+    });
+    act(cx, window, |window, cx| {
+        let sessions = crate::live::LiveSessions::all(cx);
+        crate::quit::close(sessions, false, window, cx);
+    });
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
+    });
+}
