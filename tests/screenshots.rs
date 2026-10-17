@@ -517,6 +517,149 @@ fn transcript_narrow_dark() {
     );
 }
 
+/// A session opened again on a turn that ended, in a window `width` wide,
+/// with the pointer on the row `hovered` (a row's name and its entry). The
+/// turn ended with a reply, or without one, stopped.
+fn ended_turn_window(
+    mode: ThemeMode,
+    width: f32,
+    replied: bool,
+    hovered: (&'static str, u64),
+) -> Screenshot {
+    use arko::remote::{Delivery, Feed, Item, Kind, Level, Source};
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AppContext as _, Modifiers, MouseMoveEvent, PlatformInput, point};
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut message = Item::new(Kind::User, "Name a fruit that keeps well.");
+    message.message_index = Some(0);
+    message.source = Some(Source::App);
+    message.delivery = Some(Delivery::Turn);
+    let ending = if replied {
+        Item::new(
+            Kind::Reply,
+            "An apple. Kept cool and dry, it lasts for months.",
+        )
+    } else {
+        Item::new(Kind::Notice, "Stopped.").level(Level::Warn)
+    };
+    let footer = Item::new(Kind::Turn, "6 s · $0.004 (session $0.01) · context 3k");
+    let items = [message, ending, footer]
+        .into_iter()
+        .zip(1..)
+        .map(|(mut item, id)| {
+            item.id = id;
+            item.turn = Some(1);
+            item
+        })
+        .collect();
+    let feed = Feed::new("main");
+    feed.restore(items);
+    let window = app
+        .open_window_with(size(px(width), px(300.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| TranscriptView::new(&feed, AgentFilter::Main, window, cx))
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.run_until_parked();
+    let _ = app.capture(window).unwrap();
+    // The pointer at the row's left, in the window's margin, away from its
+    // buttons.
+    app.update_window(window, |_, window, cx| {
+        let row = window.find(hovered).bounds();
+        let position = point(row.left() + px(4.), row.bottom() - px(4.));
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+/// The latest reply, under the pointer: Regenerate is alone at the right
+/// end of its actions.
+#[test]
+fn transcript_regenerate_light() {
+    goldens().assert(
+        "transcript-regenerate-light",
+        &ended_turn_window(ThemeMode::Light, 1300., true, ("actions", 2)),
+    );
+}
+
+#[test]
+fn transcript_regenerate_dark() {
+    goldens().assert(
+        "transcript-regenerate-dark",
+        &ended_turn_window(ThemeMode::Dark, 1300., true, ("actions", 2)),
+    );
+}
+
+#[test]
+fn transcript_regenerate_narrow_light() {
+    goldens().assert(
+        "transcript-regenerate-narrow-light",
+        &ended_turn_window(ThemeMode::Light, 460., true, ("actions", 2)),
+    );
+}
+
+#[test]
+fn transcript_regenerate_narrow_dark() {
+    goldens().assert(
+        "transcript-regenerate-narrow-dark",
+        &ended_turn_window(ThemeMode::Dark, 460., true, ("actions", 2)),
+    );
+}
+
+/// A turn stopped before it replied, its footer under the pointer:
+/// Regenerate is at the line's right end, where the reply would be.
+#[test]
+fn transcript_stopped_light() {
+    goldens().assert(
+        "transcript-stopped-light",
+        &ended_turn_window(ThemeMode::Light, 1300., false, ("turn", 3)),
+    );
+}
+
+#[test]
+fn transcript_stopped_dark() {
+    goldens().assert(
+        "transcript-stopped-dark",
+        &ended_turn_window(ThemeMode::Dark, 1300., false, ("turn", 3)),
+    );
+}
+
+#[test]
+fn transcript_stopped_narrow_light() {
+    goldens().assert(
+        "transcript-stopped-narrow-light",
+        &ended_turn_window(ThemeMode::Light, 460., false, ("turn", 3)),
+    );
+}
+
+#[test]
+fn transcript_stopped_narrow_dark() {
+    goldens().assert(
+        "transcript-stopped-narrow-dark",
+        &ended_turn_window(ThemeMode::Dark, 460., false, ("turn", 3)),
+    );
+}
+
 /// The representative transcript with a find going on: its matches marked,
 /// the current one stronger, and the keyboard's ring on a row.
 fn transcript_find_window(mode: ThemeMode) -> Screenshot {

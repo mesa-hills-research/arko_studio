@@ -38,8 +38,12 @@ const COLUMN: f32 = 46.;
 /// half the column, the width of a comfortable line.
 const USER_BUBBLE_WIDTH: f32 = 17.5;
 /// The room, in rem, kept at the left of a user's message for its actions
-/// (four small buttons).
-const USER_ACTIONS_ROOM: f32 = 5.5;
+/// (three small buttons).
+const USER_ACTIONS_ROOM: f32 = 4.;
+/// The least room, in rem, between a reply's other actions and Regenerate.
+const REGENERATE_GAP: f32 = 2.;
+/// The room, in rem, a line keeps at its right for Regenerate laid over it.
+const REGENERATE_ROOM: f32 = 1.75;
 /// Lines of a call's output shown before "Show all N lines".
 pub(super) const OUTPUT_LINES: usize = 40;
 /// Rows of an edit's diff shown before it scrolls inside.
@@ -212,6 +216,7 @@ pub(super) fn render(
             .model
             .entry(id)
             .is_some_and(|entry| entry.item.kind == Kind::Reply),
+        RowKey::Turn(_) | RowKey::Notice(_) => this.offers_regenerate(row.key),
         _ => false,
     };
     let hover_view = view.downgrade();
@@ -471,9 +476,9 @@ impl TranscriptView {
             RowKey::Call(id) => self.call(id, view, cx),
             RowKey::Group(id) => self.group(id, view, cx),
             RowKey::Count(id) => self.count(id, view, cx),
-            RowKey::Notice(id) => self.notice(id, cx),
+            RowKey::Notice(id) => self.notice(id, view, cx),
             RowKey::Output(id) => self.output(id, cx),
-            RowKey::Turn(id) => self.turn(id, cx),
+            RowKey::Turn(id) => self.turn(id, view, cx),
             RowKey::Worker(id) => self.worker(id, view, cx),
         }
     }
@@ -533,9 +538,6 @@ impl TranscriptView {
             let last = self.model.last_message() == Some(id);
             (busy, last, view.downgrade(), view.downgrade())
         });
-        // A turn that ended with no reply (stopped, or failed after its
-        // retries): its message offers to go again.
-        let regenerate = (self.model.regenerable_message() == Some(id)).then(|| view.downgrade());
         // Edit, Branch and Copy show on hover, beside the bubble at its left,
         // level with its first line.
         let actions = HoverActions {
@@ -585,20 +587,6 @@ impl TranscriptView {
                                     branch_view
                                         .update(cx, |this, cx| {
                                             this.change(TranscriptEvent::Branch(id), cx)
-                                        })
-                                        .ok();
-                                }),
-                        )
-                    })
-                    .when_some(regenerate, |this, regenerate_view| {
-                        this.child(
-                            action("regenerate-message", Lucide::RotateCcw)
-                                .tooltip("Send it again for a reply")
-                                .accessibility_label("Regenerate")
-                                .on_click(move |_, _, cx| {
-                                    regenerate_view
-                                        .update(cx, |this, cx| {
-                                            this.change(TranscriptEvent::Regenerate, cx)
                                         })
                                         .ok();
                                 }),
@@ -829,9 +817,8 @@ impl TranscriptView {
         let render_markdown = self.settings.render_markdown;
         let muted = theme.muted_foreground;
         let view = view.downgrade();
-        // Regenerate, under the latest reply, while nothing runs.
-        let last =
-            self.model.last_reply() == Some(id) && matches!(self.model.filter(), AgentFilter::Main);
+        // Regenerate, under the latest reply. It waits while anything runs.
+        let regenerate = self.offers_regenerate(RowKey::Actions(id));
         let busy = self.busy_reason();
         HoverActions {
             id: ("reply-actions", id).into(),
@@ -873,30 +860,18 @@ impl TranscriptView {
                             |this, id, cx| this.toggle_source(id, cx),
                         ))
                     })
-                    .when(last, |this| {
-                        let view = view.clone();
-                        this.child(
-                            div().id(("regenerate", id)).test_support().child(
-                                Button::new("button")
-                                    .ghost()
-                                    .xsmall()
-                                    .label("Regenerate")
-                                    .text_color(muted)
-                                    .tab_stop(shown)
-                                    .disabled(busy.is_some())
-                                    .tooltip(
-                                        busy.unwrap_or(
-                                            "Send your last message again for a new reply",
-                                        ),
-                                    )
-                                    .on_click(move |_, _, cx| {
-                                        view.update(cx, |this, cx| {
-                                            this.change(TranscriptEvent::Regenerate, cx)
-                                        })
-                                        .ok();
-                                    }),
-                            ),
-                        )
+                    .when(regenerate, |this| {
+                        // Alone at the right end, away from the others, so a
+                        // click meant for one of them can't land on it.
+                        this.child(div().flex_1().min_w(rems(REGENERATE_GAP)))
+                            .child(regenerate_button(
+                                id,
+                                busy.unwrap_or("Send your last message again for a new reply"),
+                                busy.is_some(),
+                                shown,
+                                muted,
+                                view.clone(),
+                            ))
                     })
                     .into_any_element()
             }),
@@ -1311,17 +1286,21 @@ impl TranscriptView {
         )
     }
 
-    fn notice(&self, id: u64, cx: &App) -> AnyElement {
+    fn notice(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
         let theme = cx.theme();
         let Some(item) = self.item(id) else {
             return div().into_any_element();
         };
+        // The Messages view hides turns' footers: the notice that says why
+        // the turn ended without a reply offers Regenerate instead.
+        let regenerate = self.end_line_regenerate(RowKey::Notice(id), view, cx);
         let (icon, color, text_color) = match item.level {
             Some(Level::Error) => (Lucide::CircleX, theme.danger, theme.foreground),
             Some(Level::Warn) => (Lucide::TriangleAlert, theme.warning, theme.foreground),
             _ => (Lucide::Info, theme.muted_foreground, theme.muted_foreground),
         };
         h_flex()
+            .relative()
             .w_full()
             .items_start()
             .gap_1p5()
@@ -1344,13 +1323,22 @@ impl TranscriptView {
                     .pt_0p5()
                     .child(Icon::new(icon).xsmall().text_color(color)),
             )
-            .child(div().flex_1().min_w_0().child(self.marked(
-                ("notice-text", id),
-                id,
-                Place::Text,
-                item.text.clone(),
-                cx,
-            )))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when(regenerate.is_some(), |this| this.pr(rems(REGENERATE_ROOM)))
+                    .child(self.marked(
+                        ("notice-text", id),
+                        id,
+                        Place::Text,
+                        item.text.clone(),
+                        cx,
+                    )),
+            )
+            .when_some(regenerate, |this, regenerate| {
+                this.child(div().absolute().top_0().right_0().child(regenerate))
+            })
             .into_any_element()
     }
 
@@ -1375,19 +1363,109 @@ impl TranscriptView {
             .into_any_element()
     }
 
-    fn turn(&self, id: u64, cx: &App) -> AnyElement {
+    fn turn(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
         let theme = cx.theme();
         let Some(item) = self.item(id) else {
             return div().into_any_element();
         };
+        let regenerate = self.end_line_regenerate(RowKey::Turn(id), view, cx);
         div()
+            .relative()
             .w_full()
             .px_2()
             .text_xs()
             .text_color(theme.muted_foreground)
-            .truncate()
-            .child(self.marked_plain(id, Place::Text, item.text.clone(), cx))
+            .child(
+                div()
+                    .truncate()
+                    .when(regenerate.is_some(), |this| this.pr(rems(REGENERATE_ROOM)))
+                    .child(self.marked_plain(id, Place::Text, item.text.clone(), cx)),
+            )
+            // Over the line, centred on it, so the line keeps its height.
+            .when_some(regenerate, |this, regenerate| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .flex()
+                        .items_center()
+                        .child(regenerate),
+                )
+            })
             .into_any_element()
+    }
+
+    /// Regenerate on the last line of a turn that ended without a reply
+    /// (its footer, or the notice that says why), when row `key` is it.
+    fn end_line_regenerate(
+        &self,
+        key: RowKey,
+        view: &Entity<Self>,
+        cx: &App,
+    ) -> Option<AnyElement> {
+        if !self.offers_regenerate(key) {
+            return None;
+        }
+        let id = key.entry();
+        let muted = cx.theme().muted_foreground;
+        let view = view.downgrade();
+        Some(
+            HoverActions {
+                id: ("end-actions", id).into(),
+                shown: self.hovered == Some(id),
+                build: Box::new(move |shown| {
+                    regenerate_button(
+                        id,
+                        "Send your last message again for a reply",
+                        false,
+                        shown,
+                        muted,
+                        view,
+                    )
+                    .into_any_element()
+                }),
+            }
+            .into_any_element(),
+        )
+    }
+
+    /// Whether row `key` offers Regenerate: the latest reply's actions, or
+    /// the last line of a turn that ended without a reply.
+    pub(super) fn offers_regenerate(&self, key: RowKey) -> bool {
+        match key {
+            RowKey::Actions(id) => {
+                self.model.last_reply() == Some(id)
+                    && matches!(self.model.filter(), AgentFilter::Main)
+            }
+            RowKey::Turn(_) | RowKey::Notice(_) => self.regenerate_end() == Some(key),
+            _ => false,
+        }
+    }
+
+    /// The last line of the turn of the user's latest message, when that
+    /// turn ended without a reply and nothing runs: its footer, or in the
+    /// Messages view, which hides footers, the notice that says why it
+    /// ended.
+    pub(super) fn regenerate_end(&self) -> Option<RowKey> {
+        if !matches!(self.model.filter(), AgentFilter::Main) {
+            return None;
+        }
+        let message = self.model.regenerable_message()?;
+        let turn = self.item(message)?.turn;
+        // The message is the latest: its turn's rows are the last ones.
+        self.rows
+            .iter()
+            .rev()
+            .map(|row| row.key)
+            .take_while(|key| *key != RowKey::User(message))
+            .find(|key| {
+                matches!(key, RowKey::Turn(_) | RowKey::Notice(_))
+                    && self
+                        .item(key.entry())
+                        .is_some_and(|item| item.is_main() && item.turn == turn)
+            })
     }
 
     fn worker(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
@@ -1703,6 +1781,33 @@ impl RenderOnce for HoverActions {
             .opacity(if shown { 1. } else { 0. })
             .child((self.build)(shown))
     }
+}
+
+/// Regenerate, for the entry `id` it shows on: it sends the user's last
+/// message again, after asking.
+fn regenerate_button(
+    id: u64,
+    tooltip: &'static str,
+    disabled: bool,
+    shown: bool,
+    color: Hsla,
+    view: WeakEntity<TranscriptView>,
+) -> impl IntoElement {
+    div().id(("regenerate", id)).test_support().child(
+        Button::new("button")
+            .ghost()
+            .xsmall()
+            .icon(Icon::new(Lucide::RotateCcw))
+            .text_color(color)
+            .tab_stop(shown)
+            .disabled(disabled)
+            .tooltip(tooltip)
+            .accessibility_label("Regenerate")
+            .on_click(move |_, _, cx| {
+                view.update(cx, |this, cx| this.change(TranscriptEvent::Regenerate, cx))
+                    .ok();
+            }),
+    )
 }
 
 /// A thumbnail's size, in rem: up to four fit the reading column.

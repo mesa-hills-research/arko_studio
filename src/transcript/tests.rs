@@ -12,7 +12,7 @@ use arko_workflows::WorkflowEvent;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, Context, ElementId, Entity, IntoElement,
-    ParentElement as _, Point, Render, Styled as _, TestAppContext, Window, WindowBounds,
+    ParentElement as _, Pixels, Point, Render, Styled as _, TestAppContext, Window, WindowBounds,
     WindowOptions, div, px, size,
 };
 use serde_json::Value;
@@ -1801,7 +1801,7 @@ fn a_users_message_is_a_bubble_at_the_right_of_the_column(cx: &mut TestAppContex
     let widths: [(f32, Widest); 3] = [
         (800., |column, _| column / 2.),
         (480., |_, rem| 17.5 * rem),
-        (300., |column, rem| column - 5.5 * rem),
+        (300., |column, rem| column - 4. * rem),
     ];
     for (width, widest) in widths {
         cx.simulate_window_resize(window, size(px(width), px(600.)));
@@ -1830,4 +1830,134 @@ fn a_users_message_is_a_bubble_at_the_right_of_the_column(cx: &mut TestAppContex
         })
         .unwrap();
     }
+}
+
+/// A conversation as a session opened again reads it: the user's message,
+/// then its turn's reply (or, without one, a notice that it stopped) and
+/// footer. A message that isn't `changeable` can't be sent again.
+fn ended_turn(replied: bool, changeable: bool) -> Feed {
+    let mut message = arko::remote::Item::new(Kind::User, "Name a fruit.");
+    message.id = 1;
+    message.turn = Some(1);
+    message.message_index = changeable.then_some(0);
+    message.source = Some(Source::App);
+    message.delivery = Some(Delivery::Turn);
+    let mut ending = if replied {
+        arko::remote::Item::new(Kind::Reply, "A pear.")
+    } else {
+        arko::remote::Item::new(Kind::Notice, "Stopped.").level(Level::Warn)
+    };
+    ending.id = 2;
+    ending.turn = Some(1);
+    let mut footer = arko::remote::Item::new(Kind::Turn, "3 s · $0.004 (session $0.01)");
+    footer.id = 3;
+    footer.turn = Some(1);
+    let feed = Feed::new("main");
+    feed.restore(vec![message, ending, footer]);
+    feed
+}
+
+/// The right edge of the reading column's text in a window `width` wide:
+/// the column is at most 46 rem, centred, with 1 rem inside each side.
+fn column_right(width: f32, rem: Pixels) -> Pixels {
+    let rem = f32::from(rem);
+    let column = width.min(46. * rem) - 2. * rem;
+    px((width + column) / 2.)
+}
+
+/// Regenerate sits alone at the right end of the latest reply's actions,
+/// away from Copy, Copy as Markdown and View Source, in a wide window and
+/// in a narrow one. The message it sends again offers it no longer.
+#[gpui_kit::test]
+fn regenerate_sits_alone_at_the_right_end_of_the_reply(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = ended_turn(true, true);
+    let reply = ids_of(&feed, Kind::Reply)[0];
+    let message = ids_of(&feed, Kind::User)[0];
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    assert_eq!(cx.read(|cx| view.read(cx).regenerate_entry()), Some(reply));
+    for width in [800., 360.] {
+        cx.simulate_window_resize(window, size(px(width), px(600.)));
+        settle(cx, window);
+        cx.update_window(window, |_, window, _| {
+            let rem = window.rem_size();
+            let row = window
+                .find(super::row::element_id(RowKey::Actions(reply)))
+                .bounds();
+            let source = window.find(("view-source", reply)).bounds();
+            let regenerate = window.find(("regenerate", reply)).bounds();
+            assert_eq!(regenerate.right(), column_right(width, rem), "{width}");
+            assert!(regenerate.right() < row.right());
+            assert!(regenerate.left() - source.right() >= rem * 2., "{width}");
+            assert_eq!(regenerate.top(), source.top(), "{width}");
+            assert!(window.try_find(("regenerate", message)).is_none());
+        })
+        .unwrap();
+    }
+}
+
+/// A turn that ended without a reply offers Regenerate at the right end
+/// of its last line, where the reply would be: its footer, or in the
+/// Messages view, which hides footers, the notice that says it stopped.
+/// The line keeps its height, and the pointer over it shows Regenerate.
+#[gpui_kit::test]
+fn a_turn_without_a_reply_offers_regenerate_on_its_last_line(cx: &mut TestAppContext) {
+    start(cx);
+    // The same turn, but its message can't be sent again: no Regenerate.
+    let plain = ended_turn(false, false);
+    let (window, view) = open(cx, &plain, AgentFilter::Main, 600.);
+    assert_eq!(cx.read(|cx| view.read(cx).regenerate_entry()), None);
+    let footer = ids_of(&plain, Kind::Turn)[0];
+    let plain_height = cx
+        .update_window(window, |_, window, _| {
+            assert!(window.try_find(("regenerate", footer)).is_none());
+            window
+                .find(super::row::element_id(RowKey::Turn(footer)))
+                .bounds()
+                .size
+                .height
+        })
+        .unwrap();
+
+    let feed = ended_turn(false, true);
+    let message = ids_of(&feed, Kind::User)[0];
+    let notice = ids_of(&feed, Kind::Notice)[0];
+    let footer = ids_of(&feed, Kind::Turn)[0];
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    assert_eq!(cx.read(|cx| view.read(cx).regenerate_entry()), Some(footer));
+    let line = RowKey::Turn(footer);
+    cx.update_window(window, |_, window, _| {
+        let rem = window.rem_size();
+        let row = window.find(super::row::element_id(line)).bounds();
+        let regenerate = window.find(("regenerate", footer)).bounds();
+        assert_eq!(regenerate.right(), column_right(800., rem));
+        // Laid over the line, centred on it: the line is no taller.
+        assert_eq!(row.size.height, plain_height);
+        assert!((regenerate.bottom() - row.bottom()).abs() <= px(3.));
+        assert!(window.try_find(("regenerate", message)).is_none());
+        assert!(window.try_find(("regenerate", notice)).is_none());
+    })
+    .unwrap();
+    cx.update_window(window, |_, window, cx| {
+        window.hover(super::row::element_id(line), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| view.read(cx).hovered), Some(footer));
+
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Messages));
+    settle(cx, window);
+    assert!(!keys(&view, cx).contains(&line), "no footers");
+    assert_eq!(cx.read(|cx| view.read(cx).regenerate_entry()), Some(notice));
+    cx.update_window(window, |_, window, _| {
+        let rem = window.rem_size();
+        let row = window
+            .find(super::row::element_id(RowKey::Notice(notice)))
+            .bounds();
+        let regenerate = window.find(("regenerate", notice)).bounds();
+        assert_eq!(regenerate.right(), column_right(800., rem));
+        assert!(regenerate.top() >= row.top());
+        assert!(regenerate.bottom() <= row.bottom() + px(1.));
+    })
+    .unwrap();
 }

@@ -385,8 +385,8 @@ impl Model {
     }
 
     /// The user's latest message, when its turn ended without a reply
-    /// (stopped, or failed after its retries) and nothing runs: Regenerate
-    /// sends it again from the message itself.
+    /// (stopped, or failed after its retries) and nothing runs. Regenerate
+    /// sends it again from the turn's last line.
     pub fn regenerable_message(&self) -> Option<u64> {
         if self.busy_reason().is_some() || self.last_reply().is_some() {
             return None;

@@ -629,10 +629,10 @@ fn enter_in_the_edit_dialog_edits(cx: &mut TestAppContext) {
     app.close_all(cx);
 }
 
-/// A turn stopped before it replied: the message offers Regenerate, and it
-/// sends the message again.
+/// A turn stopped before it replied: its last line offers Regenerate, where
+/// the reply would be, and it sends the message again.
 #[gpui_kit::test]
-fn a_stopped_turns_message_offers_regenerate(cx: &mut TestAppContext) {
+fn a_stopped_turn_offers_regenerate_on_its_last_line(cx: &mut TestAppContext) {
     let mock = Mock::start(move |index, _| {
         if index == 0 {
             crate::testing::reply_after("a1", "First try.", std::time::Duration::from_secs(20))
@@ -646,15 +646,27 @@ fn a_stopped_turns_message_offers_regenerate(cx: &mut TestAppContext) {
     wait_until(cx, "the turn", |cx| {
         cx.read(|cx| session.read(cx).is_working())
     });
-    let message = app.message(cx, "Name a fruit.");
+    let regenerate_entry = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            app.view
+                .read(cx)
+                .transcript(cx)
+                .and_then(|transcript| transcript.read(cx).regenerate_entry())
+        })
+    };
     // Not while the turn runs.
-    act(cx, app.window, |window, _| {
-        assert!(window.try_find(("regenerate-message", message)).is_none());
-    });
+    assert_eq!(regenerate_entry(cx), None);
     act(cx, app.window, |window, cx| window.press("escape", cx));
     app.wait_idle(cx);
+    let message = app.message(cx, "Name a fruit.");
+    let end = regenerate_entry(cx).expect("the stopped turn offers Regenerate");
+    act(cx, app.window, |window, _| {
+        // On the turn's footer, not on the message.
+        assert!(window.try_find(("turn", end)).is_some());
+        assert!(window.try_find(("regenerate", message)).is_none());
+    });
     act(cx, app.window, |window, cx| {
-        window.click(("regenerate-message", message), cx)
+        window.click(("regenerate", end), cx)
     });
     act(cx, app.window, |window, cx| {
         window.click("edit-confirm", cx)

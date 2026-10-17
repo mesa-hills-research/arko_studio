@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use arko::remote::{Delivery, Feed, Source};
+use arko::remote::{Delivery, Feed, Item, Kind, Level, Source};
 use arko_agents::AgentEvent;
 use arko_workflows::WorkflowEvent;
 use gpui_kit::test::TestWindowExt as _;
@@ -338,4 +338,73 @@ fn the_rows_are_a_list_with_labels_for_assistive_technology(cx: &mut TestAppCont
         );
     })
     .unwrap();
+}
+
+/// A session opened again, with a message that can be sent again. Its turn
+/// ended with a reply, or without one and with a notice that it stopped.
+fn ended_turn(replied: bool) -> Feed {
+    let mut message = Item::new(Kind::User, "Name a fruit.");
+    message.id = 1;
+    message.turn = Some(1);
+    message.message_index = Some(0);
+    message.delivery = Some(Delivery::Turn);
+    let mut ending = if replied {
+        Item::new(Kind::Reply, "A pear.")
+    } else {
+        Item::new(Kind::Notice, "Stopped.").level(Level::Warn)
+    };
+    ending.id = 2;
+    ending.turn = Some(1);
+    let mut footer = Item::new(Kind::Turn, "3 s");
+    footer.id = 3;
+    footer.turn = Some(1);
+    let feed = Feed::new("main");
+    feed.restore(vec![message, ending, footer]);
+    feed
+}
+
+impl Rows {
+    /// Tab: the focus goes to the next control.
+    fn tab(&self, cx: &mut TestAppContext) {
+        cx.update_window(self.window, |_, window, cx| window.focus_next(cx))
+            .unwrap();
+        self.draw(cx);
+    }
+}
+
+/// From the keyboard, Up onto the reply's actions shows them, and Tab goes
+/// through Copy, Copy as Markdown and View Source to Regenerate, which
+/// Enter presses.
+#[gpui_kit::test]
+fn tab_reaches_regenerate_after_the_replys_other_actions(cx: &mut TestAppContext) {
+    let rows = open(cx, ended_turn(true), 600.);
+    rows.focus(cx);
+    rows.press(cx, "up");
+    assert!(matches!(rows.cursor(cx), Some(RowKey::Actions(_))));
+    for _ in 0..4 {
+        rows.tab(cx);
+    }
+    rows.press(cx, "enter");
+    assert_eq!(
+        rows.events.borrow().last(),
+        Some(&TranscriptEvent::Regenerate)
+    );
+}
+
+/// A turn that ended without a reply: the keyboard on its last line shows
+/// Regenerate there, and Tab reaches it.
+#[gpui_kit::test]
+fn tab_reaches_regenerate_on_the_last_line_of_a_turn_without_a_reply(cx: &mut TestAppContext) {
+    let rows = open(cx, ended_turn(false), 600.);
+    rows.focus(cx);
+    let Some(RowKey::Turn(footer)) = rows.cursor(cx) else {
+        panic!("on the turn's footer: {:?}", rows.cursor(cx));
+    };
+    assert_eq!(cx.read(|cx| rows.view.read(cx).hovered), Some(footer));
+    rows.tab(cx);
+    rows.press(cx, "enter");
+    assert_eq!(
+        rows.events.borrow().last(),
+        Some(&TranscriptEvent::Regenerate)
+    );
 }

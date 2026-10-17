@@ -455,6 +455,14 @@ impl TranscriptView {
         self.model.last_reply()
     }
 
+    /// The entry Regenerate shows on: the latest reply, or the last line
+    /// of a turn that ended without one.
+    pub fn regenerate_entry(&self) -> Option<u64> {
+        self.last_reply()
+            .filter(|reply| self.offers_regenerate(RowKey::Actions(*reply)))
+            .or_else(|| self.regenerate_end().map(RowKey::entry))
+    }
+
     /// The text and the images of the user's message `id`.
     pub fn message(&self, id: u64) -> Option<(String, Vec<arko::images::ImageRef>)> {
         let item = &self.model.entry(id)?.item;
