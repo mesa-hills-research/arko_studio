@@ -355,23 +355,28 @@ impl SessionInfo {
     }
 }
 
-/// A label and its value, in the info's two columns.
-fn row(label: &'static str, value: impl IntoElement, cx: &App) -> Div {
+/// A label and its value, in the info's two columns, or the label above
+/// its value in a narrow window.
+fn row(narrow: bool, label: &'static str, value: impl IntoElement, cx: &App) -> Div {
+    let label = div()
+        .flex_none()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child(label);
+    let value = div().min_w_0().text_sm().child(value);
+    if narrow {
+        return v_flex().gap_0p5().pb_1().child(label).child(value);
+    }
     h_flex()
         .items_start()
         .gap_3()
         .min_h(rems(1.75))
-        .child(
-            div()
-                .w(rems(8.5))
-                .flex_none()
-                .pt(rems(0.25))
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(label),
-        )
-        .child(div().flex_1().min_w_0().text_sm().child(value))
+        .child(label.w(rems(8.5)).pt(rems(0.25)))
+        .child(value.flex_1())
 }
+
+/// Windows narrower than this put each label above its value.
+const NARROW_BELOW: Pixels = px(480.);
 
 /// A group's heading.
 fn heading(text: &'static str, cx: &App) -> Div {
@@ -404,6 +409,10 @@ fn path_value(id: &'static str, path: &Path, cx: &App) -> Div {
 
 impl Render for SessionInfo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // As wide as the window allows, with a margin.
+        let viewport = window.viewport_size();
+        let narrow = viewport.width < NARROW_BELOW;
+        let width = (window.rem_size() * 28.).min(viewport.width - window.rem_size() * 2.);
         let Some(About {
             title,
             mode,
@@ -417,7 +426,7 @@ impl Render for SessionInfo {
             return v_flex()
                 .id("session-info")
                 .test_support()
-                .w(rems(26.))
+                .w(width)
                 .text_sm()
                 .child("No session is open.");
         };
@@ -530,10 +539,16 @@ impl Render for SessionInfo {
         body =
             body.child(heading("Session", cx))
                 .when_some(workspace.filter(|_| agent), |this, folder| {
-                    this.child(row("Folder", path_value("reveal-folder", &folder, cx), cx))
+                    this.child(row(
+                        narrow,
+                        "Folder",
+                        path_value("reveal-folder", &folder, cx),
+                        cx,
+                    ))
                 })
-                .child(row("Mode", mode.label(), cx))
+                .child(row(narrow, "Mode", mode.label(), cx))
                 .child(row(
+                    narrow,
                     "Model",
                     v_flex().child(main_model).when(started, |this| {
                         this.child(
@@ -545,12 +560,13 @@ impl Render for SessionInfo {
                     cx,
                 ))
                 .when_some(workers_model.filter(|_| agent), |this, model| {
-                    this.child(row("Workers’ model", model, cx))
+                    this.child(row(narrow, "Workers’ model", model, cx))
                 });
         // When the agents hand over.
         body = body
             .child(heading("Handover", cx))
             .child(row(
+                narrow,
                 if compacts {
                     "Main agent compacts at"
                 } else {
@@ -571,6 +587,7 @@ impl Render for SessionInfo {
             ))
             .when(agent && reading.models.has_workers, |this| {
                 this.child(row(
+                    narrow,
                     "Workers at",
                     h_flex().children(input(Field::HandoverWorkers, self)),
                     cx,
@@ -579,7 +596,7 @@ impl Render for SessionInfo {
         if agent {
             body = body
                 .child(heading("Settings", cx))
-                .child(row(
+                .child(row(narrow,
                     "Outside access",
                     switch(
                         "outside-access",
@@ -590,12 +607,12 @@ impl Render for SessionInfo {
                     ),
                     cx,
                 ))
-                .child(row(
+                .child(row(narrow,
                     "Background after",
                     h_flex().children(input(Field::BackgroundAfter, self)),
                     cx,
                 ))
-                .child(row(
+                .child(row(narrow,
                     "Text replies",
                     switch(
                         "text-replies",
@@ -606,7 +623,7 @@ impl Render for SessionInfo {
                     ),
                     cx,
                 ))
-                .child(row(
+                .child(row(narrow,
                     "Claude Code compaction",
                     switch(
                         "cc-compact",
@@ -617,17 +634,17 @@ impl Render for SessionInfo {
                     ),
                     cx,
                 ))
-                .child(row("Extra rules", extra_rules, cx))
+                .child(row(narrow, "Extra rules", extra_rules, cx))
                 .when(started, |this| {
                     this.child(
                         div()
-                            .pl(rems(9.25))
+                            .when(!narrow, |this| this.pl(rems(9.25)))
                             .text_xs()
                             .text_color(muted)
                             .child("Text replies, Claude Code compaction and the extra rules are fixed once the conversation started."),
                     )
                 })
-                .child(row(
+                .child(row(narrow,
                     "Project instructions",
                     v_flex()
                         .gap_1()
@@ -670,6 +687,7 @@ impl Render for SessionInfo {
                 ),
                 Some(facts) => body
                     .child(row(
+                        narrow,
                         "MCP servers",
                         v_flex().children(
                             mcp_lines(&facts.mcp)
@@ -678,9 +696,10 @@ impl Render for SessionInfo {
                         ),
                         cx,
                     ))
-                    .child(row("Skills", skills_line(&facts.skills), cx)),
+                    .child(row(narrow, "Skills", skills_line(&facts.skills), cx)),
             };
             body = body.child(row(
+                narrow,
                 "Indexes",
                 indexes.unwrap_or_else(|| "None".to_string()),
                 cx,
@@ -690,6 +709,7 @@ impl Render for SessionInfo {
         body = body
             .child(heading("Kept as", cx))
             .child(row(
+                narrow,
                 "Session ID",
                 h_flex()
                     .gap_1()
@@ -710,15 +730,20 @@ impl Render for SessionInfo {
                 cx,
             ))
             .when_some(dir, |this, dir| {
-                this.child(row("Data folder", path_value("reveal-data", &dir, cx), cx))
+                this.child(row(
+                    narrow,
+                    "Data folder",
+                    path_value("reveal-data", &dir, cx),
+                    cx,
+                ))
             });
 
         // As tall as the window allows, scrolling past that.
-        let tallest = window.viewport_size().height * 0.8;
+        let tallest = viewport.height * 0.8;
         v_flex()
             .id("session-info")
             .test_support()
-            .w(rems(28.))
+            .w(width)
             .max_h(tallest)
             .overflow_y_scroll()
             .child(
@@ -942,6 +967,39 @@ mod view_tests {
             window.dispatch_action(Box::new(menus::SessionInfo), cx)
         });
         assert!(shows(window, cx, "session-info"));
+    }
+
+    /// At the narrowest window, the info stays inside it, each label above
+    /// its value.
+    #[gpui_kit::test]
+    fn the_info_fits_a_narrow_window(cx: &mut TestAppContext) {
+        start(cx);
+        let (window, workspace) = open(cx, 400.);
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        let title_bar = cx.read(|cx| workspace.read(cx).title_bar().clone());
+        cx.update_window(window, |_, window, cx| {
+            title_bar.update(cx, |bar, cx| {
+                bar.set_live_session(Some(session.clone()), window, cx);
+                bar.toggle_info(cx);
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let (bounds, viewport) = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                (
+                    window.try_find("session-info").map(|found| found.bounds()),
+                    window.viewport_size(),
+                )
+            })
+            .unwrap();
+        let bounds = bounds.expect("the info shows");
+        assert!(
+            bounds.origin.x >= gpui_kit::px(0.)
+                && bounds.origin.x + bounds.size.width <= viewport.width,
+            "{bounds:?} in {viewport:?}"
+        );
     }
 
     /// The command lines the session was sent.
