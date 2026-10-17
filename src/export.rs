@@ -29,11 +29,8 @@ pub struct Header {
 pub fn with_saved(
     mut header: Header,
     visible: Vec<Item>,
-    saved: Option<arko::sessions::SavedConversation>,
+    saved: arko::sessions::SavedConversation,
 ) -> (String, bool) {
-    let Some(saved) = saved else {
-        return (markdown(&header, &visible), header.starts_partway);
-    };
     header.starts_partway = !saved.reports.is_empty();
     let mut items = saved.items;
     let last_saved = items.iter().filter_map(|item| item.message_index).max();
@@ -476,7 +473,7 @@ mod tests {
             starts_partway: true,
             ..Header::default()
         };
-        let (text, partial) = with_saved(header.clone(), vec![next], Some(saved.clone()));
+        let (text, partial) = with_saved(header.clone(), vec![next], saved.clone());
         assert!(!partial);
         assert!(text.contains("The start."));
         assert!(text.contains("A new turn."));
@@ -485,7 +482,7 @@ mod tests {
         handed_over
             .reports
             .push("The earlier work was summarized.".into());
-        let (text, partial) = with_saved(header, Vec::new(), Some(handed_over));
+        let (text, partial) = with_saved(header, Vec::new(), handed_over);
         assert!(partial);
         assert!(text.contains(STARTS_PARTWAY));
         assert!(text.contains("The earlier work was summarized."));

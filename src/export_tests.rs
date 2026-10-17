@@ -95,7 +95,8 @@ fn export_writes_the_conversation_where_the_user_chooses(cx: &mut TestAppContext
     act(cx, window, |window, cx| {
         window.dispatch_action(Box::new(crate::menus::ExportMarkdown), cx)
     });
-    // The save dialog opens in the session's folder, named for the session.
+    // The save dialog opens only after the saved history was read.
+    wait_until(cx, "the save dialog", |cx| cx.did_prompt_for_new_path());
     let file = temp.path().join("pears.md");
     cx.simulate_new_path_selection(|folder| {
         assert_eq!(folder, work.as_path());
@@ -108,6 +109,50 @@ fn export_writes_the_conversation_where_the_user_chooses(cx: &mut TestAppContext
     assert!(text.contains("And the plums?"), "{text}");
     assert!(!text.contains(crate::export::STARTS_PARTWAY), "{text}");
     assert!(text.contains("\n## Arko\n\nSeven **pears**.\n"), "{text}");
+    use gpui_kit::component::WindowExt as _;
+    let session = cx.read(|cx| view.read(cx).live_session().unwrap().clone());
+    let id = cx.read(|cx| session.read(cx).id().unwrap().0.clone());
+    let marker = root
+        .join("sessions")
+        .join(&id)
+        .join("run/latest-checkpoint");
+    let checkpoint = std::fs::read(&marker).unwrap();
+    let notes = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| window.notifications(cx).len())
+            .unwrap()
+    };
+    let before = notes(cx);
+    std::fs::write(&marker, "missing-checkpoint.json").unwrap();
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ExportMarkdown), cx)
+    });
+    wait_until(cx, "the missing checkpoint error", |cx| notes(cx) > before);
+    assert!(!cx.did_prompt_for_new_path());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    std::fs::write(&marker, checkpoint).unwrap();
+    session.update(cx, |session, cx| {
+        session
+            .send(
+                arko::Input::Message(arko::Message {
+                    text: "/new".into(),
+                    images: Vec::new(),
+                }),
+                cx,
+            )
+            .unwrap()
+    });
+    wait_until(cx, "the empty new conversation", |_| {
+        arko::sessions::conversation(&root, &id, None)
+            .err()
+            .is_some_and(|why| why.contains("no messages yet"))
+    });
+    let before = notes(cx);
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ExportMarkdown), cx)
+    });
+    wait_until(cx, "the empty conversation notice", |cx| notes(cx) > before);
+    assert!(!cx.did_prompt_for_new_path());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
     act(cx, window, |window, cx| {
         let sessions = crate::live::LiveSessions::all(cx);
         crate::quit::close(sessions, false, window, cx);

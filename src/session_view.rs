@@ -855,18 +855,35 @@ impl SessionView {
             .to_path_buf();
         let id = session.id().cloned();
         let exporting = cx.background_spawn(async move {
-            let saved =
-                id.and_then(|id| arko::sessions::conversation(&root, id.as_str(), None).ok());
-            crate::export::with_saved(header, items, saved)
+            let id = id.ok_or("There is no conversation to export yet.")?;
+            let saved = arko::sessions::conversation(&root, id.as_str(), None)?;
+            Ok::<_, String>(crate::export::with_saved(header, items, saved))
         });
         let folder = crate::export::folder(
             session.workspace().map(PathBuf::as_path),
             self.home.as_deref(),
         );
         let name = crate::export::file_name(session.title());
-        let chosen = cx.prompt_for_new_path(&folder, Some(&name));
         cx.spawn_in(window, async move |this, cx| {
-            let (text, starts_partway) = exporting.await;
+            let (text, starts_partway) = match exporting.await {
+                Ok(export) => export,
+                Err(why) => {
+                    cx.update(|window, cx| {
+                        window.push_notification(
+                            gpui_kit::component::notification::Notification::error(format!(
+                                "Couldn’t export the conversation. {}",
+                                crate::backend::sentence(&why)
+                            )),
+                            cx,
+                        );
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let Ok(chosen) = cx.update(|_, cx| cx.prompt_for_new_path(&folder, Some(&name))) else {
+                return;
+            };
             let export = Export {
                 text,
                 starts_partway,
