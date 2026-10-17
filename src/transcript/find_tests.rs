@@ -304,10 +304,21 @@ fn mod_f_opens_the_find_bar_and_esc_gives_the_keyboard_back(cx: &mut TestAppCont
             })
         })
     });
+    let rows = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, _| {
+            window
+                .find(crate::transcript::row::element_id(RowKey::User(1)))
+                .bounds()
+        })
+        .unwrap()
+    };
+    let before = rows(cx);
     act(cx, window, |window, cx| window.press("secondary-f", cx));
     act(cx, window, |window, _| {
         assert!(window.try_find("find-bar").is_some());
     });
+    // It floats over the transcript: the rows stay where they were.
+    assert_eq!(rows(cx), before);
     act(cx, window, |window, cx| window.input("pears", cx));
     let status = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).find_status());
     assert_eq!(

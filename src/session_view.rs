@@ -1012,6 +1012,8 @@ impl SessionView {
                 .pt_2()
                 .child(
                     h_flex()
+                        .id("find-box")
+                        .occlude()
                         .w_full()
                         .gap_1()
                         .p_1()
@@ -2860,11 +2862,11 @@ impl Render for SessionView {
             .bg(theme.background)
             .text_color(theme.foreground)
             .items_center()
-            .children(find)
             .child(
                 div()
                     .id("transcript")
                     .test_support()
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .w_full()
@@ -2875,7 +2877,18 @@ impl Render for SessionView {
                             .justify_center()
                             .px_4()
                             .child(state)
-                    }),
+                    })
+                    // The find bar floats over the transcript's top, so
+                    // opening it moves nothing.
+                    .children(find.map(|find| {
+                        h_flex()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .justify_center()
+                            .child(find)
+                    })),
             )
             .child(
                 // The composer's column: centred and at most ~46 rem wide, full
