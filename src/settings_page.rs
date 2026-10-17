@@ -516,10 +516,10 @@ impl SettingsPage {
                 ]),
                 SettingGroup::new()
                     .title("Interface font")
-                    .item(SettingItem::render(move |_, _, cx| font_picker(ui_font.as_ref(), &prefs::get(cx).appearance.ui_font, cx)).keywords(["font", "typeface", "size"])),
+                    .item(SettingItem::render(move |_, _, cx| font_picker(ui_font.as_ref(), &prefs::get(cx).appearance.ui_font, false, cx)).keywords(["font", "typeface", "size"])),
                 SettingGroup::new()
                     .title("Code font")
-                    .item(SettingItem::render(move |_, _, cx| font_picker(code_font.as_ref(), &prefs::get(cx).appearance.code_font, cx)).keywords(["font", "monospace", "size"]))
+                    .item(SettingItem::render(move |_, _, cx| font_picker(code_font.as_ref(), &prefs::get(cx).appearance.code_font, true, cx)).keywords(["font", "monospace", "size"]))
                     .item(
                         switch(
                             "Code ligatures",
@@ -617,15 +617,19 @@ impl SettingsPage {
 }
 
 /// A font picker showing a family and its size, or, while the installed
-/// fonts are read, the chosen family and size.
+/// fonts are read, the chosen family and size. `monospace_filter` offers
+/// Monospace only, which the code font starts with, and which the interface
+/// font has no use for.
 fn font_picker(
     picker: Option<&Entity<FontPickerState>>,
     choice: &prefs::FontChoice,
+    monospace_filter: bool,
     cx: &App,
 ) -> AnyElement {
     match picker {
         Some(picker) => FontPicker::new(picker)
             .compact()
+            .show_monospace_filter(monospace_filter)
             .show_weight(false)
             .show_line_height(false)
             .show_features(false)

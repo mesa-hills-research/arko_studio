@@ -465,6 +465,21 @@ fn opening_settings_leaves_the_reading_to_the_background(cx: &mut TestAppContext
     assert!(cx.read(|cx| settings.read(cx).font_pickers().is_some()));
 }
 
+/// Monospace only narrows the code font's list, and starts on. The
+/// interface font has no use for it and doesn't offer it.
+#[gpui_kit::test]
+fn only_the_code_font_offers_monospace_only(cx: &mut TestAppContext) {
+    start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, 0, 1200.);
+    assert!(cx.read(|cx| settings.read(cx).font_pickers().is_some()));
+    act(cx, window, |window, _| {
+        // A second checkbox, the interface font's, would make the ID
+        // ambiguous. This one is on, as only the code font's starts.
+        let monospace = window.find("font-picker-monospace");
+        assert_eq!(monospace.checked(), Some(true));
+    });
+}
+
 /// "Needs an OpenAI key" in the composer's model list opens Models &
 /// accounts on the OpenAI key's row, with the keyboard there.
 #[gpui_kit::test]
