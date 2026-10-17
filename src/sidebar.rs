@@ -629,7 +629,11 @@ impl Sidebar {
             return;
         }
         self.renaming = None;
-        self.focus_handle.focus(window, cx);
+        // The keyboard goes back to the list, unless a click took it
+        // elsewhere, such as to the composer.
+        if self.focus_handle.contains_focused(window, cx) {
+            self.focus_handle.focus(window, cx);
+        }
         cx.notify();
         let Some(title) = title.map(|title| title.trim().to_string()) else {
             return;
@@ -789,11 +793,20 @@ impl Sidebar {
         .detach();
     }
 
+    /// The row that shows the keyboard cursor's ring. It shows while the list
+    /// has the keyboard, and not while a row's name is being edited, whose
+    /// field shows the focus then.
+    fn cursor_ring(&self, window: &Window, cx: &App) -> Option<&RowKey> {
+        let focused = self.focus_handle.contains_focused(window, cx);
+        self.cursor
+            .as_ref()
+            .filter(|_| focused && self.renaming.is_none())
+    }
+
     fn render_row(&self, index: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let row = &self.rows[index];
         let theme = cx.theme();
-        let focused = self.focus_handle.contains_focused(window, cx);
-        let is_cursor = focused && self.cursor.as_ref() == Some(&row.key());
+        let is_cursor = self.cursor_ring(window, cx) == Some(&row.key());
         let is_active = match row {
             Row::Session { id, .. } => self.active.as_ref() == Some(id),
             _ => false,
@@ -932,6 +945,11 @@ impl Sidebar {
                                 .min_w_0()
                                 .key_context(RENAME_CONTEXT)
                                 .on_action(cx.listener(Self::cancel_rename))
+                                // Enter in the field confirms the name. The
+                                // field passes the key on, and the list's
+                                // Enter would open the session too, taking
+                                // the keyboard to the composer.
+                                .on_action(cx.listener(|_, _: &OpenSelected, _, _| {}))
                                 .child(Input::new(&input).xsmall()),
                         ),
                         None => this
@@ -1361,5 +1379,86 @@ mod tests {
         assert!(
             matches!(&rows[1], Row::Session { conversations: false, time, .. } if time == "1m")
         );
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    // Named, not `super::*`: GPUI's glob brings a `test` macro that would
+    // shadow Rust's.
+    use super::{RowKey, Sidebar};
+    use crate::backend::SessionId;
+    use crate::tests::{act, open};
+    use crate::{Startup, menus};
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
+    use std::sync::Arc;
+    use std::time::SystemTime;
+
+    fn start(cx: &mut TestAppContext) {
+        let backend = Arc::new(crate::backend::FakeBackend::sample(
+            "/arko",
+            SystemTime::now(),
+        ));
+        cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    }
+
+    /// The row that shows the cursor's ring, whether a name is being edited
+    /// and whether the keyboard is in the sidebar.
+    fn focus(
+        sidebar: &Entity<Sidebar>,
+        window: AnyWindowHandle,
+        cx: &mut TestAppContext,
+    ) -> (Option<RowKey>, bool, bool) {
+        act(cx, window, |_, _| {});
+        cx.update_window(window, |_, window, cx| {
+            let sidebar = sidebar.read(cx);
+            (
+                sidebar.cursor_ring(window, cx).cloned(),
+                sidebar.renaming.is_some(),
+                sidebar.focus_handle.contains_focused(window, cx),
+            )
+        })
+        .unwrap()
+    }
+
+    /// While a session's name is edited, only its field shows focus. Enter
+    /// and Escape give the keyboard and the ring back to its row, and a click
+    /// into the composer leaves the keyboard there.
+    #[gpui_kit::test]
+    fn the_name_field_alone_shows_focus_while_renaming(cx: &mut TestAppContext) {
+        start(cx);
+        let (window, workspace) = open(cx, 1300.);
+        // Focus moving away is told only to an active window's elements.
+        cx.update_window(window, |_, window, _| window.activate_window())
+            .unwrap();
+        let sidebar = cx.read(|cx| workspace.read(cx).sidebar().clone());
+        let fonts = RowKey::Session(SessionId("20261016-080000-a7b8".into()));
+        act(cx, window, |window, cx| {
+            window.dispatch_action(Box::new(menus::FocusSessionFilter), cx)
+        });
+        act(cx, window, |window, cx| window.press("down", cx));
+        assert_eq!(
+            focus(&sidebar, window, cx),
+            (Some(fonts.clone()), false, true)
+        );
+
+        for end in ["enter", "escape"] {
+            act(cx, window, |window, cx| window.press("f2", cx));
+            assert_eq!(focus(&sidebar, window, cx), (None, true, true), "{end}");
+            act(cx, window, |window, cx| window.press(end, cx));
+            assert_eq!(
+                focus(&sidebar, window, cx),
+                (Some(fonts.clone()), false, true),
+                "{end}"
+            );
+        }
+
+        act(cx, window, |window, cx| window.press("f2", cx));
+        let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+        act(cx, window, |window, cx| {
+            view.update(cx, |view, cx| view.focus_composer(window, cx))
+        });
+        assert_eq!(focus(&sidebar, window, cx), (None, false, false));
     }
 }

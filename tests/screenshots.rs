@@ -1233,3 +1233,62 @@ fn session_info_light() {
 fn session_info_dark() {
     goldens().assert("session-info-dark", &session_info(ThemeMode::Dark));
 }
+
+/// The open session's name being edited in the sidebar. The field alone shows
+/// focus, and the row keeps its selected look without a ring of its own.
+fn renaming(mode: ThemeMode) -> Screenshot {
+    use arko_studio::backend::SessionId;
+    use arko_studio::menus;
+    use gpui_kit::test::TestWindowExt as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut workspace = None;
+    let window = app
+        .open_window_with(size(px(900.), px(360.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, opened)| {
+                workspace = Some(opened);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = workspace.unwrap();
+    app.update_window(window, |_, window, cx| {
+        window.activate_window();
+        let fonts = SessionId("20261016-080000-a7b8".into());
+        workspace.update(cx, |workspace, cx| {
+            workspace.open_session(fonts, window, cx)
+        });
+    })
+    .unwrap();
+    app.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(menus::FocusSessionFilter), cx);
+    })
+    .unwrap();
+    for key in ["down", "f2"] {
+        app.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(key, cx);
+        })
+        .unwrap();
+    }
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn renaming_light() {
+    goldens().assert("renaming-light", &renaming(ThemeMode::Light));
+}
+
+#[test]
+fn renaming_dark() {
+    goldens().assert("renaming-dark", &renaming(ThemeMode::Dark));
+}
