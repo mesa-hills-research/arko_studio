@@ -3,8 +3,9 @@
 //! access, and on the right the cache timer, plan usage, cost and context.
 //! An idle window with nothing unusual has an empty bar.
 //!
-//! The bar is a view of its own: its clock ticks once a second only while
-//! it shows a running time, and only the bar draws again then.
+//! The bar is a view of its own, which the window keeps from frame to frame
+//! (a cached view): its clock ticks once a second only while it shows a
+//! running time, and then the bar draws again, not the panes around it.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -46,6 +47,10 @@ enum Source {
 
 /// The time the bar reads, in Unix milliseconds.
 pub type Clock = Rc<dyn Fn() -> i64>;
+
+/// The bar's height: the window lays it out at this height without drawing
+/// it again.
+pub const STATUS_BAR_HEIGHT: Rems = rems(1.75);
 
 /// Digits of equal width, so a running time keeps its width as it counts.
 pub fn tabular_figures() -> FontFeatures {
@@ -551,7 +556,12 @@ impl StatusBar {
 
 impl Render for StatusBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut bar = KitStatusBar::new().h_7().flex_none();
+        #[cfg(test)]
+        crate::testing::rendered("StatusBar");
+        let mut bar = KitStatusBar::new()
+            .w_full()
+            .h(STATUS_BAR_HEIGHT)
+            .flex_none();
         let Some((reading, activity)) = self.status(cx) else {
             self.schedule_tick(None, cx);
             return bar;

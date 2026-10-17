@@ -16,7 +16,7 @@ use crate::prefs::{self, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
 use crate::session_view::{Branched, SessionView, SessionViewEvent, recent_folders};
 use crate::settings_page::{CloseRequested, SettingsPage};
 use crate::sidebar::{Sidebar, SidebarEvent};
-use crate::status_bar::StatusBar;
+use crate::status_bar::{STATUS_BAR_HEIGHT, StatusBar};
 use crate::title_bar::AppTitleBar;
 use crate::workers_panel::{WorkersPanel, WorkersPanelEvent};
 use crate::{about, chrome, menus, palette, prompts, quit, shortcuts};
@@ -1056,13 +1056,23 @@ impl Workspace {
 
     fn render_main(&self) -> AnyElement {
         match &self.settings {
-            // Drawn again when its page changes, not whenever the window is.
-            Some(settings) => AnyView::from(settings.clone())
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element(),
+            Some(settings) => pane(settings),
+            // Not kept itself: GPUI draws every kept view inside a kept view
+            // that draws again, and the session view draws with each
+            // keystroke and blink of the caret. Its transcript is kept.
             None => self.session_view.clone().into_any_element(),
         }
     }
+}
+
+/// A pane of the window filling its place, kept from frame to frame and
+/// drawn again only when something in it changed: a frame drawn for one
+/// view (a tick of the status bar's clock, the composer's caret) takes the
+/// panes around it from the frame before.
+fn pane<V: Render>(view: &Entity<V>) -> AnyElement {
+    view.clone()
+        .cached(StyleRefinement::default().size_full())
+        .into_any_element()
 }
 
 /// The strip along a docked pane's inner edge that resizes it.
@@ -1101,6 +1111,8 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::testing::rendered("Workspace");
         let theme = cx.theme();
         let (background, foreground, font_family, border) = (
             theme.background,
@@ -1217,7 +1229,14 @@ impl Render for Workspace {
                 }),
             )
             .on_drop(cx.listener(|this, _: &ResizeDrag, _, cx| this.finish_resize(cx)))
-            .child(self.title_bar.clone())
+            .child(
+                self.title_bar.clone().cached(
+                    StyleRefinement::default()
+                        .w_full()
+                        .flex_none()
+                        .h(gpui_kit::component::TITLE_BAR_HEIGHT),
+                ),
+            )
             .child(
                 h_flex()
                     .id("panes")
@@ -1235,7 +1254,7 @@ impl Render for Workspace {
                                 .w(rems(sidebar_width))
                                 .border_r_1()
                                 .border_color(border)
-                                .child(self.sidebar.clone())
+                                .child(pane(&self.sidebar))
                                 .child(resize_handle(Edge::Sidebar, cx)),
                         )
                     })
@@ -1257,7 +1276,7 @@ impl Render for Workspace {
                                 .w(rems(panel_width))
                                 .border_l_1()
                                 .border_color(border)
-                                .child(self.workers.clone())
+                                .child(pane(&self.workers))
                                 .child(resize_handle(Edge::Panel, cx)),
                         )
                     }),
@@ -1267,7 +1286,12 @@ impl Render for Workspace {
                     .id("status-bar")
                     .test_support()
                     .flex_none()
-                    .child(self.status_bar.clone()),
+                    .w_full()
+                    .child(
+                        self.status_bar
+                            .clone()
+                            .cached(StyleRefinement::default().w_full().h(STATUS_BAR_HEIGHT)),
+                    ),
             )
     }
 }

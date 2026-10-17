@@ -174,6 +174,8 @@ impl AppTitleBar {
 
 impl Render for AppTitleBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::testing::rendered("AppTitleBar");
         let mac = cfg!(target_os = "macos");
         let title = self.render_title(cx);
         TitleBar::new()

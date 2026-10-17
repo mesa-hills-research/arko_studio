@@ -1110,6 +1110,8 @@ impl Focusable for Sidebar {
 
 impl Render for Sidebar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::testing::rendered("Sidebar");
         let theme = cx.theme();
         let rows = self.rows.len();
         v_flex()

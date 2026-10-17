@@ -412,6 +412,74 @@ fn window_with_session(
     (window, workspace, session)
 }
 
+/// The draws of each of the window's views over five seconds, after two
+/// to settle, the bar reading `now`.
+fn draws_in_five_seconds(
+    cx: &mut TestAppContext,
+    now: &Rc<Cell<i64>>,
+) -> std::collections::BTreeMap<&'static str, usize> {
+    let second = |cx: &mut TestAppContext| {
+        now.set(now.get() + 1_000);
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+    };
+    second(cx);
+    second(cx);
+    crate::testing::count_renders();
+    for _ in 0..5 {
+        second(cx);
+    }
+    crate::testing::renders()
+}
+
+/// Each second the cache timer counts, the bar draws again, and the title
+/// bar and the sidebar beside it don't.
+#[gpui_kit::test]
+fn a_tick_of_the_bars_clock_leaves_the_other_panes_alone(cx: &mut TestAppContext) {
+    let (window, workspace, session) = window_with_session(cx);
+    let now = Rc::new(Cell::new(NOW));
+    let bar = cx.read(|cx| workspace.read(cx).status_bar().clone());
+    let clock = now.clone();
+    bar.update(cx, |bar, cx| {
+        bar.set_clock(Rc::new(move || clock.get()), cx)
+    });
+    // Nothing focused: the composer's caret doesn't blink.
+    cx.update_window(window, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    act(cx, window, |window, cx| window.blur(cx));
+    let mut reading = Reading::default();
+    reading.cache.lifetime = Some(Duration::from_secs(3_600));
+    reading.cache.refreshed_at = Some(NOW - 300_000);
+    session.update(cx, |session, cx| {
+        session.set_status(reading, Activity::default(), cx)
+    });
+    cx.run_until_parked();
+    assert!(cx.read(|cx| bar.read(cx).is_ticking()));
+    let draws = draws_in_five_seconds(cx, &now);
+    assert_eq!(draws.get("StatusBar"), Some(&5), "{draws:?}");
+    for pane in ["AppTitleBar", "Sidebar"] {
+        assert_eq!(draws.get(pane), None, "{pane} drew again: {draws:?}");
+    }
+}
+
+/// The composer's caret blinks twice a second: the window draws again
+/// around it, but not its title bar, sidebar and status bar.
+#[gpui_kit::test]
+fn the_composers_caret_leaves_the_other_panes_alone(cx: &mut TestAppContext) {
+    let (window, _, _) = window_with_session(cx);
+    cx.update_window(window, |_, window, _| window.activate_window())
+        .unwrap();
+    let draws = draws_in_five_seconds(cx, &Rc::new(Cell::new(NOW)));
+    assert!(
+        draws.get("Workspace").is_some_and(|draws| *draws >= 5),
+        "{draws:?}"
+    );
+    for pane in ["AppTitleBar", "Sidebar", "StatusBar"] {
+        assert_eq!(draws.get(pane), None, "{pane} drew again: {draws:?}");
+    }
+}
+
 /// Share Web Page serves the page where Settings say and shows its links
 /// once it's up. Stop Sharing Web Page stops it.
 #[gpui_kit::test]
