@@ -164,9 +164,9 @@ impl BackendError {
         match self {
             BackendError::Locked {
                 holder: Some(holder),
-            } => format!("It’s open in {}.", holder.describe()),
+            } => format!("It’s open in {}, so close it there first.", holder.describe()),
             BackendError::Locked { holder: None } => {
-                "It’s open in another copy of Arko.".to_string()
+                "It’s open in another copy of Arko, so close it there first.".to_string()
             }
             BackendError::NotFound(id) => format!("There’s no session {id} any more."),
             BackendError::Other(message) => sentence(message),
@@ -651,10 +651,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 fn delete_error(error: arko::sessions::DeleteError) -> BackendError {
-    match error {
-        arko::sessions::DeleteError::Locked { holder } => BackendError::Locked { holder },
-        arko::sessions::DeleteError::Io(error) => BackendError::Other(error),
-    }
+    BackendError::Other(error.to_string())
 }
 
 /// Sessions in memory, for tests whose sessions don't run.
@@ -989,7 +986,7 @@ impl Backend for FakeBackend {
     fn set_chatgpt_login(&self, path: &Path) -> Result<String, String> {
         if path.file_name().is_none_or(|name| name != "auth.json") {
             return Err(format!(
-                "Could not use {}: it holds no ChatGPT login.",
+                "Could not use {} because it holds no ChatGPT login.",
                 path.display()
             ));
         }
@@ -1134,6 +1131,13 @@ mod tests {
             message.starts_with("It’s open in Arko in a terminal (process 4121), since "),
             "{message}"
         );
+    }
+
+    #[test]
+    fn a_delete_refusal_keeps_the_engines_recovery_hint() {
+        let error = arko::sessions::DeleteError::Locked { holder: None };
+        assert_eq!(delete_error(error.clone()).message(), sentence(&error.to_string()));
+        assert!(delete_error(error).message().contains("so close it there first"));
     }
 
     #[test]

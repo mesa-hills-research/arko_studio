@@ -1218,9 +1218,9 @@ fn open_error(error: &arko::OpenError) -> String {
     match error {
         arko::OpenError::Locked {
             holder: Some(holder),
-        } => format!("It’s open in {}.", holder.describe()),
+        } => format!("It’s open in {}, so close it there first.", holder.describe()),
         arko::OpenError::Locked { holder: None } => {
-            "It’s open in another copy of Arko.".to_string()
+            "It’s open in another copy of Arko, so close it there first.".to_string()
         }
         arko::OpenError::Failed(message) if message == CANCELLED => CANCELLED.to_string(),
         other => crate::backend::sentence(&other.to_string()),

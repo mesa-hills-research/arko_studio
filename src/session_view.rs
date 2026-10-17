@@ -1546,7 +1546,7 @@ impl SessionView {
         {
             window.push_notification(
                 format!(
-                    "The message wasn't sent: {why}. Send it without images, or switch to a model that takes them."
+                    "The message wasn’t sent because {why}. Send it without images, or switch to a model that takes them."
                 ),
                 cx,
             );

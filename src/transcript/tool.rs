@@ -65,6 +65,14 @@ impl Tool {
         if line.starts_with("(in ") {
             return Tool::Shell;
         }
+        if let Some((name, rest)) = line.split_once(" (")
+            && !name.contains(char::is_whitespace)
+            && let Some((server, arguments)) = rest.split_once(')')
+            && !server.is_empty()
+            && (arguments.trim().is_empty() || arguments.trim_start().starts_with('{'))
+        {
+            return if is_web(server) || is_web(name) { Tool::Web } else { Tool::Mcp };
+        }
         let mut words = line.split_whitespace();
         let first = words.next().unwrap_or_default();
         let second = words.next().unwrap_or_default();
@@ -187,6 +195,14 @@ mod tests {
             ("skill rust-style", Tool::Skill),
             ("index search: where are retries", Tool::Search),
             ("github: create_issue {\"title\":\"x\"}", Tool::Mcp),
+            ("create_issue (github) {\"title\":\"x\"}", Tool::Mcp),
+            ("read (github) {}", Tool::Mcp),
+            ("create_issue (github)", Tool::Mcp),
+            ("fetch (web) {\"url\":\"https://a.b\"}", Tool::Web),
+            ("start worker “Fix the parser”", Tool::Workers),
+            ("start worker (worktree) “Fix the parser”", Tool::Workers),
+            ("message r1 “use plan B”", Tool::Workers),
+            ("index search “where are retries”", Tool::Search),
             ("fetch: fetch {\"url\":\"https://a.b\"}", Tool::Web),
             ("cargo test -p arko", Tool::Shell),
             ("(in crates/kit) cargo build", Tool::Shell),

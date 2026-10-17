@@ -796,7 +796,11 @@ fn run(
 
 /// Whether `item` is a message that only kept the prompt cache warm.
 pub(crate) fn is_refresh(item: &Item) -> bool {
-    item.is_main() && item.kind == Kind::User && item.delivery == Some(Delivery::Refresh)
+    item.is_main()
+        && item.kind == Kind::User
+        && (item.delivery == Some(Delivery::Refresh)
+            || item.text == arko::remote::REFRESH_MESSAGE
+            || item.text == "(Arko: this message only keeps the prompt cache warm. Reply with \"Acknowledged\" and nothing else.)")
 }
 
 /// Where the transcript goes on after the cache refresh at `ix`: past the
@@ -1308,6 +1312,20 @@ mod tests {
         model.apply(Update::Remove { id: 9 }, &mut changes);
         assert_eq!(ids(&model), [1]);
         assert_eq!(changes.removed, [2]);
+    }
+
+    #[test]
+    fn old_and_new_refresh_messages_are_one_quiet_row() {
+        for text in [
+            arko::remote::REFRESH_MESSAGE,
+            "(Arko: this message only keeps the prompt cache warm. Reply with \"Acknowledged\" and nothing else.)",
+        ] {
+            let model = model(vec![
+                item(1, Kind::User, "main", text),
+                item(2, Kind::Reply, "main", "Acknowledged"),
+            ]);
+            assert_eq!(keys(&model, View::Full), [RowKey::Refresh(1)]);
+        }
     }
 
     #[test]
