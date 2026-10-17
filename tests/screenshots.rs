@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use arko_studio::backend::FakeBackend;
+use arko_studio::backend::{Backend as _, FakeBackend, SessionEntry, SessionId};
 use arko_studio::prefs::{self, Motion, Prefs, ThemeMode};
 use arko_studio::{Startup, assets::Assets, fonts, workspace};
 use gpui_kit::{px, size};
@@ -44,6 +44,66 @@ fn new_window(mode: ThemeMode, width: f32) -> Screenshot {
         })
         .unwrap();
     app.capture(window).unwrap()
+}
+
+/// A window `width` logical pixels wide on a session with a long title, in
+/// a folder with a long name, that had workers (so both layout buttons
+/// show). The folder's name gives way first, then the title.
+fn long_title(mode: ThemeMode, width: f32) -> Screenshot {
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let mut sessions = FakeBackend::sample("/arko", SystemTime::now())
+        .sessions()
+        .unwrap();
+    let id = SessionId("20261016-091300-e1e1".into());
+    sessions.push(SessionEntry {
+        id: id.clone(),
+        title: "A long session title that should stay readable".into(),
+        workspace: Some("/home/ada/src/a-project-folder-with-a-very-long-descriptive-name".into()),
+        had_workers: true,
+        ..sessions[0].clone()
+    });
+    let backend =
+        FakeBackend::new("/arko", sessions).with_default_model(Some("claude-opus-5-5".into()));
+    let startup = Startup::for_tests(Arc::new(backend))
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(width), px(400.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, window, cx| {
+        workspace.update(cx, |workspace, cx| workspace.open_session(id, window, cx));
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn long_title_light() {
+    goldens().assert("long-title-light", &long_title(ThemeMode::Light, 600.));
+}
+#[test]
+fn long_title_dark() {
+    goldens().assert("long-title-dark", &long_title(ThemeMode::Dark, 600.));
+}
+#[test]
+fn minimum_title_light() {
+    goldens().assert("minimum-title-light", &long_title(ThemeMode::Light, 400.));
+}
+#[test]
+fn minimum_title_dark() {
+    goldens().assert("minimum-title-dark", &long_title(ThemeMode::Dark, 400.));
 }
 
 #[test]

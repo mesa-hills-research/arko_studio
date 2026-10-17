@@ -3,7 +3,8 @@
 //! layout buttons at the right end.
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Selectable as _, Sizable as _, TitleBar,
+    ActiveTheme as _, GlobalState, IconName, Selectable as _, Sizable as _, TITLE_BAR_HEIGHT,
+    TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::AppMenuBar,
@@ -119,26 +120,99 @@ impl AppTitleBar {
     }
 }
 
+/// The narrowest the session's title gets, in rems, while the window has
+/// room for it (or as wide as the title is, when that is less).
+const TITLE_FLOOR: f32 = 7.;
+/// The narrowest the folder's name gets before the title is cut short.
+const FOLDER_FLOOR: f32 = 4.;
+/// The bar's inset at its start, before the menus.
+const BAR_INSET: Pixels = px(12.);
+/// The folder gives up its room this many times faster than the title, so
+/// it reaches its floor before the title gets shorter.
+const FOLDER_SHRINK: f32 = 10_000.;
+
+/// How the title bar shares its width between the menus and the title.
+struct Room {
+    /// The most the menus take. They scroll sideways in it.
+    menus: Pixels,
+    /// The narrowest the title gets.
+    title: Pixels,
+    /// The narrowest the folder gets, or `None` when there's no room for it.
+    folder: Option<Pixels>,
+}
+
 impl AppTitleBar {
+    /// Shares the bar's width. The menus get what the title and the folder
+    /// leave at their floors, and the folder goes first when the window is
+    /// too narrow for both floors.
+    fn room(&self, window: &Window, cx: &App) -> Room {
+        let rem = window.rem_size();
+        let width = |text: &str| text_width(text, window, cx);
+        let title = self
+            .title
+            .as_ref()
+            .map_or(px(0.), |title| width(title).min(rem * TITLE_FLOOR));
+        let folder = self
+            .folder
+            .as_ref()
+            .map(|folder| width(&folder_label(folder)).min(rem * FOLDER_FLOOR));
+        let gap = if self.title.is_some() && folder.is_some() {
+            rem * 0.375
+        } else {
+            px(0.)
+        };
+        // Besides the menus and the words, the bar holds the window's
+        // buttons, its inset, the room around the title and inside its
+        // button, and the layout buttons with their gaps.
+        let layout_buttons = if self.workers.is_some() { 2. } else { 1. };
+        let fixed = window_buttons(window, cx) + BAR_INSET + rem * (3.5 + 1.625 * layout_buttons);
+        let free = window.viewport_size().width - fixed;
+        let floors = title + gap + folder.unwrap_or_default();
+        let menus = whole_menus(free - floors, window, cx);
+        let words = (free - menus).max(px(0.));
+        let title = title.min(words);
+        let folder = folder.filter(|folder| title + gap + *folder <= words);
+        Room {
+            menus,
+            title,
+            folder,
+        }
+    }
+
     /// The title and the folder: plain text, or, for an open session, a
-    /// button that opens its info.
-    fn render_title(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// button that opens its info. The folder's name shrinks first, to its
+    /// floor, then the title, each with an ellipsis.
+    fn render_title(&self, room: &Room, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         let words = h_flex()
             .min_w_0()
             .gap_1p5()
             .text_sm()
             .when_some(self.title.clone(), |this, title| {
-                this.child(div().min_w_0().truncate().child(title))
-            })
-            .when_some(self.folder.clone(), |this, folder| {
                 this.child(
                     div()
-                        .flex_none()
-                        .text_color(muted)
-                        .child(format!("· {folder}")),
+                        .id("session-title-text")
+                        .test_support()
+                        .min_w(room.title)
+                        .truncate()
+                        .child(title),
                 )
-            });
+            })
+            .when_some(
+                self.folder.as_ref().zip(room.folder),
+                |this, (folder, floor)| {
+                    this.child(
+                        div()
+                            .id("session-folder-text")
+                            .test_support()
+                            .min_w(floor)
+                            .flex_shrink(FOLDER_SHRINK)
+                            .truncate()
+                            .text_color(muted)
+                            .child(folder_label(folder)),
+                    )
+                },
+            );
         let has_session = self.info.read(cx).session().is_some();
         if !has_session {
             return words.into_any_element();
@@ -173,12 +247,90 @@ impl AppTitleBar {
     }
 }
 
+/// The width to give the menus out of `room`. That's all of it when every
+/// title fits, else what the titles that fit whole take, and at least the
+/// first title. A narrow window then shows whole titles, and the menus
+/// after them scroll into view. macOS has its menus in its own menu bar.
+fn whole_menus(room: Pixels, window: &Window, cx: &App) -> Pixels {
+    if cfg!(target_os = "macos") {
+        return px(0.);
+    }
+    let rem = window.rem_size();
+    let mut filled = px(0.);
+    for (ix, menu) in GlobalState::global(cx).app_menus().iter().enumerate() {
+        // As GPUI Kit's menu bar draws a title (a compact small button) and
+        // the gap before it, with a pixel to spare.
+        let title = (text_width(&menu.name, window, cx) + rem * 0.75 + px(1.)).max(rem * 1.5);
+        let gap = if ix == 0 { px(0.) } else { rem * 0.25 };
+        if ix > 0 && filled + gap + title > room {
+            return filled;
+        }
+        filled += gap + title;
+    }
+    filled.max(room)
+}
+
+/// The folder as the title bar shows it, after the title.
+fn folder_label(folder: &str) -> SharedString {
+    format!("· {folder}").into()
+}
+
+/// How wide `text` is in the title bar's small text, in whole pixels.
+fn text_width(text: &str, window: &Window, cx: &App) -> Pixels {
+    let mut style = window.text_style();
+    style.font_family = cx.theme().font_family.clone();
+    style.font_size = rems(0.875).into();
+    let size = style.font_size.to_pixels(window.rem_size());
+    window
+        .text_system()
+        .shape_line(
+            SharedString::from(text.to_string()),
+            size,
+            &[style.to_run(text.len())],
+            None,
+        )
+        .width
+        .ceil()
+}
+
+/// How wide the window's own buttons are in the bar. These are the caption
+/// buttons on Windows, the traffic lights' room on macOS, and on Linux the
+/// buttons the desktop leaves to the app.
+fn window_buttons(window: &Window, cx: &App) -> Pixels {
+    if cfg!(target_os = "windows") {
+        return px(46.) * 3.;
+    }
+    if cfg!(target_os = "macos") {
+        return px(80.) - BAR_INSET;
+    }
+    if !matches!(window.window_decorations(), Decorations::Client { .. }) {
+        return px(0.);
+    }
+    let Some(layout) = cx.button_layout() else {
+        return px(0.);
+    };
+    let controls = window.window_controls();
+    let shown = layout
+        .left
+        .iter()
+        .chain(&layout.right)
+        .flatten()
+        .filter(|button| match button {
+            WindowButton::Minimize => controls.minimize,
+            WindowButton::Maximize => controls.maximize,
+            WindowButton::Close => true,
+        })
+        .count();
+    TITLE_BAR_HEIGHT * shown as f32
+}
+
 impl Render for AppTitleBar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         crate::testing::rendered("AppTitleBar");
         let mac = cfg!(target_os = "macos");
-        let title = self.render_title(cx);
+        let room = self.room(window, cx);
+        let title = self.render_title(&room, cx);
         TitleBar::new()
             // GPUI Kit's Linux close button calls `window.remove_window()`, which
             // skips the close check. This sends it through the check instead. Only
@@ -186,7 +338,8 @@ impl Render for AppTitleBar {
             .on_close_window(|_, window, cx| chrome::close_window(window, cx))
             // The menus, on Windows and Linux (macOS has them in its menu bar).
             .when(!mac, |this| {
-                this.child(title_bar_item(self.menu_bar.clone()))
+                // They scroll sideways, in what the title leaves them.
+                this.child(title_bar_item(self.menu_bar.clone()).max_w(room.menus))
             })
             // The session's title, centred on the window. It moves aside for
             // the menus when they leave too little room, and is cut short
@@ -291,6 +444,128 @@ mod tests {
                 .map(|id| window.try_find(id).map(|element| element.bounds()));
         });
         bounds
+    }
+
+    /// The sample sessions, and three with long names. One has a long title
+    /// in a long folder, one a short title in it, and one a long title in a
+    /// short folder.
+    /// All three had workers, so both layout buttons show.
+    fn start_with_long_names(cx: &mut TestAppContext) {
+        use crate::backend::{Backend as _, FakeBackend, SessionEntry, SessionId};
+        let sample = FakeBackend::sample("/arko", SystemTime::now());
+        let mut sessions = sample.sessions().unwrap();
+        let first = sessions[0].clone();
+        let session = |id: &str, title: &str, folder: &str| SessionEntry {
+            id: SessionId(id.into()),
+            title: title.into(),
+            workspace: Some(std::path::Path::new("/home/ada/src").join(folder)),
+            had_workers: true,
+            ..first.clone()
+        };
+        sessions.extend([
+            session("20261016-091300-e1e1", LONG_TITLE, LONG_FOLDER),
+            session("20261016-091400-e2e2", "Notes", LONG_FOLDER),
+            session("20261016-091500-e3e3", OTHER_LONG_TITLE, "arko"),
+        ]);
+        let backend =
+            FakeBackend::new("/arko", sessions).with_default_model(Some("claude-opus-5-5".into()));
+        cx.update(|cx| crate::init(Startup::for_tests(Arc::new(backend)), cx));
+    }
+
+    const LONG_TITLE: &str = "A long session title that should stay readable";
+    const OTHER_LONG_TITLE: &str = "Another long session title in a short folder";
+    const LONG_FOLDER: &str = "a-project-folder-with-a-very-long-descriptive-name";
+
+    /// A long title and a long folder share what the menus and the layout
+    /// buttons leave. The folder's name shrinks first, to its floor, then
+    /// the title, each with an ellipsis, and neither spills out of the
+    /// title's button. A short title or folder keeps its whole width.
+    #[gpui_kit::test]
+    fn the_folder_shrinks_before_the_title_and_neither_spills(cx: &mut TestAppContext) {
+        start_with_long_names(cx);
+        let (window, workspace) = open(cx, 1300.);
+        // Opens the session titled `title`, then measures its title and
+        // folder at `width`.
+        let show = |title: &str, width: f32, cx: &mut TestAppContext| {
+            cx.simulate_window_resize(window, size(px(1300.), px(720.)));
+            let row = row_of(&workspace, title, cx);
+            act(cx, window, |window, cx| window.click(("row", row), cx));
+            cx.simulate_window_resize(window, size(px(width), px(720.)));
+            let mut bounds = None;
+            act(cx, window, |window, _| {
+                let found = |id: &'static str| window.try_find(id).map(|element| element.bounds());
+                let [title, folder, button, menus, layout] = [
+                    "session-title-text",
+                    "session-folder-text",
+                    "session-title-button",
+                    "app-menu-bar",
+                    "toggle-sidebar",
+                ]
+                .map(found);
+                let (title, button, layout) = (title.unwrap(), button.unwrap(), layout.unwrap());
+                assert!(window.try_find("toggle-workers").is_some());
+                // Nothing spills out of the button, or under the menus or
+                // the layout buttons.
+                let end = folder.map_or(title.right(), |folder| folder.right());
+                assert!(
+                    end <= button.right(),
+                    "{width} {title:?} {folder:?} {button:?}"
+                );
+                if let Some(folder) = folder {
+                    assert!(
+                        title.right() <= folder.left(),
+                        "{width} {title:?} {folder:?}"
+                    );
+                }
+                assert!(
+                    button.right() <= layout.left(),
+                    "{width} {button:?} {layout:?}"
+                );
+                if let Some(menus) = menus {
+                    assert!(
+                        menus.right() <= button.left(),
+                        "{width} {menus:?} {button:?}"
+                    );
+                }
+                bounds = Some((title, folder, window.rem_size()));
+            });
+            bounds.unwrap()
+        };
+        let (title, folder, rem) = show(LONG_TITLE, 1300., cx);
+        let (whole_title, whole_folder) = (title.size.width, folder.unwrap().size.width);
+        assert!(
+            whole_title > rem * 15. && whole_folder > rem * 15.,
+            "{title:?} {folder:?}"
+        );
+        // The folder keeps 4 rems, and the title at least 7.
+        for width in [600., 400.] {
+            let (title, folder, _) = show(LONG_TITLE, width, cx);
+            assert!(title.size.width < whole_title, "{width} {title:?}");
+            // Windows' caption buttons leave too little room for the folder
+            // at the narrowest.
+            if cfg!(target_os = "linux") {
+                let folder = folder.expect("room for the folder");
+                assert!(
+                    (folder.size.width - rem * 4.).abs() < px(1.),
+                    "{width} {folder:?}"
+                );
+                assert!(title.size.width >= rem * 7. - px(1.), "{width} {title:?}");
+            }
+        }
+        // A short title keeps its width, with the folder just after it.
+        let (title, folder, _) = show("Notes", 400., cx);
+        let folder = folder.unwrap();
+        assert!(title.size.width < rem * 4., "{title:?}");
+        assert!(
+            folder.left() - title.right() < rem * 0.5,
+            "{title:?} {folder:?}"
+        );
+        // A short folder keeps its width, and the title is cut short.
+        let (whole, folder, _) = show(OTHER_LONG_TITLE, 1300., cx);
+        let whole_folder = folder.unwrap().size.width;
+        let (title, folder, _) = show(OTHER_LONG_TITLE, 600., cx);
+        assert_eq!(folder.unwrap().size.width, whole_folder);
+        assert!(title.size.width < whole.size.width, "{title:?}");
     }
 
     /// The session's title sits in the middle of the window rather than of
