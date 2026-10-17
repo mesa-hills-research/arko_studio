@@ -5,7 +5,11 @@ use std::borrow::Cow;
 
 use gpui_kit::{AssetSource, Result, SharedString};
 
-gpui_kit::assets::icon_assets!(pub ExtraIcons, [Paperclip, Maximize2, Minimize2, MessageSquare, MessageCircleQuestionMark, KeyRound, Plug]);
+// The composer's and the dialogs' (Plug and MessageCircleQuestionMark come
+// with the transcript's).
+gpui_kit::assets::icon_assets!(pub ExtraIcons, [Paperclip, Maximize2, Minimize2, MessageSquare, KeyRound]);
+// The transcript's: tool icons and the question label.
+gpui_kit::assets::icon_assets!(pub TranscriptIcons, [FilePen, FolderTree, Plug, Wrench, MessageCircleQuestionMark]);
 
 /// The icons the app draws, for `Application::with_assets`.
 pub struct Assets;
@@ -15,12 +19,16 @@ impl AssetSource for Assets {
         if let Some(bytes) = ExtraIcons.load(path)? {
             return Ok(Some(bytes));
         }
+        if let Some(bytes) = TranscriptIcons.load(path)? {
+            return Ok(Some(bytes));
+        }
         gpui_kit::assets::Assets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut paths = gpui_kit::assets::Assets.list(path)?;
         paths.extend(ExtraIcons.list(path)?);
+        paths.extend(TranscriptIcons.list(path)?);
         paths.sort();
         paths.dedup();
         Ok(paths)

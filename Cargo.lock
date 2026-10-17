@@ -280,6 +280,7 @@ dependencies = [
  "eventsource-stream",
  "futures",
  "httpdate",
+ "image",
  "log",
  "nix",
  "reqwest",
@@ -369,6 +370,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arko",
+ "arko_agents",
+ "arko_workflows",
  "async-trait",
  "chrono",
  "gpui-kit",
@@ -379,6 +382,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "winresource",
 ]
 
