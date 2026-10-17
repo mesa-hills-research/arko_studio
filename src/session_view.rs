@@ -38,6 +38,8 @@ const RECENT_FOLDERS: usize = 8;
 
 /// How long typing rests before the draft is kept.
 const DRAFT_REST: std::time::Duration = std::time::Duration::from_millis(300);
+/// The tallest the question card's text grows, in rem, before it scrolls.
+pub const QUESTION_MAX_HEIGHT: f32 = 12.;
 
 /// A new session, before its first message: how it will work, where and on
 /// which model.
@@ -1355,9 +1357,15 @@ impl SessionView {
                                 .flex_none(),
                         )
                         .child(
+                            // A long question (a plan to approve) scrolls
+                            // and leaves room for the transcript.
                             div()
+                                .id("question-text")
+                                .test_support()
                                 .flex_1()
                                 .min_w_0()
+                                .max_h(rems(QUESTION_MAX_HEIGHT))
+                                .overflow_y_scroll()
                                 .text_sm()
                                 .child(TextView::markdown(("question", id as usize), text)),
                         )

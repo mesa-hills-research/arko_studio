@@ -904,6 +904,7 @@ impl Render for Composer {
         let tiles = (!self.images.is_empty()).then(|| self.render_images(cx));
         div()
             .id("composer-field")
+            .test_support()
             .relative()
             .w_full()
             .key_context(CONTEXT)

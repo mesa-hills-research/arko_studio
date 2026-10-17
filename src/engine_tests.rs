@@ -302,6 +302,37 @@ fn the_agents_question_is_answered_from_the_composer(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_long_question_scrolls_inside_its_card(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, _| {
+        let plan: Vec<String> = (1..=60).map(|step| format!("{step}. A step.")).collect();
+        let call = arko::testing::tool_call(
+            "q1",
+            "ask_user",
+            serde_json::json!({ "questions": format!("Shall I go ahead?\n\n{}", plan.join("\n")) }),
+        );
+        Box::pin(async move { call })
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Plan the work.");
+    wait_until(cx, "the question card", |cx| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("question-text").is_some()
+        })
+        .unwrap()
+    });
+    act(cx, app.window, |window, _| {
+        let tallest = window.rem_size() * crate::session_view::QUESTION_MAX_HEIGHT;
+        let height = window.find("question-text").bounds().size.height;
+        assert!(height <= tallest + gpui_kit::px(0.5), "{height:?}");
+        // The composer is still on screen below it.
+        let composer = window.find("composer-field").bounds();
+        assert!(composer.bottom() <= window.viewport_size().height);
+    });
+    app.close_all(cx);
+}
+
+#[gpui_kit::test]
 fn a_command_typed_while_a_question_waits_runs_and_the_question_stays(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, body| {
         if body.contains("Two spaces.") {
