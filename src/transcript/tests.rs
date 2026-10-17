@@ -596,6 +596,49 @@ fn showing_all_of_a_code_block_at_the_bottom_keeps_its_top(cx: &mut TestAppConte
     let _ = view;
 }
 
+/// How many times the transcript draws in a second of the test clock.
+fn draws_in_a_second(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> usize {
+    for _ in 0..200 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1));
+        cx.run_until_parked();
+    }
+    let before = cx.read(|cx| view.read(cx).render_count());
+    for _ in 0..1000 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1));
+        cx.run_until_parked();
+    }
+    cx.read(|cx| view.read(cx).render_count()) - before
+}
+
+#[gpui_kit::test]
+fn one_indicator_turns_at_a_time(cx: &mut TestAppContext) {
+    start(cx);
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| prefs.appearance.motion = prefs::Motion::On);
+        cx.set_reduce_motion(false);
+    });
+    let feed = Feed::new("main");
+    turns(&feed, 4, 1);
+    feed.user("Build", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.worker("r1", "Write the fuzz target", WorkerChange::Started);
+    call(&feed, "main", "shell", &[("command", "cargo build".into())]);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    // A worker and a call run: the call's indicator turns, a dozen times a
+    // second, and the elapsed times tick once.
+    let draws = draws_in_a_second(cx, &view);
+    assert!((10..=16).contains(&draws), "{draws} draws");
+    // Then thinking streams: its shimmer is the one that moves.
+    think(&feed, "hmm");
+    settle(cx, window);
+    let draws = draws_in_a_second(cx, &view);
+    assert!((25..=34).contains(&draws), "{draws} draws");
+    let thinking = item_ids(&feed).last().unwrap().0;
+    assert_eq!(cx.read(|cx| view.read(cx).animated), Some(thinking));
+}
+
 #[gpui_kit::test]
 fn the_new_count_counts_what_the_view_shows(cx: &mut TestAppContext) {
     start(cx);

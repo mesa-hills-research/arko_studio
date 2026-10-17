@@ -2,6 +2,7 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arko::remote::{CallStatus, Delivery, Item, Kind, Level, Source, WorkerState};
 use gpui_kit::assets::IconName as Lucide;
@@ -16,7 +17,6 @@ use gpui_kit::component::{
     diff_view::{Diff, DiffView},
     h_flex,
     shimmer::ShimmerText,
-    spinner::Spinner,
     tooltip::Tooltip,
     v_flex,
 };
@@ -26,6 +26,9 @@ use gpui_kit::*;
 use super::model::{Gap, RowKey};
 use super::tool::{self, Tool};
 use super::{AgentFilter, CODE_LINES, TranscriptView, selectable};
+
+/// How often the running indicator turns, in frames a second.
+const SPINNER_FPS: f32 = 12.;
 
 /// The reading column's widest.
 const COLUMN: f32 = 46.;
@@ -557,6 +560,25 @@ impl TranscriptView {
             .into_any_element()
     }
 
+    /// The running indicator of the entry `id`: it turns only for the
+    /// latest thing that runs, and stands still for the others. Each turning
+    /// frame draws the transcript, so one indicator turns, a dozen times a
+    /// second.
+    fn spinner(&self, id: u64, cx: &App) -> AnyElement {
+        let icon = Icon::new(IconName::Loader).xsmall();
+        if self.animated != Some(id) || cx.reduce_motion() {
+            return icon.into_any_element();
+        }
+        icon.with_animation(
+            ("running", id),
+            Animation::new(Duration::from_millis(900))
+                .repeat()
+                .with_max_fps(SPINNER_FPS),
+            |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
+        )
+        .into_any_element()
+    }
+
     /// Whether thinking shows open unless the reader chose.
     pub(super) fn thinking_open_by_default(&self) -> bool {
         self.settings.expand_thinking
@@ -576,10 +598,12 @@ impl TranscriptView {
             .and_then(|ui| ui.expanded)
             .unwrap_or(default);
         let streaming = self.model.is_streaming(ix);
-        let label: AnyElement = if streaming {
+        let label: AnyElement = if streaming && self.animated == Some(id) && !cx.reduce_motion() {
             ShimmerText::new("Thinking…")
                 .id(("thinking-shimmer", id))
                 .into_any_element()
+        } else if streaming {
+            "Thinking…".into_any_element()
         } else {
             match self.model.thought_for(ix) {
                 Some(ms) => format!("Thought for {}", duration(ms)),
@@ -627,7 +651,7 @@ impl TranscriptView {
                     .gap_1()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(Spinner::new().xsmall())
+                    .child(self.spinner(id, cx))
                     .child(duration((self.clock)() - item.at))
                     .into_any_element(),
             ),
@@ -839,7 +863,7 @@ impl TranscriptView {
                                 .flex_1()
                                 .min_w_0()
                                 .gap_1()
-                                .child(Spinner::new().xsmall())
+                                .child(self.spinner(running.id, cx))
                                 .child(div().min_w_0().truncate().child(
                                     running.text.lines().next().unwrap_or_default().to_string(),
                                 )),
@@ -1037,7 +1061,7 @@ impl TranscriptView {
                     .unwrap_or_default();
                 h_flex()
                     .gap_1()
-                    .child(Spinner::new().xsmall())
+                    .child(self.spinner(id, cx))
                     .child(elapsed)
                     .into_any_element()
             }

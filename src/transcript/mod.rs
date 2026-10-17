@@ -175,6 +175,9 @@ pub struct TranscriptView {
     clock: Clock,
     /// Draws again every second while a call or a worker runs.
     ticker: Option<Task<()>>,
+    /// The entry whose running indicator turns this frame: the latest
+    /// thing that runs.
+    animated: Option<u64>,
     image_cache: Entity<LruImageCache>,
     /// Where the images the items show are read: the session's store.
     images: Option<ImageLookup>,
@@ -230,6 +233,7 @@ impl TranscriptView {
             scroll_to: None,
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
+            animated: None,
             image_cache: LruImageCache::new(IMAGE_BUDGET, cx),
             images: None,
             image_sources: RefCell::default(),
@@ -656,6 +660,26 @@ impl TranscriptView {
         }));
     }
 
+    /// The latest entry that runs: a call, a thinking that streams, a
+    /// worker's card.
+    fn latest_running(&self) -> Option<u64> {
+        let entries = self.model.entries();
+        entries.iter().enumerate().rev().find_map(|(ix, entry)| {
+            let item = &entry.item;
+            let running = match item.kind {
+                Kind::Call => item.status == Some(CallStatus::Running),
+                Kind::Thinking => self.model.is_streaming(ix),
+                Kind::WorkerLine => item
+                    .worker
+                    .as_deref()
+                    .and_then(|worker| self.model.worker(worker))
+                    .is_some_and(|worker| worker.state == arko::remote::WorkerState::Running),
+                _ => false,
+            };
+            running.then_some(item.id)
+        })
+    }
+
     fn is_running(&self) -> bool {
         self.model
             .entries()
@@ -897,6 +921,7 @@ impl Render for TranscriptView {
         if !self.list.is_scrolled_up() {
             self.new_while_away = 0;
         }
+        self.animated = self.latest_running();
         let new = self.new_while_away;
         let view = cx.entity().downgrade();
         let rows = list::render(
