@@ -302,15 +302,16 @@ impl Model {
     }
 
     /// How long the thinking at `ix` took, in milliseconds: until its
-    /// agent's next item. `None` while it goes on, or when unknown (items
-    /// restored from a saved session all carry the time they were restored).
+    /// agent's next item. `None` while it goes on, under a second, or when
+    /// unknown (items restored from a saved session all carry the time they
+    /// were restored).
     pub fn thought_for(&self, ix: usize) -> Option<i64> {
         let entry = &self.entries[ix];
         let next = self.entries[ix + 1..]
             .iter()
             .find(|later| later.item.agent == entry.item.agent)?;
         let took = next.item.at - entry.item.at;
-        (took > 0).then_some(took)
+        (took >= 1000).then_some(took)
     }
 }
 
@@ -1075,5 +1076,15 @@ mod tests {
         model.apply(Update::Item(text), &mut changes);
         assert!(!model.is_streaming(0));
         assert_eq!(model.thought_for(0), Some(12_000));
+    }
+
+    #[test]
+    fn thinking_under_a_second_has_no_time() {
+        let mut thinking = item(1, Kind::Thinking, "main", "hmm");
+        thinking.at = 1_000;
+        let mut text = item(2, Kind::Text, "main", "so");
+        text.at = 1_001;
+        let model = model(vec![thinking, text]);
+        assert_eq!(model.thought_for(0), None);
     }
 }
