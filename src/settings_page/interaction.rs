@@ -7,7 +7,8 @@ use std::time::SystemTime;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AnyWindowHandle, Bounds, Entity, Point, TestAppContext, WindowBounds, WindowOptions, px, size,
+    AnyWindowHandle, AppContext as _, Bounds, Entity, Point, TestAppContext, WindowBounds,
+    WindowOptions, px, size,
 };
 
 use super::SettingsPage;
@@ -220,4 +221,43 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     let typed = cx.read(|cx| page.read(cx).typed(cx));
     assert_eq!(typed[0].as_ref(), "");
     assert_eq!(typed[2].as_ref(), "off");
+}
+
+/// Opening Settings reads nothing on the UI thread: the installed fonts
+/// and the accounts are read in the background while the page shows, and
+/// the fonts once for the app.
+#[gpui_kit::test]
+fn opening_settings_leaves_the_reading_to_the_background(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, workspace) = open(cx, 1300.);
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_action(Box::new(crate::menus::OpenSettings), cx)
+    })
+    .unwrap();
+    let settings = cx.read(|cx| workspace.read(cx).settings().unwrap().clone());
+    cx.read(|cx| {
+        let settings = settings.read(cx);
+        assert!(
+            settings.font_pickers().is_none(),
+            "fonts read on the UI thread"
+        );
+        assert!(settings.accounts().read(cx).accounts().is_none());
+    });
+    assert_eq!(backend.accounts_read(), 0);
+    act(cx, window, |window, _| {
+        assert!(window.try_find("settings-page").is_some());
+    });
+    cx.read(|cx| {
+        let settings = settings.read(cx);
+        assert!(settings.font_pickers().is_some());
+        assert!(settings.accounts().read(cx).accounts().is_some());
+    });
+    // Opened again, the pickers have the fonts at once.
+    act(cx, window, |window, cx| window.press("escape", cx));
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_action(Box::new(crate::menus::OpenSettings), cx)
+    })
+    .unwrap();
+    let settings = cx.read(|cx| workspace.read(cx).settings().unwrap().clone());
+    assert!(cx.read(|cx| settings.read(cx).font_pickers().is_some()));
 }

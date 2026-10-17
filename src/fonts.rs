@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, anyhow};
 use gpui_kit::component::font_picker::FontCatalog;
-use gpui_kit::{App, Global, SharedString};
+use gpui_kit::{App, BorrowAppContext as _, Global, SharedString};
 
 /// Font files Arko Studio reads from the fonts folder.
 const FONT_EXTENSIONS: [&str; 4] = ["ttf", "otf", "ttc", "otc"];
@@ -103,14 +103,73 @@ pub fn is_available(family: &str, cx: &mut App) -> bool {
 }
 
 /// Records a font file the user just added, which a font picker registered
-/// with the text system.
+/// with the text system: the font pickers made later list it too.
 pub fn note_added(data: Cow<'static, [u8]>, cx: &mut App) {
     if !cx.has_global::<Fonts>() {
         cx.set_global(Fonts::default());
     }
     let fonts = cx.global_mut::<Fonts>();
-    fonts.added.push(data);
+    fonts.added.push(data.clone());
     fonts.families = None;
+    if cx.has_global::<PickerCatalog>() {
+        cx.update_global::<PickerCatalog, _>(|picker, _| {
+            if let Some(catalog) = picker.catalog.as_mut() {
+                catalog.add_fonts(&[data]);
+            }
+        });
+    }
+}
+
+/// The families the font pickers list: the system's, the bundled ones and
+/// the ones the user added, with their faces. Reading them takes a while
+/// (every installed font file is opened), so it's done once, in the
+/// background, the first time Settings opens; the pickers wait for it.
+#[derive(Default)]
+pub struct PickerCatalog {
+    catalog: Option<FontCatalog>,
+    loading: Option<gpui_kit::Task<()>>,
+}
+
+impl Global for PickerCatalog {}
+
+/// The fonts the pickers list, once they're read ([`load_picker_catalog`]).
+pub fn picker_catalog(cx: &App) -> Option<FontCatalog> {
+    cx.try_global::<PickerCatalog>()?.catalog.clone()
+}
+
+/// Starts reading the fonts the pickers list, unless that's done or under
+/// way. Observers of [`PickerCatalog`] hear when it's ready.
+pub fn load_picker_catalog(cx: &mut App) {
+    let picker = cx.default_global::<PickerCatalog>();
+    if picker.catalog.is_some() || picker.loading.is_some() {
+        return;
+    }
+    let (bundled, added) = cx
+        .try_global::<Fonts>()
+        .map(|fonts| (fonts.bundled(), fonts.added()))
+        .unwrap_or_default();
+    let system = FontCatalog::load(cx);
+    let loading = cx.spawn(async move |cx| {
+        let system = system.await;
+        // The faces of the fonts the app registered from its own data are in
+        // that data, not in the installed files.
+        let catalog = cx
+            .background_executor()
+            .spawn(async move {
+                let mut catalog = system;
+                catalog.include_fonts(&bundled);
+                catalog.add_fonts(&added);
+                catalog
+            })
+            .await;
+        cx.update(|cx| {
+            cx.update_global::<PickerCatalog, _>(|picker, _| {
+                picker.catalog = Some(catalog);
+                picker.loading = None;
+            })
+        });
+    });
+    cx.global_mut::<PickerCatalog>().loading = Some(loading);
 }
 
 /// A font file the user chose, copied into the fonts folder.

@@ -57,8 +57,9 @@ pub struct SettingsPage {
     focus_handle: FocusHandle,
     light_theme: Entity<ThemePicker>,
     dark_theme: Entity<ThemePicker>,
-    ui_font: Entity<FontPickerState>,
-    code_font: Entity<FontPickerState>,
+    /// The font pickers, once the fonts they list are read.
+    ui_font: Option<Entity<FontPickerState>>,
+    code_font: Option<Entity<FontPickerState>>,
     accounts: Entity<AccountsPage>,
     sessions: Entity<SessionsPage>,
     /// The page to show, set from outside (the command palette), and how
@@ -70,40 +71,59 @@ pub struct SettingsPage {
 
 impl SettingsPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let appearance = prefs::get(cx).appearance.clone();
-        let (bundled, added) = {
-            let fonts = cx.global::<fonts::Fonts>();
-            (fonts.bundled(), fonts.added())
-        };
-        let picker = |choice: &prefs::FontChoice,
-                      monospace: bool,
-                      bundled: Vec<Cow<'static, [u8]>>,
-                      added: Vec<Cow<'static, [u8]>>,
-                      window: &mut Window,
-                      cx: &mut Context<Self>| {
-            let settings = FontSettings::new(choice.family.clone()).with_size(px(choice.size()));
-            cx.new(|cx| {
-                FontPickerState::new(window, cx)
-                    .default_settings(settings)
-                    .monospace_only(monospace)
-                    .app_fonts(bundled)
-                    .added_fonts(added)
-            })
-        };
-        let ui_font = picker(
-            &appearance.ui_font,
-            false,
-            bundled.clone(),
-            added.clone(),
-            window,
-            cx,
-        );
-        let code_font = picker(&appearance.code_font, true, bundled, added, window, cx);
         let accounts = cx.new(AccountsPage::new);
         let sessions = cx.new(|cx| SessionsPage::new(window, cx));
+        // The fonts the pickers list are read in the background, the first
+        // time: the pickers show once they're there.
+        fonts::load_picker_catalog(cx);
         let subscriptions = vec![
             cx.observe(&accounts, |_, _, cx| cx.notify()),
             cx.observe(&sessions, |_, _, cx| cx.notify()),
+            cx.observe_global_in::<fonts::PickerCatalog>(window, |this, window, cx| {
+                this.make_font_pickers(window, cx)
+            }),
+            // Settings shows the preferences as they change, here or elsewhere
+            // (a zoom shortcut, another window).
+            cx.observe_global::<prefs::PrefsStore>(|_, cx| cx.notify()),
+        ];
+        let mut this = Self {
+            focus_handle: cx.focus_handle(),
+            light_theme: cx.new(|cx| ThemePicker::new(false, window, cx)),
+            dark_theme: cx.new(|cx| ThemePicker::new(true, window, cx)),
+            ui_font: None,
+            code_font: None,
+            accounts,
+            sessions,
+            page: 0,
+            shown: 0,
+            _subscriptions: subscriptions,
+        };
+        this.make_font_pickers(window, cx);
+        this
+    }
+
+    /// Makes the font pickers, once the fonts they list are read.
+    fn make_font_pickers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ui_font.is_some() {
+            return;
+        }
+        let Some(catalog) = fonts::picker_catalog(cx) else {
+            return;
+        };
+        let appearance = prefs::get(cx).appearance.clone();
+        let mut picker = |choice: &prefs::FontChoice, monospace: bool| {
+            let settings = FontSettings::new(choice.family.clone()).with_size(px(choice.size()));
+            let catalog = catalog.clone();
+            cx.new(|cx| {
+                FontPickerState::new(window, cx)
+                    .catalog(catalog)
+                    .default_settings(settings)
+                    .monospace_only(monospace)
+            })
+        };
+        let ui_font = picker(&appearance.ui_font, false);
+        let code_font = picker(&appearance.code_font, true);
+        self._subscriptions.extend([
             cx.subscribe(&ui_font, |_, _, event: &FontPickerEvent, cx| {
                 let FontPickerEvent::Change(font) = event else {
                     return;
@@ -118,22 +138,15 @@ impl SettingsPage {
                 let choice = prefs::FontChoice::new(font.family(), f32::from(font.size()));
                 prefs::update(cx, |prefs| prefs.appearance.code_font = choice);
             }),
-            // Settings shows the preferences as they change, here or elsewhere
-            // (a zoom shortcut, another window).
-            cx.observe_global::<prefs::PrefsStore>(|_, cx| cx.notify()),
-        ];
-        Self {
-            focus_handle: cx.focus_handle(),
-            light_theme: cx.new(|cx| ThemePicker::new(false, window, cx)),
-            dark_theme: cx.new(|cx| ThemePicker::new(true, window, cx)),
-            ui_font,
-            code_font,
-            accounts,
-            sessions,
-            page: 0,
-            shown: 0,
-            _subscriptions: subscriptions,
-        }
+        ]);
+        self.ui_font = Some(ui_font);
+        self.code_font = Some(code_font);
+        cx.notify();
+    }
+
+    /// The font pickers, `None` while the fonts they list are read.
+    pub fn font_pickers(&self) -> Option<(&Entity<FontPickerState>, &Entity<FontPickerState>)> {
+        Some((self.ui_font.as_ref()?, self.code_font.as_ref()?))
     }
 
     /// Shows the page at `page` in [`PAGES`].
@@ -190,7 +203,10 @@ impl SettingsPage {
                     if !font.already_imported {
                         fonts::note_added(data.clone(), cx);
                     }
-                    for picker in [this.ui_font.clone(), this.code_font.clone()] {
+                    for picker in [this.ui_font.clone(), this.code_font.clone()]
+                        .into_iter()
+                        .flatten()
+                    {
                         picker
                             .update(cx, |picker, cx| {
                                 picker.add_fonts(vec![data.clone()], window, cx)
@@ -357,10 +373,10 @@ impl SettingsPage {
                 ]),
                 SettingGroup::new()
                     .title("Interface font")
-                    .item(SettingItem::render(move |_, _, _| FontPicker::new(&ui_font).compact().show_weight(false).show_line_height(false).show_features(false)).keywords(["font", "typeface", "size"])),
+                    .item(SettingItem::render(move |_, _, cx| font_picker(ui_font.as_ref(), &prefs::get(cx).appearance.ui_font, cx)).keywords(["font", "typeface", "size"])),
                 SettingGroup::new()
                     .title("Code font")
-                    .item(SettingItem::render(move |_, _, _| FontPicker::new(&code_font).compact().show_weight(false).show_line_height(false).show_features(false)).keywords(["font", "monospace", "size"])),
+                    .item(SettingItem::render(move |_, _, cx| font_picker(code_font.as_ref(), &prefs::get(cx).appearance.code_font, cx)).keywords(["font", "monospace", "size"])),
                 SettingGroup::new().title("Size").items([
                     SettingItem::new(
                         "Add font file…",
@@ -442,6 +458,37 @@ impl SettingsPage {
                     .description("System follows your computer’s reduce-motion setting. Off stops animations, smooth typing included."),
                 ),
             ])
+    }
+}
+
+/// A font picker showing a family and its size, or, while the installed
+/// fonts are read, the chosen family and size.
+fn font_picker(
+    picker: Option<&Entity<FontPickerState>>,
+    choice: &prefs::FontChoice,
+    cx: &App,
+) -> AnyElement {
+    match picker {
+        Some(picker) => FontPicker::new(picker)
+            .compact()
+            .show_weight(false)
+            .show_line_height(false)
+            .show_features(false)
+            .into_any_element(),
+        None => h_flex()
+            .id("font-picker-loading")
+            .test_support()
+            .gap_2()
+            .text_sm()
+            .child(choice.family.clone())
+            .child(format!("{} px", choice.size()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Reading the installed fonts…"),
+            )
+            .into_any_element(),
     }
 }
 
