@@ -360,7 +360,17 @@ impl SettingsPage {
                     .item(SettingItem::render(move |_, _, _| FontPicker::new(&ui_font).compact().show_weight(false).show_line_height(false).show_features(false)).keywords(["font", "typeface", "size"])),
                 SettingGroup::new()
                     .title("Code font")
-                    .item(SettingItem::render(move |_, _, _| FontPicker::new(&code_font).compact().show_weight(false).show_line_height(false).show_features(false)).keywords(["font", "monospace", "size"])),
+                    .item(SettingItem::render(move |_, _, _| FontPicker::new(&code_font).compact().show_weight(false).show_line_height(false).show_features(false)).keywords(["font", "monospace", "size"]))
+                    .item(
+                        switch(
+                            "Code ligatures",
+                            "Draws pairs such as -> and != as one symbol in code.",
+                            |prefs| prefs.appearance.code_ligatures,
+                            |prefs, on| prefs.appearance.code_ligatures = on,
+                            defaults.code_ligatures,
+                        )
+                        .keywords(["ligatures", "font", "monospace"]),
+                    ),
                 SettingGroup::new().title("Size").items([
                     SettingItem::new(
                         "Add font file…",

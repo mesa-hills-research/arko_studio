@@ -247,6 +247,9 @@ fn font_overrides(cx: &mut App) -> FontOverrides {
     if fonts::is_available(&appearance.code_font.family, cx) {
         fonts = fonts.with_mono_font_family(appearance.code_font.family.clone());
     }
+    if !appearance.code_ligatures {
+        fonts = fonts.with_mono_font_features(fonts::no_ligatures());
+    }
     fonts
 }
 

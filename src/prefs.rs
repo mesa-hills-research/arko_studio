@@ -139,6 +139,8 @@ pub struct Appearance {
     pub render_markdown: bool,
     pub stream_fade: bool,
     pub expand_thinking: bool,
+    /// The code font joins characters such as `->` into ligatures.
+    pub code_ligatures: bool,
 }
 
 impl Default for Appearance {
@@ -156,6 +158,7 @@ impl Default for Appearance {
             render_markdown: true,
             stream_fade: false,
             expand_thinking: false,
+            code_ligatures: true,
         }
     }
 }

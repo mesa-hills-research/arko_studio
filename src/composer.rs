@@ -30,6 +30,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::writing::WordSuggestions;
 use gpui_kit::*;
 
+use crate::fonts::CodeFont as _;
 use crate::prefs::{self, SendKey};
 use crate::writing::WritingAids;
 
@@ -836,17 +837,12 @@ impl Composer {
                     .when(selected, |this| {
                         this.bg(theme.accent).text_color(theme.accent_foreground)
                     })
-                    .child(
-                        div()
-                            .flex_none()
-                            .font_family(theme.mono_font_family.clone())
-                            .child(item.label.clone()),
-                    )
+                    .child(div().flex_none().code_font(theme).child(item.label.clone()))
                     .when(!item.hint.is_empty(), |this| {
                         this.child(
                             div()
                                 .flex_none()
-                                .font_family(theme.mono_font_family.clone())
+                                .code_font(theme)
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
                                 .child(item.hint.clone()),

@@ -4,13 +4,32 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context as _, anyhow};
+use gpui_kit::component::Theme;
 use gpui_kit::component::font_picker::FontCatalog;
-use gpui_kit::{App, Global, SharedString};
+use gpui_kit::{App, FontFeatures, Global, SharedString, Styled};
 
 /// Font files Arko Studio reads from the fonts folder.
 const FONT_EXTENSIONS: [&str; 4] = ["ttf", "otf", "ttc", "otc"];
+
+/// The code font's OpenType features with ligatures turned off. JetBrains
+/// Mono draws its ligatures through `calt`, and other fonts through `liga`.
+pub fn no_ligatures() -> FontFeatures {
+    FontFeatures(Arc::new(vec![("calt".into(), 0), ("liga".into(), 0)]))
+}
+
+/// Sets an element's text in the code font, with the features the "Code
+/// ligatures" setting gives it.
+pub trait CodeFont: Styled + Sized {
+    fn code_font(self, theme: &Theme) -> Self {
+        self.font_family(theme.mono_font_family.clone())
+            .font_features(theme.mono_font_features.clone())
+    }
+}
+
+impl<T: Styled> CodeFont for T {}
 
 /// The fonts Arko Studio bundles, from GPUI Kit: Work Sans for the
 /// interface and JetBrains Mono for code, both variable, upright and italic.

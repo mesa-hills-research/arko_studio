@@ -23,6 +23,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::fonts::CodeFont as _;
+
 use super::model::{Gap, RowKey};
 use super::tool::{self, Tool};
 use super::{AgentFilter, CODE_LINES, TranscriptView, selectable};
@@ -408,8 +410,7 @@ impl TranscriptView {
                 .to_string();
             div()
                 .when(ui.source, |this| {
-                    this.font_family(theme.mono_font_family.clone())
-                        .text_size(theme.mono_font_size)
+                    this.code_font(theme).text_size(theme.mono_font_size)
                 })
                 .child(selectable(
                     SharedString::from(format!("source-{id}-{block}")),
@@ -663,7 +664,7 @@ impl TranscriptView {
                             div()
                                 .flex_none()
                                 .text_xs()
-                                .font_family(theme.mono_font_family.clone())
+                                .code_font(theme)
                                 .child(item.agent.clone()),
                         )
                     })
@@ -701,7 +702,7 @@ impl TranscriptView {
                 .py_1p5()
                 .rounded(theme.radius)
                 .bg(theme.muted)
-                .font_family(theme.mono_font_family.clone())
+                .code_font(theme)
                 .text_size(theme.mono_font_size)
                 .child(selectable((key, id), text))
         };
@@ -961,7 +962,7 @@ impl TranscriptView {
                     div()
                         .flex_none()
                         .text_xs()
-                        .font_family(theme.mono_font_family.clone())
+                        .code_font(theme)
                         .text_color(theme.muted_foreground)
                         .child(item.agent.clone()),
                 )
@@ -996,7 +997,7 @@ impl TranscriptView {
             .pl_3()
             .border_l_2()
             .border_color(border)
-            .font_family(theme.mono_font_family.clone())
+            .code_font(theme)
             .text_size(theme.mono_font_size)
             .child(selectable(("output-text", id), item.text.clone()))
             .into_any_element()
@@ -1066,7 +1067,7 @@ impl TranscriptView {
                     .child(
                         div()
                             .flex_none()
-                            .font_family(theme.mono_font_family.clone())
+                            .code_font(theme)
                             .text_size(theme.mono_font_size)
                             .child(worker_id),
                     )
@@ -1138,7 +1139,7 @@ impl Render for OutputViewer {
                     .w_full()
                     .rounded(theme.radius)
                     .bg(theme.muted)
-                    .font_family(theme.mono_font_family.clone())
+                    .code_font(theme)
                     .text_size(theme.mono_font_size)
                     .child(
                         list(self.list.clone(), move |ix, _, cx| {

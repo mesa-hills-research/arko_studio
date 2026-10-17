@@ -363,6 +363,7 @@ fn show_mcp(session: Entity<LiveSession>, request: McpRequest, window: &mut Wind
             .content({
                 let muted = theme.muted_foreground;
                 let mono = theme.mono_font_family.clone();
+                let mono_features = theme.mono_font_features.clone();
                 move |content, _, _| {
                     let request = request.clone();
                     content.child(
@@ -382,6 +383,7 @@ fn show_mcp(session: Entity<LiveSession>, request: McpRequest, window: &mut Wind
                                     .child(
                                         div()
                                             .font_family(mono.clone())
+                                            .font_features(mono_features.clone())
                                             .text_xs()
                                             .text_color(muted)
                                             .child(command.clone()),
@@ -640,6 +642,7 @@ pub fn confirm_stop(
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let theme = cx.theme();
         let (muted, mono) = (theme.muted_foreground, theme.mono_font_family.clone());
+        let mono_features = theme.mono_font_features.clone();
         let work = work.clone();
         let (ok, cancel) = (answer.clone(), answer.clone());
         let checked = dont_ask.clone();
@@ -680,6 +683,7 @@ pub fn confirm_stop(
                                 .children(ask.jobs.iter().map(|job| {
                                     div()
                                         .font_family(mono.clone())
+                                        .font_features(mono_features.clone())
                                         .text_xs()
                                         .text_color(muted)
                                         .truncate()
