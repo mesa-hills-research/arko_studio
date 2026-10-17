@@ -85,11 +85,20 @@ pub fn confirm(
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let muted = cx.theme().muted_foreground;
         let checked = dont_ask.clone();
-        let (branch, change_it) = (answer.clone(), answer.clone());
-        let remembered = dont_ask.clone();
+        let (branch, change_it, on_enter) = (answer.clone(), answer.clone(), answer.clone());
+        let (remembered, remembered_on_enter) = (dont_ask.clone(), dont_ask.clone());
         alert
             .title(title(change))
             .description(description.clone())
+            // Enter does what the primary button does, as in the app's other
+            // dialogs.
+            .on_ok(move |_, window, cx| {
+                if remembered_on_enter.get() {
+                    prefs::update(cx, |prefs| prefs.sessions.ask_before_edit = false);
+                }
+                on_enter(Choice::Change, window, cx);
+                true
+            })
             .content(move |content, _, _| {
                 let checked = checked.clone();
                 content.child(

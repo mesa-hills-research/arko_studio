@@ -513,3 +513,24 @@ fn an_edit_that_cant_go_yet_stays_in_the_composer(cx: &mut TestAppContext) {
     assert!(editing(cx));
     app.close_all(cx);
 }
+
+/// Enter in the dialog does what its primary button does, as in the app's
+/// other dialogs.
+#[gpui_kit::test]
+fn enter_in_the_edit_dialog_edits(cx: &mut TestAppContext) {
+    let mock = answers();
+    let app = start(cx, &mock);
+    app.send(cx, "Count the pears.");
+    app.wait_for(cx, "Seven pears.");
+    app.wait_idle(cx);
+    act(cx, app.window, |window, cx| window.press("up", cx));
+    app.set_composer(cx, "Count the apples.");
+    act(cx, app.window, |window, cx| window.press("enter", cx));
+    act(cx, app.window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        window.press("enter", cx)
+    });
+    app.wait_for(cx, "Five apples.");
+    assert!(!cx.read(|cx| app.view.read(cx).is_editing()));
+    app.close_all(cx);
+}
