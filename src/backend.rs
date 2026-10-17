@@ -455,7 +455,7 @@ impl ArkoBackend {
     /// The options a session starts with. It reads files: call it off the
     /// UI thread.
     pub fn options(&self, start: Start) -> arko::Options {
-        prepare(&self.root, self.configure.as_ref(), &self.defaults(), start).0
+        prepare(&self.root, self.configure.as_ref(), &self.defaults(), start)
     }
 }
 
@@ -468,7 +468,7 @@ fn prepare(
     configure: Option<&Configure>,
     defaults: &SessionDefaults,
     start: Start,
-) -> (arko::Options, Vec<String>) {
+) -> arko::Options {
     let mut options = arko::Options {
         root: Some(root.to_path_buf()),
         app: "arko-studio",
@@ -479,7 +479,7 @@ fn prepare(
     match start {
         Start::Resume(id) => {
             options.session = arko::SessionChoice::Resume(id.0);
-            defaults.apply(&mut options, None, || None);
+            defaults.apply(&mut options, None);
         }
         Start::New(new) => {
             options.session = arko::SessionChoice::New;
@@ -497,16 +497,13 @@ fn prepare(
             if let Some(effort) = effort.or(defaults.effort) {
                 options.effort = effort;
             }
-            defaults.apply(&mut options, Some(new.mode), || last_model(root));
+            defaults.apply(&mut options, Some(new.mode));
         }
     }
-    let notes = defaults::take_free_port(&mut options.remote)
-        .into_iter()
-        .collect();
     if let Some(configure) = configure {
         configure(&mut options);
     }
-    (options, notes)
+    options
 }
 
 impl Backend for ArkoBackend {
@@ -573,10 +570,7 @@ impl Backend for ArkoBackend {
         let starting = std::thread::Builder::new()
             .name("arko-studio-start".into())
             .spawn(move || {
-                let (options, notes) = prepare(&root, configure.as_ref(), &defaults, start);
-                for note in &notes {
-                    prompter.note(arko::Level::Warn, note);
-                }
+                let options = prepare(&root, configure.as_ref(), &defaults, start);
                 let running = arko::spawn(options, prompter);
                 // Without an answer, the session stopped as it opened, and
                 // so does the app's.
@@ -1088,6 +1082,51 @@ impl FakeBackend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn two_prepared_sessions_both_share_their_page() {
+        let temp = tempfile::tempdir().unwrap();
+        let mock = crate::testing::Mock::start(|_, _| crate::testing::reply("a", "Done."));
+        let backend = ArkoBackend::new(temp.path()).with_configure(mock.configure());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut prefs = crate::prefs::Prefs::default();
+        prefs.web_page.share_by_default = true;
+        prefs.web_page.address = Some("127.0.0.1".into());
+        prefs.web_page.port = Some(port);
+        backend.set_defaults(SessionDefaults::from_prefs(&prefs));
+        let start = || {
+            Start::New(NewSession {
+                mode: Mode::Chat,
+                folder: None,
+                model: None,
+                effort: None,
+            })
+        };
+        let one = backend.options(start());
+        let two = backend.options(start());
+        let first = arko::spawn(one, Arc::new(arko::NoPrompter));
+        let second = arko::spawn(two, Arc::new(arko::NoPrompter));
+        let one = first.opened.blocking_recv().unwrap().unwrap();
+        let two = second.opened.blocking_recv().unwrap().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while (one.meter.read().page.is_none() || two.meter.read().page.is_none())
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pages = [one.meter.read().page, two.meter.read().page];
+        one.input.send(arko::Input::Quit(Some(Vec::new()))).unwrap();
+        two.input.send(arko::Input::Quit(Some(Vec::new()))).unwrap();
+        first.ended.blocking_recv().unwrap();
+        second.ended.blocking_recv().unwrap();
+        assert!(pages.iter().all(Option::is_some));
+        assert_ne!(
+            pages[0].as_ref().unwrap().addr,
+            pages[1].as_ref().unwrap().addr
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -1357,17 +1396,15 @@ mod tests {
         prefs.advanced.mcp_config = vec![good.clone(), bad.clone(), gone.clone()];
         let defaults = SessionDefaults::from_prefs(&prefs);
         let resume = Start::Resume(SessionId("s1".into()));
-        let (options, notes) = prepare(Path::new("/arko"), None, &defaults, resume);
+        let options = prepare(Path::new("/arko"), None, &defaults, resume);
         assert_eq!(options.mcp_config, [good, bad, gone]);
         assert!(!options.mcp_config_required);
-        assert!(notes.is_empty(), "{notes:?}");
     }
 
-    /// With a port set and every session sharing its page, a session finding
-    /// the port taken (by another session's page) serves on any free port,
-    /// and says so. One finding it free serves there.
+    /// Availability is decided by the engine while binding, not by an
+    /// earlier probe that could race with another session opening.
     #[test]
-    fn a_taken_web_page_port_goes_to_the_first_session_only() {
+    fn the_engine_binds_the_preferred_port_or_a_free_one() {
         let taken = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = taken.local_addr().unwrap().port();
         let mut prefs = crate::prefs::Prefs::default();
@@ -1376,14 +1413,13 @@ mod tests {
         prefs.web_page.port = Some(port);
         let defaults = SessionDefaults::from_prefs(&prefs);
         let resume = || Start::Resume(SessionId("s1".into()));
-        let (options, notes) = prepare(Path::new("/arko"), None, &defaults, resume());
-        assert_eq!(options.remote.unwrap().port, None);
-        assert_eq!(notes.len(), 1);
-        assert!(notes[0].contains(&format!("Port {port}")), "{notes:?}");
-        drop(taken);
-        let (options, notes) = prepare(Path::new("/arko"), None, &defaults, resume());
+        let options = prepare(Path::new("/arko"), None, &defaults, resume());
         assert_eq!(options.remote.unwrap().port, Some(port));
-        assert!(notes.is_empty());
+        assert!(options.remote_port_fallback);
+        drop(taken);
+        let options = prepare(Path::new("/arko"), None, &defaults, resume());
+        assert_eq!(options.remote.unwrap().port, Some(port));
+        assert!(options.remote_port_fallback);
     }
 
     /// A chat is created in no folder of the user's, even when one was
