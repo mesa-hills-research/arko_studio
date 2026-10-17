@@ -127,6 +127,9 @@ pub struct CacheReminders {
     session: WeakEntity<LiveSession>,
     /// The session's key, which tells its notifications apart.
     key: u64,
+    /// The idle period the reminders sent belong to: when the cache was
+    /// last refreshed.
+    period: Option<i64>,
     sent: Sent,
     /// The window showing the last reminder.
     shown_in: Option<AnyWindowHandle>,
@@ -161,6 +164,7 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) -> Entity<CacheReminde
         let mut this = CacheReminders {
             session: session.downgrade(),
             key: session.read(cx).key(),
+            period: None,
             sent: Sent::default(),
             shown_in: None,
             _timer: None,
@@ -190,6 +194,15 @@ impl CacheReminders {
         };
         let now = now(cx);
         let enabled = prefs::get(cx).notifications.cache_reminders;
+        // A refresh of the cache (a request, a Refresh here or elsewhere)
+        // starts a new idle period: what was said of the one before no
+        // longer holds.
+        let period = session.read(cx).reading().cache.refreshed_at;
+        if period != self.period {
+            self.period = period;
+            self.sent = Sent::default();
+            self.dismiss(cx);
+        }
         let (due, next, working) = {
             let live = session.read(cx);
             let (due, next) = plan(
@@ -308,8 +321,9 @@ impl CacheReminders {
         notify::play_sound(cx);
     }
 
-    /// Keeps the cache warm (the reminder's Refresh). A refresh the user
-    /// asks for starts a new idle period, with its own reminders.
+    /// Keeps the cache warm (the reminder's Refresh). The refresh starts a
+    /// new idle period, with its own reminders, once the session's status
+    /// says when it was.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.session.upgrade() else {
             return;
@@ -320,16 +334,11 @@ impl CacheReminders {
         let window = notify::window_for(&session, cx);
         self._refresh = Some(cx.spawn(async move |this, cx| {
             let refreshed = refreshing.await;
-            this.update(cx, |this, cx| {
+            this.update(cx, |_, cx| {
                 let message = match refreshed {
-                    Ok(arko::Refreshed::OutOfBand { cost, .. }) => {
-                        this.sent = Sent::default();
-                        this.check(cx);
-                        Some(Notification::info(format!(
-                            "Cache refreshed ({}).",
-                            figures::dollars(cost)
-                        )))
-                    }
+                    Ok(arko::Refreshed::OutOfBand { cost, .. }) => Some(Notification::info(
+                        format!("Cache refreshed ({}).", figures::dollars(cost)),
+                    )),
                     // A short turn keeps it warm: the transcript shows it.
                     Ok(arko::Refreshed::Message) => None,
                     Err(why) => Some(Notification::error(format!(
@@ -621,6 +630,31 @@ mod tests {
             cx.read(|cx| super::of(&self.session, cx).unwrap().read(cx).sent())
         }
 
+        /// The session's status says its cache was refreshed `ago`
+        /// milliseconds before now.
+        fn refreshed(&self, cx: &mut TestAppContext, lifetime_minutes: u64, ago: i64) {
+            let reading = Reading {
+                cache: CacheStatus {
+                    refreshed_at: Some(self.now.get() - ago),
+                    ..cache(lifetime_minutes)
+                },
+                ..Reading::default()
+            };
+            self.session.update(cx, |session, cx| {
+                session.set_status(reading, Activity::default(), cx)
+            });
+            cx.run_until_parked();
+        }
+
+        fn click(&self, cx: &mut TestAppContext, id: impl Into<ElementId>) {
+            cx.update_window(self.window, |_, window, cx| {
+                window.render_frame(cx);
+                window.click(id, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+        }
+
         fn notes(&self, cx: &mut TestAppContext) -> usize {
             cx.update_window(self.window, |_, window, cx| window.notifications(cx).len())
                 .unwrap()
@@ -675,6 +709,39 @@ mod tests {
         );
         // The reminder gave way to why the refresh failed.
         assert!(reminded.notes(cx) >= 1);
+    }
+
+    /// Refresh keeps the cache warm out of band. arko answers before its
+    /// status says when the cache was refreshed: the reminder stays away,
+    /// and the new idle period gets its own.
+    #[gpui_kit::test]
+    fn a_refresh_starts_an_idle_period_with_reminders_of_its_own(cx: &mut TestAppContext) {
+        // 50 s left: the last reminder shows.
+        let reminded = Reminded::new(cx, 5, 250_000);
+        assert!(reminded.sent(cx).last);
+        reminded.session.update(cx, |session, _| {
+            session.answer_refresh_with(Ok(arko::Refreshed::OutOfBand {
+                read: 180_000,
+                written: 0,
+                cost: 0.04,
+            }))
+        });
+        let key = cx.read(|cx| reminded.session.read(cx).key());
+        reminded.click(cx, ("refresh-cache", key));
+        reminded.advance(cx, 300);
+        assert!(
+            !reminded.shows(cx, "cache-countdown"),
+            "the reminder came back"
+        );
+        assert_eq!(reminded.notes(cx), 1, "only “Cache refreshed” shows");
+        // arko's status, half a second after the refresh.
+        reminded.advance(cx, 200);
+        reminded.refreshed(cx, 5, 500);
+        assert_eq!(reminded.sent(cx), Sent::default());
+        // The new idle period's last minute.
+        reminded.advance(cx, 4 * 60_000);
+        assert!(reminded.sent(cx).last);
+        assert!(reminded.shows(cx, "cache-countdown"));
     }
 
     /// An hour-long cache gets a first reminder 5 minutes before.

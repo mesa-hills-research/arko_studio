@@ -318,6 +318,9 @@ pub struct LiveSession {
     /// How many times what was drained was applied (tests).
     #[cfg(test)]
     applied: usize,
+    /// What a refresh of its cache answers (tests).
+    #[cfg(test)]
+    refresh_answer: Option<Result<arko::Refreshed, String>>,
     _tasks: Vec<Task<()>>,
     /// The tasks draining the feed it has open: dropped with that feed.
     _feed: Vec<Task<()>>,
@@ -354,6 +357,8 @@ impl LiveSession {
             opened: 0,
             #[cfg(test)]
             applied: 0,
+            #[cfg(test)]
+            refresh_answer: None,
             _tasks: Vec::new(),
             _feed: Vec::new(),
             _rename: None,
@@ -740,6 +745,10 @@ impl LiveSession {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Task<Result<arko::Refreshed, String>> {
+        #[cfg(test)]
+        if let Some(answer) = self.refresh_answer.clone() {
+            return Task::ready(answer);
+        }
         let Some(link) = &self.link else {
             return Task::ready(Err("The session isn’t open.".to_string()));
         };
@@ -797,6 +806,13 @@ impl LiveSession {
     #[cfg(test)]
     pub fn set_touched_at(&mut self, at: i64) {
         self.touched_at = at;
+    }
+
+    /// Answers each refresh of its cache with `answer`, as the engine would
+    /// (tests).
+    #[cfg(test)]
+    pub fn answer_refresh_with(&mut self, answer: Result<arko::Refreshed, String>) {
+        self.refresh_answer = Some(answer);
     }
 
     fn ended(&mut self, cx: &mut Context<Self>) {
