@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{self, Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::tooltip::Tooltip;
@@ -31,7 +31,7 @@ use crate::composer::{Attached, Composer, ComposerEvent, Outgoing};
 use crate::editing::{self, Change, Choice};
 use crate::layout::WidthClass;
 use crate::live::{LiveSession, LiveSessions, Phase, PromptKind};
-use crate::transcript::{AgentFilter, TranscriptEvent, TranscriptView};
+use crate::transcript::{AgentFilter, FindStatus, TranscriptEvent, TranscriptView};
 use crate::{drafts, menus, prefs};
 
 /// How many recent folders Change… offers.
@@ -77,6 +77,18 @@ pub struct Branched {
     /// What its composer shows.
     pub draft: Option<String>,
 }
+
+/// The find bar at the top of the transcript (Mod+F).
+struct FindBar {
+    input: Entity<InputState>,
+    /// Where the keyboard was: it goes back there when the bar closes.
+    before: Option<FocusHandle>,
+    status: FindStatus,
+    _input: Subscription,
+}
+
+/// The key context of the find bar.
+pub const FIND_CONTEXT: &str = "FindBar";
 
 /// A message of the user's being edited in the composer.
 struct Editing {
@@ -124,6 +136,7 @@ pub struct SessionView {
     target: Option<SharedString>,
     /// The message the composer edits.
     editing: Option<Editing>,
+    find: Option<FindBar>,
     model_filter: Entity<InputState>,
     _session: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
@@ -166,6 +179,7 @@ impl SessionView {
             expanded_rows: None,
             target: None,
             editing: None,
+            find: None,
             model_filter,
             _session: Vec::new(),
             _subscriptions: subscriptions,
@@ -358,6 +372,7 @@ impl SessionView {
         // The draft kept for the session left is what was there before
         // an edit.
         self.end_edit(window, cx);
+        self.close_find(window, cx);
         self.keep_draft(cx);
         if let Some(old) = self.session.take() {
             old.update(cx, |old, cx| old.set_shown(false, cx));
@@ -608,7 +623,223 @@ impl SessionView {
             TranscriptEvent::Edit(item) => self.edit_message(*item, window, cx),
             TranscriptEvent::Regenerate => self.regenerate(window, cx),
             TranscriptEvent::Branch(item) => self.branch_from(Some(*item), window, cx),
+            TranscriptEvent::FindStatus(status) => {
+                if let Some(find) = &mut self.find {
+                    find.status = *status;
+                    cx.notify();
+                }
+            }
         }
+    }
+
+    /// Opens the find bar at the top of the transcript, or gives it the
+    /// keyboard again with its words selected.
+    pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.transcript(cx).is_none() {
+            return;
+        }
+        if let Some(find) = &self.find {
+            find.input.update(cx, |input, cx| {
+                input.focus(window, cx);
+                input.select_all(window, cx);
+            });
+            return;
+        }
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Find in the conversation"));
+        let subscription = cx.subscribe_in(&input, window, Self::on_find_input);
+        let before = window.focused(cx);
+        input.update(cx, |input, cx| input.focus(window, cx));
+        self.find = Some(FindBar {
+            input,
+            before,
+            status: FindStatus::default(),
+            _input: subscription,
+        });
+        cx.notify();
+    }
+
+    /// Closes the find bar: the highlights go, and the keyboard goes back
+    /// where it was.
+    pub fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(find) = self.find.take() else {
+            return;
+        };
+        if let Some(transcript) = self.transcript(cx).cloned() {
+            transcript.update(cx, |transcript, cx| transcript.clear_find(cx));
+        }
+        match find.before {
+            Some(before) => before.focus(window, cx),
+            None => self.focus_composer(window, cx),
+        }
+        cx.notify();
+    }
+
+    /// Whether the find bar shows, and where its find is.
+    pub fn find_status(&self) -> Option<FindStatus> {
+        self.find.as_ref().map(|find| find.status)
+    }
+
+    /// The next match down the transcript (`forward`), or the previous.
+    pub fn find_next(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(transcript) = self.transcript(cx).cloned() else {
+            return;
+        };
+        let status = transcript.update(cx, |transcript, cx| transcript.find_next(forward, cx));
+        if let Some(find) = &mut self.find {
+            find.status = status;
+        }
+        cx.notify();
+    }
+
+    fn on_find_input(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::Change => {
+                let query = input.read(cx).value().to_string();
+                let Some(transcript) = self.transcript(cx).cloned() else {
+                    return;
+                };
+                let status = transcript.update(cx, |transcript, cx| transcript.find(&query, cx));
+                if let Some(find) = &mut self.find {
+                    find.status = status;
+                }
+                cx.notify();
+            }
+            InputEvent::PressEnter { shift, .. } => self.find_next(!*shift, cx),
+            _ => {}
+        }
+    }
+
+    /// The find bar: the words, where the find is, previous and next, and
+    /// close.
+    fn render_find(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let find = self.find.as_ref()?;
+        let theme = cx.theme();
+        let has_words = !find.input.read(cx).value().trim().is_empty();
+        let status = match (find.status.current, find.status.total) {
+            _ if !has_words => String::new(),
+            (_, 0) => "No matches".to_string(),
+            (Some(current), total) => format!("{} of {total}", current + 1),
+            (None, total) => format!("{total} found"),
+        };
+        let key_tip = |label: &'static str, key: &'static str| {
+            move |window: &mut Window, cx: &mut App| {
+                Tooltip::new(label)
+                    .key_binding(Keystroke::parse(key).ok().map(Kbd::new))
+                    .build(window, cx)
+            }
+        };
+        let none = find.status.total == 0;
+        Some(
+            h_flex()
+                .id("find-bar")
+                .test_support()
+                .key_context(FIND_CONTEXT)
+                .capture_action(cx.listener(|this, _: &input::Escape, window, cx| {
+                    this.close_find(window, cx);
+                    cx.stop_propagation();
+                }))
+                .capture_action(cx.listener(|this, _: &input::MoveUp, _, cx| {
+                    this.find_next(false, cx);
+                    cx.stop_propagation();
+                }))
+                .capture_action(cx.listener(|this, _: &input::MoveDown, _, cx| {
+                    this.find_next(true, cx);
+                    cx.stop_propagation();
+                }))
+                .w_full()
+                .max_w(rems(46.))
+                .px_4()
+                .pt_2()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_1()
+                        .p_1()
+                        .rounded(theme.radius_lg)
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.background)
+                        .shadow_sm()
+                        .child(
+                            div().flex_1().min_w_0().child(
+                                Input::new(&find.input).small().appearance(false).prefix(
+                                    Icon::new(IconName::Search)
+                                        .xsmall()
+                                        .text_color(theme.muted_foreground),
+                                ),
+                            ),
+                        )
+                        .child(
+                            div()
+                                .id("find-status")
+                                .test_support()
+                                .flex_none()
+                                .px_1()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .font_features(FontFeatures(Arc::new(vec![("tnum".into(), 1)])))
+                                .child(status),
+                        )
+                        .child(
+                            div()
+                                .id("find-previous-tip")
+                                .tooltip(key_tip("Previous match", "shift-enter"))
+                                .child(
+                                    Button::new("find-previous")
+                                        .ghost()
+                                        .xsmall()
+                                        .compact()
+                                        .icon(IconName::ChevronUp)
+                                        .disabled(none)
+                                        .accessibility_label("Previous match")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.find_next(false, cx)),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("find-next-tip")
+                                .tooltip(key_tip("Next match", "enter"))
+                                .child(
+                                    Button::new("find-next")
+                                        .ghost()
+                                        .xsmall()
+                                        .compact()
+                                        .icon(IconName::ChevronDown)
+                                        .disabled(none)
+                                        .accessibility_label("Next match")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.find_next(true, cx)),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("find-close-tip")
+                                .tooltip(key_tip("Close", "escape"))
+                                .child(
+                                    Button::new("find-close")
+                                        .ghost()
+                                        .xsmall()
+                                        .compact()
+                                        .icon(IconName::Close)
+                                        .accessibility_label("Close")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.close_find(window, cx)
+                                        })),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Whether the composer edits a message.
@@ -2042,6 +2273,7 @@ impl Render for SessionView {
         let question = self.render_question(cx);
         let prompt = self.render_prompt(cx);
         let editing = self.render_editing(cx);
+        let find = self.render_find(cx);
         // The transcript spans the column (its rows centre themselves, so
         // the wheel and the scrollbar work across it), and draws again only
         // when it changes.
@@ -2055,6 +2287,7 @@ impl Render for SessionView {
             .bg(theme.background)
             .text_color(theme.foreground)
             .items_center()
+            .children(find)
             .child(
                 div()
                     .id("transcript")

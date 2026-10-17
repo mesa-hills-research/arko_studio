@@ -13,6 +13,7 @@
 //! Mount it with [`TranscriptView::cached`], so that what happens around it
 //! (a keystroke in the composer) doesn't draw it again.
 
+mod find;
 mod inbox;
 mod model;
 mod row;
@@ -41,6 +42,7 @@ use gpui_kit::*;
 
 use crate::prefs;
 
+pub use find::FindStatus;
 pub use model::AgentFilter;
 use model::{Changes, Layout, Model, Row, RowKey};
 
@@ -75,6 +77,8 @@ pub enum TranscriptEvent {
     /// Branch: a new session with the conversation before the user's
     /// message, by its item.
     Branch(u64),
+    /// Where the find is now: the find bar shows it.
+    FindStatus(FindStatus),
 }
 
 /// The transcript's copy of the preferences it follows.
@@ -168,6 +172,8 @@ pub struct TranscriptView {
     images: Option<ImageLookup>,
     /// The images read so far, by ID, ready for the image cache.
     image_sources: RefCell<HashMap<u64, Arc<Image>>>,
+    /// The find going on (Mod+F).
+    find: Option<find::Find>,
     renders: usize,
     _prefs: Subscription,
 }
@@ -216,6 +222,7 @@ impl TranscriptView {
             image_cache: LruImageCache::new(IMAGE_BUDGET, cx),
             images: None,
             image_sources: RefCell::default(),
+            find: None,
             renders: 0,
             _prefs: observe_prefs,
         };
@@ -408,6 +415,7 @@ impl TranscriptView {
         }
         self.refresh_rows(cx);
         self.tick_while_running(cx);
+        self.find_changed(cx);
         cx.notify();
     }
 
@@ -454,6 +462,7 @@ impl TranscriptView {
         let observe = cx.observe(&state, move |this, _, cx| {
             if this.sync_blocks(id, cx) {
                 this.refresh_rows(cx);
+                this.find_changed(cx);
                 cx.notify();
             }
         });
@@ -556,13 +565,14 @@ impl TranscriptView {
         let doc = self.ui.get_mut(&id)?.doc.as_mut()?;
         let state = doc.state.clone();
         let row = doc.blocks.get_mut(block)?;
-        Some(
-            row.view
-                .get_or_insert_with(|| {
-                    cx.new(|cx| TextViewState::block_range(&state, block..block + 1, cx))
-                })
-                .clone(),
-        )
+        if let Some(view) = &row.view {
+            return Some(view.clone());
+        }
+        let view = cx.new(|cx| TextViewState::block_range(&state, block..block + 1, cx));
+        row.view = Some(view.clone());
+        // Drawn for the first time while a find goes on: its matches show.
+        self.highlight_block(id, block, &view, cx);
+        Some(view)
     }
 
     /// Rebuilds the rows from the model, and tells the list what changed:

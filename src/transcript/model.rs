@@ -412,14 +412,14 @@ impl Model {
 
 /// How a view shows an entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Show {
+pub(crate) enum Show {
     Hidden,
     Item,
     /// Counted in its run's line of tool activity (the Messages view).
     Count,
 }
 
-fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
+pub(crate) fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
     if let AgentFilter::Worker(_) = filter {
         return match item.kind {
             Kind::Result | Kind::Turn => Show::Hidden,
@@ -657,7 +657,7 @@ fn run(
 }
 
 /// Whether `item` is a message that only kept the prompt cache warm.
-fn is_refresh(item: &Item) -> bool {
+pub(crate) fn is_refresh(item: &Item) -> bool {
     item.is_main() && item.kind == Kind::User && item.delivery == Some(Delivery::Refresh)
 }
 

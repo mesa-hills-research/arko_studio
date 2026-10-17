@@ -23,6 +23,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::find::Place;
 use super::model::{Gap, RowKey};
 use super::tool::{self, Tool};
 use super::{AgentFilter, CODE_LINES, TranscriptEvent, TranscriptView, selectable};
@@ -30,7 +31,7 @@ use super::{AgentFilter, CODE_LINES, TranscriptEvent, TranscriptView, selectable
 /// The reading column's widest.
 const COLUMN: f32 = 46.;
 /// Lines of a call's output shown before "Show all N lines".
-const OUTPUT_LINES: usize = 40;
+pub(super) const OUTPUT_LINES: usize = 40;
 /// Rows of an edit's diff shown before it scrolls inside.
 const DIFF_ROWS: usize = 24;
 
@@ -92,6 +93,42 @@ fn from_line(diff: Diff, by: usize) -> Diff {
         unified.push('\n');
     }
     Diff::parse(&unified)
+}
+
+/// The parameters a call's details show: none where its line says them
+/// all or its diff does, else its parameters (or, from before the feed kept
+/// them, the line's long part: a multi-line command, a worker's task).
+pub(super) fn shown_parameters(item: &Item) -> Option<Arc<str>> {
+    let line = item.text.trim();
+    if parameters_shown_by_line(item) {
+        None
+    } else if let Some(parameters) = item.parameters.clone() {
+        Some(parameters)
+    } else if line.contains('\n') || item.detail.is_some() {
+        Some(item.detail.clone().unwrap_or(line.to_string()).into())
+    } else {
+        None
+    }
+}
+
+/// What a call's details show came back: its command's output block, or
+/// its tool's result. An edit's diff stands for its result.
+pub(super) fn shown_output(entry: &super::model::Entry) -> Option<Arc<str>> {
+    let item = &entry.item;
+    match (&entry.result, item.output.clone()) {
+        (Some(result), _) => result
+            .whole
+            .clone()
+            .or_else(|| result.detail.clone().map(Arc::from)),
+        (None, Some(_)) if shows_diff(item) && item.status == Some(CallStatus::Ok) => None,
+        (None, Some(output)) if !output.trim().is_empty() => Some(output),
+        _ => None,
+    }
+}
+
+/// Whether a call's details show a diff: an edit's or a write's.
+fn shows_diff(item: &Item) -> bool {
+    matches!(item.tool.as_deref(), Some("edit_file" | "write_file")) && item.parameters.is_some()
 }
 
 /// Whether a call's line already says all its parameters do: a one-line
@@ -372,7 +409,7 @@ impl TranscriptView {
                 )
             })
             .children(self.thumbnails(item, view, cx))
-            .child(selectable(("user-text", id), text))
+            .child(self.marked(("user-text", id), id, Place::Text, text, cx))
             // Copy, Edit and Branch show on hover.
             .child(
                 h_flex()
@@ -450,9 +487,12 @@ impl TranscriptView {
                     this.font_family(theme.mono_font_family.clone())
                         .text_size(theme.mono_font_size)
                 })
-                .child(selectable(
+                .child(self.marked(
                     SharedString::from(format!("source-{id}-{block}")),
+                    id,
+                    Place::Source(block),
                     text,
+                    cx,
                 ))
                 .into_any_element()
         } else {
@@ -722,7 +762,14 @@ impl TranscriptView {
                         )
                     })
                     .child(Icon::new(tool.icon()).xsmall().flex_none())
-                    .child(div().flex_1().min_w_0().truncate().text_left().child(line))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_left()
+                            .child(self.marked_plain(id, Place::Text, line, cx)),
+                    )
                     .children(trailing),
             )
             .on_click(move |_, _, cx| {
@@ -743,12 +790,13 @@ impl TranscriptView {
 
     /// A call's details: its parameters in full, its output, its diff.
     fn call_details(&self, id: u64, cx: &App) -> AnyElement {
+        use super::find::Place;
         let theme = cx.theme();
         let Some(entry) = self.model.entry(id) else {
             return div().into_any_element();
         };
         let item = &entry.item;
-        let mono = |text: String, key: &'static str| {
+        let mono = |text: String, key: &'static str, place: Place| {
             div()
                 .w_full()
                 .px_2()
@@ -757,7 +805,7 @@ impl TranscriptView {
                 .bg(theme.muted)
                 .font_family(theme.mono_font_family.clone())
                 .text_size(theme.mono_font_size)
-                .child(selectable((key, id), text))
+                .child(self.marked((key, id), id, place, text, cx))
         };
         let caption = |text: String| {
             div()
@@ -766,18 +814,14 @@ impl TranscriptView {
                 .child(text)
         };
         // The first lines of a long text, and a button that shows it all.
-        let lines = |text: Arc<str>, key: &'static str, title: String| {
+        let lines = |text: Arc<str>, key: &'static str, place: Place, title: String| {
             let total = text.lines().count();
-            let shown: String = text
-                .lines()
-                .take(OUTPUT_LINES)
-                .collect::<Vec<_>>()
-                .join("\n");
+            let shown = super::find::shown_lines(&text);
             let title: SharedString = title.into();
             v_flex()
                 .w_full()
                 .gap_1()
-                .child(mono(shown, key))
+                .child(mono(shown, key, place))
                 .when(total > OUTPUT_LINES, |this| {
                     this.child(
                         Button::new((key, id))
@@ -797,21 +841,14 @@ impl TranscriptView {
         // part: a multi-line command, a worker's task).
         let diff = self.ui.get(&id).and_then(|ui| ui.diff.clone());
         let has_diff = diff.is_some();
-        let parameters: Option<Arc<str>> = if parameters_shown_by_line(item) {
-            None
-        } else if let Some(parameters) = item.parameters.clone() {
-            Some(parameters)
-        } else if line.contains('\n') || item.detail.is_some() {
-            Some(item.detail.clone().unwrap_or(line.clone()).into())
-        } else {
-            None
-        };
+        let parameters = shown_parameters(item);
         if let Some(diff) = diff {
             details = details.child(DiffView::new(&diff).max_rows(DIFF_ROWS));
         } else if let Some(parameters) = parameters {
             details = details.child(caption("Parameters".into())).child(lines(
                 parameters,
                 "parameters",
+                Place::Parameters,
                 format!("Parameters of {line}"),
             ));
         }
@@ -819,12 +856,13 @@ impl TranscriptView {
         match (&entry.result, item.output.clone()) {
             (Some(result), _) => {
                 details = details.child(caption(result.text.clone()));
-                if let Some(body) = result
-                    .whole
-                    .clone()
-                    .or_else(|| result.detail.clone().map(Arc::from))
-                {
-                    details = details.child(lines(body, "output", format!("Output of {line}")));
+                if let Some(body) = shown_output(entry) {
+                    details = details.child(lines(
+                        body,
+                        "output",
+                        Place::Output,
+                        format!("Output of {line}"),
+                    ));
                 }
             }
             // An edit's diff says what its result would.
@@ -833,6 +871,7 @@ impl TranscriptView {
                 details = details.child(caption("Result".into())).child(lines(
                     output,
                     "output",
+                    Place::Output,
                     format!("Result of {line}"),
                 ));
             }
@@ -1026,12 +1065,13 @@ impl TranscriptView {
                     .pt_0p5()
                     .child(Icon::new(icon).xsmall().text_color(color)),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(selectable(("notice-text", id), item.text.clone())),
-            )
+            .child(div().flex_1().min_w_0().child(self.marked(
+                ("notice-text", id),
+                id,
+                Place::Text,
+                item.text.clone(),
+                cx,
+            )))
             .into_any_element()
     }
 
@@ -1052,7 +1092,7 @@ impl TranscriptView {
             .border_color(border)
             .font_family(theme.mono_font_family.clone())
             .text_size(theme.mono_font_size)
-            .child(selectable(("output-text", id), item.text.clone()))
+            .child(self.marked(("output-text", id), id, Place::Text, item.text.clone(), cx))
             .into_any_element()
     }
 

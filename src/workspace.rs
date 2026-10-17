@@ -1093,7 +1093,12 @@ impl Render for Workspace {
                     not_yet("Export", window, cx)
                 }),
             )
-            .on_action(cx.listener(|_, _: &menus::Find, window, cx| not_yet("Find", window, cx)))
+            .on_action(cx.listener(|this, _: &menus::Find, window, cx| {
+                if this.settings.is_none() {
+                    this.session_view
+                        .update(cx, |view, cx| view.open_find(window, cx));
+                }
+            }))
             .on_action(cx.listener(|_, _: &menus::KeyboardShortcuts, window, cx| {
                 shortcuts::open(window, cx)
             }))
