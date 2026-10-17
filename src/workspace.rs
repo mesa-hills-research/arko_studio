@@ -724,7 +724,8 @@ impl Workspace {
                 return;
             }
         }
-        self.status_bar.update(cx, |bar, cx| bar.show_web_page(cx));
+        self.status_bar
+            .update(cx, |bar, cx| bar.show_web_page(window, cx));
     }
 
     /// Stops serving the shown session's web page.

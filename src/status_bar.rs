@@ -19,6 +19,7 @@ use gpui_kit::component::{
     WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
+    notification::Notification,
     popover::Popover,
     v_flex,
 };
@@ -29,7 +30,7 @@ use crate::cache_timer::{CacheTimer, cache_timer, requests_run};
 use crate::context_ring::{ContextDetails, ContextSize, context_button};
 use crate::figures::{self, Turn};
 use crate::layout::WidthClass;
-use crate::live::LiveSession;
+use crate::live::{LiveSession, Phase};
 use crate::menus;
 use crate::session_view::{HomeFolder, shown_folder};
 use crate::web_page::WebPagePanel;
@@ -52,6 +53,10 @@ pub type Clock = Rc<dyn Fn() -> i64>;
 /// it again.
 pub const STATUS_BAR_HEIGHT: Rems = rems(1.75);
 
+/// How long Share Web Page waits for the page, in seconds, once the session
+/// is open.
+pub const PAGE_WAIT_SECONDS: u32 = 10;
+
 /// Digits of equal width, so a running time keeps its width as it counts.
 pub fn tabular_figures() -> FontFeatures {
     FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
@@ -68,6 +73,8 @@ pub struct StatusBar {
     web_page_open: bool,
     /// It opens as soon as the page is served (Share Web Page).
     web_page_asked: bool,
+    /// Gives up on the page asked for when it doesn't come.
+    _web_page_wait: Option<Task<()>>,
     _session: Option<Subscription>,
     _tick: Option<Task<()>>,
     _cost: Option<Task<()>>,
@@ -82,6 +89,7 @@ impl StatusBar {
             cost: None,
             web_page_open: false,
             web_page_asked: false,
+            _web_page_wait: None,
             _session: None,
             _tick: None,
             _cost: None,
@@ -127,6 +135,7 @@ impl StatusBar {
         self._cost = None;
         self.web_page_open = false;
         self.web_page_asked = false;
+        self._web_page_wait = None;
         self._session = session
             .as_ref()
             .map(|session| cx.observe(session, |_, _, cx| cx.notify()));
@@ -152,16 +161,55 @@ impl StatusBar {
     }
 
     /// Shows the web page's links and QR code: at once when the page is
-    /// served, else as soon as it is.
-    pub fn show_web_page(&mut self, cx: &mut Context<Self>) {
+    /// served, else as soon as it is. A page that doesn't come within
+    /// [`PAGE_WAIT_SECONDS`] of the session's opening is given up on, with
+    /// a notification: the popover won't open by itself later.
+    pub fn show_web_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let served = self
             .status(cx)
             .is_some_and(|(reading, _)| reading.page.is_some());
         if served {
             self.web_page_open = true;
-        } else {
-            self.web_page_asked = true;
+            cx.notify();
+            return;
         }
+        self.web_page_asked = true;
+        self._web_page_wait = Some(cx.spawn_in(window, async move |this, cx| {
+            let mut waited = 0;
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let done = this.update_in(cx, |this, window, cx| {
+                    let phase = this
+                        .session()
+                        .map(|session| session.read(cx).phase().clone());
+                    match phase {
+                        // Shown (or the bar shows another session).
+                        _ if !this.web_page_asked => return true,
+                        // Commands wait for a session that opens.
+                        Some(Phase::Opening) => return false,
+                        Some(Phase::Open) => waited += 1,
+                        _ => {
+                            this.web_page_asked = false;
+                            return true;
+                        }
+                    }
+                    if waited < PAGE_WAIT_SECONDS {
+                        return false;
+                    }
+                    this.web_page_asked = false;
+                    window.push_notification(
+                        Notification::warning(
+                            "The web page didn’t start. The transcript says why.",
+                        ),
+                        cx,
+                    );
+                    true
+                });
+                if done.unwrap_or(true) {
+                    break;
+                }
+            }
+        }));
         cx.notify();
     }
 

@@ -775,3 +775,36 @@ fn sharing_serves_where_settings_say_not_where_the_page_was(cx: &mut TestAppCont
     app.close_all(cx);
     assert!(addr.ip().is_loopback(), "served on {addr}");
 }
+
+/// A page that doesn't start (its port is taken) says so where the user
+/// asked for it, and its popover doesn't open by itself when a page
+/// starts later.
+#[gpui_kit::test]
+fn a_page_that_doesnt_start_says_so(cx: &mut TestAppContext) {
+    use crate::testing::wait_until;
+    use gpui_kit::component::WindowExt as _;
+
+    let app = OnEngine::start(cx, 1300.);
+    let session = app.first_turn(cx);
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port();
+    cx.update(|cx| crate::prefs::update(cx, |prefs| prefs.web_page.port = Some(port)));
+    let notes = |cx: &mut TestAppContext| {
+        cx.update_window(app.window, |_, window, cx| window.notifications(cx).len())
+            .unwrap()
+    };
+    let before = notes(cx);
+    act(cx, app.window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ShareWebPage), cx)
+    });
+    wait_until(cx, "a notification", |cx| notes(cx) > before);
+    // The user starts the page at the composer.
+    drop(taken);
+    app.command(cx, &session, "/remote on");
+    wait_until(cx, "the page", |cx| page_addr(&session, cx).is_some());
+    let bar = cx.read(|cx| app.workspace.read(cx).status_bar().clone());
+    act(cx, app.window, |_, _| {});
+    let opened = cx.read(|cx| bar.read(cx).is_web_page_open());
+    app.close_all(cx);
+    assert!(!opened, "the popover opened by itself");
+}
