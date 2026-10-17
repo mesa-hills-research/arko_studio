@@ -395,25 +395,25 @@ impl Model {
     }
 
     /// How many messages come after the user's message `id`: the user's,
-    /// and one reply for each run of the agent's output between them
-    /// (cache refreshes and their answers left out). Counted by place, as
-    /// a restored history's items carry no turn.
+    /// and one reply per turn (cache refreshes and their answers left out).
+    /// Older items without a turn are grouped by their place.
     pub fn messages_after(&self, id: u64) -> usize {
         let Ok(start) = self.position(id) else {
             return 0;
         };
         let mut count = 0;
         let mut in_reply = false;
+        let mut replies = std::collections::HashSet::new();
         for (item, in_refresh) in self.runs_after(start) {
             match item.kind {
                 Kind::User if !in_refresh => {
                     count += 1;
                     in_reply = false;
                 }
-                Kind::Text | Kind::Reply | Kind::Message | Kind::Question
-                    if !in_refresh && !in_reply =>
-                {
-                    count += 1;
+                Kind::Text | Kind::Reply | Kind::Message | Kind::Question if !in_refresh => {
+                    if item.turn.map_or(!in_reply, |turn| replies.insert(turn)) {
+                        count += 1;
+                    }
                     in_reply = true;
                 }
                 Kind::Turn | Kind::User => in_reply = false,
@@ -1457,8 +1457,22 @@ mod tests {
         assert!(!model(Vec::new()).starts_partway());
     }
 
-    /// A restored history: its items carry no turn. The counts are the
-    /// same as live.
+    #[test]
+    fn turn_ids_keep_a_reply_whole_across_a_note_after_reopening() {
+        let mut note = said(3, Kind::User, 1, "Also check the lexer.");
+        note.delivery = Some(Delivery::Note);
+        let model = model(vec![
+            message(1, 1, 0, "Fix the parser."),
+            said(2, Kind::Text, 1, "Reading it."),
+            note,
+            said(4, Kind::Reply, 1, "Fixed."),
+            message(5, 2, 2, "Now the docs."),
+            said(6, Kind::Reply, 2, "Done."),
+        ]);
+        assert_eq!(model.messages_after(1), 4);
+    }
+
+    /// Histories saved without turn IDs still count by place.
     #[test]
     fn a_restored_conversation_counts_as_it_did_live() {
         let restored = |id: u64, kind: Kind, text: &str| item(id, kind, "main", text);
