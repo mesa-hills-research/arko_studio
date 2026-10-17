@@ -10,10 +10,6 @@ fn main() {
         eprintln!("Claude Code found in {}", folder.display());
     }
     init_logging();
-    // What sessions read before one is open (the models a new session can
-    // use): the environment, a `.env` beside the program, Arko's folder.
-    arko::accounts::use_env(arko::Env::for_folder(None, true));
-
     let startup = Startup::load();
     let app = gpui_kit::application().with_assets(Assets);
     // macOS keeps the app running when its last window closes. Clicking the
