@@ -317,6 +317,48 @@ fn the_web_pages_popover_shows_its_links_and_stops_sharing(cx: &mut TestAppConte
     assert_eq!(sent(&bar.session, cx), ["/remote new-key", "/remote off"]);
 }
 
+/// A page only this computer can open has no QR code: the popover says how
+/// to reach it from a phone, and opens Settings › Web page.
+#[gpui_kit::test]
+fn a_page_only_this_computer_opens_has_no_qr_code(cx: &mut TestAppContext) {
+    let (window, workspace, session) = window_with_session(cx);
+    let mut reading = busy();
+    reading.page = Some(Page {
+        addr: "127.0.0.1:8765".parse().unwrap(),
+        links: vec![Link {
+            url: "http://127.0.0.1:8765/#key=k".into(),
+            interface: None,
+            kind: LinkKind::Loopback,
+            loopback: true,
+        }],
+        note: None,
+    });
+    session.update(cx, |session, cx| {
+        session.set_status(reading, Activity::default(), cx)
+    });
+    cx.run_until_parked();
+    act(cx, window, |window, cx| window.click("status-web-page", cx));
+    let shows = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    assert!(shows(cx, "web-page-panel"));
+    assert!(!shows(cx, "web-page-qr"));
+    assert!(shows(cx, "web-page-this-computer"));
+    act(cx, window, |window, cx| {
+        window.click("web-page-settings", cx)
+    });
+    let settings = cx.read(|cx| workspace.read(cx).settings().cloned());
+    assert_eq!(
+        settings.map(|settings| cx.read(|cx| settings.read(cx).page())),
+        Some(5)
+    );
+    assert!(!shows(cx, "web-page-panel"), "the popover stayed open");
+}
+
 #[gpui_kit::test]
 fn the_contexts_popover_shows_the_split_and_hands_over(cx: &mut TestAppContext) {
     let bar = bar(cx, 1300.);

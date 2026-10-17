@@ -23,6 +23,8 @@ use crate::{about, chrome, menus, palette, prompts, quit, shortcuts};
 
 /// The Settings page of models and accounts.
 const ACCOUNTS_PAGE: usize = 2;
+/// The Settings page of the web page.
+const WEB_PAGE_PAGE: usize = 5;
 
 /// The narrowest and widest the workers panel docks, in rem.
 const MIN_PANEL_WIDTH: f32 = 16.;
@@ -1210,6 +1212,12 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &menus::OpenAccounts, window, cx| {
                 this.open_accounts(None, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &menus::OpenWebPageSettings, window, cx| {
+                    let settings = this.show_settings(window, cx);
+                    settings.update(cx, |settings, cx| settings.show_page(WEB_PAGE_PAGE, cx));
+                }),
+            )
             .on_action(cx.listener(|this, _: &menus::ExportMarkdown, window, cx| {
                 this.session_view
                     .update(cx, |view, cx| view.export(window, cx));

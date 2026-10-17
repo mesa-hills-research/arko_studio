@@ -421,8 +421,16 @@ impl StatusBar {
                     .when(narrow, |this| this.tooltip("The web page is shared"))
                     .accessibility_label("Web page shared"),
             )
-            .content(move |_, _, _| {
-                let panel = WebPagePanel::new(&page);
+            .content(move |_, _, cx| {
+                let panel =
+                    WebPagePanel::new(&page).on_settings(cx.listener(|state, _, window, cx| {
+                        // Once the focus is back in the window: sent from
+                        // inside the popover, the action would go with it.
+                        state.dismiss(window, cx);
+                        window.defer(cx, |window, cx| {
+                            window.dispatch_action(Box::new(menus::OpenWebPageSettings), cx)
+                        });
+                    }));
                 match &session {
                     Some(session) => panel.session(session),
                     None => panel,

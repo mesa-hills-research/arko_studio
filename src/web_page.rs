@@ -85,14 +85,14 @@ pub fn shown_url(link: &Link) -> &str {
     link.url.split("/#").next().unwrap_or(&link.url)
 }
 
-/// The link the QR code shows: the first one another device can open, else
-/// the first.
+/// The link the QR code shows: the first one another device can open.
+/// `None` when only this computer can open the page.
 pub fn qr_link(page: &Page) -> Option<&Link> {
-    page.links
-        .iter()
-        .find(|link| !link.loopback)
-        .or_else(|| page.links.first())
+    page.links.iter().find(|link| !link.loopback)
 }
+
+/// What the panel says when only this computer can open the page.
+pub const THIS_COMPUTER_ONLY: &str = "Only this computer can open these links. For a phone or another computer, share the page on your network in Settings › Web page (Tailscale’s too), or reach it through an SSH tunnel.";
 
 /// The QR codes drawn lately, by the text they hold: a page's links change
 /// only with a new key or address.
@@ -117,6 +117,9 @@ pub fn qr_image(text: &str, cx: &mut App) -> Option<Arc<Image>> {
     image
 }
 
+/// What a click on a button runs.
+type OnClick = std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
 /// The page's links, each with a copy button, the best one as a QR code,
 /// what the page allows, and Stop sharing and New key. Without a session
 /// (a preview) the buttons do nothing.
@@ -124,6 +127,7 @@ pub fn qr_image(text: &str, cx: &mut App) -> Option<Arc<Image>> {
 pub struct WebPagePanel {
     page: Page,
     session: Option<Entity<LiveSession>>,
+    on_settings: Option<OnClick>,
 }
 
 impl WebPagePanel {
@@ -131,6 +135,7 @@ impl WebPagePanel {
         Self {
             page: page.clone(),
             session: None,
+            on_settings: None,
         }
     }
 
@@ -139,12 +144,22 @@ impl WebPagePanel {
         self.session = Some(session.clone());
         self
     }
+
+    /// Offers Settings › Web page, through `open`, when only this computer
+    /// can open the page.
+    pub fn on_settings(
+        mut self,
+        open: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_settings = Some(std::rc::Rc::new(open));
+        self
+    }
 }
 
 impl RenderOnce for WebPagePanel {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let qr = qr_link(&self.page).map(|link| link.url.clone());
-        let qr = qr.and_then(|url| qr_image(&url, cx));
+        let qr = qr_link(&self.page).map(|link| (link.url.clone(), link_label(link)));
+        let qr = qr.and_then(|(url, label)| Some((qr_image(&url, cx)?, label)));
         let theme = cx.theme();
         let mono = theme.mono_font_family.clone();
         let _ = window;
@@ -208,7 +223,32 @@ impl RenderOnce for WebPagePanel {
                         )
                 }),
             ))
-            .when_some(qr, |this, qr| {
+            .when(qr.is_none() && !self.page.links.is_empty(), |this| {
+                this.child(
+                    v_flex()
+                        .id("web-page-this-computer")
+                        .test_support()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(THIS_COMPUTER_ONLY),
+                        )
+                        .when_some(self.on_settings.clone(), |this, open| {
+                            this.child(
+                                h_flex().child(
+                                    Button::new("web-page-settings")
+                                        .outline()
+                                        .small()
+                                        .label("Web Page Settings")
+                                        .on_click(move |event, window, cx| open(event, window, cx)),
+                                ),
+                            )
+                        }),
+                )
+            })
+            .when_some(qr, |this, (qr, label)| {
                 this.child(
                     v_flex()
                         .items_center()
@@ -224,7 +264,7 @@ impl RenderOnce for WebPagePanel {
                             div()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child("The first link, for a phone’s camera"),
+                                .child(format!("{label}, for a phone’s camera")),
                         ),
                 )
             })
@@ -338,7 +378,8 @@ mod tests {
             note: None,
         };
         assert_eq!(qr_link(&page(vec![local.clone(), lan.clone()])), Some(&lan));
-        assert_eq!(qr_link(&page(vec![local.clone()])), Some(&local));
+        // A phone can't open this computer's own address.
+        assert_eq!(qr_link(&page(vec![local.clone()])), None);
         assert_eq!(qr_link(&page(Vec::new())), None);
     }
 
