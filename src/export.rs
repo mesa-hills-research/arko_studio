@@ -19,6 +19,9 @@ pub struct Header {
     pub folder: Option<String>,
     /// When it was exported, as shown.
     pub when: String,
+    /// The conversation's first messages aren't in the items: the
+    /// transcript keeps the latest part of a long conversation.
+    pub starts_partway: bool,
 }
 
 /// The conversation `items` (one agent's, in order) as a Markdown
@@ -31,6 +34,9 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
     facts.extend(header.folder.clone());
     facts.push(format!("exported {}", header.when));
     out.push_str(&format!("*{}*\n", facts.join(" · ")));
+    if header.starts_partway {
+        out.push_str(&format!("\n*{STARTS_PARTWAY}*\n"));
+    }
     // Who said the last section: a new heading only when it changes.
     let mut speaker: Option<&'static str> = None;
     let mut calls = false;
@@ -165,6 +171,10 @@ fn code(text: &str) -> String {
     };
     format!("{fence}{pad}{text}{pad}{fence}")
 }
+
+/// What the export says under its header when it starts partway.
+const STARTS_PARTWAY: &str =
+    "This export starts partway through the conversation. Earlier messages aren’t included.";
 
 /// The fence a block of `text` needs: a backtick more than its longest run
 /// of them, and three at least.
@@ -341,6 +351,7 @@ mod tests {
             model: "Opus 5.5".into(),
             folder: Some("~/src/parse".into()),
             when: "2026-10-17 09:30".into(),
+            starts_partway: false,
         };
         let text = markdown(
             &header,
@@ -472,6 +483,24 @@ Thanks.
         let text = markdown(&header, &[item(Kind::Message, "I'm on it."), from_worker]);
         assert!(
             text.ends_with("## Arko\n\nI'm on it.\n\n*From r1*\n\nDone with the parser.\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn an_export_that_starts_partway_says_so() {
+        let header = Header {
+            title: "Long".into(),
+            mode: "Chat".into(),
+            when: "now".into(),
+            starts_partway: true,
+            ..Header::default()
+        };
+        let text = markdown(&header, &[item(Kind::User, "Go on.")]);
+        assert!(
+            text.starts_with(
+                "# Long\n\n*Chat · exported now*\n\n*This export starts partway through the conversation. Earlier messages aren’t included.*\n"
+            ),
             "{text}"
         );
     }

@@ -442,6 +442,13 @@ impl TranscriptView {
             .collect()
     }
 
+    /// Whether the conversation's first messages are missing: the
+    /// transcript keeps the latest part of a long conversation, and a
+    /// session opened again reads back its latest messages.
+    pub fn starts_partway(&self) -> bool {
+        self.model.starts_partway()
+    }
+
     /// The reply Regenerate replaces: the main agent's latest, after the
     /// user's last message.
     pub fn last_reply(&self) -> Option<u64> {

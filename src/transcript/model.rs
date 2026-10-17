@@ -338,6 +338,16 @@ impl Model {
             && !is_refresh(item)
     }
 
+    /// Whether the conversation's first messages are missing: its first
+    /// message here isn't the conversation's first.
+    pub fn starts_partway(&self) -> bool {
+        self.entries
+            .iter()
+            .map(|entry| &entry.item)
+            .find(|item| Self::is_changeable(item))
+            .is_some_and(|item| item.message_index != Some(0))
+    }
+
     /// The latest message of the user's that can be edited.
     pub fn last_message(&self) -> Option<u64> {
         self.entries
@@ -1444,6 +1454,22 @@ mod tests {
         model.apply(Update::Truncate { from: 3 }, &mut changes);
         assert_eq!(model.last_reply(), Some(2));
         assert_eq!(model.replies_sought.get(), 4);
+    }
+
+    #[test]
+    fn a_transcript_without_the_first_message_starts_partway() {
+        let whole = model(vec![
+            message(1, 1, 0, "Fix the parser."),
+            said(2, Kind::Reply, 1, "Fixed."),
+        ]);
+        assert!(!whole.starts_partway());
+        // The feed kept the latest items only.
+        let cut = model(vec![
+            said(5, Kind::Reply, 2, "…and the lexer."),
+            message(7, 3, 4, "Thanks."),
+        ]);
+        assert!(cut.starts_partway());
+        assert!(!model(Vec::new()).starts_partway());
     }
 
     /// A restored history: its items carry no turn. The counts are the

@@ -776,9 +776,12 @@ impl SessionView {
     /// Exports the conversation shown as Markdown, to a file the user
     /// chooses (Export as Markdown…).
     pub fn export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let items = self
+        let (items, starts_partway) = self
             .transcript(cx)
-            .map(|transcript| transcript.read(cx).export_items())
+            .map(|transcript| {
+                let transcript = transcript.read(cx);
+                (transcript.export_items(), transcript.starts_partway())
+            })
             .unwrap_or_default();
         let Some(session) = self.session.as_ref().filter(|_| !items.is_empty()) else {
             window.push_notification("There is no conversation to export yet.", cx);
@@ -793,6 +796,7 @@ impl SessionView {
                 .workspace()
                 .map(|folder| shown_folder(folder, self.home.as_deref())),
             when: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+            starts_partway,
         };
         let text = crate::export::markdown(&header, &items);
         let folder = crate::export::folder(
@@ -813,7 +817,13 @@ impl SessionView {
                 })
                 .await;
             cx.update(|window, cx| match written {
-                Ok(()) => window.push_notification(format!("Exported to {}.", path.display()), cx),
+                Ok(()) => {
+                    let mut said = format!("Exported to {}.", path.display());
+                    if starts_partway {
+                        said.push_str(" It starts partway, without the earliest messages.");
+                    }
+                    window.push_notification(said, cx)
+                }
                 Err(error) => window.push_notification(
                     gpui_kit::component::notification::Notification::error(format!(
                         "Couldn’t export to {}: {error}.",
