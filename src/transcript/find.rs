@@ -30,8 +30,10 @@ const LOWERCASE_IN_BACKGROUND: usize = 256 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum Place {
     /// The entry's plain text: a message of the user's, a notice, an
-    /// output, a call's line.
+    /// output, a call's line, a turn's footer, a worker card's title.
     Text,
+    /// Why a call failed, beside its line.
+    Outcome,
     /// Block `n` of the entry's Markdown, as it renders.
     Block(usize),
     /// Block `n` of the entry's Markdown, shown as its source.
@@ -707,7 +709,20 @@ impl TranscriptView {
     fn gather(&self, entry: &Entry, cx: &App) -> Gathered {
         let item = &entry.item;
         let texts = match item.kind {
-            Kind::User | Kind::Notice | Kind::Output => vec![(Place::Text, item.text.clone())],
+            Kind::User | Kind::Notice | Kind::Output | Kind::Turn => {
+                vec![(Place::Text, item.text.clone())]
+            }
+            Kind::WorkerLine => {
+                // The card's title: the worker's task, as its summary says.
+                let title = item
+                    .worker
+                    .as_deref()
+                    .and_then(|worker| self.model.worker(worker))
+                    .map(|summary| summary.title.clone())
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or_else(|| item.text.clone());
+                vec![(Place::Text, title)]
+            }
             Kind::Text | Kind::Reply | Kind::Message | Kind::Question | Kind::Thinking => {
                 let doc = self
                     .ui
@@ -749,6 +764,11 @@ impl TranscriptView {
                     Place::Text,
                     item.text.lines().next().unwrap_or_default().to_string(),
                 )];
+                if item.status == Some(arko::remote::CallStatus::Failed)
+                    && let Some(outcome) = &item.outcome
+                {
+                    texts.push((Place::Outcome, outcome.clone()));
+                }
                 if let Some(parameters) = row::shown_parameters(item) {
                     texts.push((Place::Parameters, parameters.to_string()));
                 }

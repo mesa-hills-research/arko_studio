@@ -643,3 +643,48 @@ fn matches_past_an_outputs_first_lines_are_found_in_the_full_output(cx: &mut Tes
     })
     .unwrap();
 }
+
+/// The find covers what a row shows beside its text: why a call failed,
+/// a worker card's title, a turn's footer.
+#[gpui_kit::test]
+fn the_find_covers_a_failure_a_workers_title_and_a_turns_footer(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    feed.user("Go.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let id = Uuid::new_v4();
+    let parameters: HashMap<String, Value> = [("command".to_string(), Value::from("cargo test"))]
+        .into_iter()
+        .collect();
+    feed.event(
+        &event(AgentEvent::ToolCallFormatted {
+            tool_call_id: id,
+            tool_name: "shell".into(),
+            parameters,
+        }),
+        None,
+    );
+    feed.event(
+        &event(AgentEvent::ToolResult {
+            tool_call_id: id,
+            tool_name: "shell".into(),
+            output: "exit code 101, 0.2 s\nthe tests failed".into(),
+        }),
+        None,
+    );
+    feed.worker(
+        "r1",
+        "Profile the renderer",
+        arko::remote::WorkerChange::Started,
+    );
+    feed.turn_ended("48 s · $0.21", None);
+    let (window, view) = open_feed(cx, &feed, View::Full, 900.);
+    let call = entry(cx, &view, "cargo test");
+    assert_eq!(find(cx, window, &view, "exit 101").total, 1);
+    assert_eq!(
+        cx.read(|cx| view.read(cx).match_ranges(call, Place::Outcome))
+            .len(),
+        1
+    );
+    assert_eq!(find(cx, window, &view, "renderer").total, 1);
+    assert_eq!(find(cx, window, &view, "$0.21").total, 1);
+}

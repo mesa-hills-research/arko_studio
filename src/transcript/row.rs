@@ -965,7 +965,12 @@ impl TranscriptView {
                     .text_color(theme.danger)
                     .child(Icon::new(Lucide::CircleX).xsmall())
                     .when_some(item.outcome.clone(), |this, outcome| {
-                        this.child(div().min_w_0().truncate().child(outcome))
+                        this.child(div().min_w_0().truncate().child(self.marked_plain(
+                            id,
+                            Place::Outcome,
+                            outcome,
+                            cx,
+                        )))
                     })
                     .into_any_element(),
             ),
@@ -1325,7 +1330,7 @@ impl TranscriptView {
             .text_xs()
             .text_color(theme.muted_foreground)
             .truncate()
-            .child(item.text.clone())
+            .child(self.marked_plain(id, Place::Text, item.text.clone(), cx))
             .into_any_element()
     }
 
@@ -1382,7 +1387,14 @@ impl TranscriptView {
                             .text_size(theme.mono_font_size)
                             .child(worker_id),
                     )
-                    .child(div().flex_1().min_w_0().truncate().text_left().child(title))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_left()
+                            .child(self.marked_plain(id, Place::Text, title, cx)),
+                    )
                     .child(
                         div()
                             .flex_none()
