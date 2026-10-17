@@ -114,9 +114,13 @@ pub fn close_window(window: &mut Window, cx: &mut App) {
 pub fn quit(cx: &mut App) {
     // Deferred, so the window that sent Quit is free to answer too.
     cx.defer(|cx| {
-        // The sessions close first, asking about their work in one window.
+        // The sessions close first, asking about their work in one window:
+        // with none left open (macOS runs on without one), a new one.
         if crate::quit::any_running(cx)
-            && let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied())
+            && let Some(window) = cx
+                .active_window()
+                .or_else(|| cx.windows().first().copied())
+                .or_else(|| crate::workspace::open_with(None, cx))
         {
             window
                 .update(cx, |_, window, cx| crate::quit::quit(window, cx))

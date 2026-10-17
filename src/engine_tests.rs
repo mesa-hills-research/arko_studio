@@ -728,6 +728,35 @@ impl App {
 }
 
 #[gpui_kit::test]
+fn quitting_with_no_window_open_asks_about_the_work_in_a_new_one(cx: &mut TestAppContext) {
+    let (_mock, app, session, _) = a_session_with_a_job(cx);
+    // As on macOS: the last window closed, and the sessions run on.
+    cx.update_window(app.window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert!(cx.read(|cx| cx.windows().is_empty()));
+    cx.update(crate::chrome::quit);
+    cx.run_until_parked();
+    let window = cx
+        .read(|cx| cx.windows().first().copied())
+        .expect("a window to ask in");
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("quit-work").is_some());
+        window.within("dialog").click("cancel", cx);
+    });
+    assert!(cx.read(|cx| session.read(cx).is_running()), "kept");
+    act(cx, window, |window, cx| {
+        crate::quit::close(LiveSessions::all(cx), false, window, cx);
+    });
+    act(cx, window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| LiveSessions::all(cx).is_empty())
+    });
+}
+
+#[gpui_kit::test]
 fn deleting_a_session_with_running_work_asks_to_stop_it_then_deletes_it(cx: &mut TestAppContext) {
     let (_mock, app, session, id) = a_session_with_a_job(cx);
     app.delete(&id, cx);
