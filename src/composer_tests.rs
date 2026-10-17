@@ -668,3 +668,39 @@ fn an_at_mentions_files_are_ranked_off_the_ui_thread_latest_first(cx: &mut TestA
     cx.run_until_parked();
     assert_eq!(first(cx), Some(("src/parse.rs".to_string(), 4..7)));
 }
+
+/// Branching needs the session to run: a session this app hasn't opened
+/// offers Branch from Here, but disabled.
+#[gpui_kit::test]
+fn branch_from_here_waits_for_the_session_to_run(cx: &mut TestAppContext) {
+    let (_, window, workspace) = start(cx);
+    let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        let sidebar = workspace.read(cx).sidebar().clone();
+        let heard = heard.clone();
+        cx.subscribe(
+            &sidebar,
+            move |_, event: &crate::sidebar::SidebarEvent, _| {
+                heard.borrow_mut().push(event.clone())
+            },
+        )
+        .detach();
+    });
+    let row = row_of(&workspace, "Split the engine out of main.rs", cx);
+    act(cx, window, |window, cx| {
+        window.right_click(("row", row), cx)
+    });
+    act(cx, window, |window, cx| {
+        let branch = window.within("popup-menu").find(2usize);
+        assert_eq!(branch.label(), Some("Branch from Here"));
+        window.within("popup-menu").click(2usize, cx);
+    });
+    assert!(
+        !heard
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, crate::sidebar::SidebarEvent::Branch(_))),
+        "{:?}",
+        heard.borrow()
+    );
+}

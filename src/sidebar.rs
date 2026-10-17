@@ -19,7 +19,7 @@ use gpui_kit::*;
 
 use crate::backend::{BackendError, Mode, SessionEntry, SessionId, SharedBackend};
 use crate::layout::relative_time;
-use crate::live::LiveSessions;
+use crate::live::{LiveSessions, Phase};
 use crate::menus::{DeleteSession, NewSession, RenameSession};
 use crate::prefs;
 
@@ -53,6 +53,9 @@ pub enum SidebarEvent {
     Open(SessionId),
     OpenConversation(SessionId, u32),
     OpenInNewWindow(SessionId),
+    /// Branch the session from its latest message: a new session with its
+    /// conversation, which the window opens.
+    Branch(SessionId),
     /// A session was renamed; the window updates its title if it shows it.
     Renamed(SessionId, String),
     Deleted(SessionId),
@@ -1001,9 +1004,22 @@ impl Sidebar {
                         this.cursor = this.rows.get(index).map(Row::key);
                         this.open_row(index, cx);
                     }))
-                    .context_menu(move |menu, _, _| {
+                    .context_menu(move |menu, _, cx| {
                         let id = menu_id.clone();
                         let sidebar = sidebar.clone();
+                        // The engine branches a session it runs: one open
+                        // in this app.
+                        let open = LiveSessions::find(&id, cx)
+                            .is_some_and(|session| *session.read(cx).phase() == Phase::Open);
+                        let branch = {
+                            let id = id.clone();
+                            let sidebar = sidebar.clone();
+                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                sidebar
+                                    .update(cx, |_, cx| cx.emit(SidebarEvent::Branch(id.clone())))
+                                    .ok();
+                            }
+                        };
                         let open_new = {
                             let id = id.clone();
                             let sidebar = sidebar.clone();
@@ -1018,7 +1034,11 @@ impl Sidebar {
                         menu.action_context(focus.clone())
                             .menu("Rename…", Box::new(RenameSession))
                             .item(PopupMenuItem::new("Open in New Window").on_click(open_new))
-                            .item(PopupMenuItem::new("Branch from Here").disabled(true))
+                            .item(
+                                PopupMenuItem::new("Branch from Here")
+                                    .disabled(!open)
+                                    .on_click(branch),
+                            )
                             .when_some(workspace.clone(), |menu, folder| {
                                 menu.item(
                                     PopupMenuItem::new("Reveal Folder")

@@ -336,3 +336,47 @@ fn branch_instead_goes_on_in_a_new_session_and_leaves_this_one(cx: &mut TestAppC
     assert!(cx.read(|cx| crate::prefs::get(cx).sessions.ask_before_edit));
     app.close_all(cx);
 }
+
+#[gpui_kit::test]
+fn the_sidebar_branches_an_open_session_from_its_latest_message(cx: &mut TestAppContext) {
+    let mock = answers();
+    let app = start(cx, &mock);
+    app.send(cx, "Count the pears.");
+    app.wait_for(cx, "Seven pears.");
+    app.wait_idle(cx);
+    app.send(cx, "And the plums?");
+    app.wait_for(cx, "Three plums.");
+    app.wait_idle(cx);
+    let original = cx.read(|cx| app.view.read(cx).live_session().cloned().unwrap());
+    wait_until(cx, "the session's row", |cx| {
+        cx.read(|cx| {
+            app.workspace
+                .read(cx)
+                .sidebar()
+                .read(cx)
+                .rows()
+                .iter()
+                .any(|row| matches!(row, crate::sidebar::Row::Session { title, .. } if title == "Count the pears."))
+        })
+    });
+    let row = crate::tests::row_of(&app.workspace, "Count the pears.", cx);
+    act(cx, app.window, |window, cx| {
+        window.right_click(("row", row), cx)
+    });
+    act(cx, app.window, |window, cx| {
+        window.within("popup-menu").click(2usize, cx)
+    });
+    // The branch opens here with the whole conversation.
+    wait_until(cx, "the branch to open", |cx| {
+        cx.read(|cx| {
+            app.view.read(cx).live_session().is_some_and(|session| {
+                session.entity_id() != original.entity_id()
+                    && session.read(cx).title().starts_with("Branch of")
+            })
+        })
+    });
+    app.wait_for(cx, "Three plums.");
+    assert!(app.says(cx, "Seven pears."));
+    assert!(cx.read(|cx| original.read(cx).is_running()), "it runs on");
+    app.close_all(cx);
+}

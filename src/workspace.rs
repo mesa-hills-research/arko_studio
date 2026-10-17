@@ -800,7 +800,31 @@ impl Workspace {
                     self.show(None, window, cx);
                 }
             }
+            SidebarEvent::Branch(id) => self.branch_session(id.clone(), window, cx),
         }
+    }
+
+    /// Branches the session `id`, open in this app, from its latest
+    /// message: a new session with its whole conversation, titled "Branch
+    /// of …", which this window opens. The session runs on.
+    fn branch_session(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = LiveSessions::find(&id, cx) else {
+            window.push_notification("Open the session to branch it.", cx);
+            return;
+        };
+        let branching = session.read(cx).branch(None, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let branched = branching.await;
+            this.update_in(cx, |this, window, cx| match branched {
+                Ok(branch) => {
+                    let entry = session.read(cx).branch_entry(branch);
+                    this.open_branch(entry, None, None, window, cx);
+                }
+                Err(why) => window.push_notification(why, cx),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn toggle_sidebar(
