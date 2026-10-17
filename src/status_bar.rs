@@ -1,6 +1,6 @@
 //! The status bar under the window. It shows only what the user may act on:
 //! a turn's state while one runs, workers, unusual states such as outside
-//! access, and on the right plan usage and cost.
+//! access, and on the right plan usage, cost and context.
 //! An idle window with nothing unusual has an empty bar.
 //!
 //! The bar is a view of its own: its clock ticks once a second only while
@@ -24,6 +24,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::context_ring::{ContextDetails, ContextSize, context_button};
 use crate::figures::{self, Turn};
 use crate::layout::WidthClass;
 use crate::live::LiveSession;
@@ -424,6 +425,27 @@ impl StatusBar {
                 .into_any_element(),
         )
     }
+
+    fn render_context(&self, context: ContextSize, cx: &mut Context<Self>) -> AnyElement {
+        let this = cx.entity();
+        let clock = self.clock.clone();
+        context_button(
+            context,
+            move |cx| {
+                let bar = this.read(cx);
+                let reading = bar
+                    .status(cx)
+                    .map(|(reading, _)| reading)
+                    .unwrap_or_default();
+                let details = ContextDetails::new(&reading, clock());
+                match bar.session() {
+                    Some(session) => details.session(session),
+                    None => details,
+                }
+            },
+            cx,
+        )
+    }
 }
 
 /// What the bar shows, part by part: each `None` (or `false`) while hidden.
@@ -439,11 +461,13 @@ pub struct Shown {
     pub plan: Option<String>,
     /// "$1.20".
     pub cost: Option<String>,
+    /// "142k / 1M", and whether it warns.
+    pub context: Option<(String, bool)>,
 }
 
 impl StatusBar {
-    /// What the bar shows now. Narrow windows keep the cost and the
-    /// warnings.
+    /// What the bar shows now. Narrow windows keep the context, the cost
+    /// and the warnings.
     pub fn shown(&self, cx: &App) -> Shown {
         let Some((reading, activity)) = self.status(cx) else {
             return Shown::default();
@@ -465,6 +489,8 @@ impl StatusBar {
                 .filter(|_| wide)
                 .map(|(_, window)| figures::plan_label(window)),
             cost: figures::cost_label(&reading),
+            context: ContextSize::of(&reading)
+                .map(|context| (context.label(), context.near_handover())),
         }
     }
 }
@@ -499,6 +525,9 @@ impl Render for StatusBar {
         }
         if let Some(cost) = self.render_cost(&reading, cx) {
             bar = bar.right(cost);
+        }
+        if let Some(context) = ContextSize::of(&reading) {
+            bar = bar.right(self.render_context(context, cx));
         }
         bar
     }

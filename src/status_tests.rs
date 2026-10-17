@@ -163,6 +163,7 @@ fn an_idle_session_with_nothing_unusual_shows_nothing(cx: &mut TestAppContext) {
         "status-web-page",
         "status-plan",
         "status-cost",
+        "status-context",
     ] {
         assert!(!bar.find(cx, id), "{id} shows");
     }
@@ -181,6 +182,7 @@ fn a_busy_session_shows_its_turn_workers_warnings_and_figures(cx: &mut TestAppCo
             web_page: true,
             plan: Some("5 h limit 84%".into()),
             cost: Some("$1.20".into()),
+            context: Some(("142k / 1M".into(), false)),
         }
     );
     for id in [
@@ -190,6 +192,7 @@ fn a_busy_session_shows_its_turn_workers_warnings_and_figures(cx: &mut TestAppCo
         "status-web-page",
         "status-plan",
         "status-cost",
+        "status-context",
     ] {
         assert!(bar.find(cx, id), "{id} is missing");
     }
@@ -207,7 +210,7 @@ fn a_busy_session_shows_its_turn_workers_warnings_and_figures(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
-fn a_narrow_bar_keeps_the_cost_and_the_warnings(cx: &mut TestAppContext) {
+fn a_narrow_bar_keeps_the_context_the_cost_and_the_warnings(cx: &mut TestAppContext) {
     let bar = bar(cx, 600.);
     bar.show(cx, busy(), working(NOW - 83_000));
     let shown = bar.shown(cx);
@@ -215,7 +218,7 @@ fn a_narrow_bar_keeps_the_cost_and_the_warnings(cx: &mut TestAppContext) {
     assert!(shown.workers.is_empty());
     assert_eq!(shown.plan, None);
     assert!(shown.outside && shown.web_page);
-    assert!(shown.cost.is_some());
+    assert!(shown.cost.is_some() && shown.context.is_some());
 }
 
 #[gpui_kit::test]
@@ -310,6 +313,47 @@ fn the_web_pages_popover_shows_its_links_and_stops_sharing(cx: &mut TestAppConte
         window.click("web-page-stop", cx)
     });
     assert_eq!(sent(&bar.session, cx), ["/remote new-key", "/remote off"]);
+}
+
+#[gpui_kit::test]
+fn the_contexts_popover_shows_the_split_and_hands_over(cx: &mut TestAppContext) {
+    let bar = bar(cx, 1300.);
+    let mut reading = busy();
+    reading.last_request = Some(arko::remote::LastRequest {
+        at: NOW,
+        model: "claude-opus-5-5".into(),
+        sizes: Some(Default::default()),
+        bytes_per_token: 4.,
+    });
+    if let Some(sizes) = reading
+        .last_request
+        .as_mut()
+        .and_then(|request| request.sizes.as_mut())
+    {
+        sizes.system_prompt = 80_000;
+        sizes.user_text = 400_000;
+        sizes.tool_results = 100_000;
+    }
+    reading.cache.read = Some(140_000);
+    reading.cache.written = Some(2_000);
+    bar.show(cx, reading, Activity::default());
+    act(cx, bar.window, |window, cx| {
+        window.click("status-context", cx)
+    });
+    assert!(bar.find(cx, "context-details"));
+    act(cx, bar.window, |window, cx| {
+        window.click("hand-over-now", cx)
+    });
+    assert_eq!(sent(&bar.session, cx), ["/handover"]);
+}
+
+#[gpui_kit::test]
+fn the_context_warns_from_90_percent_of_the_handover_size(cx: &mut TestAppContext) {
+    let bar = bar(cx, 1300.);
+    let mut reading = busy();
+    reading.context_tokens = Some(855_000);
+    bar.show(cx, reading, Activity::default());
+    assert_eq!(bar.shown(cx).context, Some(("855k / 1M".into(), true)));
 }
 
 #[gpui_kit::test]

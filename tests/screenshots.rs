@@ -571,8 +571,8 @@ fn status_narrow_dark() {
     );
 }
 
-/// The status bar's popovers side by side: the cost's and the web
-/// page's.
+/// The status bar's popovers side by side: the context's, the cost's and
+/// the web page's.
 struct StatusPopovers {
     reading: Arc<arko::remote::Reading>,
 }
@@ -584,6 +584,7 @@ impl gpui_kit::Render for StatusPopovers {
         cx: &mut gpui_kit::Context<Self>,
     ) -> impl gpui_kit::IntoElement {
         use arko::details::{CostReport, CostShare};
+        use arko_studio::context_ring::ContextDetails;
         use arko_studio::status_bar::CostDetails;
         use arko_studio::web_page::WebPagePanel;
         use gpui_kit::component::{ActiveTheme as _, h_flex};
@@ -621,6 +622,9 @@ impl gpui_kit::Render for StatusPopovers {
             .bg(theme.background)
             .text_color(theme.foreground)
             .font_family(theme.font_family.clone())
+            .child(card(
+                ContextDetails::new(&self.reading, status::NOW).into_any_element(),
+            ))
             .child(card(
                 CostDetails::new(Some(cost), &self.reading).into_any_element(),
             ))

@@ -13,6 +13,7 @@ mod bundled_themes;
 pub mod chrome;
 pub mod commands;
 pub mod composer;
+pub mod context_ring;
 pub mod drafts;
 pub mod figures;
 pub mod fonts;
