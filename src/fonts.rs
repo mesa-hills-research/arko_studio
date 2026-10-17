@@ -123,7 +123,7 @@ pub fn note_added(data: Cow<'static, [u8]>, cx: &mut App) {
 /// The families the font pickers list: the system's, the bundled ones and
 /// the ones the user added, with their faces. Reading them takes a while
 /// (every installed font file is opened), so it's done once, in the
-/// background, the first time Settings opens; the pickers wait for it.
+/// background, the first time Settings opens, and the pickers wait for it.
 #[derive(Default)]
 pub struct PickerCatalog {
     catalog: Option<FontCatalog>,

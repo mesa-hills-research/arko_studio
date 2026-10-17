@@ -39,7 +39,7 @@ pub struct SessionDefaults {
     pub shell: Option<arko::WindowsShell>,
     /// MCP config files every session reads (arko's `--mcp-config`).
     pub mcp_config: Vec<PathBuf>,
-    /// Where every session serves its web page as it opens; `None` when it
+    /// Where every session serves its web page as it opens. `None` when it
     /// doesn't.
     pub web_page: Option<arko::remote::Bind>,
 }

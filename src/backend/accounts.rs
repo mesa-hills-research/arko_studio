@@ -20,7 +20,7 @@ pub struct Accounts {
     pub chatgpt: ChatGptLogin,
     pub claude_code: ClaudeCodeStatus,
     /// The 1-hour cache as `ARKO_CACHE_1H` sets it, in the environment or
-    /// a `.env` file; `None` where it isn't set.
+    /// a `.env` file. `None` where it isn't set.
     pub cache_1h: Option<bool>,
 }
 

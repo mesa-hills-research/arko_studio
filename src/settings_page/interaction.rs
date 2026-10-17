@@ -86,7 +86,7 @@ fn a_new_session_starts_as_settings_say(cx: &mut TestAppContext) {
 }
 
 /// A key is added in a masked field, replaced, and removed after a
-/// confirmation, all through the backend; keys Arko didn't save can't be
+/// confirmation, all through the backend. Keys Arko didn't save can't be
 /// removed here.
 #[gpui_kit::test]
 fn api_keys_are_added_and_removed_through_the_backend(cx: &mut TestAppContext) {
@@ -164,8 +164,8 @@ fn logins_are_checked_and_chosen(cx: &mut TestAppContext) {
     assert_eq!(state, LoginState::Ready);
 }
 
-/// Sizes and times are saved as soon as they read as arko reads them;
-/// until then the field says why, and the setting stays. A reset empties
+/// Sizes and times are saved as soon as they read as arko reads them.
+/// Until then the field says why, and the setting stays. A reset empties
 /// the field.
 #[gpui_kit::test]
 fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
