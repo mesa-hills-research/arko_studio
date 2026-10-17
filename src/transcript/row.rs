@@ -1264,13 +1264,18 @@ impl OutputViewer {
         let list = ListState::new(lines.len(), ListAlignment::Top, px(400.));
         Self { text, lines, list }
     }
+
+    /// What Copy all copies: the output itself, shared, not a copy of it
+    /// made with each frame.
+    fn copy_value(&self) -> SharedString {
+        self.text.clone().into()
+    }
 }
 
 impl Render for OutputViewer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let viewer = cx.entity().downgrade();
-        let copy: SharedString = self.text.to_string().into();
         v_flex()
             .gap_2()
             .child(
@@ -1305,7 +1310,7 @@ impl Render for OutputViewer {
                 h_flex().justify_end().child(
                     Clipboard::new("copy-output")
                         .tooltip("Copy all")
-                        .value(copy),
+                        .value(self.copy_value()),
                 ),
             )
     }
@@ -1474,8 +1479,20 @@ impl RenderOnce for Thumbnail {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{apply_diff_patch, code_lines, duration, edit_diff, longest_code, preview};
+    use super::{
+        OutputViewer, apply_diff_patch, code_lines, duration, edit_diff, longest_code, preview,
+    };
     use arko::remote::{Item, Kind};
+    use gpui_kit::AppContext as _;
+    use std::sync::Arc;
+
+    #[gpui_kit::test]
+    fn the_output_dialogs_copy_shares_the_output(cx: &mut gpui_kit::TestAppContext) {
+        let text: Arc<str> = "line\n".repeat(100_000).into();
+        let viewer = cx.new(|cx| OutputViewer::new(text.clone(), cx));
+        let copy = cx.read(|cx| viewer.read(cx).copy_value());
+        assert_eq!(copy.as_ptr(), text.as_ptr());
+    }
 
     #[test]
     fn an_edits_diff_is_numbered_from_the_line_it_changed() {
