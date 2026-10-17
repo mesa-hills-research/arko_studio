@@ -62,10 +62,8 @@ actions!(
 pub enum WorkersPanelEvent {
     /// Send this command line to the session (`/stop-workers r1`).
     Command(String),
-    /// The worker the composer writes to: the one shown while the panel has
-    /// the focus, `None` when the panel lets go of it.
-    Target(Option<SharedString>),
-    /// Message a worker: the composer takes the focus, writing to it.
+    /// Message a worker: the composer takes the focus, writing to it until
+    /// the user goes back to Arko (the chip's ×, Esc) or another session.
     Message(SharedString),
     /// Esc in the list: the keyboard goes back to the composer.
     Leave,
@@ -132,8 +130,6 @@ pub struct WorkersPanel {
     clock: Clock,
     /// Draws again while a time on show goes on.
     ticker: Option<Task<()>>,
-    /// The worker the panel last told the composer to write to.
-    target: Option<SharedString>,
     _session: Option<Subscription>,
     _focus: Vec<Subscription>,
 }
@@ -150,21 +146,12 @@ impl WorkersPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let worker_focus = cx.focus_handle();
-        let focus = vec![
-            // The worker shown takes the composer while its view has the
-            // focus.
-            cx.on_focus_in(&worker_focus, window, |this, _, cx| {
-                let open = this.open.clone();
-                this.set_target(open, cx);
-            }),
-            cx.on_focus_in(&focus_handle, window, |this, _, cx| {
-                this.set_target(None, cx);
-                if this.cursor.is_none() {
-                    this.cursor = this.rows(this.now()).into_iter().next();
-                    cx.notify();
-                }
-            }),
-        ];
+        let focus = vec![cx.on_focus_in(&focus_handle, window, |this, _, cx| {
+            if this.cursor.is_none() {
+                this.cursor = this.rows(this.now()).into_iter().next();
+                cx.notify();
+            }
+        })];
         Self {
             session: None,
             source: PanelSource::default(),
@@ -177,7 +164,6 @@ impl WorkersPanel {
             scroll: ScrollHandle::new(),
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
-            target: None,
             _session: None,
             _focus: focus,
         }
@@ -213,7 +199,6 @@ impl WorkersPanel {
             self.open = None;
             self.cursor = None;
             self.finished_open = false;
-            self.set_target(None, cx);
         }
         let same = source.workers == self.source.workers
             && source.times == self.source.times
@@ -240,11 +225,6 @@ impl WorkersPanel {
     /// The worker whose transcript shows.
     pub fn open_worker(&self) -> Option<&SharedString> {
         self.open.as_ref()
-    }
-
-    /// The worker the composer writes to while the panel has the focus.
-    pub fn target(&self) -> Option<&SharedString> {
-        self.target.as_ref()
     }
 
     /// The list's rows at `now`: the current workers in the order they
@@ -323,7 +303,6 @@ impl WorkersPanel {
     /// Back to the list.
     pub fn show_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.open.take().is_some() {
-            self.set_target(None, cx);
             self.focus_handle.focus(window, cx);
             cx.notify();
         }
@@ -343,30 +322,16 @@ impl WorkersPanel {
         }
     }
 
-    /// Opens the worker `id` and gives its view the keyboard: the composer
-    /// writes to it.
+    /// Opens the worker `id` and gives its view the keyboard. The composer
+    /// goes on writing to Arko: only Message writes to a worker.
     fn enter_worker(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_worker(id.clone(), window, cx);
+        self.show_worker(id, window, cx);
         self.worker_focus.focus(window, cx);
-        self.set_target(Some(id), cx);
     }
 
     pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.focus_handle.contains_focused(window, cx)
             || self.worker_focus.contains_focused(window, cx)
-    }
-
-    /// The panel no longer shows: the composer writes to the main agent
-    /// again.
-    pub fn hidden(&mut self, cx: &mut Context<Self>) {
-        self.set_target(None, cx);
-    }
-
-    /// Tells the composer whom it writes to. Told each time, as the composer
-    /// may have gone back to the main agent since (its target's ×).
-    fn set_target(&mut self, target: Option<SharedString>, cx: &mut Context<Self>) {
-        self.target = target.clone();
-        cx.emit(WorkersPanelEvent::Target(target));
     }
 
     /// Stops the worker `id`.
@@ -379,7 +344,6 @@ impl WorkersPanel {
     }
 
     fn message(&mut self, id: SharedString, cx: &mut Context<Self>) {
-        self.target = Some(id.clone());
         cx.emit(WorkersPanelEvent::Message(id));
     }
 

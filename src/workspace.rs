@@ -412,9 +412,6 @@ impl Workspace {
                             this.sheet = None;
                             this.sync_chrome(window, cx);
                         }
-                        if edge == Edge::Panel {
-                            this.workers.update(cx, |panel, cx| panel.hidden(cx));
-                        }
                     })
                     .ok();
                 })
@@ -660,11 +657,6 @@ impl Workspace {
                         window.push_notification(why, cx);
                     }
                 }
-            }
-            WorkersPanelEvent::Target(target) => {
-                let target = target.clone();
-                self.session_view
-                    .update(cx, |view, cx| view.set_target(target, window, cx));
             }
             WorkersPanelEvent::Message(id) => {
                 let target = Some(id.clone());
@@ -928,11 +920,8 @@ impl Workspace {
             window.defer(cx, move |window, cx| {
                 workers.update(cx, |panel, cx| panel.focus(window, cx));
             });
-        } else {
-            self.workers.update(cx, |panel, cx| panel.hidden(cx));
-            if had_focus {
-                self.focus_composer(window, cx);
-            }
+        } else if had_focus {
+            self.focus_composer(window, cx);
         }
     }
 

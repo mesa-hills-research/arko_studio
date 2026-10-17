@@ -225,35 +225,30 @@ fn the_keyboard_moves_through_the_list_and_opens_a_worker(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
-fn a_workers_view_has_the_composer_write_to_it_and_stops_it(cx: &mut TestAppContext) {
+fn a_workers_view_writes_to_it_only_through_message(cx: &mut TestAppContext) {
     let panel = open(cx);
     panel.click(cx, ("worker", 0usize));
     assert_eq!(panel.open_worker(cx).as_deref(), Some("r1"));
-    // Opening it with a click gives it the focus: the composer writes to r1.
+    // Viewing a worker leaves the composer writing to Arko.
     assert!(
-        panel
-            .events
-            .borrow()
-            .contains(&WorkersPanelEvent::Target(Some("r1".into())))
+        panel.events.borrow().is_empty(),
+        "{:?}",
+        panel.events.borrow()
     );
     let facts = cx.read(|cx| panel.panel.read(cx).facts("r1", *panel.now.borrow()));
     assert!(facts.starts_with("Running · 1 s · 0 calls"), "{facts}");
     panel.click(cx, "worker-stop");
     panel.click(cx, "worker-message");
-    {
-        let events = panel.events.borrow();
-        assert!(events.contains(&WorkersPanelEvent::Command("/stop-workers r1".into())));
-        assert_eq!(
-            events.last(),
-            Some(&WorkersPanelEvent::Message("r1".into()))
-        );
-    }
-    // Back to the list: the composer writes to the main agent again.
-    panel.click(cx, "workers-back");
     assert_eq!(
-        panel.events.borrow().last(),
-        Some(&WorkersPanelEvent::Target(None))
+        *panel.events.borrow(),
+        [
+            WorkersPanelEvent::Command("/stop-workers r1".into()),
+            WorkersPanelEvent::Message("r1".into())
+        ]
     );
+    // Back to the list: the composer keeps writing to whom the user chose.
+    panel.click(cx, "workers-back");
+    assert_eq!(panel.events.borrow().len(), 2);
     // A finished worker has no Stop.
     panel.click(cx, ("worker", 1usize));
     cx.update_window(panel.window, |_, window, _| {
@@ -346,6 +341,58 @@ fn the_composer_writes_to_the_worker_the_panel_shows(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| window.press("escape", cx));
     assert_eq!(cx.read(|cx| view.read(cx).target().cloned()), None);
     assert_eq!(cx.read(|cx| view.read(cx).placeholder(cx)), "Message Arko");
+    act(cx, window, |window, cx| {
+        let sessions = crate::live::LiveSessions::all(cx);
+        crate::quit::close(sessions, false, window, cx);
+    });
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
+    });
+}
+
+/// Writing to a worker and editing a message are two modes Esc ends: one
+/// at a time. Choosing a worker ends an edit.
+#[gpui_kit::test]
+fn writing_to_a_worker_ends_an_edit(cx: &mut TestAppContext) {
+    use crate::testing::{Mock, reply, wait_until};
+    use crate::tests::{act, open};
+
+    let mock = Mock::start(|_, _| reply("a1", "Done."));
+    let temp = tempfile::tempdir().unwrap();
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    cx.executor().allow_parking();
+    let backend = Arc::new(
+        crate::backend::ArkoBackend::new(temp.path().join("arko")).with_configure(mock.configure()),
+    );
+    cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    let (window, workspace) = open(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    cx.update(|cx| view.update(cx, |view, cx| view.set_draft_folder(work.clone(), cx)));
+    act(cx, window, |window, cx| window.input("Hello.", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    wait_until(cx, "the reply", |cx| {
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.read(|cx| {
+            view.read(cx).transcript(cx).is_some_and(|transcript| {
+                transcript.read(cx).last_reply().is_some()
+                    && transcript.read(cx).busy_reason().is_none()
+            })
+        })
+    });
+    act(cx, window, |window, cx| window.press("up", cx));
+    assert!(cx.read(|cx| view.read(cx).is_editing()));
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_target(Some("r1".into()), window, cx)
+        })
+    });
+    assert!(!cx.read(|cx| view.read(cx).is_editing()));
+    assert_eq!(
+        cx.read(|cx| view.read(cx).target().cloned()).as_deref(),
+        Some("r1")
+    );
     act(cx, window, |window, cx| {
         let sessions = crate::live::LiveSessions::all(cx);
         crate::quit::close(sessions, false, window, cx);

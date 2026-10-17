@@ -621,6 +621,11 @@ impl SessionView {
         cx: &mut Context<Self>,
     ) {
         if self.target != target {
+            // Writing to a worker and editing a message are two modes Esc
+            // ends: one at a time.
+            if target.is_some() {
+                self.end_edit(window, cx);
+            }
             self.target = target;
             self.sync_composer(window, cx);
             cx.notify();
