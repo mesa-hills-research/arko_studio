@@ -959,6 +959,48 @@ fn a_long_transcript_shows_its_end_first_and_the_rest_a_chunk_a_frame(cx: &mut T
 }
 
 #[gpui_kit::test]
+fn block_views_far_off_screen_are_let_go(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    // 400 reply blocks.
+    turns(&feed, 200, 0);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    load_all(cx, window, &view);
+    let views = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            view.read(cx)
+                .ui
+                .values()
+                .filter_map(|ui| ui.doc.as_ref())
+                .flat_map(|doc| &doc.blocks)
+                .filter(|block| block.view.is_some())
+                .count()
+        })
+    };
+    // Up through the whole conversation, a screen at a time.
+    let count = cx.read(|cx| view.read(cx).row_count());
+    let mut most = 0;
+    for ix in (0..count).rev().step_by(4) {
+        scroll_to_row(cx, &view, ix);
+        settle(cx, window);
+        most = most.max(views(cx));
+    }
+    scroll_to_row(cx, &view, 0);
+    settle(cx, window);
+    assert!(row_top(cx, window, user_row(&feed, 0)).is_some());
+    let bound = super::BLOCK_VIEWS + super::RELEASE_EVERY + 20;
+    assert!(most <= bound, "{most} views, more than {bound}");
+    // Back at the end, its rows have views again.
+    view.update(cx, |view, cx| view.scroll_to_end(cx));
+    settle(cx, window);
+    let last = keys(&view, cx)
+        .into_iter()
+        .rev()
+        .find(|key| matches!(key, RowKey::Block { .. }));
+    assert!(row_top(cx, window, last.unwrap()).is_some());
+}
+
+#[gpui_kit::test]
 fn a_transcript_not_drawn_takes_its_updates_a_moment_after_they_come(cx: &mut TestAppContext) {
     start(cx);
     let feed = Feed::new("main");

@@ -78,6 +78,13 @@ const IMAGE_BUDGET: usize = 64 * 1024 * 1024;
 /// transcript keeps ready for the image cache: those drawn last.
 const IMAGE_COPIES: usize = 32 * 1024 * 1024;
 
+/// How many block rows keep their views, those drawn last: some screens'
+/// worth, so that scrolling back a little finds them ready.
+const BLOCK_VIEWS: usize = 200;
+
+/// How many views are made between two looks for views to let go.
+const RELEASE_EVERY: usize = 50;
+
 /// The latest entries made ready to show when a transcript starts over (a
 /// session opens, another conversation): the reader sees the end of it at
 /// once, and the older entries are made ready a few at a time.
@@ -147,9 +154,12 @@ struct Doc {
 
 struct Block {
     id: TextBlockId,
-    /// The view of the block, made when its row is first drawn: a long
-    /// session opens without a view per block of its history.
+    /// The view of the block, made when its row is drawn: a long session
+    /// opens without a view per block of its history, and the views of
+    /// rows not drawn for long go ([`BLOCK_VIEWS`]).
     view: Option<Entity<TextViewState>>,
+    /// The frame its row was last drawn in.
+    drawn: usize,
     content: TextBlockContent,
     range: Option<Range<usize>>,
     /// The lines of its longest code block (one in a list item or a quote
@@ -278,6 +288,8 @@ pub struct TranscriptView {
     /// The images read from the store last, ready for the image cache.
     image_copies: Rc<RefCell<ImageCopies>>,
     renders: usize,
+    /// Block views made since the last look for views to let go.
+    views_made: usize,
     /// The rows of each frame drawn, in order.
     #[cfg(test)]
     frames: Vec<usize>,
@@ -339,6 +351,7 @@ impl TranscriptView {
             images: None,
             image_copies: Rc::default(),
             renders: 0,
+            views_made: 0,
             #[cfg(test)]
             frames: Vec::new(),
             _prefs: observe_prefs,
@@ -639,6 +652,7 @@ impl TranscriptView {
             Block {
                 id: block.id(),
                 view: None,
+                drawn: 0,
                 code_lines: code_lines(text, &range, &content),
                 content,
                 range,
@@ -655,9 +669,14 @@ impl TranscriptView {
         block: usize,
         cx: &mut Context<Self>,
     ) -> Option<Entity<TextViewState>> {
+        let frame = self.renders;
         let doc = self.ui.get_mut(&id)?.doc.as_mut()?;
         let state = doc.state.clone();
         let row = doc.blocks.get_mut(block)?;
+        row.drawn = frame;
+        if row.view.is_none() {
+            self.views_made += 1;
+        }
         Some(
             row.view
                 .get_or_insert_with(|| {
@@ -665,6 +684,37 @@ impl TranscriptView {
                 })
                 .clone(),
         )
+    }
+
+    /// Lets go of the views of the blocks drawn longest ago, past
+    /// [`BLOCK_VIEWS`], and of the layouts they hold. A row drawn again
+    /// gets a new view, made from its document's parse.
+    fn release_block_views(&mut self) {
+        self.views_made = 0;
+        let blocks = || {
+            self.ui
+                .values()
+                .filter_map(|ui| ui.doc.as_ref())
+                .flat_map(|doc| &doc.blocks)
+                .filter(|block| block.view.is_some())
+        };
+        let mut frames: Vec<usize> = blocks().map(|block| block.drawn).collect();
+        if frames.len() <= BLOCK_VIEWS {
+            return;
+        }
+        frames.sort_unstable();
+        // Those of the last frames stay, whatever their number.
+        let kept_from = frames[frames.len() - BLOCK_VIEWS].min(self.renders.saturating_sub(1));
+        for block in self
+            .ui
+            .values_mut()
+            .filter_map(|ui| ui.doc.as_mut())
+            .flat_map(|doc| &mut doc.blocks)
+        {
+            if block.drawn < kept_from {
+                block.view = None;
+            }
+        }
     }
 
     /// Rebuilds the rows from the model, and tells the list what changed.
@@ -1103,6 +1153,9 @@ impl Render for TranscriptView {
         }
         #[cfg(test)]
         self.frames.push(self.rows.len());
+        if self.views_made >= RELEASE_EVERY {
+            self.release_block_views();
+        }
         if !self.list.is_scrolled_up() {
             self.new_while_away = 0;
         }
