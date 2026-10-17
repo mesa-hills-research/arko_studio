@@ -795,7 +795,7 @@ fn input_page() -> SettingPage {
                     defaults.keymap,
                 )
                 .description(
-                    "How the composer’s keys move and edit: your platform’s, Emacs’s or Vim’s.",
+                    "Move and edit in the composer with your platform’s keys, Emacs’s or Vim’s.",
                 )
                 .keywords(["keymap", "vim", "emacs", "shortcuts"]),
             ]),
@@ -988,7 +988,7 @@ fn advanced_page(
                 }),
             )
             .description(format!(
-                "{data}. Shared with arko in the terminal: sessions, keys, history and themes."
+                "{data}. Sessions, keys, history and themes are shared with Arko in the terminal."
             ))
             .keywords(["data", "ARKO_HOME", "sessions"]),
             SettingItem::new(

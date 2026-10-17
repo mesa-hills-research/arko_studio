@@ -77,7 +77,7 @@ pub fn sections(sessions: &[SessionEntry]) -> Vec<Section> {
             .iter()
             .enumerate()
             .map(|(page, title)| Row {
-                label: SharedString::from(format!("Settings: {title}")),
+                label: SharedString::from(format!("Settings › {title}")),
                 keywords: vec!["preferences".into()],
                 target: Target::SettingsPage(page),
             })
@@ -268,7 +268,7 @@ mod tests {
             .filter(|label| *label == "Rename Session…")
             .count();
         assert_eq!(rename, 1);
-        assert_eq!(labels("Settings")[0], "Settings: Appearance");
+        assert_eq!(labels("Settings")[0], "Settings › Appearance");
         // Arko's commands, those of the full-screen terminal view left out.
         assert!(labels("Arko Commands").contains(&"/cost".to_string()));
         assert!(!labels("Arko Commands").contains(&"/watch".to_string()));

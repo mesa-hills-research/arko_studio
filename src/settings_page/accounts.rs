@@ -444,7 +444,7 @@ impl AccountsPage {
                 )
                 .description(
                     self.model_note(chosen.worker_model.as_deref()).unwrap_or_else(|| {
-                        "Automatic: the last session’s workers’ model when the main agent starts on the last session’s, else the main agent’s.".into()
+                        "Automatic reuses the last session’s workers’ model when Model is Last used. Otherwise, workers use the main model.".into()
                     }),
                 )
                 .keywords(["workers", "worker model"]),

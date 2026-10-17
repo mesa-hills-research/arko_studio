@@ -247,6 +247,14 @@ fn settings_sessions_narrow_light() {
     );
 }
 
+#[test]
+fn settings_sessions_narrow_dark() {
+    goldens().assert(
+        "settings-sessions-narrow-dark",
+        &settings_window(ThemeMode::Dark, 460., 3),
+    );
+}
+
 /// The app's icon, the image the transcript's tool call shows.
 const PNG: &[u8] = include_bytes!("../packaging/linux/com.mesahillsresearch.ArkoStudio.png");
 

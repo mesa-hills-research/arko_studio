@@ -212,7 +212,7 @@ impl SessionsPage {
         SettingPage::new(super::PAGES[3])
             .icon(IconName::FolderOpen)
             .description(
-                "What new sessions start with. An open session’s own settings are in its Session info: click its title.",
+                "What new sessions start with. Click an open session’s title to change its settings in Session info.",
             )
             .groups([self.agent_group(), self.chat_group(), confirmations_group()])
     }

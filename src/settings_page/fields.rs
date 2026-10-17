@@ -41,7 +41,7 @@ pub struct TextSetting<T> {
 
 impl<T: Clone + PartialEq + 'static> TextSetting<T> {
     /// A field showing the preference as it is, with `placeholder` for the
-    /// default. Its owner hears its input with [`subscribe`] and calls
+    /// default. The containing view hears its input with [`subscribe`] and calls
     /// [`Self::follow`] on the preferences' changes.
     pub fn new(kind: TextKind<T>, placeholder: &str, window: &mut Window, cx: &mut App) -> Self {
         let value = (kind.get)(prefs::get(cx));

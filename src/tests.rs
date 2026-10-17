@@ -688,7 +688,7 @@ fn the_command_palette_runs_commands_in_the_window(cx: &mut TestAppContext) {
 fn the_command_palette_opens_settings_pages_and_sessions(cx: &mut TestAppContext) {
     start(cx);
     let (window, workspace) = open(cx, 1300.);
-    run_from_palette(cx, window, "settings: notifications");
+    run_from_palette(cx, window, "settings › notifications");
     let page = cx.read(|cx| {
         workspace
             .read(cx)
