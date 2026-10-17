@@ -160,6 +160,12 @@ impl StatusBar {
         }
     }
 
+    /// The bar shows a chat's figures.
+    fn is_chat(&self, cx: &App) -> bool {
+        self.session()
+            .is_some_and(|session| session.read(cx).mode() == crate::backend::Mode::Chat)
+    }
+
     /// Shows the web page's links and QR code: at once when the page is
     /// served, else as soon as it is. A page that doesn't come within
     /// [`PAGE_WAIT_SECONDS`] of the session's opening is given up on, with
@@ -599,6 +605,7 @@ impl StatusBar {
                 .map(|(_, window)| figures::plan_label(window)),
             cost: figures::cost_label(&reading),
             context: ContextSize::of(&reading)
+                .map(|context| context.in_chat(self.is_chat(cx)))
                 .map(|context| (context.label(), context.near_handover())),
         }
     }
@@ -652,7 +659,9 @@ impl Render for StatusBar {
         if let Some(cost) = self.render_cost(&reading, cx) {
             bar = bar.right(cost);
         }
-        if let Some(context) = ContextSize::of(&reading) {
+        if let Some(context) =
+            ContextSize::of(&reading).map(|context| context.in_chat(self.is_chat(cx)))
+        {
             bar = bar.right(self.render_context(context, cx));
         }
         bar

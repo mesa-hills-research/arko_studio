@@ -35,6 +35,9 @@ pub struct ContextSize {
     pub handover_at: Option<usize>,
     /// Claude Code compacts the conversation at that size.
     pub compacts: bool,
+    /// A chat: the model writes a summary at that size, and the chat goes
+    /// on from it.
+    pub chat: bool,
 }
 
 impl ContextSize {
@@ -47,7 +50,15 @@ impl ContextSize {
             window: reading.context_window.filter(|window| *window > 0),
             handover_at,
             compacts: reading.models.main.starts_with("cc:") && reading.settings.cc_compact,
+            chat: false,
         })
+    }
+
+    /// The same figures for a chat (`true`), which summarizes at the
+    /// handover size.
+    pub fn in_chat(mut self, chat: bool) -> Self {
+        self.chat = chat;
+        self
     }
 
     /// How full the window is, in percent (0-100), when the window is known.
@@ -78,10 +89,12 @@ impl ContextSize {
     }
 
     /// What the agent does at the handover size: "hands over at 950k",
-    /// "compacts at 950k".
+    /// "compacts at 950k", "summarizes at 950k".
     pub fn at_handover(&self) -> Option<String> {
         let verb = if self.compacts {
             "compacts"
+        } else if self.chat {
+            "summarizes"
         } else {
             "hands over"
         };
@@ -231,7 +244,11 @@ impl RenderOnce for ContextDetails {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let reading = &self.reading;
-        let context = ContextSize::of(reading);
+        let chat = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.read(cx).mode() == crate::backend::Mode::Chat);
+        let context = ContextSize::of(reading).map(|context| context.in_chat(chat));
         let muted = theme.muted_foreground;
         let colors = [theme.chart_1, theme.chart_2, theme.chart_3, theme.chart_4];
         let window = context.and_then(|context| context.window);
@@ -272,6 +289,8 @@ impl RenderOnce for ContextDetails {
             let percent = (context.tokens as f32 / at as f32 * 100.).clamp(0., 100.);
             let verb = if context.compacts {
                 "Until compaction"
+            } else if context.chat {
+                "Until the summary"
             } else {
                 "Until the handover"
             };
@@ -337,10 +356,12 @@ impl RenderOnce for ContextDetails {
                     Button::new("hand-over-now")
                         .outline()
                         .small()
-                        .label("Hand over now")
-                        .tooltip(
-                            "The agent writes a report and goes on from it in a fresh conversation",
-                        )
+                        .label(if chat { "Summarize now" } else { "Hand over now" })
+                        .tooltip(if chat {
+                            "The model writes a summary, and the chat goes on from it in a fresh conversation"
+                        } else {
+                            "The agent writes a report and goes on from it in a fresh conversation"
+                        })
                         .disabled(session.is_none())
                         .on_click(move |_, window, cx| {
                             if let Some(session) = &session {
@@ -413,6 +434,16 @@ mod tests {
         assert_eq!(context.label(), "8.2k");
         assert_eq!(context.percent(), None);
         assert_eq!(context.exact(), "8,200 tokens");
+    }
+
+    /// A chat summarizes at the handover size.
+    #[test]
+    fn a_chat_summarizes_at_the_handover_size() {
+        let context = ContextSize::of(&reading(142_318, 1_000_000, 950_000))
+            .unwrap()
+            .in_chat(true);
+        assert_eq!(context.at_handover().as_deref(), Some("summarizes at 950k"));
+        assert!(context.exact().ends_with("summarizes at 950k"));
     }
 
     #[test]

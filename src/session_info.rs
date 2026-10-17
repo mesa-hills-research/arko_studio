@@ -815,13 +815,15 @@ impl Render for SessionInfo {
                 });
         // When the agents hand over.
         body = body
-            .child(heading("Handover", cx))
+            .child(heading(if agent { "Handover" } else { "Context" }, cx))
             .child(row(
                 narrow,
                 if compacts {
                     "Main agent compacts at"
-                } else {
+                } else if agent {
                     "Main agent at"
+                } else {
+                    "Summarizes at"
                 },
                 h_flex()
                     .gap_2()
@@ -909,11 +911,21 @@ impl Render for SessionInfo {
                             div()
                                 .text_xs()
                                 .text_color(muted)
-                                .child(format!(
-                                    "{}, from the next conversation.",
-                                    crate::backend::sentence(settings.project_instructions.describe())
-                                        .trim_end_matches('.')
-                                )),
+                                .child({
+                                    let said = crate::backend::sentence(
+                                        settings.project_instructions.describe(),
+                                    );
+                                    // Before the first message, it holds for
+                                    // the conversation coming.
+                                    if started {
+                                        format!(
+                                            "{}, from the next conversation.",
+                                            said.trim_end_matches('.')
+                                        )
+                                    } else {
+                                        said
+                                    }
+                                }),
                         )
                         .when(reading.models.has_workers, |this| {
                             this.child(
@@ -945,11 +957,22 @@ impl Render for SessionInfo {
                     .child(row(
                         narrow,
                         "MCP servers",
-                        v_flex().children(
-                            mcp_lines(&facts.mcp)
-                                .into_iter()
-                                .map(|line| div().text_sm().child(line)),
-                        ),
+                        v_flex().children(mcp_lines(&facts.mcp).into_iter().enumerate().map(
+                            |(ix, (line, tools))| {
+                                div()
+                                    .id(("mcp-server", ix))
+                                    .text_sm()
+                                    .child(line)
+                                    .when_some(tools, |this, tools| {
+                                        this.tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(
+                                                tools.clone(),
+                                            )
+                                            .build(window, cx)
+                                        })
+                                    })
+                            },
+                        )),
                         cx,
                     ))
                     .child(row(narrow, "Skills", skills_line(&facts.skills), cx)),
@@ -963,7 +986,7 @@ impl Render for SessionInfo {
         }
         // Where it's kept.
         body = body
-            .child(heading("Kept as", cx))
+            .child(heading("Storage", cx))
             .child(row(
                 narrow,
                 "Session ID",
@@ -1021,25 +1044,28 @@ fn clicked<const N: usize>(after: &[bool], before: [bool; N]) -> Option<usize> {
     (0..N).find(|ix| after.get(*ix).copied().unwrap_or(false) && !before[*ix])
 }
 
-/// The MCP servers, a line each: "files — 4 tools", "web — didn't start:
-/// …".
-pub fn mcp_lines(mcp: &McpFacts) -> Vec<String> {
-    let mut lines: Vec<String> = mcp
+/// The MCP servers, a line each ("files — 4 tools", "web — didn't start:
+/// …"), with the names of the server's tools for its tooltip.
+pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
+    let mut lines: Vec<(String, Option<String>)> = mcp
         .servers
         .iter()
         .map(|server| match &server.tools {
-            Ok(tools) => format!(
-                "{} — {} tool{}",
-                server.name,
-                tools.len(),
-                if tools.len() == 1 { "" } else { "s" }
+            Ok(tools) => (
+                format!(
+                    "{} — {} tool{}",
+                    server.name,
+                    tools.len(),
+                    if tools.len() == 1 { "" } else { "s" }
+                ),
+                (!tools.is_empty()).then(|| tools.join(", ")),
             ),
-            Err(why) => format!("{} — didn’t start: {why}", server.name),
+            Err(why) => (format!("{} — didn’t start: {why}", server.name), None),
         })
         .collect();
-    lines.extend(mcp.notes.iter().cloned());
+    lines.extend(mcp.notes.iter().map(|note| (note.clone(), None)));
     if lines.is_empty() {
-        lines.push("None".to_string());
+        lines.push(("None".to_string(), None));
     }
     lines
 }
@@ -1158,9 +1184,12 @@ mod tests {
         };
         assert_eq!(
             mcp_lines(&mcp),
-            ["files — 2 tools", "web — didn’t start: no such program"]
+            [
+                ("files — 2 tools".into(), Some("read, write".into())),
+                ("web — didn’t start: no such program".into(), None)
+            ]
         );
-        assert_eq!(mcp_lines(&McpFacts::default()), ["None"]);
+        assert_eq!(mcp_lines(&McpFacts::default()), [("None".into(), None)]);
         let skills = SkillsFacts {
             skills: vec![SkillFacts {
                 name: "docs-style".into(),
