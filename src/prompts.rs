@@ -432,11 +432,16 @@ fn show_mcp(session: Entity<LiveSession>, request: McpRequest, window: &mut Wind
 
 /// A token count as the context ring labels it: "8.2k", "142k", "1.02M".
 pub fn short_tokens(tokens: usize) -> String {
-    match tokens {
-        0..1_000 => tokens.to_string(),
-        1_000..10_000 => format!("{:.1}k", tokens as f64 / 1e3),
-        10_000..1_000_000 => format!("{}k", (tokens as f64 / 1e3).round()),
-        _ => format!("{:.2}M", tokens as f64 / 1e6),
+    // The unit is picked after rounding: 999,600 is 1.00M, not 1000k.
+    let thousands = tokens as f64 / 1e3;
+    if tokens < 1_000 {
+        tokens.to_string()
+    } else if (thousands * 10.).round() < 100. {
+        format!("{thousands:.1}k")
+    } else if thousands.round() < 1_000. {
+        format!("{}k", thousands.round())
+    } else {
+        format!("{:.2}M", tokens as f64 / 1e6)
     }
 }
 
@@ -738,6 +743,8 @@ mod tests {
         assert_eq!(short_tokens(8_200), "8.2k");
         assert_eq!(short_tokens(142_318), "142k");
         assert_eq!(short_tokens(1_020_000), "1.02M");
+        assert_eq!(short_tokens(9_960), "10k");
+        assert_eq!(short_tokens(999_600), "1.00M");
     }
 
     #[test]
