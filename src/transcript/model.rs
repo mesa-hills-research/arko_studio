@@ -344,6 +344,16 @@ impl Model {
         last
     }
 
+    /// The user's latest message, when its turn ended without a reply
+    /// (stopped, or failed after its retries) and nothing runs: Regenerate
+    /// sends it again from the message itself.
+    pub fn regenerable_message(&self) -> Option<u64> {
+        if self.busy_reason().is_some() || self.last_reply().is_some() {
+            return None;
+        }
+        self.last_message()
+    }
+
     /// How many messages come after the user's message `id`: the user's,
     /// and one reply for each run of the agent's output between them
     /// (cache refreshes and their answers left out). Counted by place, as

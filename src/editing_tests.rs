@@ -534,3 +534,37 @@ fn enter_in_the_edit_dialog_edits(cx: &mut TestAppContext) {
     assert!(!cx.read(|cx| app.view.read(cx).is_editing()));
     app.close_all(cx);
 }
+
+/// A turn stopped before it replied: the message offers Regenerate, and it
+/// sends the message again.
+#[gpui_kit::test]
+fn a_stopped_turns_message_offers_regenerate(cx: &mut TestAppContext) {
+    let mock = Mock::start(move |index, _| {
+        if index == 0 {
+            crate::testing::reply_after("a1", "First try.", std::time::Duration::from_secs(20))
+        } else {
+            reply("a2", "Second try.")
+        }
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Name a fruit.");
+    let session = cx.read(|cx| app.view.read(cx).live_session().cloned().unwrap());
+    wait_until(cx, "the turn", |cx| {
+        cx.read(|cx| session.read(cx).is_working())
+    });
+    let message = app.message(cx, "Name a fruit.");
+    // Not while the turn runs.
+    act(cx, app.window, |window, _| {
+        assert!(window.try_find(("regenerate-message", message)).is_none());
+    });
+    act(cx, app.window, |window, cx| window.press("escape", cx));
+    app.wait_idle(cx);
+    act(cx, app.window, |window, cx| {
+        window.click(("regenerate-message", message), cx)
+    });
+    act(cx, app.window, |window, cx| {
+        window.click("edit-confirm", cx)
+    });
+    app.wait_for(cx, "Second try.");
+    app.close_all(cx);
+}

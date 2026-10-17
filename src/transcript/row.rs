@@ -518,6 +518,9 @@ impl TranscriptView {
             let first = item.message_index == Some(0);
             (busy, first, view.downgrade(), view.downgrade())
         });
+        // A turn that ended with no reply (stopped, or failed after its
+        // retries): its message offers to go again.
+        let regenerate = (self.model.regenerable_message() == Some(id)).then(|| view.downgrade());
         h_flex()
             .id(("user-message", id))
             .w_full()
@@ -584,6 +587,20 @@ impl TranscriptView {
                                         branch_view
                                             .update(cx, |this, cx| {
                                                 this.change(TranscriptEvent::Branch(id), cx)
+                                            })
+                                            .ok();
+                                    }),
+                            )
+                        })
+                        .when_some(regenerate, |this, regenerate_view| {
+                            this.child(
+                                action("regenerate-message", Lucide::RotateCcw)
+                                    .tooltip("Send it again for a reply")
+                                    .accessibility_label("Regenerate")
+                                    .on_click(move |_, _, cx| {
+                                        regenerate_view
+                                            .update(cx, |this, cx| {
+                                                this.change(TranscriptEvent::Regenerate, cx)
                                             })
                                             .ok();
                                     }),
