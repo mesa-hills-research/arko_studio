@@ -557,7 +557,7 @@ impl Workspace {
                 self.show(Some(session.clone()), window, cx);
                 self.sidebar.update(cx, |sidebar, cx| sidebar.refresh(cx));
             }
-            SessionViewEvent::OpenAccounts => self.open_accounts(window, cx),
+            SessionViewEvent::OpenAccounts(way) => self.open_accounts(way.as_deref(), window, cx),
             SessionViewEvent::ShowPrompt => {
                 if let Some(session) = &self.session {
                     prompts::show(session, window, cx);
@@ -669,10 +669,14 @@ impl Workspace {
         }
     }
 
-    /// Settings › Models & accounts.
-    fn open_accounts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Settings › Models & accounts, on what the group of models `way`
+    /// needs, if one is.
+    fn open_accounts(&mut self, way: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.show_settings(window, cx);
-        settings.update(cx, |settings, cx| settings.show_page(ACCOUNTS_PAGE, cx));
+        settings.update(cx, |settings, cx| {
+            settings.show_page(ACCOUNTS_PAGE, cx);
+            settings.point_at_account(way, window, cx);
+        });
     }
 
     /// Serves the shown session's web page where Settings › Web page says,
@@ -1164,7 +1168,7 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(Self::close_shown_session))
             .on_action(cx.listener(|this, _: &menus::OpenAccounts, window, cx| {
-                this.open_accounts(window, cx)
+                this.open_accounts(None, window, cx)
             }))
             .on_action(cx.listener(|this, _: &menus::ExportMarkdown, window, cx| {
                 this.session_view

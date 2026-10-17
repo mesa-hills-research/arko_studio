@@ -60,8 +60,9 @@ pub struct Draft {
 pub enum SessionViewEvent {
     /// A new session started with its first message: the window shows it.
     Created(Entity<LiveSession>),
-    /// Open Settings › Models & accounts.
-    OpenAccounts,
+    /// Open Settings › Models & accounts, on what the group of models named
+    /// here needs ("OpenAI, with your API key"), if one is.
+    OpenAccounts(Option<SharedString>),
     /// Show the session's waiting prompt again.
     ShowPrompt,
     /// The reader opened a worker's card in the transcript.
@@ -206,7 +207,10 @@ impl SessionView {
         );
         let mut this = Self {
             session: None,
-            draft: Draft::default(),
+            draft: Draft {
+                mode: default_mode(cx),
+                ..Draft::default()
+            },
             recent_folders: Vec::new(),
             home: cx.global::<HomeFolder>().0.clone(),
             models: None,
@@ -1565,6 +1569,8 @@ impl SessionView {
         });
         self.draft.model = None;
         self.draft.effort = None;
+        // The next new session starts as Settings say.
+        self.set_draft_mode(default_mode(cx), cx);
         cx.emit(SessionViewEvent::Created(session));
         Ok(())
     }
@@ -1774,6 +1780,7 @@ impl SessionView {
                                 .child(group.name.clone()),
                         )
                         .when_some(needs.clone(), |this, needs| {
+                            let way = SharedString::from(group.name.clone());
                             this.child(
                                 Button::new(("model-needs", group_ix))
                                     .link()
@@ -1783,8 +1790,9 @@ impl SessionView {
                                     .on_click({
                                         let view = view.clone();
                                         move |_, _, cx| {
+                                            let way = way.clone();
                                             view.update(cx, |_, cx| {
-                                                cx.emit(SessionViewEvent::OpenAccounts)
+                                                cx.emit(SessionViewEvent::OpenAccounts(Some(way)))
                                             })
                                             .ok();
                                         }
@@ -2610,6 +2618,15 @@ fn browse(view: WeakEntity<SessionView>, cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// How a new session works until the user picks: as Settings › Models &
+/// accounts says.
+fn default_mode(cx: &App) -> Mode {
+    match prefs::get(cx).new_sessions.mode {
+        prefs::NewSessionMode::Chat => Mode::Chat,
+        prefs::NewSessionMode::Agent => Mode::Agent,
+    }
 }
 
 /// The folders of `sessions` that ran agents, the most recently active

@@ -24,6 +24,17 @@ use crate::prefs::{self, Keymap, Motion, SendKey, Suggestions, ThemeMode};
 use crate::theme_picker::ThemePicker;
 use crate::{fonts, menus, paths};
 
+mod accounts;
+mod extensions;
+mod fields;
+mod sessions;
+mod web;
+
+pub use accounts::AccountsPage;
+pub use extensions::ExtensionsPage;
+pub use sessions::SessionsPage;
+pub use web::WebPageSettings;
+
 actions!(settings_page, [CloseSettings]);
 
 /// The key context of the Settings page.
@@ -50,8 +61,13 @@ pub struct SettingsPage {
     focus_handle: FocusHandle,
     light_theme: Entity<ThemePicker>,
     dark_theme: Entity<ThemePicker>,
-    ui_font: Entity<FontPickerState>,
-    code_font: Entity<FontPickerState>,
+    /// The font pickers, once the fonts they list are read.
+    ui_font: Option<Entity<FontPickerState>>,
+    code_font: Option<Entity<FontPickerState>>,
+    accounts: Entity<AccountsPage>,
+    sessions: Entity<SessionsPage>,
+    web_page: Entity<WebPageSettings>,
+    extensions: Entity<ExtensionsPage>,
     /// The page to show, set from outside (the command palette), and how
     /// many times it was: the page list starts afresh on it each time.
     page: usize,
@@ -61,36 +77,65 @@ pub struct SettingsPage {
 
 impl SettingsPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let appearance = prefs::get(cx).appearance.clone();
-        let (bundled, added) = {
-            let fonts = cx.global::<fonts::Fonts>();
-            (fonts.bundled(), fonts.added())
+        let accounts = cx.new(AccountsPage::new);
+        let sessions = cx.new(|cx| SessionsPage::new(window, cx));
+        let web_page = cx.new(|cx| WebPageSettings::new(window, cx));
+        let extensions = cx.new(ExtensionsPage::new);
+        // The fonts the pickers list are read in the background, the first
+        // time: the pickers show once they're there.
+        fonts::load_picker_catalog(cx);
+        let subscriptions = vec![
+            cx.observe(&accounts, |_, _, cx| cx.notify()),
+            cx.observe(&sessions, |_, _, cx| cx.notify()),
+            cx.observe(&web_page, |_, _, cx| cx.notify()),
+            cx.observe(&extensions, |_, _, cx| cx.notify()),
+            cx.observe_global_in::<fonts::PickerCatalog>(window, |this, window, cx| {
+                this.make_font_pickers(window, cx)
+            }),
+            // Settings shows the preferences as they change, here or elsewhere
+            // (a zoom shortcut, another window).
+            cx.observe_global::<prefs::PrefsStore>(|_, cx| cx.notify()),
+        ];
+        let mut this = Self {
+            focus_handle: cx.focus_handle(),
+            light_theme: cx.new(|cx| ThemePicker::new(false, window, cx)),
+            dark_theme: cx.new(|cx| ThemePicker::new(true, window, cx)),
+            ui_font: None,
+            code_font: None,
+            accounts,
+            sessions,
+            web_page,
+            extensions,
+            page: 0,
+            shown: 0,
+            _subscriptions: subscriptions,
         };
-        let picker = |choice: &prefs::FontChoice,
-                      monospace: bool,
-                      bundled: Vec<Cow<'static, [u8]>>,
-                      added: Vec<Cow<'static, [u8]>>,
-                      window: &mut Window,
-                      cx: &mut Context<Self>| {
+        this.make_font_pickers(window, cx);
+        this
+    }
+
+    /// Makes the font pickers, once the fonts they list are read.
+    fn make_font_pickers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ui_font.is_some() {
+            return;
+        }
+        let Some(catalog) = fonts::picker_catalog(cx) else {
+            return;
+        };
+        let appearance = prefs::get(cx).appearance.clone();
+        let mut picker = |choice: &prefs::FontChoice, monospace: bool| {
             let settings = FontSettings::new(choice.family.clone()).with_size(px(choice.size()));
+            let catalog = catalog.clone();
             cx.new(|cx| {
                 FontPickerState::new(window, cx)
+                    .catalog(catalog)
                     .default_settings(settings)
                     .monospace_only(monospace)
-                    .app_fonts(bundled)
-                    .added_fonts(added)
             })
         };
-        let ui_font = picker(
-            &appearance.ui_font,
-            false,
-            bundled.clone(),
-            added.clone(),
-            window,
-            cx,
-        );
-        let code_font = picker(&appearance.code_font, true, bundled, added, window, cx);
-        let subscriptions = vec![
+        let ui_font = picker(&appearance.ui_font, false);
+        let code_font = picker(&appearance.code_font, true);
+        self._subscriptions.extend([
             cx.subscribe(&ui_font, |_, _, event: &FontPickerEvent, cx| {
                 let FontPickerEvent::Change(font) = event else {
                     return;
@@ -105,20 +150,15 @@ impl SettingsPage {
                 let choice = prefs::FontChoice::new(font.family(), f32::from(font.size()));
                 prefs::update(cx, |prefs| prefs.appearance.code_font = choice);
             }),
-            // Settings shows the preferences as they change, here or elsewhere
-            // (a zoom shortcut, another window).
-            cx.observe_global::<prefs::PrefsStore>(|_, cx| cx.notify()),
-        ];
-        Self {
-            focus_handle: cx.focus_handle(),
-            light_theme: cx.new(|cx| ThemePicker::new(false, window, cx)),
-            dark_theme: cx.new(|cx| ThemePicker::new(true, window, cx)),
-            ui_font,
-            code_font,
-            page: 0,
-            shown: 0,
-            _subscriptions: subscriptions,
-        }
+        ]);
+        self.ui_font = Some(ui_font);
+        self.code_font = Some(code_font);
+        cx.notify();
+    }
+
+    /// The font pickers, `None` while the fonts they list are read.
+    pub fn font_pickers(&self) -> Option<(&Entity<FontPickerState>, &Entity<FontPickerState>)> {
+        Some((self.ui_font.as_ref()?, self.code_font.as_ref()?))
     }
 
     /// Shows the page at `page` in [`PAGES`].
@@ -126,6 +166,20 @@ impl SettingsPage {
         self.page = page.min(PAGES.len() - 1);
         self.shown += 1;
         cx.notify();
+    }
+
+    /// On Models & accounts, points at what the group of models `way`
+    /// needs ("OpenAI, with your API key"): its row is marked and has the
+    /// keyboard focus.
+    pub fn point_at_account(
+        &mut self,
+        way: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let account = way.and_then(accounts::account_for);
+        self.accounts
+            .update(cx, |accounts, cx| accounts.point_at(account, window, cx));
     }
 
     /// The page last asked for with [`Self::show_page`].
@@ -139,6 +193,22 @@ impl SettingsPage {
 
     pub fn dark_theme(&self) -> &Entity<ThemePicker> {
         &self.dark_theme
+    }
+
+    pub fn accounts(&self) -> &Entity<AccountsPage> {
+        &self.accounts
+    }
+
+    pub fn sessions(&self) -> &Entity<SessionsPage> {
+        &self.sessions
+    }
+
+    pub fn web_page(&self) -> &Entity<WebPageSettings> {
+        &self.web_page
+    }
+
+    pub fn extensions(&self) -> &Entity<ExtensionsPage> {
+        &self.extensions
     }
 
     /// Asks for a font file, copies it into Arko's folder and offers it in
@@ -167,7 +237,10 @@ impl SettingsPage {
                     if !font.already_imported {
                         fonts::note_added(data.clone(), cx);
                     }
-                    for picker in [this.ui_font.clone(), this.code_font.clone()] {
+                    for picker in [this.ui_font.clone(), this.code_font.clone()]
+                        .into_iter()
+                        .flatten()
+                    {
                         picker
                             .update(cx, |picker, cx| {
                                 picker.add_fonts(vec![data.clone()], window, cx)
@@ -195,6 +268,37 @@ impl SettingsPage {
         .detach();
     }
 
+    /// Asks for an MCP config file that every session reads.
+    fn add_mcp_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Add".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            this.update(cx, |this, cx| this.add_mcp_configs(paths, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Adds MCP config files every session reads, each once.
+    pub fn add_mcp_configs(&mut self, files: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        prefs::update(cx, |prefs| {
+            for file in files {
+                if !prefs.advanced.mcp_config.contains(&file) {
+                    prefs.advanced.mcp_config.push(file);
+                }
+            }
+        });
+        // Extensions lists the files' servers.
+        self.extensions.update(cx, |page, cx| page.refresh(cx));
+    }
+
     fn confirm_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.open_alert_dialog(cx, |alert, _, _| {
             alert
@@ -220,55 +324,12 @@ impl SettingsPage {
         vec![
             self.appearance_page(cx),
             input_page(),
-            planned_page(
-                PAGES[2],
-                IconName::Bot,
-                &[
-                    ("Default mode", "Chat or Agent, for new sessions."),
-                    (
-                        "Default model and effort",
-                        "For the main agent and for workers.",
-                    ),
-                    ("1-hour cache", "For Claude with an API key."),
-                    (
-                        "API keys",
-                        "Anthropic, OpenAI, Gemini, OpenRouter and Voyage: where each comes from, and adding, replacing or removing it.",
-                    ),
-                    (
-                        "ChatGPT login",
-                        "The discovered auth.json, or a file you choose.",
-                    ),
-                    (
-                        "Claude Code",
-                        "Where it's installed and whether you're signed in.",
-                    ),
-                ],
-            ),
-            sessions_page(),
+            self.accounts.read(cx).page(&self.accounts, cx),
+            self.sessions.read(cx).page(),
             notifications_page(),
-            planned_page(
-                PAGES[5],
-                IconName::Globe,
-                &[
-                    (
-                        "Share the web page",
-                        "Follow and steer a session from a browser: address and port.",
-                    ),
-                    ("Links and QR code", "Where the page is, and a new key."),
-                ],
-            ),
-            planned_page(
-                PAGES[6],
-                IconName::Frame,
-                &[
-                    (
-                        "MCP servers",
-                        "From .mcp.json and --mcp-config, and their approvals.",
-                    ),
-                    ("Skills", "Where skills are read from."),
-                ],
-            ),
-            advanced_page(cx),
+            self.web_page.read(cx).page(cx),
+            self.extensions.read(cx).page(&self.extensions),
+            advanced_page(&cx.entity(), cx),
         ]
     }
 
@@ -357,10 +418,10 @@ impl SettingsPage {
                 ]),
                 SettingGroup::new()
                     .title("Interface font")
-                    .item(SettingItem::render(move |_, _, _| FontPicker::new(&ui_font).compact().show_weight(false).show_line_height(false).show_features(false)).keywords(["font", "typeface", "size"])),
+                    .item(SettingItem::render(move |_, _, cx| font_picker(ui_font.as_ref(), &prefs::get(cx).appearance.ui_font, cx)).keywords(["font", "typeface", "size"])),
                 SettingGroup::new()
                     .title("Code font")
-                    .item(SettingItem::render(move |_, _, _| FontPicker::new(&code_font).compact().show_weight(false).show_line_height(false).show_features(false)).keywords(["font", "monospace", "size"]))
+                    .item(SettingItem::render(move |_, _, cx| font_picker(code_font.as_ref(), &prefs::get(cx).appearance.code_font, cx)).keywords(["font", "monospace", "size"]))
                     .item(
                         switch(
                             "Code ligatures",
@@ -452,6 +513,37 @@ impl SettingsPage {
                     .description("System follows your computer’s reduce-motion setting. Off stops animations, smooth typing included."),
                 ),
             ])
+    }
+}
+
+/// A font picker showing a family and its size, or, while the installed
+/// fonts are read, the chosen family and size.
+fn font_picker(
+    picker: Option<&Entity<FontPickerState>>,
+    choice: &prefs::FontChoice,
+    cx: &App,
+) -> AnyElement {
+    match picker {
+        Some(picker) => FontPicker::new(picker)
+            .compact()
+            .show_weight(false)
+            .show_line_height(false)
+            .show_features(false)
+            .into_any_element(),
+        None => h_flex()
+            .id("font-picker-loading")
+            .test_support()
+            .gap_2()
+            .text_sm()
+            .child(choice.family.clone())
+            .child(format!("{} px", choice.size()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Reading the installed fonts…"),
+            )
+            .into_any_element(),
     }
 }
 
@@ -567,7 +659,8 @@ fn input_page() -> SettingPage {
                 )
                 .description(format!(
                     "The key that sends a message, while the other one adds a line. {modifier}Enter always sends too."
-                )),
+                ))
+                .keywords(["enter", "shift", "newline", "submit"]),
             ),
             SettingGroup::new().title("Typing").items([
                 switch(
@@ -576,14 +669,16 @@ fn input_page() -> SettingPage {
                     |prefs| prefs.input.smooth_typing,
                     |prefs, on| prefs.input.smooth_typing = on,
                     defaults.smooth_typing,
-                ),
+                )
+                .keywords(["caret", "cursor", "animation"]),
                 switch(
                     "Spell check",
                     "Underlines misspelled words (English).",
                     |prefs| prefs.input.spell_check,
                     |prefs, on| prefs.input.spell_check = on,
                     defaults.spell_check,
-                ),
+                )
+                .keywords(["spelling", "dictionary", "typos"]),
                 choice(
                     "Word suggestions",
                     &[
@@ -597,7 +692,8 @@ fn input_page() -> SettingPage {
                 )
                 .description(
                     "Completes words from what you’ve typed in Arko Studio, never from pasted text or replies. Tab accepts.",
-                ),
+                )
+                .keywords(["autocomplete", "completion", "predictions"]),
                 choice(
                     "Keybindings",
                     &[
@@ -611,7 +707,8 @@ fn input_page() -> SettingPage {
                 )
                 .description(
                     "How the composer’s keys move and edit: your platform’s, Emacs’s or Vim’s.",
-                ),
+                )
+                .keywords(["keymap", "vim", "emacs", "shortcuts"]),
             ]),
             SettingGroup::new().title("Pasting").item(
                 SettingItem::new(
@@ -634,7 +731,8 @@ fn input_page() -> SettingPage {
                 )
                 .description(
                     "Pastes longer than this many lines (or 2 KB) become one token. Click it to open it into the text.",
-                ),
+                )
+                .keywords(["paste", "clipboard", "long text"]),
             ),
         ])
 }
@@ -646,170 +744,183 @@ fn notifications_page() -> SettingPage {
         .group(SettingGroup::new().items([
             switch(
                 "When a turn ends",
-                "While Arko Studio is in the background.",
+                "A notification from your system while Arko Studio is in the background.",
                 |prefs| prefs.notifications.turn_ended,
                 |prefs, on| prefs.notifications.turn_ended = on,
                 defaults.turn_ended,
-            ),
+            )
+            .keywords(["finished", "done", "notify", "unfocused"]),
             switch(
                 "When a question arrives",
-                "The agent waits for your answer.",
+                "The agent waits for your answer: a notification from your system while Arko Studio is in the background.",
                 |prefs| prefs.notifications.question,
                 |prefs, on| prefs.notifications.question = on,
                 defaults.question,
-            ),
+            )
+            .keywords(["ask_user", "answer", "notify", "unfocused"]),
             switch(
                 "Cache reminders",
-                "Before a session’s prompt cache expires, with a refresh button.",
+                "5 minutes before a session’s prompt cache expires (for an hour-long cache), and at 1 minute with a countdown and Refresh.",
                 |prefs| prefs.notifications.cache_reminders,
                 |prefs, on| prefs.notifications.cache_reminders = on,
                 defaults.cache_reminders,
-            ),
+            )
+            .keywords(["prompt cache", "expiry", "refresh", "timer"]),
             switch(
                 "Sound",
                 "Notifications make a sound.",
                 |prefs| prefs.notifications.sound,
                 |prefs, on| prefs.notifications.sound = on,
                 defaults.sound,
-            ),
+            )
+            .keywords(["audio", "chime", "alert"]),
         ]))
 }
 
-/// Sessions: asking before quitting works, and the defaults for new
-/// sessions come later.
-fn sessions_page() -> SettingPage {
-    let defaults = prefs::SessionPrefs::default();
-    SettingPage::new(PAGES[3])
-        .icon(IconName::FolderOpen)
-        .groups([
-            SettingGroup::new().title("Quitting").item(switch(
-                "Ask about running work",
-                "Before quitting or closing a session stops background jobs and workers.",
-                |prefs| prefs.sessions.ask_before_quit,
-                |prefs, on| prefs.sessions.ask_before_quit = on,
-                defaults.ask_before_quit,
-            )),
-            SettingGroup::new()
-                .title("New sessions")
-                .description("These settings come with a later version.")
-                .items(
-                    [
-                        (
-                            "Handover size",
-                            "When the main agent and workers hand over to a fresh conversation.",
-                        ),
-                        (
-                            "Background after",
-                            "When a running command moves to the background.",
-                        ),
-                        (
-                            "Outside access",
-                            "Whether new sessions may touch files outside their folder.",
-                        ),
-                        (
-                            "Text replies",
-                            "Whether the agent ends its turns with a reply in text.",
-                        ),
-                        (
-                            "Claude Code compaction",
-                            "Whether Claude Code compacts or hands over.",
-                        ),
-                        (
-                            "Extra rules and project instructions",
-                            "What new agents are told.",
-                        ),
-                        (
-                            "Chat instructions",
-                            "Your custom instructions for new chats, and what happens at the context limit.",
-                        ),
-                    ]
-                    .into_iter()
-                    .map(|(title, description)| {
-                        SettingItem::new(title, SettingField::render(|_, _, _| div()))
-                            .description(description)
-                            .disabled(true)
-                    }),
-                ),
-        ])
-}
-
-/// A page whose settings come later: their names and what they'll do,
-/// without controls yet.
-fn planned_page(
-    title: &'static str,
-    icon: IconName,
-    items: &'static [(&'static str, &'static str)],
-) -> SettingPage {
-    SettingPage::new(title).icon(icon).resettable(false).group(
-        SettingGroup::new()
-            .description("These settings come with the engine.")
-            .items(items.iter().map(|(title, description)| {
-                SettingItem::new(*title, SettingField::render(|_, _, _| div()))
-                    .description(*description)
-                    .disabled(true)
-            })),
-    )
-}
-
-fn advanced_page(cx: &App) -> SettingPage {
-    let data = cx
-        .global::<crate::backend::SharedBackend>()
-        .data_root()
-        .display()
-        .to_string();
+fn advanced_page(this: &Entity<SettingsPage>, cx: &App) -> SettingPage {
+    let home = cx.global::<crate::session_view::HomeFolder>().0.clone();
+    // The folders as the user's home folder holds them, with `~`.
+    let in_home = |folder: &std::path::Path| {
+        crate::backend::account_words::tilde(
+            folder,
+            crate::session_view::home_from_env().as_deref(),
+        )
+    };
+    let data = in_home(cx.global::<crate::backend::SharedBackend>().data_root());
     let logs = paths::logs_folder()
-        .map(|folder| folder.display().to_string())
+        .map(|folder| in_home(&folder))
         .unwrap_or_default();
+    let mut groups = Vec::new();
+    // Only Windows runs commands in a shell the user picks.
+    if cfg!(windows) {
+        groups.push(
+            SettingGroup::new().title("Shell").item(
+                choice(
+                    "Shell on Windows",
+                    &[
+                        (None, "As ARKO_SHELL says"),
+                        (Some(prefs::WindowsShell::Cmd), "cmd.exe"),
+                        (Some(prefs::WindowsShell::Powershell), "PowerShell"),
+                    ],
+                    |prefs| prefs.advanced.windows_shell,
+                    |prefs, shell| prefs.advanced.windows_shell = shell,
+                    None,
+                )
+                .description(
+                    "What new sessions run commands in. PowerShell is PowerShell 7 where it’s installed, else Windows PowerShell. Without ARKO_SHELL, cmd.exe.",
+                )
+                .keywords(["cmd", "powershell", "pwsh", "ARKO_SHELL"]),
+            ),
+        );
+    }
+    let mut files: Vec<SettingItem> = prefs::get(cx)
+        .advanced
+        .mcp_config
+        .iter()
+        .enumerate()
+        .map(|(ix, file)| {
+            let file = file.clone();
+            SettingItem::new(
+                crate::backend::account_words::tilde(&file, home.as_deref()),
+                SettingField::render(move |_, _, _| {
+                    let file = file.clone();
+                    Button::new(("remove-mcp-config", ix))
+                        .ghost()
+                        .small()
+                        .label("Remove")
+                        .on_click(move |_, _, cx| {
+                            let file = file.clone();
+                            prefs::update(cx, |prefs| {
+                                prefs.advanced.mcp_config.retain(|kept| *kept != file)
+                            })
+                        })
+                }),
+            )
+            .description("Every session starts the servers in it. Extensions lists them.")
+            .keywords(["mcp", "--mcp-config", "servers"])
+        })
+        .collect();
+    let add = this.downgrade();
+    files.push(
+        SettingItem::new(
+            "Add an MCP config file…",
+            SettingField::render(move |_, _, _| {
+                let add = add.clone();
+                Button::new("add-mcp-config")
+                    .outline()
+                    .small()
+                    .label("Add…")
+                    .on_click(move |_, window, cx| {
+                        add.update(cx, |page, cx| page.add_mcp_config(window, cx))
+                            .ok();
+                    })
+            })
+            .on_reset(
+                |cx| !prefs::get(cx).advanced.mcp_config.is_empty(),
+                |_, cx| prefs::update(cx, |prefs| prefs.advanced.mcp_config.clear()),
+            ),
+        )
+        .description(
+            "Servers every session starts, besides Arko’s mcp.json and a project’s .mcp.json, as arko --mcp-config does. In Claude Code’s format or arko’s.",
+        )
+        .keywords(["mcp", "--mcp-config", "servers", "json"]),
+    );
+    groups.push(SettingGroup::new().title("MCP config files").items(files));
+    groups.push(
+        SettingGroup::new().title("Folders").items([
+            SettingItem::new(
+                "Arko’s folder",
+                SettingField::render(|_, _, _| {
+                    Button::new("open-data")
+                        .outline()
+                        .small()
+                        .label("Open")
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(menus::OpenDataFolder), cx)
+                        })
+                }),
+            )
+            .description(format!(
+                "{data}. Shared with arko in the terminal: sessions, keys, history and themes."
+            ))
+            .keywords(["data", "ARKO_HOME", "sessions"]),
+            SettingItem::new(
+                "Logs",
+                SettingField::render(|_, _, _| {
+                    Button::new("open-logs")
+                        .outline()
+                        .small()
+                        .label("Open")
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(menus::OpenLogsFolder), cx)
+                        })
+                }),
+            )
+            .description(logs)
+            .keywords(["log", "debug"]),
+        ]),
+    );
+    groups.push(
+        SettingGroup::new().title("Reset").item(
+            SettingItem::new(
+                "Reset preferences…",
+                SettingField::render(|_, _, _| {
+                    Button::new("reset-preferences")
+                        .outline()
+                        .small()
+                        .label("Reset…")
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(ResetPreferences), cx)
+                        })
+                }),
+            )
+            .description("Every setting in Arko Studio goes back to its default.")
+            .keywords(["defaults", "studio.json"]),
+        ),
+    );
     SettingPage::new(PAGES[7])
         .icon(IconName::Settings2)
-        .resettable(false)
-        .groups([
-            SettingGroup::new().title("Folders").items([
-                SettingItem::new(
-                    "Arko’s folder",
-                    SettingField::render(|_, _, _| {
-                        Button::new("open-data")
-                            .outline()
-                            .small()
-                            .label("Open")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(menus::OpenDataFolder), cx)
-                            })
-                    }),
-                )
-                .description(format!(
-                    "{data}. Shared with arko in the terminal: sessions, keys, history and themes."
-                )),
-                SettingItem::new(
-                    "Logs",
-                    SettingField::render(|_, _, _| {
-                        Button::new("open-logs")
-                            .outline()
-                            .small()
-                            .label("Open")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(menus::OpenLogsFolder), cx)
-                            })
-                    }),
-                )
-                .description(logs),
-            ]),
-            SettingGroup::new().title("Reset").item(
-                SettingItem::new(
-                    "Reset preferences…",
-                    SettingField::render(|_, _, _| {
-                        Button::new("reset-preferences")
-                            .outline()
-                            .small()
-                            .label("Reset…")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(ResetPreferences), cx)
-                            })
-                    }),
-                )
-                .description("Every setting in Arko Studio goes back to its default."),
-            ),
-        ])
+        .groups(groups)
 }
 
 actions!(settings_page, [ResetPreferences]);
@@ -823,7 +934,8 @@ impl Focusable for SettingsPage {
 impl Render for SettingsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pages = self.pages(cx);
-        let nav_width = window.rem_size() * 13.;
+        // Wide enough for "Models & accounts" beside its icon and chevron.
+        let nav_width = window.rem_size() * 14.;
         let theme = cx.theme();
         v_flex()
             .id("settings-page")
@@ -873,6 +985,9 @@ impl Render for SettingsPage {
             )
     }
 }
+
+#[cfg(test)]
+mod interaction;
 
 #[cfg(test)]
 mod tests {

@@ -186,6 +186,7 @@ pub fn init(startup: Startup, cx: &mut App) {
     fonts::init(startup.bundled_fonts, startup.added_fonts, cx);
     prefs::init(startup.prefs, cx);
     cx.set_global(SharedBackend(startup.backend));
+    backend::follow_prefs(cx);
     cx.set_global(session_view::HomeFolder(startup.home));
     live::init(cx);
     writing::init(startup.arko.as_deref(), cx);

@@ -76,6 +76,177 @@ fn narrow_dark() {
     goldens().assert("narrow-dark", &new_window(ThemeMode::Dark, 600.));
 }
 
+/// Settings' page `page` in a window `width` wide, on the sample sessions
+/// and accounts.
+fn settings_window(mode: ThemeMode, width: f32, page: usize) -> Screenshot {
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let opened = std::cell::RefCell::new(None);
+    let window = app
+        .open_window_with(size(px(width), px(1200.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened.replace(Some(workspace));
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.take().unwrap();
+    app.update_window(window, |_, window, cx| {
+        window.dispatch_action(Box::new(arko_studio::menus::OpenSettings), cx)
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.update(|cx| {
+        let settings = workspace.read(cx).settings().unwrap().clone();
+        settings.update(cx, |settings, cx| settings.show_page(page, cx));
+    });
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn settings_appearance_light() {
+    goldens().assert(
+        "settings-appearance-light",
+        &settings_window(ThemeMode::Light, 1300., 0),
+    );
+}
+
+#[test]
+fn settings_appearance_dark() {
+    goldens().assert(
+        "settings-appearance-dark",
+        &settings_window(ThemeMode::Dark, 1300., 0),
+    );
+}
+
+#[test]
+fn settings_input_light() {
+    goldens().assert(
+        "settings-input-light",
+        &settings_window(ThemeMode::Light, 1300., 1),
+    );
+}
+
+#[test]
+fn settings_input_dark() {
+    goldens().assert(
+        "settings-input-dark",
+        &settings_window(ThemeMode::Dark, 1300., 1),
+    );
+}
+
+#[test]
+fn settings_accounts_light() {
+    goldens().assert(
+        "settings-accounts-light",
+        &settings_window(ThemeMode::Light, 1300., 2),
+    );
+}
+
+#[test]
+fn settings_accounts_dark() {
+    goldens().assert(
+        "settings-accounts-dark",
+        &settings_window(ThemeMode::Dark, 1300., 2),
+    );
+}
+
+#[test]
+fn settings_sessions_light() {
+    goldens().assert(
+        "settings-sessions-light",
+        &settings_window(ThemeMode::Light, 1300., 3),
+    );
+}
+
+#[test]
+fn settings_sessions_dark() {
+    goldens().assert(
+        "settings-sessions-dark",
+        &settings_window(ThemeMode::Dark, 1300., 3),
+    );
+}
+
+#[test]
+fn settings_notifications_light() {
+    goldens().assert(
+        "settings-notifications-light",
+        &settings_window(ThemeMode::Light, 1300., 4),
+    );
+}
+
+#[test]
+fn settings_notifications_dark() {
+    goldens().assert(
+        "settings-notifications-dark",
+        &settings_window(ThemeMode::Dark, 1300., 4),
+    );
+}
+
+#[test]
+fn settings_web_page_light() {
+    goldens().assert(
+        "settings-web-page-light",
+        &settings_window(ThemeMode::Light, 1300., 5),
+    );
+}
+
+#[test]
+fn settings_web_page_dark() {
+    goldens().assert(
+        "settings-web-page-dark",
+        &settings_window(ThemeMode::Dark, 1300., 5),
+    );
+}
+
+#[test]
+fn settings_extensions_light() {
+    goldens().assert(
+        "settings-extensions-light",
+        &settings_window(ThemeMode::Light, 1300., 6),
+    );
+}
+
+#[test]
+fn settings_extensions_dark() {
+    goldens().assert(
+        "settings-extensions-dark",
+        &settings_window(ThemeMode::Dark, 1300., 6),
+    );
+}
+
+#[test]
+fn settings_advanced_light() {
+    goldens().assert(
+        "settings-advanced-light",
+        &settings_window(ThemeMode::Light, 1300., 7),
+    );
+}
+
+#[test]
+fn settings_advanced_dark() {
+    goldens().assert(
+        "settings-advanced-dark",
+        &settings_window(ThemeMode::Dark, 1300., 7),
+    );
+}
+
+/// Under 480 px, each setting's control goes under its title.
+#[test]
+fn settings_sessions_narrow_light() {
+    goldens().assert(
+        "settings-sessions-narrow-light",
+        &settings_window(ThemeMode::Light, 460., 3),
+    );
+}
+
 /// The app's icon, the image the transcript's tool call shows.
 const PNG: &[u8] = include_bytes!("../packaging/linux/com.mesahillsresearch.ArkoStudio.png");
 
