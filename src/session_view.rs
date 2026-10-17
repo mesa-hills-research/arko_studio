@@ -1138,12 +1138,18 @@ impl SessionView {
                 folders.push(folder.clone());
             }
         }
-        if !prefs::get(cx).sessions.ask_before_switch {
-            let folder = folders.first().cloned().filter(|_| to == Mode::Agent);
-            self.switch_mode(session, to, folder, window, cx);
+        // Told not to ask, a switch to Chat just happens, and one to Agent
+        // still asks where the agent works.
+        let ask = prefs::get(cx).sessions.ask_before_switch;
+        if !ask && to == Mode::Chat {
+            self.switch_mode(session, to, None, window, cx);
             return;
         }
-        let cost = session.read(cx).switch_cost(to, cx);
+        let cost = if ask {
+            session.read(cx).switch_cost(to, cx)
+        } else {
+            Task::ready(None)
+        };
         let home = self.home.clone();
         cx.spawn_in(window, async move |this, cx| {
             let cost = cost.await;
@@ -1152,6 +1158,7 @@ impl SessionView {
                 crate::prompts::confirm_switch(
                     to,
                     cost,
+                    !ask,
                     folders,
                     home,
                     window,

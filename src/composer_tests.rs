@@ -245,6 +245,25 @@ fn the_slash_menu_takes_tab_and_enter_and_mod_enter_sends_as_typed(cx: &mut Test
 }
 
 #[gpui_kit::test]
+fn told_not_to_ask_a_switch_to_agent_still_asks_for_the_folder(cx: &mut TestAppContext) {
+    let (_, window, workspace) = start(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.sessions.ask_before_switch = false));
+    open_row(window, &workspace, "Naming a desktop app", cx);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.choose_mode(crate::backend::Mode::Agent, window, cx)
+        })
+    });
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("switch-mode").is_some());
+        assert!(window.try_find("switch-folder").is_some());
+        assert!(window.try_find("dont-ask-switch").is_none());
+        window.within("dialog").click("cancel", cx);
+    });
+}
+
+#[gpui_kit::test]
 fn spell_check_and_suggestions_follow_settings(cx: &mut TestAppContext) {
     let (_, _, workspace) = start(cx);
     let textarea = cx.read(|cx| {

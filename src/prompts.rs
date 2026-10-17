@@ -465,10 +465,14 @@ pub fn switch_cost_text(cost: Option<&arko::details::SwitchCost>) -> String {
 /// Asks before switching an open session between Chat and Agent: what
 /// changes, what it costs, and for Agent the folder it works in (`folders`:
 /// the choices, the first chosen). `answer` hears the folder (none for
-/// Chat) on Switch. "Don't ask again" counts only on Switch.
+/// Chat) on Switch. "Don't ask again" counts only on Switch. With
+/// `folder_only` (the user said not to ask again), it asks only for the
+/// folder: without the cost, and without "Don't ask again".
+#[allow(clippy::too_many_arguments)]
 pub fn confirm_switch(
     to: crate::backend::Mode,
     cost: Option<arko::details::SwitchCost>,
+    folder_only: bool,
     folders: Vec<std::path::PathBuf>,
     home: Option<std::path::PathBuf>,
     window: &mut Window,
@@ -489,7 +493,11 @@ pub fn confirm_switch(
             "From your next message Arko answers without tools, as a chat.",
         ),
     };
-    let description = format!("{change} {}", switch_cost_text(cost.as_ref()));
+    let description = if folder_only {
+        change.to_string()
+    } else {
+        format!("{change} {}", switch_cost_text(cost.as_ref()))
+    };
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
@@ -561,15 +569,17 @@ pub fn confirm_switch(
                                     ),
                             )
                         })
-                        .child(
-                            Checkbox::new("dont-ask-switch")
-                                .label("Don’t ask again")
-                                .checked(checked.get())
-                                .on_click(move |on, window, _| {
-                                    checked.set(*on);
-                                    window.refresh();
-                                }),
-                        ),
+                        .when(!folder_only, |this| {
+                            this.child(
+                                Checkbox::new("dont-ask-switch")
+                                    .label("Don’t ask again")
+                                    .checked(checked.get())
+                                    .on_click(move |on, window, _| {
+                                        checked.set(*on);
+                                        window.refresh();
+                                    }),
+                            )
+                        }),
                 )
             })
             .confirm()
