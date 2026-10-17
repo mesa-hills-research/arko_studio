@@ -34,7 +34,7 @@ fn parse(file: &str, text: &str) -> Vec<ThemeConfig> {
     match serde_json::from_str::<ThemeSet>(text) {
         Ok(set) => set.themes,
         Err(error) => {
-            tracing::warn!("ignored the theme file {file}: {error}");
+            tracing::warn!("ignored the theme file {file} ({error})");
             Vec::new()
         }
     }
@@ -126,7 +126,7 @@ pub fn init(themes: Vec<ThemeConfig>, themes_folder: Option<ThemesFolder>, cx: &
     match themes_folder {
         Some(ThemesFolder::Watch(folder)) => {
             if let Err(error) = ThemeRegistry::watch_dir(folder, cx, apply) {
-                tracing::error!("couldn't watch the themes folder: {error}");
+                tracing::error!("couldn't watch the themes folder ({error})");
             }
         }
         Some(ThemesFolder::ReadOnce(folder)) => ThemeRegistry::load_dir(folder, cx, apply),

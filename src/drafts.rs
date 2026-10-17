@@ -73,7 +73,7 @@ pub fn init(drafts: BTreeMap<String, String>, path: Option<PathBuf>, cx: &mut Ap
             if let Some((path, drafts)) = unsaved
                 && let Err(error) = write(&path, drafts)
             {
-                tracing::error!("couldn't save {}: {error}", path.display());
+                tracing::error!("couldn't save {} ({error})", path.display());
             }
         }
     })
@@ -145,7 +145,7 @@ fn schedule_save(cx: &mut App) {
             })
             .await;
         if let Err(error) = written {
-            tracing::error!("couldn't save {}: {error}", path.display());
+            tracing::error!("couldn't save {} ({error})", path.display());
             cx.update(|cx| cx.global_mut::<Drafts>().changed = true);
         }
     });

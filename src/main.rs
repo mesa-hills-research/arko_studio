@@ -39,7 +39,7 @@ fn init_logging() {
     if let Some(dir) = paths::logs_folder()
         && let Err(error) = arko::logging::ProcessLog::install(&dir.join("engine.log"))
     {
-        eprintln!("couldn't start the engine's log: {error}");
+        eprintln!("couldn't start the engine's log ({error})");
     }
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));

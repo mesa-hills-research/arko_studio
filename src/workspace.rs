@@ -66,7 +66,7 @@ pub fn open_with(session: Option<SessionId>, cx: &mut App) -> Option<AnyWindowHa
             Some(handle)
         }
         Err(error) => {
-            tracing::error!("couldn't open a window: {error}");
+            tracing::error!("couldn't open a window ({error})");
             None
         }
     }

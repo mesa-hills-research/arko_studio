@@ -594,7 +594,7 @@ impl Backend for ArkoBackend {
         match starting {
             Ok(_) => Launch::Engine(arko::Running { opened, ended }),
             Err(error) => Launch::Refused(BackendError::Other(format!(
-                "could not start the session: {error}"
+                "could not start the session ({error})"
             ))),
         }
     }

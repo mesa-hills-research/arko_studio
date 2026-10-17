@@ -52,7 +52,7 @@ pub fn added(folder: &Path) -> Vec<Cow<'static, [u8]>> {
         .filter_map(|path| match std::fs::read(&path) {
             Ok(data) => Some(keep(data)),
             Err(error) => {
-                tracing::warn!("couldn't read the font {}: {error}", path.display());
+                tracing::warn!("couldn't read the font {} ({error})", path.display());
                 None
             }
         })
@@ -98,7 +98,7 @@ impl Fonts {
 pub fn init(bundled: Vec<Cow<'static, [u8]>>, added: Vec<Cow<'static, [u8]>>, cx: &mut App) {
     for font in bundled.iter().chain(added.iter()) {
         if let Err(error) = cx.text_system().add_fonts(vec![font.clone()]) {
-            tracing::error!("couldn't load a font: {error}");
+            tracing::error!("couldn't load a font ({error})");
         }
     }
     cx.set_global(Fonts {

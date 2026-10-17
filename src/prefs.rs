@@ -761,7 +761,7 @@ impl PrefsStore {
                 return Self::new(Prefs::default(), Some(path.to_path_buf()));
             }
             Err(error) => {
-                tracing::warn!("couldn't read {}: {error}", path.display());
+                tracing::warn!("couldn't read {} ({error})", path.display());
                 return Self::new(Prefs::default(), None);
             }
         };
@@ -770,7 +770,7 @@ impl PrefsStore {
                 migrate(&mut file);
                 let (prefs, unread) = read_fields(&file);
                 for (keys, _) in &unread.values {
-                    tracing::warn!("{}: left {} as it is", path.display(), keys.join("."));
+                    tracing::warn!("in {}, left {} as it is", path.display(), keys.join("."));
                 }
                 Self {
                     prefs,
@@ -781,14 +781,14 @@ impl PrefsStore {
             _ => {
                 let kept = path.with_extension("json.bad");
                 tracing::warn!(
-                    "{} isn't a preferences file: kept as {}",
+                    "{} isn't a preferences file, so it was kept as {}",
                     path.display(),
                     kept.display()
                 );
                 match std::fs::write(&kept, &text) {
                     Ok(()) => Self::new(Prefs::default(), Some(path.to_path_buf())),
                     Err(error) => {
-                        tracing::warn!("couldn't keep it: {error}");
+                        tracing::warn!("couldn't keep it ({error})");
                         Self::new(Prefs::default(), None)
                     }
                 }
@@ -830,7 +830,7 @@ fn unsaved(cx: &App) -> Option<(PathBuf, String, u64)> {
     match store.text() {
         Ok(text) => Some((path, text, saver.changes)),
         Err(error) => {
-            tracing::error!("couldn't write the preferences: {error}");
+            tracing::error!("couldn't write the preferences ({error})");
             None
         }
     }
@@ -848,7 +848,7 @@ pub fn init(store: PrefsStore, cx: &mut App) {
             if let Some((path, text, _)) = save
                 && let Err(error) = write_atomically(&path, &text)
             {
-                tracing::error!("couldn't save {}: {error}", path.display());
+                tracing::error!("couldn't save {} ({error})", path.display());
             }
         }
     })
@@ -896,7 +896,7 @@ fn schedule_save(cx: &mut App) {
                 let saver = cx.global_mut::<Saver>();
                 saver.saved = saver.saved.max(change);
             }),
-            Err(error) => tracing::error!("couldn't save {}: {error}", path.display()),
+            Err(error) => tracing::error!("couldn't save {} ({error})", path.display()),
         }
     });
     cx.global_mut::<Saver>().pending = Some(task);
