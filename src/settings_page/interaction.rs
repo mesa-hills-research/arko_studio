@@ -655,6 +655,21 @@ fn only_mcp_config_files_are_added(cx: &mut TestAppContext) {
     });
 }
 
+/// The MCP config files are removed one by one, with Remove. The
+/// Advanced page's reset leaves the list, which would take a file dialog
+/// per file to make again.
+#[gpui_kit::test]
+fn advanced_resets_keep_the_mcp_config_files(cx: &mut TestAppContext) {
+    let mut settings = prefs::Prefs::default();
+    settings.advanced.mcp_config = vec![std::path::PathBuf::from("/home/ada/mcp/work.json")];
+    start_with(cx, settings);
+    let (window, _, _) = settings_window(cx, 7, 900.);
+    act(cx, window, |window, _| {
+        assert!(window.try_find(("remove-mcp-config", 0usize)).is_some());
+        assert!(window.try_find("reset").is_none(), "nothing else to reset");
+    });
+}
+
 /// Moving or resizing the window changes its placement in the preferences
 /// many times a second: the pages aren't built again for it. A preference
 /// they show still shows at once.

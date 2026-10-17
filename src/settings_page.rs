@@ -976,11 +976,7 @@ fn advanced_page(
                         add.update(cx, |page, cx| page.add_mcp_config(window, cx))
                             .ok();
                     })
-            })
-            .on_reset(
-                |cx| !prefs::get(cx).advanced.mcp_config.is_empty(),
-                |_, cx| prefs::update(cx, |prefs| prefs.advanced.mcp_config.clear()),
-            ),
+            }),
         )
         .description(
             "Servers agent sessions start ahead of a project’s and Arko’s, as arko --mcp-config does. In Claude Code’s format or arko’s.",
