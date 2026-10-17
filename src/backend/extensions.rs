@@ -15,7 +15,6 @@ pub struct Extensions {
     pub files: Vec<McpFile>,
     pub projects: Vec<ProjectServers>,
     pub skills: Vec<SkillFolder>,
-    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,7 +96,6 @@ impl Extensions {
                     })
                     .collect(),
             }],
-            notes: Vec::new(),
         }
     }
 }
@@ -112,22 +110,14 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
             projects.push(folder);
         }
     }
-    // Without a project, use an absent folder so only shared extensions
-    // are listed. The engine's listing currently requires a workspace.
-    let no_project = root.join("studio-no-project");
     let workspaces = if projects.is_empty() {
-        vec![no_project]
+        vec![None]
     } else {
-        projects.clone()
+        projects.iter().map(|path| Some(path.as_path())).collect()
     };
     let mut found = Extensions::default();
-    for (index, workspace) in workspaces.iter().enumerate() {
+    for (index, workspace) in workspaces.into_iter().enumerate() {
         let listed = arko::extensions::list(root, workspace, mcp_config);
-        for note in &listed.notes {
-            if !found.notes.contains(note) {
-                found.notes.push(note.clone());
-            }
-        }
         if index == 0 {
             let mut files = mcp_config.to_vec();
             let user = root.join(USER_MCP_FILE);
@@ -139,14 +129,17 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
                     continue;
                 }
                 found.files.push(McpFile {
-                    servers: path.is_file().then(|| servers_in(&listed, &path)),
+                    servers: (path.is_file() || file_note(&listed, &path).is_some())
+                        .then(|| servers_in(&listed, &path)),
                     arko: path == user,
                     path,
                 });
             }
         }
-        let project = workspace.join(PROJECT_MCP_FILE);
-        if project.is_file() {
+        if let Some(workspace) = workspace
+            && let project = workspace.join(PROJECT_MCP_FILE)
+            && project.is_file()
+        {
             let raw = mcp_servers(&project);
             let approval = match approvals.get(&workspace.display().to_string()) {
                 None => Approval::NotAsked,
@@ -160,7 +153,7 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
                 Some(_) => Approval::Changed,
             };
             found.projects.push(ProjectServers {
-                folder: workspace.clone(),
+                folder: workspace.to_path_buf(),
                 servers: servers_in(&listed, &project),
                 approval,
             });
@@ -203,12 +196,36 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
     found
 }
 
+fn normal_path(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut normal = PathBuf::new();
+    for component in absolute.components() {
+        if component == std::path::Component::ParentDir {
+            normal.pop();
+        } else {
+            normal.push(component.as_os_str());
+        }
+    }
+    normal
+}
+
+fn file_note<'a>(listed: &'a arko::extensions::Extensions, path: &Path) -> Option<&'a str> {
+    let path = normal_path(path);
+    listed
+        .notes
+        .iter()
+        .find(|note| note.file == path)
+        .map(|note| note.message.as_str())
+}
+
 fn servers_in(
     listed: &arko::extensions::Extensions,
     path: &Path,
 ) -> Result<Vec<McpServer>, String> {
-    check_mcp_file(path)?;
-    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Some(note) = file_note(listed, path) {
+        return Err(note.to_string());
+    }
+    let absolute = normal_path(path);
     Ok(listed
         .servers
         .iter()
@@ -317,7 +334,15 @@ mod tests {
             .as_ref()
             .unwrap();
         assert!(user[0].skipped.as_deref().unwrap().contains("servers.json"));
-        assert!(found.notes.iter().any(|note| note.contains("missing.json")));
+        assert!(
+            found.files[1]
+                .servers
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap_err()
+                .contains("missing.json")
+        );
         let ours = found
             .skills
             .iter()
@@ -333,6 +358,30 @@ mod tests {
                 .iter()
                 .any(|skill| skill.name == "flat" && skill.skipped.is_none())
         );
+    }
+
+    #[test]
+    fn shared_extensions_need_no_synthetic_workspace_and_notes_stay_with_their_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        write(
+            &root.join("studio-no-project/.mcp.json"),
+            r#"{"mcpServers":{"unexpected":{"command":"x"}}}"#,
+        );
+        let bad = root.join("bad.json");
+        let gone = root.join("studio-no-project/../gone.json");
+        write(&bad, "invalid JSON");
+        write(&root.join(USER_MCP_FILE), "{}");
+        let listed = arko::extensions::list(&root, None, &[bad.clone(), gone.clone()]);
+        let found = read(&root, &[], &[bad.clone(), gone.clone()]);
+        assert!(found.projects.is_empty());
+        for path in [&bad, &gone, &root.join(USER_MCP_FILE)] {
+            let file = found.files.iter().find(|file| &file.path == path).unwrap();
+            assert_eq!(
+                file.servers.as_ref().unwrap().as_ref().unwrap_err(),
+                file_note(&listed, path).unwrap()
+            );
+        }
     }
 
     #[test]

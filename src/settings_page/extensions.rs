@@ -156,17 +156,6 @@ impl ExtensionsPage {
                 )
                 .items(files),
         ];
-        if let Some(extensions) = &self.extensions {
-            for note in &extensions.notes {
-                groups.push(
-                    SettingGroup::new().items([SettingItem::new(
-                        "MCP file",
-                        SettingField::render(|_, _, _| div()),
-                    )
-                    .description(note.clone())]),
-                );
-            }
-        }
         if !projects.is_empty() {
             groups.push(
                 SettingGroup::new()
@@ -221,7 +210,7 @@ fn file_item(file: &McpFile, home: Option<&Path>) -> SettingItem {
             format!("{path} isn’t there. Servers set up in it start in every agent session.")
         }
         None => format!("{path} isn’t there. Remove it under Advanced, or make it."),
-        Some(Err(why)) => format!("It can’t be read ({why})."),
+        Some(Err(why)) => why.clone(),
         Some(Ok(servers)) if file.arko => format!("{path}. {}", servers_words(servers)),
         Some(Ok(servers)) => servers_words(servers),
     };
@@ -238,7 +227,7 @@ fn project_item(
 ) -> SettingItem {
     let servers = match &project.servers {
         Ok(servers) => servers_words(servers),
-        Err(why) => format!("It can’t be read ({why})."),
+        Err(why) => why.clone(),
     };
     let answer = match project.approval {
         Approval::Approved => "Approved, so they start with its sessions.",
