@@ -144,7 +144,8 @@ pub struct CacheReminders {
     /// last refreshed.
     period: Option<i64>,
     sent: Sent,
-    /// The window showing the last reminder.
+    /// The window showing the reminder (the last one stays there, and an
+    /// OS copy of either waits in the notification center).
     shown_in: Option<AnyWindowHandle>,
     /// The next reminder shows without a sound or an OS copy: it comes back
     /// after a failed Refresh.
@@ -270,7 +271,8 @@ impl CacheReminders {
         });
     }
 
-    /// Takes the last reminder away.
+    /// Takes the reminder away, from the app and from the OS's
+    /// notifications.
     fn dismiss(&mut self, cx: &mut App) {
         if let Some(window) = self.shown_in.take() {
             let key = self.key;
@@ -323,7 +325,11 @@ impl CacheReminders {
             .update(cx, |_, window, cx| {
                 if system {
                     window.push_notification(
+                        // The same id as the app's: taking the reminder away
+                        // takes it out of the OS's notifications too, and the
+                        // last one takes the place of the first.
                         Notification::new()
+                            .id1::<CacheReminder>(ElementId::Integer(key))
                             .title(headline.clone())
                             .message(lines(&title, &choices))
                             .on_click({
@@ -355,9 +361,7 @@ impl CacheReminders {
                 window.push_notification(note, cx);
             })
             .ok();
-        if last {
-            self.shown_in = Some(window);
-        }
+        self.shown_in = Some(window);
         if !quiet {
             notify::play_sound(cx);
         }
@@ -927,6 +931,20 @@ mod tests {
         reminded.advance(cx, 4 * 60_000);
         assert!(reminded.sent(cx).last);
         assert!(reminded.shows(cx, "cache-countdown"));
+    }
+
+    /// In the background the reminder goes to the OS's notifications too,
+    /// and leaves them with the lapse.
+    #[gpui_kit::test]
+    fn an_os_copy_leaves_with_the_reminder(cx: &mut TestAppContext) {
+        let reminded = Reminded::new(cx, 5, 230_000);
+        gpui_kit::VisualTestContext::from_window(reminded.window, cx).deactivate_window();
+        reminded.advance(cx, 10_000);
+        assert!(reminded.sent(cx).last);
+        assert_eq!(cx.delivered_system_notifications().len(), 1);
+        reminded.advance(cx, 61_000);
+        assert!(!reminded.shows(cx, "cache-countdown"));
+        assert!(cx.delivered_system_notifications().is_empty());
     }
 
     /// A reminder due while the computer slept comes after it wakes: its
