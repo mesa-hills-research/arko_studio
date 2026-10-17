@@ -326,6 +326,10 @@ fn branch_instead_goes_on_in_a_new_session_and_leaves_this_one(cx: &mut TestAppC
     act(cx, app.window, |window, cx| window.press("up", cx));
     app.set_composer(cx, "Count the apples.");
     act(cx, app.window, |window, cx| window.press("enter", cx));
+    // "Don't ask again" ticked: it is kept with Edit only.
+    act(cx, app.window, |window, cx| {
+        window.click("dont-ask-edit", cx)
+    });
     act(cx, app.window, |window, cx| window.click("edit-branch", cx));
     // The branch has the first exchange and the edited message's reply.
     wait_until(cx, "the branch's reply", |cx| {
@@ -338,7 +342,7 @@ fn branch_instead_goes_on_in_a_new_session_and_leaves_this_one(cx: &mut TestAppC
     });
     assert!(app.says(cx, "Seven pears."));
     assert!(!app.says(cx, "Three plums."));
-    // The session it came from is as it was, "Don't ask again" untouched.
+    // The session it came from is as it was, and Edit still asks first.
     let kept: Vec<String> = cx.read(|cx| {
         original
             .read(cx)
