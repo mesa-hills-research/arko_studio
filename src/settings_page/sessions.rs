@@ -28,6 +28,8 @@ pub struct SessionsPage {
     workers_handover: TextSetting<usize>,
     background_after: TextSetting<u64>,
     chat_instructions: Entity<TextareaState>,
+    /// The preferences as the page last showed them.
+    seen: prefs::Prefs,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -107,6 +109,9 @@ impl SessionsPage {
                 }
             }),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
+                if !super::shown_changed(&mut this.seen, cx) {
+                    return;
+                }
                 this.handover.follow(window, cx);
                 this.workers_handover.follow(window, cx);
                 this.background_after.follow(window, cx);
@@ -123,6 +128,7 @@ impl SessionsPage {
             workers_handover,
             background_after,
             chat_instructions,
+            seen: super::shown_prefs(prefs::get(cx)),
             _subscriptions: subscriptions,
         }
     }

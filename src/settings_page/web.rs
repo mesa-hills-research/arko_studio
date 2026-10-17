@@ -21,6 +21,8 @@ pub const WHAT_IT_ALLOWS: &str = "Anyone with a session’s link can follow it f
 pub struct WebPageSettings {
     address: TextSetting<String>,
     port: TextSetting<u16>,
+    /// The preferences as the page last showed them.
+    seen: prefs::Prefs,
     _subscriptions: Vec<Subscription>,
     _sessions: Vec<Subscription>,
 }
@@ -70,6 +72,9 @@ impl WebPageSettings {
                 }
             }),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
+                if !super::shown_changed(&mut this.seen, cx) {
+                    return;
+                }
                 this.address.follow(window, cx);
                 this.port.follow(window, cx);
                 cx.notify();
@@ -82,6 +87,7 @@ impl WebPageSettings {
         let mut this = Self {
             address,
             port,
+            seen: super::shown_prefs(prefs::get(cx)),
             _subscriptions: subscriptions,
             _sessions: Vec::new(),
         };

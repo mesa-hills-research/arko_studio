@@ -385,3 +385,39 @@ fn mcp_config_files_are_added_and_removed(cx: &mut TestAppContext) {
     assert!(backend.defaults().mcp_config.is_empty());
     assert!(cx.read(|cx| prefs::get(cx).advanced.mcp_config.is_empty()));
 }
+
+/// Moving or resizing the window changes its placement in the preferences
+/// many times a second: the pages aren't built again for it. A preference
+/// they show still shows at once.
+#[gpui_kit::test]
+fn a_resize_leaves_the_pages_as_they_are(cx: &mut TestAppContext) {
+    start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, 0, 900.);
+    let builds = |cx: &mut TestAppContext| cx.read(|cx| settings.read(cx).builds);
+    // A frame as the platform asks for one: only what changed draws again.
+    let frame = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    };
+    frame(cx);
+    let before = builds(cx);
+    for step in 0..5 {
+        cx.update(|cx| {
+            prefs::update(cx, |prefs| {
+                prefs.window = Some(prefs::WindowPlacement {
+                    x: 10. * step as f32,
+                    y: 0.,
+                    width: 1300. + step as f32,
+                    height: 900.,
+                    maximized: false,
+                });
+            })
+        });
+        frame(cx);
+    }
+    assert_eq!(builds(cx), before);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.render_markdown = false));
+    frame(cx);
+    assert!(builds(cx) > before);
+}

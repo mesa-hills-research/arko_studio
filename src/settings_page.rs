@@ -72,7 +72,34 @@ pub struct SettingsPage {
     /// many times it was: the page list starts afresh on it each time.
     page: usize,
     shown: usize,
+    /// The preferences the pages show, as they were drawn.
+    shown_prefs: prefs::Prefs,
+    /// How many times the pages were built (tests).
+    #[cfg(test)]
+    builds: usize,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Whether the preferences Settings shows changed since `seen`, which then
+/// takes them: a page draws again only then.
+fn shown_changed(seen: &mut prefs::Prefs, cx: &App) -> bool {
+    let shown = shown_prefs(prefs::get(cx));
+    if shown == *seen {
+        return false;
+    }
+    *seen = shown;
+    true
+}
+
+/// The preferences Settings shows: all but where the window is and how
+/// wide its panes are, which a resize or a drag changes many times a second.
+fn shown_prefs(prefs: &prefs::Prefs) -> prefs::Prefs {
+    prefs::Prefs {
+        window: None,
+        sidebar: prefs::SidebarPrefs::default(),
+        workers_panel: prefs::PanelPrefs::default(),
+        ..prefs.clone()
+    }
 }
 
 impl SettingsPage {
@@ -93,8 +120,13 @@ impl SettingsPage {
                 this.make_font_pickers(window, cx)
             }),
             // Settings shows the preferences as they change, here or elsewhere
-            // (a zoom shortcut, another window).
-            cx.observe_global::<prefs::PrefsStore>(|_, cx| cx.notify()),
+            // (a zoom shortcut, another window), but not the window's
+            // placement and its panes' widths, which it doesn't show.
+            cx.observe_global::<prefs::PrefsStore>(|this, cx| {
+                if shown_changed(&mut this.shown_prefs, cx) {
+                    cx.notify();
+                }
+            }),
         ];
         let mut this = Self {
             focus_handle: cx.focus_handle(),
@@ -108,6 +140,9 @@ impl SettingsPage {
             extensions,
             page: 0,
             shown: 0,
+            shown_prefs: shown_prefs(prefs::get(cx)),
+            #[cfg(test)]
+            builds: 0,
             _subscriptions: subscriptions,
         };
         this.make_font_pickers(window, cx);
@@ -933,6 +968,10 @@ impl Focusable for SettingsPage {
 
 impl Render for SettingsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.builds += 1;
+        }
         let pages = self.pages(cx);
         // Wide enough for "Models & accounts" beside its icon and chevron.
         let nav_width = window.rem_size() * 14.;

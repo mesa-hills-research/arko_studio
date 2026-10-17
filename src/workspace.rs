@@ -98,6 +98,9 @@ pub struct Workspace {
     workers_open: bool,
     /// The pane showing as a sheet over a narrow window.
     sheet: Option<Edge>,
+    /// The sidebar's state and the panes' widths in the preferences, as the
+    /// window last followed them.
+    panes: (bool, f32, f32),
     /// Widths while a drag resizes them, in rem; saved when it ends.
     sidebar_width: f32,
     panel_width: f32,
@@ -154,6 +157,7 @@ impl Workspace {
             width: WidthClass::of(window.viewport_size().width),
             workers_open: false,
             sheet: None,
+            panes: (sidebar_prefs.open, sidebar_prefs.width(), panel_width),
             sidebar_width: sidebar_prefs.width(),
             panel_width,
             _subscriptions: subscriptions,
@@ -241,10 +245,22 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Follows the preferences the window's layout takes: whether the
+    /// sidebar shows, and the panes' widths. Others (the window's own
+    /// placement, saved as it moves) leave it as it is.
     fn prefs_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sidebar = &prefs::get(cx).sidebar;
-        self.sidebar_width = sidebar.width();
-        self.panel_width = prefs::get(cx).workers_panel.width;
+        let prefs = prefs::get(cx);
+        let panes = (
+            prefs.sidebar.open,
+            prefs.sidebar.width(),
+            prefs.workers_panel.width,
+        );
+        if panes == self.panes {
+            return;
+        }
+        self.panes = panes;
+        self.sidebar_width = panes.1;
+        self.panel_width = panes.2;
         self.sync_chrome(window, cx);
         cx.notify();
     }
@@ -1040,7 +1056,10 @@ impl Workspace {
 
     fn render_main(&self) -> AnyElement {
         match &self.settings {
-            Some(settings) => settings.clone().into_any_element(),
+            // Drawn again when its page changes, not whenever the window is.
+            Some(settings) => AnyView::from(settings.clone())
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
             None => self.session_view.clone().into_any_element(),
         }
     }
