@@ -578,7 +578,7 @@ impl TranscriptView {
                             action("branch-message", Lucide::GitBranch)
                                 .disabled(busy.is_some())
                                 .tooltip(busy.unwrap_or(
-                                    "Branch: a new session with the conversation before this message",
+                                    "Branch into a new session with the conversation before this message",
                                 ))
                                 .accessibility_label("Branch")
                                 .on_click(move |_, _, cx| {

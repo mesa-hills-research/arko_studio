@@ -2448,7 +2448,7 @@ impl SessionView {
         let text: SharedString = match session.phase() {
             Phase::Opening if session.id().is_none() => "Starting the session…".into(),
             Phase::Opening | Phase::Open | Phase::Closing => "Opening the session…".into(),
-            Phase::Sample => "A sample session: it shows, but doesn’t run.".into(),
+            Phase::Sample => "A sample session that shows, but doesn’t run.".into(),
             Phase::Ended => "The session has closed.".into(),
             Phase::Failed(why) => why.clone().into(),
         };
@@ -2859,8 +2859,8 @@ type PickMode = Rc<dyn Fn(Mode, &mut Window, &mut App)>;
 /// and for a `started` conversation what switching costs.
 pub fn mode_description(mode: Mode, started: bool) -> String {
     let what = match mode {
-        Mode::Chat => "Chat: conversation only, no tools.",
-        Mode::Agent => "Agent: works in a folder with tools and workers.",
+        Mode::Chat => "Chat is conversation only, without tools.",
+        Mode::Agent => "Agent works in a folder with tools and workers.",
     };
     if started {
         format!("{what} Switching re-reads the conversation without its cache.")
@@ -3027,11 +3027,11 @@ mod tests {
     fn the_mode_line_says_what_the_mode_does_and_what_switching_costs() {
         assert_eq!(
             mode_description(Mode::Chat, false),
-            "Chat: conversation only, no tools."
+            "Chat is conversation only, without tools."
         );
         assert_eq!(
             mode_description(Mode::Agent, true),
-            "Agent: works in a folder with tools and workers. Switching re-reads the conversation without its cache."
+            "Agent works in a folder with tools and workers. Switching re-reads the conversation without its cache."
         );
     }
 

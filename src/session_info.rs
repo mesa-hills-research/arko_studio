@@ -969,8 +969,8 @@ fn clicked<const N: usize>(after: &[bool], before: [bool; N]) -> Option<usize> {
     (0..N).find(|ix| after.get(*ix).copied().unwrap_or(false) && !before[*ix])
 }
 
-/// The MCP servers, a line each ("files — 4 tools", "web — didn't start:
-/// …"), with the names of the server's tools for its tooltip.
+/// The MCP servers, a line each ("files — 4 tools", "web — didn’t start
+/// (…)"), with the names of the server's tools for its tooltip.
 pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
     let mut lines: Vec<(String, Option<String>)> = mcp
         .servers
@@ -985,7 +985,7 @@ pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
                 ),
                 (!tools.is_empty()).then(|| tools.join(", ")),
             ),
-            Err(why) => (format!("{} — didn’t start: {why}", server.name), None),
+            Err(why) => (format!("{} — didn’t start ({why})", server.name), None),
         })
         .collect();
     lines.extend(mcp.notes.iter().map(|note| (note.clone(), None)));
@@ -995,10 +995,10 @@ pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
     lines
 }
 
-/// The skills, in a line: "3: release-notes, docs-style, triage".
+/// The skills, in a line: "3 (release-notes, docs-style, triage)".
 pub fn skills_line(skills: &Result<SkillsFacts, String>) -> String {
     match skills {
-        Err(why) => format!("Couldn’t be read: {why}"),
+        Err(why) => format!("Couldn’t be read ({why})"),
         Ok(skills) if skills.skills.is_empty() => "None".to_string(),
         Ok(skills) => {
             let names: Vec<&str> = skills
@@ -1006,7 +1006,7 @@ pub fn skills_line(skills: &Result<SkillsFacts, String>) -> String {
                 .iter()
                 .map(|skill| skill.name.as_str())
                 .collect();
-            format!("{}: {}", names.len(), names.join(", "))
+            format!("{} ({})", names.len(), names.join(", "))
         }
     }
 }
@@ -1111,7 +1111,7 @@ mod tests {
             mcp_lines(&mcp),
             [
                 ("files — 2 tools".into(), Some("read, write".into())),
-                ("web — didn’t start: no such program".into(), None)
+                ("web — didn’t start (no such program)".into(), None)
             ]
         );
         assert_eq!(mcp_lines(&McpFacts::default()), [("None".into(), None)]);
@@ -1124,7 +1124,7 @@ mod tests {
             folders: Vec::new(),
             own_folder: PathBuf::new(),
         };
-        assert_eq!(skills_line(&Ok(skills)), "1: docs-style");
+        assert_eq!(skills_line(&Ok(skills)), "1 (docs-style)");
         assert_eq!(
             indexes_line(&["2 skills".into(), "indexes arko (code), docs (docs)".into()])
                 .as_deref(),

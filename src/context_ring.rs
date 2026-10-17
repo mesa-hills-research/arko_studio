@@ -309,7 +309,7 @@ impl RenderOnce for ContextDetails {
         let cache = match (reading.cache.read, reading.cache.written) {
             (None, None) => None,
             (read, written) => Some(format!(
-                "Cache, last request: {} read · {} written",
+                "Last request’s cache · {} read · {} written",
                 figures::tokens(read.unwrap_or(0)),
                 figures::tokens(written.unwrap_or(0))
             )),

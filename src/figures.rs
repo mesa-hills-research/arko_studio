@@ -148,10 +148,14 @@ pub fn plan_label(window: &PlanWindow) -> String {
     format!("{} limit {}", window.label, percent(window.used_percent))
 }
 
-/// One window of a plan, for a tooltip or a popover: "5 h: 84% used,
+/// One window of a plan, for a tooltip or a popover: "5 h limit · 84% used,
 /// starts over at 14:00".
 pub fn plan_window_line(window: &PlanWindow, now: i64) -> String {
-    let mut text = format!("{}: {} used", window.label, percent(window.used_percent));
+    let mut text = format!(
+        "{} limit · {} used",
+        window.label,
+        percent(window.used_percent)
+    );
     if let Some(at) = window.resets_at {
         text.push_str(&format!(", starts over {}", starts_over(at, now)));
     }
@@ -170,8 +174,8 @@ pub fn starts_over(unix_seconds: i64, now: i64) -> String {
     }
 }
 
-/// The plans' windows, a plan a line: "Claude plan · 5 h: 84% used, starts
-/// over at 14:00 · 7 d: 40% used".
+/// The plans' windows, a plan a line: "Claude plan · 5 h limit · 84% used,
+/// starts over at 14:00 · 7 d limit · 40% used".
 pub fn plans_tooltip(plans: &[PlanStatus], now: i64) -> String {
     plans
         .iter()
@@ -312,7 +316,7 @@ mod tests {
         assert_eq!(plan_label(window), "7 d limit 91%");
         assert_eq!(
             plans_tooltip(&plans, 0),
-            "Claude plan · 5 h: 84% used · 7 d: 91% used"
+            "Claude plan · 5 h limit · 84% used · 7 d limit · 91% used"
         );
     }
 

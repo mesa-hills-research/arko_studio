@@ -296,7 +296,7 @@ impl Sidebar {
             let sessions = listing.await;
             this.update(cx, |this, cx| match sessions {
                 Ok(sessions) => this.set_sessions(sessions, cx),
-                Err(error) => tracing::error!("couldn't list the sessions: {error:?}"),
+                Err(error) => tracing::error!("couldn't list the sessions ({error:?})"),
             })
             .ok();
         }));
@@ -731,12 +731,12 @@ impl Sidebar {
                 })
                 .collect();
             description.push_str(&format!(
-                " Workers’ worktrees with uncommitted changes stay: {}.",
+                " Workers’ worktrees with uncommitted changes stay ({}).",
                 kept.join(", ")
             ));
         }
         if LiveSessions::find(&entry.id, cx).is_some_and(|session| session.read(cx).is_running()) {
-            description.push_str(" It’s open here: it closes first.");
+            description.push_str(" It’s open here, so it closes first.");
         }
         let sidebar = cx.entity().downgrade();
         let id = entry.id.clone();

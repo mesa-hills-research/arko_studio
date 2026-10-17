@@ -710,7 +710,7 @@ impl RenderOnce for CostDetails {
                             .text_xs()
                             .text_color(muted)
                             .child(format!(
-                                "≈ {} at API prices: the {plan} covers {}",
+                                "≈ {} at API prices. The {plan} covers {}",
                                 figures::dollars(api),
                                 if report.main.plan.is_some() && report.workers.plan.is_some()
                                     || report.workers.input + report.workers.output == 0

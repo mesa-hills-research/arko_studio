@@ -140,7 +140,7 @@ pub fn notice(
         LiveEvent::QuestionAsked if settings.question && !(focused && shown) => Some(Notice {
             title: title.to_string(),
             body: match question {
-                Some(text) => format!("Arko asks: {}", first_line(text)),
+                Some(text) => format!("Arko asks “{}”", first_line(text)),
                 None => "Arko asks you something.".to_string(),
             },
             system: !focused,
@@ -286,7 +286,7 @@ mod tests {
         assert_eq!(asked(true, true), None, "the question card shows it");
         let in_app = asked(true, false).unwrap();
         assert!(!in_app.system);
-        assert_eq!(in_app.body, "Arko asks: Tabs or spaces?");
+        assert_eq!(in_app.body, "Arko asks “Tabs or spaces?”");
         assert!(asked(false, true).unwrap().system);
         let off = Notifications {
             question: false,

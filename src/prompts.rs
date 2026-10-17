@@ -189,7 +189,7 @@ impl CredentialsForm {
         match &self.need {
             arko::Need::Any => "Add an API key, or sign in to ChatGPT (`codex login`) or Claude Code, then check again. Keys are saved in Arko’s folder, readable only by you.".to_string(),
             arko::Need::ChatGptLogin { problem, .. } => format!(
-                "Arko reaches OpenAI models through your ChatGPT login: {problem}. Sign in with `codex login`, or choose the auth.json file Codex keeps it in."
+                "Arko couldn’t use your ChatGPT login ({problem}). Sign in with `codex login`, or choose Codex’s auth.json file."
             ),
             arko::Need::ClaudeCode {
                 problem: arko::accounts::Problem::Missing,
@@ -400,7 +400,7 @@ fn show_mcp(session: Entity<LiveSession>, request: McpRequest, window: &mut Wind
                             }))
                             .when(!request.skipped.is_empty(), |this| {
                                 this.child(div().text_xs().text_color(muted).child(format!(
-                                    "Left out: {}",
+                                    "Left out {}",
                                     request.skipped.join(", ")
                                 )))
                             }),
@@ -460,15 +460,15 @@ pub fn switch_cost_text(cost: Option<&arko::details::SwitchCost>) -> String {
     match cost {
         Some(cost) => match (cost.dollars, cost.plan) {
             (Some(dollars), _) => format!(
-                "Arko re-reads this conversation without its cache: about {} tokens, ≈ ${dollars:.2}.",
+                "Arko re-reads about {} tokens of this conversation without its cache, costing ≈ ${dollars:.2}.",
                 short_tokens(cost.tokens)
             ),
             (None, Some(plan)) => format!(
-                "Arko re-reads this conversation without its cache: about {} tokens of {plan}.",
+                "Arko re-reads about {} tokens of this conversation without its cache, using {plan}.",
                 short_tokens(cost.tokens)
             ),
             (None, None) => format!(
-                "Arko re-reads this conversation without its cache: about {} tokens.",
+                "Arko re-reads about {} tokens of this conversation without its cache.",
                 short_tokens(cost.tokens)
             ),
         },
@@ -698,7 +698,7 @@ pub fn confirm_stop(
                                 })
                                 .when(!ask.workers.is_empty(), |this| {
                                     this.child(div().text_color(muted).child(format!(
-                                        "{} {}: {}",
+                                        "{} {} ({})",
                                         ask.workers.len(),
                                         if ask.workers.len() == 1 { "worker" } else { "workers" },
                                         ask.workers.join(", ")
@@ -765,11 +765,11 @@ mod tests {
         };
         assert_eq!(
             switch_cost_text(Some(&cost(Some(0.9), None))),
-            "Arko re-reads this conversation without its cache: about 180k tokens, ≈ $0.90."
+            "Arko re-reads about 180k tokens of this conversation without its cache, costing ≈ $0.90."
         );
         assert_eq!(
             switch_cost_text(Some(&cost(None, Some("your Claude plan")))),
-            "Arko re-reads this conversation without its cache: about 180k tokens of your Claude plan."
+            "Arko re-reads about 180k tokens of this conversation without its cache, using your Claude plan."
         );
         assert_eq!(
             switch_cost_text(None),
