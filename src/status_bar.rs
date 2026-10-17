@@ -69,8 +69,8 @@ pub struct StatusBar {
     web_page_open: bool,
     /// It opens as soon as the page is served (Share Web Page).
     web_page_asked: bool,
-    /// The engine’s reply to Share Web Page.
-    _web_page_request: Option<Task<()>>,
+    /// The session's latest Stop or Close, invalidating older popovers.
+    web_page_epoch: u64,
     _session: Option<Subscription>,
     _tick: Option<Task<()>>,
     _cost: Option<Task<()>>,
@@ -85,7 +85,7 @@ impl StatusBar {
             cost: None,
             web_page_open: false,
             web_page_asked: false,
-            _web_page_request: None,
+            web_page_epoch: 0,
             _session: None,
             _tick: None,
             _cost: None,
@@ -131,7 +131,9 @@ impl StatusBar {
         self._cost = None;
         self.web_page_open = false;
         self.web_page_asked = false;
-        self._web_page_request = None;
+        self.web_page_epoch = session
+            .as_ref()
+            .map_or(0, |session| session.read(cx).sharing_epoch());
         self._session = session
             .as_ref()
             .map(|session| cx.observe(session, |_, _, cx| cx.notify()));
@@ -178,17 +180,33 @@ impl StatusBar {
             return;
         }
         let answer = crate::web_page::share(&session, bind, cx);
-        self._web_page_request = Some(cx.spawn_in(window, async move |this, cx| {
-            let answer = answer.await;
-            this.update_in(cx, |this, window, cx| match answer {
-                Ok(_) => {
-                    this.web_page_asked = true;
-                    cx.notify();
-                }
-                Err(why) => window.push_notification(Notification::error(why), cx),
+        let epoch = session.read(cx).sharing_epoch();
+        self.web_page_epoch = epoch;
+        let this = cx.entity().downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let answer = answer.await;
+                cx.update(|window, cx| {
+                    // Stop and Close deliberately cancel earlier shares.
+                    if session.read(cx).sharing_epoch() != epoch {
+                        return;
+                    }
+                    match answer {
+                        Ok(_) => {
+                            this.update(cx, |this, cx| {
+                                if this.session().is_some_and(|shown| shown == &session) {
+                                    this.web_page_asked = true;
+                                    cx.notify();
+                                }
+                            })
+                            .ok();
+                        }
+                        Err(why) => window.push_notification(Notification::error(why), cx),
+                    }
+                })
+                .ok();
             })
-            .ok();
-        }));
+            .detach();
     }
 
     /// Whether the web page's popover shows.
@@ -607,6 +625,14 @@ impl Render for StatusBar {
         }
         if shown.outside {
             bar = bar.left(self.render_outside(narrow, cx));
+        }
+        if let Some(session) = self.session() {
+            let epoch = session.read(cx).sharing_epoch();
+            if self.web_page_epoch != epoch {
+                self.web_page_epoch = epoch;
+                self.web_page_asked = false;
+                self.web_page_open = false;
+            }
         }
         match &reading.page {
             Some(page) => {

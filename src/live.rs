@@ -304,6 +304,8 @@ pub struct LiveSession {
     queued: Vec<arko::Input>,
     /// Requests made while the session opens, answered once it opens.
     queued_requests: std::cell::RefCell<Vec<arko::Request>>,
+    /// A Stop or Close invalidates earlier Share completions in every window.
+    sharing_epoch: std::cell::Cell<u64>,
     prompt: Option<Prompt>,
     quit_ask: Option<arko::QuitAsk>,
     /// What the user agreed to stop to close it.
@@ -356,6 +358,7 @@ impl LiveSession {
             shown: 0,
             queued: Vec::new(),
             queued_requests: Default::default(),
+            sharing_epoch: Default::default(),
             prompt: None,
             quit_ask: None,
             quit_agreed: None,
@@ -1011,6 +1014,10 @@ impl LiveSession {
         }));
     }
 
+    pub(crate) fn sharing_epoch(&self) -> u64 {
+        self.sharing_epoch.get()
+    }
+
     /// Asks the engine `request`, made with its reply's sender. The task
     /// gives the answer, or why there is none.
     pub(crate) fn request<T: Send + 'static>(
@@ -1019,12 +1026,20 @@ impl LiveSession {
         cx: &App,
     ) -> Task<Result<T, String>> {
         let (reply, answer) = oneshot::channel();
+        let request = request(reply);
+        if matches!(request, arko::Request::StopWebPage { .. }) {
+            self.sharing_epoch
+                .set(self.sharing_epoch.get().wrapping_add(1));
+            self.queued_requests
+                .borrow_mut()
+                .retain(|request| !matches!(request, arko::Request::ShareWebPage { .. }));
+        }
         if let Some(link) = &self.link {
-            if link.requests.send(request(reply)).is_err() {
+            if link.requests.send(request).is_err() {
                 return Task::ready(Err("The session has closed.".to_string()));
             }
         } else if self.phase == Phase::Opening {
-            self.queued_requests.borrow_mut().push(request(reply));
+            self.queued_requests.borrow_mut().push(request);
         } else {
             return Task::ready(Err("The session isn’t open.".to_string()));
         }
@@ -1127,6 +1142,8 @@ impl LiveSession {
     /// agreed to stop). Should the engine find more running, it asks
     /// ([`LiveEvent::QuitAsked`]).
     pub fn close(&mut self, agreed: arko::QuitAsk, cx: &mut Context<Self>) {
+        self.sharing_epoch
+            .set(self.sharing_epoch.get().wrapping_add(1));
         match &self.phase {
             Phase::Opening => {
                 // It hasn't opened: it closes as soon as it does, without
@@ -1134,6 +1151,7 @@ impl LiveSession {
                 // would still go to the model). A question it asks before it
                 // opens is answered: don't open.
                 self.queued.clear();
+                self.queued_requests.get_mut().clear();
                 self.queued.push(arko::Input::Quit(Some(Vec::new())));
                 self.quit_agreed = Some(agreed);
                 self.phase = Phase::Closing;

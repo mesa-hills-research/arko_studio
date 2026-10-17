@@ -52,6 +52,8 @@ mod composer_tests;
 #[cfg(test)]
 mod engine_tests;
 #[cfg(test)]
+mod sharing_tests;
+#[cfg(test)]
 mod status_tests;
 #[cfg(test)]
 mod testing;
