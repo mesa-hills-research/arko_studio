@@ -851,7 +851,7 @@ fn notifications_page() -> SettingPage {
             .keywords(["finished", "done", "notify", "unfocused"]),
             switch(
                 "When a question arrives",
-                "The agent waits for your answer: a notification from your system while Arko Studio is in the background.",
+                "A notification from your system while Arko Studio is in the background, or in the app while it shows another session.",
                 |prefs| prefs.notifications.question,
                 |prefs, on| prefs.notifications.question = on,
                 defaults.question,
