@@ -109,7 +109,7 @@ impl Startup {
     /// thread, which [`init`] waits for.
     pub fn load() -> Self {
         let arko = paths::arko_folder().unwrap_or_else(|| PathBuf::from("arko"));
-        let prefs = Prefs::load(&paths::prefs_file(&arko));
+        let prefs = PrefsStore::load(&paths::prefs_file(&arko));
         let themes = std::thread::Builder::new()
             .name("themes".into())
             .spawn(appearance::parse_bundled)
@@ -117,7 +117,7 @@ impl Startup {
             .unwrap_or_else(|_| Themes::Ready(appearance::parse_bundled()));
         let added_fonts = fonts::added(&paths::fonts_folder(&arko));
         Self {
-            prefs: PrefsStore::new(prefs, Some(paths::prefs_file(&arko))),
+            prefs,
             themes,
             bundled_fonts: fonts::bundled(),
             added_fonts,
