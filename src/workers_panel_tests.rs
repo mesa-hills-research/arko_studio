@@ -203,7 +203,7 @@ fn the_keyboard_moves_through_the_list_and_opens_a_worker(cx: &mut TestAppContex
     })
     .unwrap();
     panel.draw(cx);
-    // The focus lands on the first worker; ↓ and Tab move on, ↑ back.
+    // The focus lands on the first worker. ↓ and Tab move on, ↑ back.
     panel.press(cx, "down");
     panel.press(cx, "tab");
     panel.press(cx, "up");
