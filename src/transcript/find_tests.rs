@@ -386,6 +386,88 @@ fn open_feed(
     opened
 }
 
+#[gpui_kit::test]
+fn the_next_match_keeps_its_quiet_group_open(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    feed.user("Go.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    for number in 0..5 {
+        command(&feed, &format!("needle {number}"), "no match");
+    }
+    feed.turn_ended("1 s", None);
+    let (window, view) = open_feed(cx, &feed, View::Quiet, 900.);
+    view.update(cx, |view, cx| view.find("needle", cx));
+    settle(cx, window);
+    for _ in 0..5 {
+        view.update(cx, |view, cx| view.find_next(false, cx));
+        settle(cx, window);
+        let calls = cx.read(|cx| {
+            view.read(cx)
+                .rows
+                .iter()
+                .filter(|row| matches!(row.key, RowKey::Call(_)))
+                .count()
+        });
+        assert_eq!(calls, 5);
+    }
+}
+
+#[gpui_kit::test]
+fn a_match_in_thinking_opens_both_the_entry_and_its_code(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    feed.user("Go.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    think(
+        &feed,
+        &format!(
+            "```rust\n{}let needle = 1;\n```\n",
+            "let x = 0;\n".repeat(80)
+        ),
+    );
+    say(&feed, "Done.");
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open_feed(cx, &feed, View::Full, 900.);
+    view.update(cx, |view, cx| view.find("needle", cx));
+    settle(cx, window);
+    cx.read(|cx| {
+        let view = view.read(cx);
+        let id = view.current_match().unwrap().entry;
+        let ui = view.ui.get(&id).unwrap();
+        assert_eq!(ui.expanded, Some(true));
+        assert!(ui.uncapped.contains(&0));
+    });
+}
+
+#[gpui_kit::test]
+fn changing_scope_rejects_an_older_background_search(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    feed.user("Go.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    for number in 0..10 {
+        command(
+            &feed,
+            &format!("build {number}"),
+            &format!("{}needle", "filler ".repeat(5000)),
+        );
+    }
+    feed.turn_ended("1 s", None);
+    let (window, view) = open_feed(cx, &feed, View::Full, 900.);
+    view.update(cx, |view, cx| {
+        assert!(view.find("needle", cx).searching);
+        let generation = view.find.as_ref().unwrap().generation;
+        view.settings.view = View::Messages;
+        view.refresh_rows(cx);
+        view.find_changed_all(cx);
+        // Even a completion already queued on the UI thread is stale.
+        view.lowered(generation, Vec::new(), cx);
+    });
+    settle(cx, window);
+    let status = cx.read(|cx| view.read(cx).find_status());
+    assert!(!status.searching);
+    assert_eq!(status.total, 0);
+}
+
 fn top(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> gpui_kit::ListOffset {
     cx.read(|cx| view.read(cx).list.top())
 }
