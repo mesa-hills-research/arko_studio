@@ -625,3 +625,111 @@ fn the_bar_and_the_info_follow_a_session_on_the_engine(cx: &mut TestAppContext) 
         cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
     });
 }
+
+/// A window on arko's engine, its model arko's mock, sessions working in a
+/// temporary folder.
+struct OnEngine {
+    _temp: tempfile::TempDir,
+    _mock: crate::testing::Mock,
+    window: AnyWindowHandle,
+    workspace: Entity<crate::workspace::Workspace>,
+}
+
+impl OnEngine {
+    fn start(cx: &mut TestAppContext, width: f32) -> Self {
+        use crate::testing::{Mock, reply};
+
+        let mock = Mock::start(|index, _| reply(&format!("a{index}"), "Done."));
+        cx.executor().allow_parking();
+        let temp = tempfile::tempdir().unwrap();
+        let (root, work) = (temp.path().join("arko"), temp.path().join("work"));
+        std::fs::create_dir_all(&work).unwrap();
+        let backend =
+            Arc::new(crate::backend::ArkoBackend::new(&root).with_configure(mock.configure()));
+        cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+        let (window, workspace) = open(cx, width);
+        let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+        cx.update(|cx| view.update(cx, |view, cx| view.set_draft_folder(work.clone(), cx)));
+        Self {
+            _temp: temp,
+            _mock: mock,
+            window,
+            workspace,
+        }
+    }
+
+    fn shown(&self, cx: &mut TestAppContext) -> Option<Entity<LiveSession>> {
+        cx.read(|cx| self.workspace.read(cx).live_session().cloned())
+    }
+
+    /// Sends a first message and waits for its turn to end.
+    fn first_turn(&self, cx: &mut TestAppContext) -> Entity<LiveSession> {
+        act(cx, self.window, |window, cx| {
+            window.input("Count the pears.", cx)
+        });
+        act(cx, self.window, |window, cx| window.press("enter", cx));
+        crate::testing::wait_until(cx, "the turn's end", |cx| {
+            self.shown(cx).is_some_and(|session| {
+                cx.read(|cx| {
+                    let session = session.read(cx);
+                    session.reading().context_tokens.is_some() && !session.is_working()
+                })
+            })
+        });
+        self.shown(cx).unwrap()
+    }
+
+    fn command(&self, cx: &mut TestAppContext, session: &Entity<LiveSession>, text: &str) {
+        act(cx, self.window, |window, cx| {
+            crate::status_bar::run(session, text, window, cx)
+        });
+    }
+
+    fn close_all(&self, cx: &mut TestAppContext) {
+        act(cx, self.window, |window, cx| {
+            let sessions = crate::live::LiveSessions::all(cx);
+            crate::quit::close(sessions, false, window, cx);
+        });
+        crate::testing::wait_until(cx, "the sessions to end", |cx| {
+            cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
+        });
+    }
+}
+
+/// Where the session's page is served.
+fn page_addr(
+    session: &Entity<LiveSession>,
+    cx: &mut TestAppContext,
+) -> Option<std::net::SocketAddr> {
+    cx.read(|cx| {
+        session
+            .read(cx)
+            .reading()
+            .page
+            .as_ref()
+            .map(|page| page.addr)
+    })
+}
+
+/// Share Web Page serves where Settings say, this computer only by default,
+/// even in a session that served on every network before.
+#[gpui_kit::test]
+fn sharing_serves_where_settings_say_not_where_the_page_was(cx: &mut TestAppContext) {
+    use crate::testing::wait_until;
+
+    let app = OnEngine::start(cx, 1300.);
+    let session = app.first_turn(cx);
+    app.command(cx, &session, "/remote 0.0.0.0");
+    wait_until(cx, "the page on every network", |cx| {
+        page_addr(&session, cx).is_some_and(|addr| addr.ip().is_unspecified())
+    });
+    app.command(cx, &session, "/remote off");
+    wait_until(cx, "the page off", |cx| page_addr(&session, cx).is_none());
+    act(cx, app.window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ShareWebPage), cx)
+    });
+    wait_until(cx, "the page again", |cx| page_addr(&session, cx).is_some());
+    let addr = page_addr(&session, cx).unwrap();
+    app.close_all(cx);
+    assert!(addr.ip().is_loopback(), "served on {addr}");
+}

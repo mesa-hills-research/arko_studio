@@ -80,20 +80,28 @@ impl Default for WebPagePrefs {
 }
 
 impl WebPagePrefs {
-    /// The argument `/remote` takes to serve there: empty for the defaults,
-    /// else `0.0.0.0`, `9000`, `0.0.0.0:9000` or `[::]:9000`.
-    pub fn bind_argument(&self) -> String {
+    /// The address to serve on, `None` when the one given isn't an IP
+    /// address. Empty is this computer only.
+    pub fn ip(&self) -> Option<std::net::IpAddr> {
         let address = self.address.trim();
-        let address = (!address.is_empty() && address != DEFAULT_WEB_PAGE_ADDRESS)
-            .then_some(address.trim_start_matches('[').trim_end_matches(']'));
-        match (address, self.port) {
-            (None, None) => String::new(),
-            (None, Some(port)) => port.to_string(),
-            (Some(address), None) => address.to_string(),
-            (Some(address), Some(port)) if address.contains(':') => {
-                format!("[{address}]:{port}")
-            }
-            (Some(address), Some(port)) => format!("{address}:{port}"),
+        let address = match address.trim_start_matches('[').trim_end_matches(']') {
+            "" => DEFAULT_WEB_PAGE_ADDRESS,
+            address => address,
+        };
+        address.parse().ok()
+    }
+
+    /// The argument `/remote` takes to serve there, always with the address
+    /// (without one a session serves where it served last): `127.0.0.1`,
+    /// `0.0.0.0:9000`, `[::]:9000`. An address that isn't an IP address
+    /// serves on this computer only.
+    pub fn bind_argument(&self) -> String {
+        let ip = self
+            .ip()
+            .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        match self.port {
+            Some(port) => std::net::SocketAddr::new(ip, port).to_string(),
+            None => ip.to_string(),
         }
     }
 }
@@ -746,15 +754,31 @@ mod tests {
             address: address.into(),
             port,
         };
-        assert_eq!(WebPagePrefs::default().bind_argument(), "");
-        assert_eq!(page("", None).bind_argument(), "");
-        assert_eq!(page("127.0.0.1", Some(9000)).bind_argument(), "9000");
+        // Always with the address: without one, a session serves where it
+        // served last.
+        assert_eq!(WebPagePrefs::default().bind_argument(), "127.0.0.1");
+        assert_eq!(page("", None).bind_argument(), "127.0.0.1");
+        assert_eq!(
+            page("127.0.0.1", Some(9000)).bind_argument(),
+            "127.0.0.1:9000"
+        );
         assert_eq!(page(" 0.0.0.0 ", None).bind_argument(), "0.0.0.0");
         assert_eq!(page("0.0.0.0", Some(9000)).bind_argument(), "0.0.0.0:9000");
         assert_eq!(page("::", Some(9000)).bind_argument(), "[::]:9000");
         assert_eq!(page("[::1]", None).bind_argument(), "::1");
+        // A word or a host name isn't taken for a command or looked up: the
+        // page stays on this computer.
+        for address in ["off", "new-key", "my-laptop"] {
+            assert_eq!(page(address, None).ip(), None);
+            assert_eq!(page(address, None).bind_argument(), "127.0.0.1");
+        }
         // Each reads back as the same address and port.
-        for (address, port) in [("0.0.0.0", Some(9000)), ("::", Some(9000)), ("::1", None)] {
+        for (address, port) in [
+            ("127.0.0.1", None),
+            ("0.0.0.0", Some(9000)),
+            ("::", Some(9000)),
+            ("::1", None),
+        ] {
             let bind = arko::remote::parse_bind(&page(address, port).bind_argument()).unwrap();
             assert_eq!(bind.ip, address.parse::<std::net::IpAddr>().unwrap());
             assert_eq!(bind.port, port);

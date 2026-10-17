@@ -707,8 +707,17 @@ impl Workspace {
             return;
         };
         if session.read(cx).reading().page.is_none() {
-            let bind = prefs::get(cx).web_page.bind_argument();
-            if let Err(why) = crate::web_page::share(&session, &bind, cx) {
+            let page = prefs::get(cx).web_page.clone();
+            if page.ip().is_none() {
+                window.push_notification(
+                    Notification::warning(format!(
+                        "“{}” in Settings › Web page isn’t an IP address: the page is served on this computer only.",
+                        page.address.trim()
+                    )),
+                    cx,
+                );
+            }
+            if let Err(why) = crate::web_page::share(&session, &page.bind_argument(), cx) {
                 window.push_notification(why, cx);
                 return;
             }
