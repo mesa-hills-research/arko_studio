@@ -332,61 +332,66 @@ impl Model {
     /// be sent again comes before it: the reply Regenerate replaces.
     pub fn last_reply(&self) -> Option<u64> {
         let message = self.last_message()?;
-        let after = || {
-            self.entries
-                .iter()
-                .rev()
-                .take_while(move |entry| entry.item.id > message)
-        };
-        // A cache refresh's answer ("Acknowledged") isn't a reply to send
-        // again: the engine sends the user's last message.
-        let refreshed: Vec<Option<u64>> = after()
-            .filter(|entry| is_refresh(&entry.item))
-            .map(|entry| entry.item.turn)
-            .collect();
-        after()
-            .find(|entry| {
-                entry.item.is_main()
-                    && entry.item.kind == Kind::Reply
-                    && !refreshed.contains(&entry.item.turn)
-            })
-            .map(|entry| entry.item.id)
+        let start = self.position(message).ok()?;
+        let mut last = None;
+        for (item, in_refresh) in self.runs_after(start) {
+            // A cache refresh's answer ("Acknowledged") isn't a reply to
+            // send again: the engine sends the user's last message.
+            if item.kind == Kind::Reply && !in_refresh {
+                last = Some(item.id);
+            }
+        }
+        last
     }
 
     /// How many messages come after the user's message `id`: the user's,
-    /// and the agent's replies, one per turn (cache refreshes left out).
+    /// and one reply for each run of the agent's output between them
+    /// (cache refreshes and their answers left out). Counted by place, as
+    /// a restored history's items carry no turn.
     pub fn messages_after(&self, id: u64) -> usize {
         let Ok(start) = self.position(id) else {
             return 0;
         };
-        let after = &self.entries[start + 1..];
-        let refreshed: Vec<Option<u64>> = after
+        let mut count = 0;
+        let mut in_reply = false;
+        for (item, in_refresh) in self.runs_after(start) {
+            match item.kind {
+                Kind::User if !in_refresh => {
+                    count += 1;
+                    in_reply = false;
+                }
+                Kind::Text | Kind::Reply | Kind::Message | Kind::Question
+                    if !in_refresh && !in_reply =>
+                {
+                    count += 1;
+                    in_reply = true;
+                }
+                Kind::Turn | Kind::User => in_reply = false,
+                _ => {}
+            }
+        }
+        count
+    }
+
+    /// The main agent's items after the entry at `start`, each with whether
+    /// it is part of a cache refresh: the refresh message, and what follows
+    /// it until its turn ends or the user writes again.
+    fn runs_after(&self, start: usize) -> impl Iterator<Item = (&Item, bool)> {
+        let mut in_refresh = false;
+        self.entries[start + 1..]
             .iter()
-            .filter(|entry| is_refresh(&entry.item))
-            .map(|entry| entry.item.turn)
-            .collect();
-        let users = after
-            .iter()
-            .filter(|entry| {
-                let item = &entry.item;
-                item.kind == Kind::User && item.is_main() && !is_refresh(item)
+            .map(|entry| &entry.item)
+            .filter(|item| item.is_main())
+            .map(move |item| {
+                if item.kind == Kind::User {
+                    in_refresh = is_refresh(item);
+                }
+                let refreshing = in_refresh;
+                if item.kind == Kind::Turn {
+                    in_refresh = false;
+                }
+                (item, refreshing)
             })
-            .count();
-        let mut turns: Vec<Option<u64>> = after
-            .iter()
-            .filter(|entry| {
-                let item = &entry.item;
-                item.is_main()
-                    && matches!(
-                        item.kind,
-                        Kind::Text | Kind::Reply | Kind::Message | Kind::Question
-                    )
-                    && !refreshed.contains(&item.turn)
-            })
-            .map(|entry| entry.item.turn)
-            .collect();
-        turns.dedup();
-        users + turns.len()
     }
 
     /// Why the conversation can't be changed now: a turn runs, or workers
@@ -1348,6 +1353,39 @@ mod tests {
             "a refresh"
         );
         assert_eq!(model.busy_reason(), None);
+    }
+
+    /// A restored history: its items carry no turn. The counts are the
+    /// same as live.
+    #[test]
+    fn a_restored_conversation_counts_as_it_did_live() {
+        let restored = |id: u64, kind: Kind, text: &str| item(id, kind, "main", text);
+        let mut first = restored(1, Kind::User, "Fix the parser.");
+        first.message_index = Some(0);
+        first.delivery = Some(Delivery::Turn);
+        let mut second = restored(4, Kind::User, "Now the docs.");
+        second.message_index = Some(2);
+        second.delivery = Some(Delivery::Turn);
+        let mut third = restored(7, Kind::User, "Thanks.");
+        third.message_index = Some(4);
+        third.delivery = Some(Delivery::Turn);
+        let mut refresh = restored(9, Kind::User, "(keep the cache warm)");
+        refresh.delivery = Some(Delivery::Refresh);
+        let model = model(vec![
+            first,
+            restored(2, Kind::Text, "Reading it."),
+            restored(3, Kind::Reply, "Fixed."),
+            second,
+            restored(6, Kind::Reply, "Done."),
+            third,
+            restored(8, Kind::Reply, "You're welcome."),
+            refresh,
+            restored(10, Kind::Reply, "Acknowledged"),
+        ]);
+        // After the first: its reply, two messages and their replies.
+        assert_eq!(model.messages_after(1), 5);
+        assert_eq!(model.messages_after(7), 1);
+        assert_eq!(model.last_reply(), Some(8));
     }
 
     #[test]
