@@ -11,13 +11,7 @@ use super::fields::{self, TextKind, TextSetting};
 use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
-/// The smallest handover size arko takes: a fresh conversation starts at
-/// about a tenth of it.
-pub const MIN_HANDOVER: usize = 20_000;
-
-/// The longest arko waits before moving a command to the background, in
-/// seconds.
-pub const MAX_BACKGROUND_AFTER: u64 = 3_600;
+use arko::commands::MIN_HANDOVER_SIZE;
 
 /// arko's own time before a command moves to the background, in seconds.
 pub const DEFAULT_BACKGROUND_AFTER: u64 = 600;
@@ -231,7 +225,7 @@ impl SessionsPage {
                 self.handover.item("Handover size", "handover-at")
                 .description(format!(
                     "When the main agent’s context reaches it, the agent writes a report and goes on in a fresh conversation. Like 950k or 1.2M, at least {}k, and held under 95% of what its model takes.",
-                    MIN_HANDOVER / 1000
+                    MIN_HANDOVER_SIZE / 1000
                 ))
                 .keywords(["context", "tokens", "handover-at", "main agent"]),
                 self.workers_handover
@@ -383,60 +377,13 @@ fn confirmations_group() -> SettingGroup {
 }
 
 /// A handover size: `200000`, `200,000`, `200_000`, `950k`, `250.5k`, `1M`
-/// or `1.2M`, at least [`MIN_HANDOVER`]. Empty: the model's own.
+/// or `1.2M`, at least [`MIN_HANDOVER_SIZE`]. Empty: the model's own.
 pub fn parse_handover(text: &str) -> Result<Option<usize>, String> {
     let text = text.trim();
     if text.is_empty() {
         return Ok(None);
     }
-    let tokens = parse_size(text)
-        .ok_or_else(|| "Give a number of tokens, such as 200000, 950k or 1.2M.".to_string())?;
-    if tokens < MIN_HANDOVER {
-        return Err(format!(
-            "At least {}k, since a fresh conversation would start near it.",
-            MIN_HANDOVER / 1000
-        ));
-    }
-    Ok(Some(tokens))
-}
-
-/// A number of tokens with `k` or `M` for thousands or millions, and
-/// decimals with either, rounded to whole tokens ("1.2M" is 1,200,000).
-fn parse_size(text: &str) -> Option<usize> {
-    let text: String = text.chars().filter(|c| !matches!(c, ',' | '_')).collect();
-    let text = text.trim();
-    let (number, scale) = if let Some(number) = text.strip_suffix(['k', 'K']) {
-        (number, 1_000u128)
-    } else if let Some(number) = text.strip_suffix(['m', 'M']) {
-        (number, 1_000_000)
-    } else {
-        (text, 1)
-    };
-    let number = number.trim();
-    let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
-    let digits = |part: &str| part.chars().all(|c| c.is_ascii_digit());
-    // Tokens are whole: decimals only with k or M.
-    if (whole.is_empty() && fraction.is_empty())
-        || !digits(whole)
-        || !digits(fraction)
-        || (scale == 1 && number.contains('.'))
-    {
-        return None;
-    }
-    let whole: u128 = if whole.is_empty() {
-        0
-    } else {
-        whole.parse().ok()?
-    };
-    // The fraction's digits past what a token can show round away.
-    let fraction = &fraction[..fraction.len().min(12)];
-    let part = if fraction.is_empty() {
-        0
-    } else {
-        let tenths = 10u128.pow(fraction.len() as u32);
-        (fraction.parse::<u128>().ok()? * scale * 2 + tenths) / (2 * tenths)
-    };
-    usize::try_from(whole.checked_mul(scale)?.checked_add(part)?).ok()
+    arko::commands::parse_handover_size(text).map(Some)
 }
 
 /// A number of tokens as the field shows it: `1.2M`, `950k`, or the
@@ -459,34 +406,11 @@ pub fn shown_tokens(tokens: usize) -> String {
 /// reads it: `90s`, `10m`, `1h` or `off` (0), at most an hour. Empty:
 /// arko's own.
 pub fn parse_background_after(text: &str) -> Result<Option<u64>, String> {
-    let text = text.trim().to_ascii_lowercase();
+    let text = text.trim();
     if text.is_empty() {
         return Ok(None);
     }
-    if text == "off" {
-        return Ok(Some(0));
-    }
-    let invalid = || {
-        format!(
-            "Give a time such as 90s, 10m or 1h (at most {}m), or off.",
-            MAX_BACKGROUND_AFTER / 60
-        )
-    };
-    let (number, unit) = text.split_at(text.len().saturating_sub(1));
-    let scale = match unit {
-        "s" => 1,
-        "m" => 60,
-        "h" => 3_600,
-        _ => return Err(invalid()),
-    };
-    let seconds = number
-        .trim()
-        .parse::<u64>()
-        .ok()
-        .and_then(|number| number.checked_mul(scale))
-        .filter(|seconds| (1..=MAX_BACKGROUND_AFTER).contains(seconds))
-        .ok_or_else(invalid)?;
-    Ok(Some(seconds))
+    arko::commands::parse_background_after(text).map(Some)
 }
 
 /// A time in seconds as the field shows it: `90s`, `10m`, `1h`, or `off`.
@@ -510,31 +434,28 @@ mod tests {
         assert_eq!(parse_handover(" 200,000 "), Ok(Some(200_000)));
         assert_eq!(parse_handover("200_000"), Ok(Some(200_000)));
         assert_eq!(parse_handover("950k"), Ok(Some(950_000)));
-        assert_eq!(parse_handover("950 K"), Ok(Some(950_000)));
+        assert!(parse_handover("950 K").is_err());
         assert!(parse_handover("lots").is_err());
         assert!(parse_handover("-5").is_err());
-        assert!(
-            parse_handover("5k")
-                .unwrap_err()
-                .starts_with("At least 20k")
-        );
-        assert!(parse_handover("0").unwrap_err().starts_with("At least 20k"));
+        for text in ["5k", "0", "1,2k", "1.2345678M"] {
+            assert_eq!(parse_handover(text), arko::commands::parse_handover_size(text).map(Some));
+        }
         assert!(parse_handover("99999999999999999999999k").is_err());
         for tokens in [20_000, 950_000, 123_456, 1_000_000, 1_200_000, 1_250_000] {
             assert_eq!(parse_handover(&shown_tokens(tokens)), Ok(Some(tokens)));
         }
     }
 
-    /// Millions, and decimals with k or M, rounded to whole tokens.
+    /// Millions and decimals with k or M must name whole tokens.
     #[test]
     fn handover_sizes_take_millions_and_decimals() {
         assert_eq!(parse_handover("1M"), Ok(Some(1_000_000)));
         assert_eq!(parse_handover("1m"), Ok(Some(1_000_000)));
         assert_eq!(parse_handover("1.2M"), Ok(Some(1_200_000)));
         assert_eq!(parse_handover("0.95M"), Ok(Some(950_000)));
-        assert_eq!(parse_handover(".5M"), Ok(Some(500_000)));
+        assert!(parse_handover(".5M").is_err());
         assert_eq!(parse_handover("250.5k"), Ok(Some(250_500)));
-        assert_eq!(parse_handover("1.2345678M"), Ok(Some(1_234_568)));
+        assert!(parse_handover("1.2345678M").is_err());
         assert!(parse_handover("200000.5").is_err(), "tokens are whole");
         assert!(parse_handover("1.2.3M").is_err());
         assert!(parse_handover("M").is_err());
@@ -553,7 +474,9 @@ mod tests {
         assert_eq!(parse_background_after("1h"), Ok(Some(3_600)));
         assert!(parse_background_after("2h").is_err());
         assert!(parse_background_after("0s").is_err());
-        assert!(parse_background_after("ten").is_err());
+        for text in ["ten", "é", "2h"] {
+            assert_eq!(parse_background_after(text), arko::commands::parse_background_after(text).map(Some));
+        }
         for seconds in [0, 90, 600, 3_600] {
             assert_eq!(
                 parse_background_after(&shown_background_after(seconds)),
