@@ -271,6 +271,27 @@ impl TranscriptView {
         self.model.last_message()
     }
 
+    /// The conversation as an export takes it: the main agent's items in
+    /// order and what the user wrote to its workers, without the messages
+    /// that only kept the prompt cache warm and their answers.
+    pub fn export_items(&self) -> Vec<arko::remote::Item> {
+        let entries = self.model.entries();
+        let refreshed: Vec<Option<u64>> = entries
+            .iter()
+            .filter(|entry| model::is_refresh(&entry.item))
+            .map(|entry| entry.item.turn)
+            .collect();
+        entries
+            .iter()
+            .map(|entry| &entry.item)
+            .filter(|item| item.is_main() || item.kind == Kind::User)
+            .filter(|item| {
+                !(item.is_main() && item.turn.is_some() && refreshed.contains(&item.turn))
+            })
+            .cloned()
+            .collect()
+    }
+
     /// The reply Regenerate replaces: the main agent's latest, after the
     /// user's last message.
     pub fn last_reply(&self) -> Option<u64> {

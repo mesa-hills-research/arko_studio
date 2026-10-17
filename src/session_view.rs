@@ -632,6 +632,60 @@ impl SessionView {
         }
     }
 
+    /// Exports the conversation shown as Markdown, to a file the user
+    /// chooses (Export as Markdown…).
+    pub fn export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let items = self
+            .transcript(cx)
+            .map(|transcript| transcript.read(cx).export_items())
+            .unwrap_or_default();
+        let Some(session) = self.session.as_ref().filter(|_| !items.is_empty()) else {
+            window.push_notification("There is no conversation to export yet.", cx);
+            return;
+        };
+        let session = session.read(cx);
+        let header = crate::export::Header {
+            title: session.title().to_string(),
+            mode: session.mode().label().to_string(),
+            model: session.model().to_string(),
+            folder: session
+                .workspace()
+                .map(|folder| shown_folder(folder, self.home.as_deref())),
+            when: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+        };
+        let text = crate::export::markdown(&header, &items);
+        let folder = crate::export::folder(
+            session.workspace().map(PathBuf::as_path),
+            self.home.as_deref(),
+        );
+        let chosen =
+            cx.prompt_for_new_path(&folder, Some(&crate::export::file_name(session.title())));
+        cx.spawn_in(window, async move |_, cx| {
+            let Ok(Ok(Some(path))) = chosen.await else {
+                return;
+            };
+            // Written off the UI thread.
+            let written = cx
+                .background_spawn({
+                    let path = path.clone();
+                    async move { std::fs::write(&path, text) }
+                })
+                .await;
+            cx.update(|window, cx| match written {
+                Ok(()) => window.push_notification(format!("Exported to {}.", path.display()), cx),
+                Err(error) => window.push_notification(
+                    gpui_kit::component::notification::Notification::error(format!(
+                        "Couldn’t export to {}: {error}.",
+                        path.display()
+                    )),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Opens the find bar at the top of the transcript, or gives it the
     /// keyboard again with its words selected.
     pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {

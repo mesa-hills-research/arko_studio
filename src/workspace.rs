@@ -1088,11 +1088,10 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &menus::OpenAccounts, window, cx| {
                 this.open_accounts(window, cx)
             }))
-            .on_action(
-                cx.listener(|_, _: &menus::ExportMarkdown, window, cx| {
-                    not_yet("Export", window, cx)
-                }),
-            )
+            .on_action(cx.listener(|this, _: &menus::ExportMarkdown, window, cx| {
+                this.session_view
+                    .update(cx, |view, cx| view.export(window, cx));
+            }))
             .on_action(cx.listener(|this, _: &menus::Find, window, cx| {
                 if this.settings.is_none() {
                     this.session_view

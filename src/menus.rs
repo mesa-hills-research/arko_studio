@@ -164,8 +164,6 @@ fn file_menu(mac: bool) -> Menu {
     let mut items = vec![
         MenuItem::action("New Session", NewSession),
         MenuItem::action("New Window", NewWindow),
-        MenuItem::separator(),
-        MenuItem::action("Export as Markdown…", ExportMarkdown),
     ];
     if mac {
         items.extend([
@@ -245,6 +243,7 @@ fn session_menu() -> Menu {
         MenuItem::action("Session Info…", SessionInfo),
         MenuItem::action("Rename…", RenameSession),
         MenuItem::action("Branch from Here", BranchSession),
+        MenuItem::action("Export as Markdown…", ExportMarkdown),
         MenuItem::separator(),
         MenuItem::action("Stop", StopTurn),
         MenuItem::action("Move Command to Background", MoveToBackground),
