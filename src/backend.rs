@@ -353,6 +353,28 @@ pub trait Backend: Send + Sync + 'static {
     fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String>;
 }
 
+/// The accounts as the app last read them. Observers hear when a reading
+/// differs from the one before (a key added or removed, a login chosen,
+/// Claude Code signed in): the models new sessions can use changed.
+#[derive(Default)]
+pub struct AccountsSeen {
+    last: Option<Accounts>,
+}
+
+impl gpui_kit::Global for AccountsSeen {}
+
+/// Records `accounts` as just read, telling the observers of
+/// [`AccountsSeen`] when they changed.
+pub fn accounts_read(accounts: &Accounts, cx: &mut gpui_kit::App) {
+    use gpui_kit::BorrowAppContext as _;
+    let seen = cx.default_global::<AccountsSeen>();
+    if seen.last.as_ref() == Some(accounts) {
+        return;
+    }
+    let accounts = accounts.clone();
+    cx.update_global::<AccountsSeen, _>(|seen, _| seen.last = Some(accounts));
+}
+
 /// Gives the backend the preferences sessions start with, now and whenever
 /// they change.
 pub fn follow_prefs(cx: &mut gpui_kit::App) {
@@ -570,6 +592,9 @@ fn delete_error(error: arko::sessions::DeleteError) -> BackendError {
 pub struct FakeBackend {
     root: PathBuf,
     models: ModelChoices,
+    /// A group of models needs nothing once the key of the provider it's
+    /// named after is set, as with arko.
+    groups_follow_keys: bool,
     state: Mutex<FakeState>,
     defaults: Mutex<SessionDefaults>,
 }
@@ -593,6 +618,7 @@ impl FakeBackend {
         Self {
             root: root.clone(),
             models: ModelChoices::default(),
+            groups_follow_keys: false,
             state: Mutex::new(FakeState {
                 sessions,
                 open: Vec::new(),
@@ -707,6 +733,14 @@ impl FakeBackend {
         self
     }
 
+    /// Lets a group of models need nothing once the key of the provider
+    /// it's named after is set ("OpenRouter, billed per token" and the
+    /// OpenRouter key), as arko's list does.
+    pub fn with_groups_following_keys(mut self) -> Self {
+        self.groups_follow_keys = true;
+        self
+    }
+
     fn with_state<R>(&self, f: impl FnOnce(&mut FakeState) -> R) -> R {
         f(&mut lock(&self.state))
     }
@@ -783,7 +817,20 @@ impl Backend for FakeBackend {
     }
 
     fn models(&self, _: Option<&Path>) -> ModelChoices {
-        self.models.clone()
+        let mut models = self.models.clone();
+        if self.groups_follow_keys {
+            self.with_state(|state| {
+                for group in &mut models.groups {
+                    let key_set = state.accounts.keys.iter().any(|row| {
+                        row.masked.is_some() && group.name.starts_with(row.key.provider)
+                    });
+                    if key_set {
+                        group.needs = None;
+                    }
+                }
+            });
+        }
+        models
     }
 
     fn start(&self, start: Start, _: Arc<dyn arko::Prompter>) -> Launch {

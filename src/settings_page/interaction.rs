@@ -14,16 +14,29 @@ use gpui_kit::{
 use super::SettingsPage;
 use crate::Startup;
 use crate::backend::account_words::LoginState;
-use crate::backend::{Backend as _, FakeBackend, Mode};
+use crate::backend::{Backend as _, FakeBackend, Mode, ModelChoice, ModelChoices, ModelGroup};
 use crate::prefs;
 use crate::tests::{act, open};
 use crate::workspace::{self, Workspace};
 
 /// The app on the sample sessions, with `settings`. Dialogs open and
 /// close without fading, so a click lands on the dialog that's there.
-fn start_with(cx: &mut TestAppContext, mut settings: prefs::Prefs) -> Arc<FakeBackend> {
+fn start_with(cx: &mut TestAppContext, settings: prefs::Prefs) -> Arc<FakeBackend> {
+    start_on(
+        cx,
+        FakeBackend::sample("/arko", SystemTime::now()),
+        settings,
+    )
+}
+
+/// The app on `backend`, with `settings`, as [`start_with`].
+fn start_on(
+    cx: &mut TestAppContext,
+    backend: FakeBackend,
+    mut settings: prefs::Prefs,
+) -> Arc<FakeBackend> {
     settings.appearance.motion = prefs::Motion::Off;
-    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let backend = Arc::new(backend);
     cx.update(|cx| crate::init(Startup::for_tests(backend.clone()).with_prefs(settings), cx));
     backend
 }
@@ -110,6 +123,66 @@ fn the_chip_follows_the_defaults_set_in_settings(cx: &mut TestAppContext) {
         started.map(|model| arko::models::display_name(&model)),
         Some("Sonnet 5.5".to_string())
     );
+}
+
+/// "Needs an OpenRouter key" in the composer's model list goes once the
+/// key is added in Settings: the composer lists its models again.
+#[gpui_kit::test]
+fn a_key_added_in_settings_makes_its_models_usable(cx: &mut TestAppContext) {
+    let group = |name: &str, needs: Option<&str>, models: &[(&str, &str)]| ModelGroup {
+        name: name.into(),
+        needs: needs.map(str::to_string),
+        models: models
+            .iter()
+            .map(|(name, alias)| ModelChoice {
+                name: (*name).into(),
+                alias: (*alias).into(),
+            })
+            .collect(),
+    };
+    let backend = FakeBackend::sample("/arko", SystemTime::now())
+        .with_models(ModelChoices {
+            groups: vec![
+                group(
+                    "Anthropic API, billed per token",
+                    None,
+                    &[("claude-opus-5-5", "opus")],
+                ),
+                group(
+                    "OpenRouter, billed per token",
+                    Some("an OpenRouter key"),
+                    &[("openrouter:moonshotai/kimi-k3", "kimi")],
+                ),
+            ],
+            default: Some("claude-opus-5-5".into()),
+            note: None,
+        })
+        .with_groups_following_keys();
+    start_on(cx, backend, prefs::Prefs::default());
+    let (window, _, _) = settings_window(cx, 2, 1400.);
+    act(cx, window, |window, cx| window.press("escape", cx));
+    // Whether the composer's model list says the OpenRouter models need
+    // their key.
+    let needs_key = |cx: &mut TestAppContext| {
+        act(cx, window, |window, cx| window.click("mode-model", cx));
+        let mut shown = false;
+        act(cx, window, |window, cx| {
+            shown = window.try_find(("model-needs", 1usize)).is_some();
+            window.press("escape", cx);
+        });
+        shown
+    };
+    assert!(needs_key(cx));
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::OpenAccounts), cx)
+    });
+    act(cx, window, |window, cx| window.click("key-openrouter", cx));
+    act(cx, window, |window, cx| {
+        window.input("sk-or-v1-0123456789abcdef", cx)
+    });
+    act(cx, window, |window, cx| window.click("key-save", cx));
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert!(!needs_key(cx));
 }
 
 /// A key is added in a masked field, replaced, and removed after a

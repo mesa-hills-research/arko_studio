@@ -153,6 +153,9 @@ impl AccountsPage {
         self._load = Some(cx.spawn(async move |this, cx| {
             let (accounts, models, last) = reading.await;
             this.update(cx, |this, cx| {
+                // A key, a login or Claude Code changed (here, or in the
+                // terminal app): the composers list their models again.
+                crate::backend::accounts_read(&accounts, cx);
                 this.accounts = Some(accounts);
                 this.models = Some(models);
                 this.last_model = last;

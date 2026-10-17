@@ -181,6 +181,17 @@ impl SessionView {
                 this.sync_defaults(cx);
             }),
             cx.observe_window_bounds(window, |this, window, cx| this.sync_expanded(window, cx)),
+            // What reaches the models changed: a key or a login in
+            // Settings. Coming back to the window, the terminal app may
+            // have changed them.
+            cx.observe_global::<crate::backend::AccountsSeen>(|this, cx| {
+                this.list_models_again(cx)
+            }),
+            cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() && this.models.is_some() {
+                    this.list_models_again(cx);
+                }
+            }),
             cx.observe(&model_filter, |_, _, cx| cx.notify()),
             cx.on_release(|this, cx| this.window_closed(cx)),
         ];
@@ -329,7 +340,8 @@ impl SessionView {
         }
     }
 
-    /// Lists the models a new session can start on, in the background.
+    /// Lists the models a new session can start on, in the background,
+    /// unless they're listed for its folder already.
     fn list_models(&mut self, cx: &mut Context<Self>) {
         let folder = self.models_folder();
         if self
@@ -339,6 +351,14 @@ impl SessionView {
         {
             return;
         }
+        self.list_models_again(cx);
+    }
+
+    /// Lists the models a new session can start on again, in the
+    /// background: what reaches them may have changed (a key added in
+    /// Settings or in the terminal app). The list shown stays until then.
+    fn list_models_again(&mut self, cx: &mut Context<Self>) {
+        let folder = self.models_folder();
         let backend = cx.global::<SharedBackend>().clone();
         let listing = cx.background_spawn({
             let folder = folder.clone();
