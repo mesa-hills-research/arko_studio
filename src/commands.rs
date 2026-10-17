@@ -245,6 +245,36 @@ pub fn commands() -> Vec<Command> {
         .keys(&["end", "secondary-end"])
         .context(crate::transcript::CONTEXT)
         .not_in_palette(),
+        Command::new(
+            Transcript,
+            "Focus Transcript",
+            crate::transcript::FocusTranscript,
+        )
+        .keys(&["f6"]),
+        Command::new(
+            Transcript,
+            "Previous Row",
+            crate::transcript::SelectPrevious,
+        )
+        .keys(&["up"])
+        .context(crate::transcript::CONTEXT)
+        .not_in_palette(),
+        Command::new(Transcript, "Next Row", crate::transcript::SelectNext)
+            .keys(&["down"])
+            .context(crate::transcript::CONTEXT)
+            .not_in_palette(),
+        Command::new(
+            Transcript,
+            "Open or Close Row",
+            crate::transcript::ToggleRow,
+        )
+        .keys(&["enter"])
+        .context(crate::transcript::CONTEXT)
+        .not_in_palette(),
+        Command::new(Transcript, "Back to the Composer", crate::transcript::Leave)
+            .keys(&["escape"])
+            .context(crate::transcript::CONTEXT)
+            .not_in_palette(),
         // The workers panel's list, and a worker's view in it.
         Command::new(Workers, "Previous Worker", workers_panel::SelectPrevious)
             .keys(&["up"])

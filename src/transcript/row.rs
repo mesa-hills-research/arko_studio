@@ -182,7 +182,7 @@ fn parameters_shown_by_line(item: &Item) -> bool {
 pub(super) fn render(
     view: &WeakEntity<TranscriptView>,
     ix: usize,
-    _: &mut Window,
+    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let Some(view) = view.upgrade() else {
@@ -217,6 +217,19 @@ pub(super) fn render(
         Gap::Section => 1.,
         Gap::Turn => 1.75,
     };
+    // The row the keyboard is on shows a ring, laid over it: nothing moves.
+    let ring = this.is_cursor(row.key, window, cx).then(|| {
+        let theme = cx.theme();
+        div()
+            .absolute()
+            .top(px(-2.))
+            .bottom(px(-2.))
+            .left_2()
+            .right_2()
+            .border_2()
+            .border_color(theme.ring)
+            .rounded(theme.radius)
+    });
     // The reading column: centred and at most ~46 rem wide, with the side
     // padding inside it, so narrow windows read edge to edge.
     div()
@@ -233,7 +246,15 @@ pub(super) fn render(
                     .ok();
             })
         })
-        .child(div().w_full().max_w(rems(COLUMN)).px_4().child(content))
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .max_w(rems(COLUMN))
+                .px_4()
+                .child(content)
+                .children(ring),
+        )
         .into_any_element()
 }
 

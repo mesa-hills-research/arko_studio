@@ -17,6 +17,7 @@ mod find;
 mod inbox;
 mod list;
 mod model;
+mod nav;
 mod row;
 #[cfg(test)]
 mod tests;
@@ -44,6 +45,7 @@ use crate::prefs;
 pub use find::FindStatus;
 pub use model::AgentFilter;
 use model::{Changes, Layout, Model, Row, RowKey};
+pub use nav::{FocusTranscript, Leave, SelectNext, SelectPrevious, ToggleRow};
 
 /// The key context of the transcript, for its key bindings.
 pub const CONTEXT: &str = "Transcript";
@@ -110,6 +112,8 @@ pub enum TranscriptEvent {
     Branch(u64),
     /// Where the find is now: the find bar shows it.
     FindStatus(FindStatus),
+    /// Esc on the rows: the keyboard goes back to the composer.
+    Leave,
 }
 
 /// The transcript's copy of the preferences it follows.
@@ -299,6 +303,8 @@ pub struct TranscriptView {
     image_copies: Rc<RefCell<ImageCopies>>,
     /// The find going on (Mod+F).
     find: Option<find::Find>,
+    /// The row the keyboard is on.
+    cursor: Option<RowKey>,
     renders: usize,
     /// Block views made since the last look for views to let go.
     views_made: usize,
@@ -363,6 +369,7 @@ impl TranscriptView {
             images: None,
             image_copies: Rc::default(),
             find: None,
+            cursor: None,
             renders: 0,
             views_made: 0,
             #[cfg(test)]
@@ -564,6 +571,7 @@ impl TranscriptView {
             self.chosen.retain(|id, _| model.entry(*id).is_some());
             self.hovered = None;
             self.hovered_rows.clear();
+            self.cursor = None;
             let ids: Vec<u64> = self.model.entries().iter().map(|e| e.item.id).collect();
             let start = ids.len().saturating_sub(FIRST_ENTRIES);
             for id in &ids[start..] {
@@ -1249,9 +1257,12 @@ impl Render for TranscriptView {
         self.animated = self.latest_running();
         let new = self.new_while_away;
         // Reached by Tab, the transcript shows that it has the focus, with a
-        // ring laid over its edge (a border would move the rows).
-        let ring = (self.focus_handle.is_focused(window) && window.last_input_was_keyboard())
-            .then(|| cx.theme().ring);
+        // ring laid over its edge (a border would move the rows). A row the
+        // keyboard is on shows its own ring instead.
+        let ring = (self.focus_handle.is_focused(window)
+            && window.last_input_was_keyboard()
+            && self.cursor_index().is_none())
+        .then(|| cx.theme().ring);
         let view = cx.entity().downgrade();
         let rows = list::render(
             "transcript-rows",
@@ -1261,13 +1272,14 @@ impl Render for TranscriptView {
             window,
             cx,
         );
+        let root = div()
+            .id("transcript")
+            .test_support()
+            .key_context(CONTEXT)
+            .track_focus(&self.focus_handle);
+        let root = Self::on_row_keys(root, cx);
         image_cache(self.image_cache.clone()).size_full().child(
-            div()
-                .id("transcript")
-                .test_support()
-                .key_context(CONTEXT)
-                .track_focus(&self.focus_handle)
-                .relative()
+            root.relative()
                 .size_full()
                 .on_action(cx.listener(Self::copy))
                 .on_action(cx.listener(|this, _: &ScrollPageUp, _, cx| {

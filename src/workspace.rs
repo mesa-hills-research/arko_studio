@@ -1092,6 +1092,14 @@ impl Render for Workspace {
                 this.session_view
                     .update(cx, |view, cx| view.export(window, cx));
             }))
+            .on_action(
+                cx.listener(|this, _: &crate::transcript::FocusTranscript, window, cx| {
+                    if this.settings.is_none() {
+                        this.session_view
+                            .update(cx, |view, cx| view.focus_transcript(window, cx));
+                    }
+                }),
+            )
             .on_action(cx.listener(|this, _: &menus::Find, window, cx| {
                 if this.settings.is_none() {
                     this.session_view

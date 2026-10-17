@@ -737,6 +737,12 @@ impl WorkersPanel {
             .key_context(WORKER_CONTEXT)
             .track_focus(&self.worker_focus)
             .on_action(cx.listener(Self::back))
+            // Esc on the worker's rows goes back to the list too.
+            .on_action(
+                cx.listener(|this, _: &crate::transcript::Leave, window, cx| {
+                    this.show_list(window, cx)
+                }),
+            )
             .flex_1()
             .min_h_0()
             .child(

@@ -729,6 +729,7 @@ impl SessionView {
             TranscriptEvent::Edit(item) => self.edit_message(*item, window, cx),
             TranscriptEvent::Regenerate => self.regenerate(window, cx),
             TranscriptEvent::Branch(item) => self.branch_from(Some(*item), window, cx),
+            TranscriptEvent::Leave => self.focus_composer(window, cx),
             TranscriptEvent::FindStatus(status) => {
                 if let Some(find) = &mut self.find {
                     find.status = *status;
@@ -790,6 +791,23 @@ impl SessionView {
             .ok();
         })
         .detach();
+    }
+
+    /// The keyboard goes to the transcript's rows, or from them back to the
+    /// composer (F6).
+    pub fn focus_transcript(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(transcript) = self.transcript(cx).cloned() else {
+            return;
+        };
+        if transcript
+            .read(cx)
+            .focus_handle(cx)
+            .contains_focused(window, cx)
+        {
+            self.focus_composer(window, cx);
+        } else {
+            transcript.update(cx, |transcript, cx| transcript.focus_rows(window, cx));
+        }
     }
 
     /// Opens the find bar at the top of the transcript, or gives it the
