@@ -232,8 +232,8 @@ fn project_item(
     let answer = match project.approval {
         Approval::Approved => "Approved, so they start with its sessions.",
         Approval::Refused => "Refused, so they don’t start.",
-        Approval::NotAsked => "Not asked yet. Its next session asks.",
-        Approval::Changed => "Changed since you answered, so its next session asks again.",
+        Approval::NotAsked => "No answer for this config. Its next session asks.",
+        Approval::Unavailable => "",
     };
     let remembered = matches!(project.approval, Approval::Approved | Approval::Refused);
     let folder = project.folder.clone();

@@ -3,11 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
-
 pub const USER_MCP_FILE: &str = "mcp.json";
 pub const PROJECT_MCP_FILE: &str = ".mcp.json";
-pub const APPROVALS_FILE: &str = "mcp-approvals.json";
 const PROJECT_SKILL_FOLDERS: [&str; 3] = [".agents/skills", ".claude/skills", ".skills"];
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -36,7 +33,8 @@ pub enum Approval {
     Approved,
     Refused,
     NotAsked,
-    Changed,
+    /// The engine could not read the answer. The servers carry its error.
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -103,11 +101,10 @@ impl Extensions {
 /// Reads extensions off the UI thread. The engine owns MCP and skill
 /// parsing, precedence, skipped entries and the folders it searches.
 pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensions {
-    let approvals = approvals(root);
-    let mut projects = folders.to_vec();
-    for folder in approvals.keys().map(PathBuf::from) {
-        if !projects.contains(&folder) {
-            projects.push(folder);
+    let mut projects = Vec::new();
+    for folder in folders {
+        if !projects.contains(folder) {
+            projects.push(folder.clone());
         }
     }
     let workspaces = if projects.is_empty() {
@@ -140,21 +137,19 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
             && let project = workspace.join(PROJECT_MCP_FILE)
             && project.is_file()
         {
-            let raw = mcp_servers(&project);
-            let approval = match approvals.get(&workspace.display().to_string()) {
-                None => Approval::NotAsked,
-                Some(answer) if raw.as_ref().ok() == answer.get("mcpServers") => {
-                    if answer.get("start").and_then(Value::as_bool) == Some(true) {
-                        Approval::Approved
-                    } else {
-                        Approval::Refused
-                    }
+            let mut servers = servers_in(&listed, &project);
+            let approval = match arko::extensions::project_mcp_approval(root, workspace) {
+                Ok(Some(true)) => Approval::Approved,
+                Ok(Some(false)) => Approval::Refused,
+                Ok(None) => Approval::NotAsked,
+                Err(why) => {
+                    servers = Err(why);
+                    Approval::Unavailable
                 }
-                Some(_) => Approval::Changed,
             };
             found.projects.push(ProjectServers {
                 folder: workspace.to_path_buf(),
-                servers: servers_in(&listed, &project),
+                servers,
                 approval,
             });
         }
@@ -238,52 +233,14 @@ fn servers_in(
         .collect())
 }
 
-/// A shallow file check for Add file and approval comparison. Entries are
-/// interpreted only by the engine.
-fn mcp_servers(path: &Path) -> Result<Value, String> {
-    let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let value: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
-    match value.get("mcpServers") {
-        Some(servers @ (Value::Object(_) | Value::Array(_))) => Ok(servers.clone()),
-        Some(_) => Err("its mcpServers is neither an object nor a list".into()),
-        None => Err("it has no mcpServers".into()),
-    }
-}
-
+/// Checks a file with the engine before Add file keeps it in Settings.
 pub fn check_mcp_file(path: &Path) -> Result<(), String> {
-    mcp_servers(path).map(|_| ())
-}
-
-/// Forgets the answer about the project's servers, so its next session asks.
-pub fn forget_approval(root: &Path, folder: &Path) -> Result<(), String> {
-    let path = root.join(APPROVALS_FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("Could not read {} ({error}).", path.display())),
-    };
-    let mut value: Value = serde_json::from_str(&text)
-        .map_err(|error| format!("Could not read {} ({error}).", path.display()))?;
-    let removed = value
-        .get_mut("projects")
-        .and_then(Value::as_object_mut)
-        .and_then(|projects| projects.remove(&folder.display().to_string()));
-    if removed.is_none() {
-        return Ok(());
+    let root = path.parent().unwrap_or(Path::new("."));
+    let listed = arko::extensions::list(root, None, &[path.to_path_buf()]);
+    match file_note(&listed, path) {
+        Some(why) => Err(why.to_string()),
+        None => Ok(()),
     }
-    let text = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
-    let temporary = root.join(format!("{APPROVALS_FILE}.tmp"));
-    std::fs::write(&temporary, text)
-        .and_then(|()| std::fs::rename(&temporary, &path))
-        .map_err(|error| format!("Could not save {} ({error}).", path.display()))
-}
-
-fn approvals(root: &Path) -> serde_json::Map<String, Value> {
-    std::fs::read_to_string(root.join(APPROVALS_FILE))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|value| value.get("projects").and_then(Value::as_object).cloned())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -394,10 +351,23 @@ mod tests {
             &project.join(PROJECT_MCP_FILE),
             &serde_json::json!({"mcpServers": servers}).to_string(),
         );
-        write(&root.join(APPROVALS_FILE), &serde_json::json!({"projects": {project.display().to_string(): {"start": true, "mcpServers": servers}}}).to_string());
-        let found = read(&root, &[], &[]);
+        write(&root.join("mcp-approvals.json"), &serde_json::json!({"projects": {project.display().to_string(): {"start": true, "mcpServers": servers}}}).to_string());
+        let alias = project.join(".");
+        let found = read(&root, std::slice::from_ref(&alias), &[]);
         assert_eq!(found.projects[0].approval, Approval::Approved);
-        forget_approval(&root, &project).unwrap();
+        write(
+            &project.join(PROJECT_MCP_FILE),
+            r#"{"mcpServers":{"github":{"command":"changed"}}}"#,
+        );
+        assert_eq!(
+            read(&root, std::slice::from_ref(&alias), &[]).projects[0].approval,
+            Approval::NotAsked
+        );
+        use crate::backend::Backend as _;
+        crate::backend::ArkoBackend::new(&root)
+            .forget_mcp_approval(&alias)
+            .unwrap();
+        assert!(!arko::extensions::forget_project_mcp_approval(&root, &project).unwrap());
         let found = read(&root, std::slice::from_ref(&project), &[]);
         assert_eq!(found.projects[0].approval, Approval::NotAsked);
         assert!(

@@ -637,7 +637,7 @@ impl Backend for ArkoBackend {
     }
 
     fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String> {
-        extensions::forget_approval(&self.root, folder)
+        arko::extensions::forget_project_mcp_approval(&self.root, folder).map(|_| ())
     }
 }
 
