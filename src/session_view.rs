@@ -103,20 +103,39 @@ pub struct SessionView {
     _draft: Option<Task<()>>,
     /// The transcripts of the sessions shown last, the latest last.
     transcripts: Vec<KeptTranscript>,
+    /// Its window closed: it shows nothing and keeps no more drafts.
+    closed: bool,
 }
 
 impl SessionView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| Composer::new(window, cx));
         let model_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find a model"));
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::on_composer_event),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 this.sync_expanded(window, cx)
             }),
             cx.observe_window_bounds(window, |this, window, cx| this.sync_expanded(window, cx)),
             cx.observe(&model_filter, |_, _, cx| cx.notify()),
+            cx.on_release(|this, cx| this.window_closed(cx)),
         ];
+        let view = cx.entity().downgrade();
+        let window_id = window.window_handle().window_id();
+        subscriptions.push(cx.on_window_closed({
+            let view = view.clone();
+            move |cx, closed| {
+                if closed == window_id {
+                    view.update(cx, |this, cx| this.window_closed(cx)).ok();
+                }
+            }
+        }));
+        drafts::keep_at_quit(
+            move |cx| {
+                view.update(cx, |this, cx| this.keep_draft(cx)).ok();
+            },
+            cx,
+        );
         let mut this = Self {
             session: None,
             draft: Draft::default(),
@@ -134,6 +153,7 @@ impl SessionView {
             _models: None,
             _draft: None,
             transcripts: Vec::new(),
+            closed: false,
         };
         this.restore_draft(window, cx);
         this.sync_expanded(window, cx);
@@ -288,8 +308,22 @@ impl SessionView {
         }
     }
 
-    fn keep_draft(&mut self, cx: &mut Context<Self>) {
+    /// Its window closed: the session it showed is no longer shown (and is
+    /// marked unseen from then on), and what was typed is kept.
+    fn window_closed(&mut self, cx: &mut App) {
+        self.keep_draft(cx);
+        self.closed = true;
+        self._session.clear();
+        if let Some(session) = self.session.take() {
+            session.update(cx, |session, cx| session.set_shown(false, cx));
+        }
+    }
+
+    fn keep_draft(&mut self, cx: &mut App) {
         self._draft = None;
+        if self.closed {
+            return;
+        }
         if let Some(key) = self.draft_key(cx) {
             let text = self.composer.read(cx).expanded_text(cx);
             drafts::set(&key, &text, cx);

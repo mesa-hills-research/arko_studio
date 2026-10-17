@@ -534,6 +534,37 @@ fn closing_a_session_with_a_background_job_asks_first(cx: &mut TestAppContext) {
     assert!(cx.read(|cx| LiveSessions::all(cx).is_empty()));
 }
 
+#[gpui_kit::test]
+fn a_turn_that_ends_after_its_window_closed_marks_the_session_unseen(cx: &mut TestAppContext) {
+    // Slow enough for the window to close first on a loaded machine.
+    let mock = Mock::start(|_, _| answer("Slow answer.", Duration::from_secs(6)));
+    let app = start(cx, &mock);
+    let (second, _) = open(cx, 1300.);
+    app.send(cx, "The slow one.");
+    let slow = app.shown(cx).unwrap();
+    wait_until(cx, "the slow turn", |cx| {
+        cx.read(|cx| slow.read(cx).is_working() && slow.read(cx).id().is_some())
+    });
+    let id = cx.read(|cx| slow.read(cx).id().cloned().unwrap());
+    // Its window closes, and another stays open.
+    cx.update_window(app.window, |_, window, cx| {
+        assert!(crate::chrome::can_close(window, cx));
+        window.remove_window();
+    })
+    .unwrap();
+    cx.run_until_parked();
+    wait_until(cx, "the reply", |cx| {
+        cx.read(|cx| !slow.read(cx).is_working())
+    });
+    assert!(cx.read(|cx| LiveSessions::indicator(&id, cx)).unseen);
+    act(cx, second, |window, cx| {
+        crate::quit::close(LiveSessions::all(cx), false, window, cx);
+    });
+    wait_until(cx, "the sessions to end", |cx| {
+        cx.read(|cx| LiveSessions::all(cx).is_empty())
+    });
+}
+
 /// A session running a background job, listed in the sidebar.
 fn a_session_with_a_job(cx: &mut TestAppContext) -> (Mock, App, Entity<LiveSession>, SessionId) {
     let mock = Mock::start(|index, _| {

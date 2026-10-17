@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AnyWindowHandle, ClipboardItem, Entity, TestAppContext};
+use gpui_kit::{AnyWindowHandle, AppContext as _, ClipboardItem, Entity, TestAppContext};
 
 use crate::backend::FakeBackend;
 use crate::live::{PromptAnswer, PromptKind};
@@ -65,6 +65,21 @@ fn each_session_keeps_its_draft(cx: &mut TestAppContext) {
         cx.read(|cx| drafts::get("20261016-091200-a1b2", cx))
             .as_deref(),
         Some("About the split")
+    );
+}
+
+#[gpui_kit::test]
+fn closing_the_window_keeps_what_was_just_typed(cx: &mut TestAppContext) {
+    let (_, window, _) = start(cx);
+    // Closed before typing rests, when the draft would be kept anyway.
+    act(cx, window, |window, cx| window.input("Half a thought", cx));
+    cx.update_window(window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| drafts::get(drafts::NEW_SESSION, cx))
+            .as_deref(),
+        Some("Half a thought")
     );
 }
 
