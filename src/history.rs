@@ -8,6 +8,9 @@ use std::path::PathBuf;
 use gpui_kit::{App, AppContext as _, BorrowAppContext as _, Global};
 use tokio::sync::mpsc;
 
+/// The most messages kept, as the terminal app keeps.
+pub const HISTORY_SIZE: usize = 1000;
+
 /// The history as last read, plus what was sent since.
 pub struct InputHistory {
     entries: Vec<String>,
@@ -21,6 +24,12 @@ impl InputHistory {
     /// The messages, oldest first.
     pub fn entries(cx: &App) -> &[String] {
         &cx.global::<Self>().entries
+    }
+
+    /// Drops the oldest beyond [`HISTORY_SIZE`].
+    fn trim(&mut self) {
+        let excess = self.entries.len().saturating_sub(HISTORY_SIZE);
+        self.entries.drain(..excess);
     }
 }
 
@@ -55,6 +64,7 @@ pub fn init(root: Option<PathBuf>, cx: &mut App) {
                     let sent = std::mem::take(&mut history.entries);
                     history.entries = read;
                     history.entries.extend(sent);
+                    history.trim();
                 })
             });
         })
@@ -74,8 +84,27 @@ pub fn add(entry: &str, cx: &mut App) {
     }
     cx.update_global::<InputHistory, _>(|history, _| {
         history.entries.push(entry.to_string());
+        history.trim();
         if let Some(writer) = &history.writer {
             let _ = writer.send(entry.to_string());
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HISTORY_SIZE, InputHistory, add, init};
+
+    #[gpui_kit::test]
+    fn the_history_keeps_the_latest_messages(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| init(None, cx));
+        for index in 0..=HISTORY_SIZE {
+            cx.update(|cx| add(&format!("Message {index}"), cx));
+        }
+        cx.read(|cx| {
+            let entries = InputHistory::entries(cx);
+            assert_eq!(entries.len(), HISTORY_SIZE);
+            assert_eq!(entries[0], "Message 1");
+        });
+    }
 }
