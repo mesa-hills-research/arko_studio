@@ -596,6 +596,51 @@ fn showing_all_of_a_code_block_at_the_bottom_keeps_its_top(cx: &mut TestAppConte
     let _ = view;
 }
 
+#[gpui_kit::test]
+fn a_long_code_block_in_a_list_item_is_capped_too(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    let code: String = (1..=200).map(|n| format!("   let x{n} = {n};\n")).collect();
+    feed.reply(&format!(
+        "Steps:\n\n1. Run this:\n\n   ```rust\n{code}   ```\n2. Done.\n"
+    ));
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 2000.);
+    let reply = item_ids(&feed)[0].0;
+    let list = RowKey::Block {
+        id: reply,
+        generation: 0,
+        block: 1,
+        source: false,
+    };
+    let (height, show_all) = cx
+        .update_window(window, |_, window, _| {
+            let height = window
+                .try_find(super::row::element_id(list))
+                .map(|row| f32::from(row.bounds().size.height));
+            let show_all = window
+                .try_find(SharedString::from(format!("show-all-{reply}-1")))
+                .is_some();
+            (height, show_all)
+        })
+        .unwrap();
+    assert!(show_all);
+    // Forty lines, not two hundred.
+    assert!(height.is_some_and(|height| height < 1200.), "{height:?}");
+    cx.read(|cx| {
+        let doc = view.read(cx).ui[&reply].doc.as_ref().unwrap();
+        assert_eq!(doc.blocks[1].code_lines, 200);
+    });
+}
+
+#[gpui_kit::test]
+fn tables_scroll_sideways_in_their_row(cx: &mut TestAppContext) {
+    start(cx);
+    cx.update(|cx| {
+        let style = super::row::text_style(cx);
+        assert_eq!(style.table().overflow.x, Some(gpui_kit::Overflow::Scroll));
+    });
+}
+
 /// How many times the transcript draws in a second of the test clock.
 fn draws_in_a_second(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> usize {
     for _ in 0..200 {

@@ -324,6 +324,61 @@ fn streaming_a_20k_token_reply() {
     report("  its last 200 chunks", tail);
 }
 
+/// Streams the last 8 KB of a 200 KB Rust code block, at the top level or
+/// inside a list item, and reports the frames.
+fn stream_a_long_code_block(nested: bool) {
+    let mut app = app();
+    let feed = Feed::new("main");
+    feed.user("Write the parser.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let indent = if nested { "   " } else { "" };
+    let mut code = String::new();
+    let mut line = 0;
+    while code.len() < 200 * 1024 {
+        code.push_str(&format!(
+            "{indent}    let value_{line} = self.pending.drain(..{line}).collect::<String>();\n"
+        ));
+        line += 1;
+    }
+    let head = if nested {
+        "Steps:\n\n1. Write this:\n\n   ```rust\n"
+    } else {
+        "Here it is:\n\n```rust\n"
+    };
+    let text = format!("{head}{code}");
+    let split = text.len() - 8 * 1024;
+    say(&feed, &text[..split]);
+    let (window, _, _) = open(&mut app, &feed);
+    for _ in 0..4 {
+        app.run_until_parked();
+        frame(&mut app, window);
+    }
+    let mut frames = Vec::new();
+    let mut at = split;
+    while at < text.len() {
+        let end = (at + 40).min(text.len());
+        say(&feed, &text[at..end]);
+        at = end;
+        app.run_until_parked();
+        frames.push(frame(&mut app, window));
+    }
+    report(
+        if nested {
+            "streaming a 200 KB code block in a list item, 40-byte chunks"
+        } else {
+            "streaming a 200 KB code block, 40-byte chunks"
+        },
+        &frames,
+    );
+}
+
+#[test]
+#[ignore = "a measurement: run it in release"]
+fn streaming_a_200_kb_code_block() {
+    stream_a_long_code_block(false);
+    stream_a_long_code_block(true);
+}
+
 /// A window with a sibling of the transcript, as the composer is.
 struct Column {
     sibling: Entity<Sibling>,

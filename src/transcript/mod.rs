@@ -127,6 +127,20 @@ struct Block {
     view: Option<Entity<TextViewState>>,
     content: TextBlockContent,
     range: Option<Range<usize>>,
+    /// The lines of its longest code block (one in a list item or a quote
+    /// counts), for "Show all N lines".
+    code_lines: usize,
+}
+
+/// The lines of the longest code block of the block of `text` at `range`.
+fn code_lines(text: &str, range: &Option<Range<usize>>, content: &TextBlockContent) -> usize {
+    let Some(source) = range.clone().and_then(|range| text.get(range)) else {
+        return 0;
+    };
+    match content {
+        TextBlockContent::CodeBlock(_) => row::code_lines(source),
+        _ => row::longest_code(source),
+    }
 }
 
 /// What the reader chose for an entry, and what its rows need.
@@ -500,13 +514,20 @@ impl TranscriptView {
         {
             row.range = block.source_range();
             row.content = block.content().clone();
+            row.code_lines = code_lines(&doc.text, &row.range, &row.content);
         }
         let added = blocks.len() > kept;
-        doc.blocks.extend(blocks[kept..].iter().map(|block| Block {
-            id: block.id(),
-            view: None,
-            content: block.content().clone(),
-            range: block.source_range(),
+        let text = &doc.text;
+        doc.blocks.extend(blocks[kept..].iter().map(|block| {
+            let range = block.source_range();
+            let content = block.content().clone();
+            Block {
+                id: block.id(),
+                view: None,
+                code_lines: code_lines(text, &range, &content),
+                content,
+                range,
+            }
         }));
         dropped || added
     }

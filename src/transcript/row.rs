@@ -8,8 +8,7 @@ use arko::remote::{CallStatus, Delivery, Item, Kind, Level, Source, WorkerState}
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::Easing;
 use gpui_kit::base::image_cache::LruImageCache;
-use gpui_kit::base::text::{TextView, TextViewMotion};
-use gpui_kit::component::text::TextBlockContent;
+use gpui_kit::base::text::{TextView, TextViewMotion, TextViewStyle};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
@@ -97,12 +96,42 @@ fn from_line(diff: Diff, by: usize) -> Diff {
     Diff::parse(&unified)
 }
 
+/// The patch an `apply_diff` call applied (sessions saved before
+/// `edit_file` edit with it), from its parameters.
+fn apply_diff_patch(item: &Item) -> Option<String> {
+    if item.tool.as_deref() != Some("apply_diff") {
+        return None;
+    }
+    let parameters: serde_json::Value = serde_json::from_str(item.parameters.as_deref()?).ok()?;
+    Some(parameters.get("diff")?.as_str()?.to_string())
+}
+
+/// The longest line a preview shows, in characters: a minified file or a
+/// one-line JSON shows its start.
+const PREVIEW_LINE_CHARS: usize = 500;
+
+/// The first lines of `text` for a preview, each at most
+/// [`PREVIEW_LINE_CHARS`] long, and how many lines it has.
+fn preview(text: &str) -> (String, usize) {
+    let total = text.lines().count();
+    let shown = text
+        .lines()
+        .take(OUTPUT_LINES)
+        .map(|line| match line.char_indices().nth(PREVIEW_LINE_CHARS) {
+            Some((end, _)) => format!("{}…", &line[..end]),
+            None => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (shown, total)
+}
+
 /// Whether a call's line already says all its parameters do: a one-line
 /// command, a file read or listed, an edit (whose diff shows instead).
 fn parameters_shown_by_line(item: &Item) -> bool {
     match item.tool.as_deref() {
         Some("shell") => item.detail.is_none(),
-        Some("read_file" | "list_files" | "edit_file" | "write_file" | "apply_diff") => true,
+        Some("read_file" | "list_files" | "edit_file" | "write_file") => true,
         _ => false,
     }
 }
@@ -240,6 +269,76 @@ fn local_images_only(uri: &SharedUri) -> ImageSource {
     } else {
         ImageSource::Resource(Resource::Embedded("".into()))
     }
+}
+
+/// How the rows' Markdown looks: the theme's text style, with tables that
+/// scroll sideways inside their row rather than squeeze their columns.
+pub(super) fn text_style(cx: &App) -> TextViewStyle {
+    let theme = cx.theme();
+    let radius = theme.semantic_tokens().radius.md;
+    let mut rounded = StyleRefinement::default();
+    rounded.corner_radii.top_left = Some(radius.into());
+    rounded.corner_radii.top_right = Some(radius.into());
+    rounded.corner_radii.bottom_left = Some(radius.into());
+    rounded.corner_radii.bottom_right = Some(radius.into());
+    let mut table = rounded.clone();
+    table.overflow.x = Some(Overflow::Scroll);
+    TextViewStyle::default()
+        .with_foreground(theme.foreground)
+        .with_muted_foreground(theme.muted_foreground)
+        .with_link(theme.link)
+        .with_selection(theme.selection)
+        .with_code_background(theme.muted)
+        .with_border(theme.border)
+        .with_code_block(rounded)
+        .with_table(table)
+        .with_table_head(
+            StyleRefinement::default()
+                .bg(theme.table_head)
+                .text_color(theme.table_head_foreground),
+        )
+        .with_inline_code(HighlightStyle {
+            background_color: Some(theme.accent),
+            ..Default::default()
+        })
+        .with_dark(theme.is_dark())
+}
+
+/// The lines of the longest fenced code block in `source`, which may be a
+/// list or a quote that holds code blocks.
+pub(crate) fn longest_code(source: &str) -> usize {
+    // A line without its indentation and quote markers.
+    let bare = |line: &str| {
+        let mut line = line.trim_start();
+        while let Some(rest) = line.strip_prefix('>') {
+            line = rest.trim_start();
+        }
+        line.to_string()
+    };
+    let fence = |line: &str| {
+        let mark = line.chars().next().filter(|c| *c == '`' || *c == '~')?;
+        let length = line.chars().take_while(|c| *c == mark).count();
+        (length >= 3).then_some((mark, length))
+    };
+    let mut longest = 0;
+    let mut open: Option<(char, usize, usize)> = None;
+    for line in source.lines() {
+        let line = bare(line);
+        match &mut open {
+            Some((mark, length, lines)) => {
+                let closes = fence(&line).is_some_and(|(m, n)| m == *mark && n >= *length)
+                    && line.trim_start_matches(*mark).trim().is_empty();
+                if closes {
+                    longest = longest.max(*lines);
+                    open = None;
+                } else {
+                    *lines += 1;
+                }
+            }
+            None => open = fence(&line).map(|(mark, length)| (mark, length, 0)),
+        }
+    }
+    open.map_or(longest, |(_, _, lines)| longest.max(lines))
 }
 
 fn stream_motion(fade: bool) -> TextViewMotion {
@@ -420,39 +519,36 @@ impl TranscriptView {
                 ))
                 .into_any_element()
         } else {
-            let code = matches!(row.content, TextBlockContent::CodeBlock(_));
-            let lines = if code {
-                row.range
-                    .clone()
-                    .and_then(|range| doc.text.get(range))
-                    .map_or(0, code_lines)
-            } else {
-                0
-            };
+            // The longest code block of the row, at the top level or inside
+            // a list item or a quote: the cap and the header apply to every
+            // code block the row draws.
+            let lines = row.code_lines;
             let uncapped = ui.uncapped.contains(&block);
-            let capped = code && lines > CODE_LINES && !uncapped;
             let Some(row_view) = row.view.as_ref() else {
                 return div().into_any_element();
             };
             let text_view = TextView::new(row_view)
+                .style(if thinking {
+                    text_style(cx).with_foreground(theme.muted_foreground)
+                } else {
+                    text_style(cx)
+                })
                 .selectable(true)
                 .image_source(local_images_only)
                 .motion(stream_motion(self.settings.stream_fade && !thinking))
-                .when(code, |this| {
-                    this.code_block_actions(|code, _, cx| {
-                        let theme = cx.theme();
-                        let copy = code.code();
-                        h_flex()
-                            .gap_1()
-                            .pl_1()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .when_some(code.lang(), |this, lang| this.child(lang))
-                            .child(Clipboard::new("copy").tooltip("Copy").value(copy))
-                    })
+                .code_block_actions(|code, _, cx| {
+                    let theme = cx.theme();
+                    let copy = code.code();
+                    h_flex()
+                        .gap_1()
+                        .pl_1()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .when_some(code.lang(), |this, lang| this.child(lang))
+                        .child(Clipboard::new("copy").tooltip("Copy").value(copy))
                 })
-                .when(capped, |this| this.code_block_max_lines(CODE_LINES));
-            let toggle = (code && lines > CODE_LINES).then(|| {
+                .when(!uncapped, |this| this.code_block_max_lines(CODE_LINES));
+            let toggle = (lines > CODE_LINES).then(|| {
                 let view = view.downgrade();
                 Button::new(("show-all", block as u64))
                     .ghost()
@@ -737,12 +833,7 @@ impl TranscriptView {
         };
         // The first lines of a long text, and a button that shows it all.
         let lines = |text: Arc<str>, key: &'static str, title: String| {
-            let total = text.lines().count();
-            let shown: String = text
-                .lines()
-                .take(OUTPUT_LINES)
-                .collect::<Vec<_>>()
-                .join("\n");
+            let (shown, total) = preview(&text);
             let title: SharedString = title.into();
             v_flex()
                 .w_full()
@@ -769,6 +860,9 @@ impl TranscriptView {
         let has_diff = diff.is_some();
         let parameters: Option<Arc<str>> = if parameters_shown_by_line(item) {
             None
+        } else if let Some(patch) = apply_diff_patch(item) {
+            // An edit from a session saved before edit_file: its patch.
+            Some(patch.into())
         } else if let Some(parameters) = item.parameters.clone() {
             Some(parameters)
         } else if line.contains('\n') || item.detail.is_some() {
@@ -1262,7 +1356,7 @@ impl RenderOnce for Thumbnail {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{code_lines, duration, edit_diff};
+    use super::{apply_diff_patch, code_lines, duration, edit_diff, longest_code, preview};
     use arko::remote::{Item, Kind};
 
     #[test]
@@ -1293,6 +1387,42 @@ mod tests {
         assert_eq!(duration(12_400), "12 s");
         assert_eq!(duration(65_000), "1 m 5 s");
         assert_eq!(duration(7_380_000), "2 h 3 m");
+    }
+
+    #[test]
+    fn the_longest_code_block_counts_inside_lists_and_quotes() {
+        let code: String = (0..50).map(|n| format!("   let x{n} = {n};\n")).collect();
+        let list = format!("1. Run this:\n\n   ```rust\n{code}   ```\n2. Done.\n");
+        assert_eq!(longest_code(&list), 50);
+        let quote = "> ```\n> a\n> b\n> ```\n> text";
+        assert_eq!(longest_code(quote), 2);
+        // A block still streaming counts what came.
+        assert_eq!(longest_code("- step\n\n  ~~~~\n  a\n  ```\n  b\n"), 3);
+        assert_eq!(longest_code("no code here"), 0);
+    }
+
+    #[test]
+    fn a_preview_shows_forty_lines_of_at_most_500_characters() {
+        let long = "x".repeat(300_000);
+        let (shown, total) = preview(&long);
+        assert_eq!(total, 1);
+        assert_eq!(shown.chars().count(), 501);
+        let many: String = (0..100).map(|n| format!("line {n}\n")).collect();
+        let (shown, total) = preview(&many);
+        assert_eq!((shown.lines().count(), total), (40, 100));
+    }
+
+    #[test]
+    fn an_apply_diff_call_shows_its_patch() {
+        let mut item = Item::new(Kind::Call, "edit a.rs");
+        item.tool = Some("apply_diff".into());
+        item.parameters = Some(
+            r#"{"diff":"<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE","path":"a.rs"}"#.into(),
+        );
+        assert_eq!(
+            apply_diff_patch(&item).as_deref(),
+            Some("<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE")
+        );
     }
 
     #[test]
