@@ -1341,8 +1341,8 @@ impl TranscriptView {
 
 /// The background of matches, and of the current one.
 pub(super) fn match_colors(cx: &App) -> (Hsla, Hsla) {
-    let yellow = cx.theme().yellow;
-    (yellow.opacity(0.25), yellow.opacity(0.55))
+    let theme = cx.theme();
+    (theme.search_match, theme.search_match_active)
 }
 
 #[cfg(test)]

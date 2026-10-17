@@ -23,6 +23,10 @@ mod row;
 mod tests;
 mod tool;
 
+#[cfg(test)]
+#[path = "find_theme_tests.rs"]
+mod find_theme_tests;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
