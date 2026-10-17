@@ -198,6 +198,11 @@ impl Workspace {
         &self.sidebar
     }
 
+    #[cfg(test)]
+    pub fn workers_panel(&self) -> &Entity<WorkersPanel> {
+        &self.workers
+    }
+
     pub fn session_view(&self) -> &Entity<SessionView> {
         &self.session_view
     }
@@ -1121,6 +1126,20 @@ fn pane<V: Render>(view: &Entity<V>) -> AnyElement {
         .into_any_element()
 }
 
+/// The workers panel's pane: kept from frame to frame like the others,
+/// except while a worker runs. Then its spinner asks for a frame many
+/// times a second, and a kept panel would draw all its rows again with it
+/// (GPUI draws every kept view inside a kept view that draws again). It
+/// draws as a plain view then, which costs little, around rows that are
+/// each kept: the spinner draws its own row only.
+fn workers_pane(panel: &Entity<WorkersPanel>, cx: &App) -> AnyElement {
+    if panel.read(cx).animates() {
+        panel.clone().into_any_element()
+    } else {
+        pane(panel)
+    }
+}
+
 /// The strip along a docked pane's inner edge that resizes it.
 fn resize_handle(edge: Edge, cx: &mut Context<Workspace>) -> impl IntoElement {
     let theme = cx.theme();
@@ -1340,7 +1359,7 @@ impl Render for Workspace {
                                 .w(rems(panel_width))
                                 .border_l_1()
                                 .border_color(border)
-                                .child(pane(&self.workers))
+                                .child(workers_pane(&self.workers, cx))
                                 .child(resize_handle(Edge::Panel, cx)),
                         )
                     }),

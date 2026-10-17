@@ -255,6 +255,17 @@ impl WorkersPanel {
         (self.clock)()
     }
 
+    /// Whether the panel animates: its list shows a running worker's
+    /// spinner.
+    pub fn animates(&self) -> bool {
+        self.open.is_none()
+            && self
+                .source
+                .workers
+                .iter()
+                .any(|worker| worker.state == WorkerState::Running)
+    }
+
     /// The worker whose transcript shows.
     pub fn open_worker(&self) -> Option<&SharedString> {
         self.open.as_ref()

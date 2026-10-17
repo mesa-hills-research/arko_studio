@@ -516,3 +516,47 @@ fn with_vim_escape_in_normal_mode_writes_to_arko_again(cx: &mut TestAppContext) 
     act(cx, window, |window, cx| window.press("escape", cx));
     assert_eq!(target(cx), None);
 }
+
+/// Docked in the window, with a worker running: its spinner draws its own
+/// row, not the others, though the window keeps the panel from frame to
+/// frame otherwise.
+#[gpui_kit::test]
+fn in_the_window_a_spinner_draws_only_its_own_row(cx: &mut TestAppContext) {
+    use crate::tests::{act, open};
+
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    cx.update(|cx| {
+        crate::prefs::update(cx, |prefs| {
+            prefs.appearance.motion = crate::prefs::Motion::On
+        });
+        cx.set_reduce_motion(false);
+    });
+    let (window, workspace) = open(cx, 1300.);
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ToggleWorkersPanel), cx)
+    });
+    let panel = cx.read(|cx| workspace.read(cx).workers_panel().clone());
+    let feed = feed();
+    let now = chrono::Utc::now().timestamp_millis() + 1_000;
+    act(cx, window, |_, cx| {
+        panel.update(cx, |panel, cx| {
+            let key = cx.entity_id();
+            panel.set_source(source(&feed, key), cx);
+            panel.set_clock(move || now, cx);
+        })
+    });
+    super::ROWS_DRAWN.with(|drawn| drawn.borrow_mut().clear());
+    for _ in 0..30 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1000 / 30 + 1));
+        cx.run_until_parked();
+    }
+    let drawn = super::ROWS_DRAWN.with(|drawn| drawn.borrow().clone());
+    assert!(
+        drawn.get("r1").is_some_and(|&count| count >= 10),
+        "{drawn:?}"
+    );
+    assert_eq!(drawn.get("r2"), None, "{drawn:?}");
+    assert_eq!(drawn.get("r3"), None, "{drawn:?}");
+}
