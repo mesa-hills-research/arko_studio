@@ -27,6 +27,8 @@ async-trait = "0.1"
 chrono = "0.4"
 # Lists an agent's folder for @-mentions as git sees it (.gitignore and the like).
 ignore = "0.4"
+# Parse fragment boundaries before joining replies in an export.
+markdown = "1"
 # The pixels of images the app draws itself (GPUI's own version, no codecs).
 image = { version = "0.25", default-features = false }
 # The web page's QR code, drawn with whole device pixels a module (arko's QR crate).

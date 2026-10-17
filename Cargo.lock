@@ -378,6 +378,7 @@ dependencies = [
  "gpui-pre-screenshot",
  "ignore",
  "image",
+ "markdown",
  "qrcodegen",
  "serde",
  "serde_json",

@@ -114,9 +114,7 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
                     continue;
                 }
                 section(&mut out, "Arko");
-                let text = closed(trimmed(&item.text))
-                    .replace("</details", "&lt;/details")
-                    .replace("</DETAILS", "&lt;/DETAILS");
+                let text = protect_details(&closed(trimmed(&item.text)));
                 out.push_str(&format!(
                     "\n<details><summary>Thinking</summary>\n\n{text}\n\n</details>\n"
                 ));
@@ -239,30 +237,58 @@ fn trimmed(text: &str) -> &str {
 /// stopped halfway through a code block), so that what follows it in the
 /// export isn't code too.
 fn closed(text: &str) -> String {
-    let mut open: Option<(char, usize)> = None;
-    for line in text.lines() {
-        // Inside a list item or a quote, the fence comes after its marks.
-        let line = line.trim_start_matches([' ', '\t', '>']);
-        let fence = ['`', '~'].into_iter().find_map(|mark| {
+    use markdown::mdast::Node;
+
+    // Container boundaries already end fenced blocks in quotes and lists.
+    // Only a top-level fence can swallow the next speaker heading.
+    let tree = markdown::to_mdast(text, &markdown::ParseOptions::default())
+        .expect("CommonMark parsing is infallible");
+    let code = tree.children().and_then(|children| children.last());
+    if let Some(Node::Code(code)) = code
+        && let Some(position) = &code.position
+        && position.end.offset == text.len()
+    {
+        let start = text[..position.start.offset]
+            .rfind('\n')
+            .map_or(0, |offset| offset + 1);
+        let source = &text[start..];
+        let first = source.lines().next().unwrap_or_default();
+        let line = first.trim_start_matches(' ');
+        let indent = first.len() - line.len();
+        if indent <= 3
+            && let Some(mark @ ('`' | '~')) = line.chars().next()
+        {
             let length = line.chars().take_while(|c| *c == mark).count();
-            (length >= 3).then_some((mark, length))
-        });
-        match (open, fence) {
-            (None, Some(fence)) => open = Some(fence),
-            (Some((mark, length)), Some((closing, closing_length)))
-                if closing == mark
-                    && closing_length >= length
-                    && line[closing_length..].trim().is_empty() =>
-            {
-                open = None
+            if length >= 3 {
+                let last = source.lines().last().unwrap_or_default();
+                let closing = last.trim_start_matches(' ');
+                let count = closing.chars().take_while(|c| *c == mark).count();
+                let closed = source.contains('\n')
+                    && last.len() - closing.len() <= 3
+                    && count >= length
+                    && closing[count..].trim().is_empty();
+                if !closed {
+                    return format!("{text}\n{}", mark.to_string().repeat(length));
+                }
             }
-            _ => {}
         }
     }
-    match open {
-        Some((mark, length)) => format!("{text}\n{}", mark.to_string().repeat(length)),
-        None => text.to_string(),
+    text.to_string()
+}
+
+fn protect_details(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (offset, character) in text.char_indices() {
+        if text[offset..]
+            .get(..9)
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("</details"))
+        {
+            out.push_str("&lt;");
+        } else {
+            out.push(character);
+        }
     }
+    out
 }
 
 /// The user's `text` as they typed it, read as Markdown: what would start
@@ -289,19 +315,18 @@ fn as_typed(text: &str) -> String {
         }
         let digits = rest.chars().take_while(char::is_ascii_digit).count();
         let first = rest.chars().next();
-        if digits > 0 && matches!(rest[digits..].chars().next(), Some('.' | ')')) {
-            // "1. " starts a list: its mark escaped.
-            out.push_str(&rest[..digits]);
-            out.push('\\');
-            out.push_str(&rest[digits..]);
-        } else if matches!(
-            first,
-            Some('#' | '>' | '-' | '+' | '*' | '=' | '|' | '`' | '~' | '_')
-        ) {
-            out.push('\\');
-            out.push_str(rest);
-        } else {
-            out.push_str(rest);
+        let ordered = digits > 0 && matches!(rest[digits..].chars().next(), Some('.' | ')'));
+        let block = matches!(first, Some('#' | '-' | '+' | '=' | '|' | '~'));
+        for (offset, character) in rest.char_indices() {
+            if matches!(
+                character,
+                '\\' | '*' | '_' | '`' | '[' | ']' | '<' | '>' | '&'
+            ) || (ordered && offset == digits)
+                || (block && offset == 0)
+            {
+                out.push('\\');
+            }
+            out.push(character);
         }
         // A line break as typed, before another line of the same paragraph.
         if lines
@@ -311,8 +336,7 @@ fn as_typed(text: &str) -> String {
             out.push('\\');
         }
     }
-    // No HTML: what looks like a tag shows as typed.
-    out.replace('<', "\\<")
+    out
 }
 
 /// `text` on one line.
@@ -548,6 +572,59 @@ Thanks.
     }
 
     #[test]
+    fn stopped_and_false_fences_keep_later_speakers_outside_code() {
+        for reply in [
+            "> ```rust\n> fn stopped() {",
+            "1. ```rust\n   fn stopped() {",
+            "```an `inline` fragment",
+            "```text\n> ```\nstill code\n```",
+            "```rust\nfn stopped() {",
+            "~~~rust\nfn stopped() {",
+            "    ```rust\n    indented code",
+        ] {
+            let text = markdown(
+                &Header {
+                    title: "Export".into(),
+                    ..Header::default()
+                },
+                &[
+                    item(Kind::Reply, reply),
+                    item(Kind::User, "next message"),
+                    item(Kind::Reply, "next reply"),
+                ],
+            );
+            let tree = markdown::to_mdast(&text, &Default::default()).unwrap();
+            let headings = tree
+                .children()
+                .unwrap()
+                .iter()
+                .filter(|node| matches!(node, markdown::mdast::Node::Heading(_)))
+                .count();
+            assert_eq!(headings, 4, "{reply:?}\n{text}");
+        }
+    }
+
+    #[test]
+    fn user_inline_syntax_renders_literally() {
+        let original = "Use **literal stars**, _underscores_, `backticks`, &copy; and \\*escaped stars\\*. [a](b) <i>";
+        let text = markdown(&Header::default(), &[item(Kind::User, original)]);
+        let body = text.split("## You\n").nth(1).unwrap();
+        let tree = markdown::to_mdast(body, &Default::default()).unwrap();
+        assert_eq!(tree.to_string(), original);
+    }
+
+    #[test]
+    fn thinking_cannot_close_its_container_with_mixed_case_tags() {
+        let text = markdown(
+            &Header::default(),
+            &[item(Kind::Thinking, "text </Details> more </dEtAiLs >")],
+        );
+        assert!(!text.contains("</Details>"));
+        assert!(!text.contains("</dEtAiLs >"));
+        assert_eq!(text.matches("</details>").count(), 1);
+    }
+
+    #[test]
     fn attachments_workers_and_notices_keep_their_labels() {
         let image = arko::images::ImageRef {
             id: 1,
@@ -612,7 +689,7 @@ Thanks.
 \\## Arko\\
 1\\. first\\
 &#32;   four spaces\\
-see \\<b>this\\</b>
+see \\<b\\>this\\</b\\>
 
 next
 
@@ -708,11 +785,17 @@ Thanks.
         std::fs::write(&unrelated, "valuable data").unwrap();
         let destination = temp.path().join("notes.md");
         write(&destination, "export").unwrap();
-        assert_eq!(std::fs::read_to_string(&unrelated).unwrap(), "valuable data");
+        assert_eq!(
+            std::fs::read_to_string(&unrelated).unwrap(),
+            "valuable data"
+        );
         std::fs::remove_file(&destination).unwrap();
         std::fs::create_dir(&destination).unwrap();
         assert!(write(&destination, "failed export").is_err());
-        assert_eq!(std::fs::read_to_string(&unrelated).unwrap(), "valuable data");
+        assert_eq!(
+            std::fs::read_to_string(&unrelated).unwrap(),
+            "valuable data"
+        );
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 2);
     }
 
@@ -725,7 +808,10 @@ Thanks.
         let link = temp.path().join(".notes.md.part");
         std::os::unix::fs::symlink(&unrelated, &link).unwrap();
         write(&temp.path().join("notes.md"), "export").unwrap();
-        assert_eq!(std::fs::read_to_string(&unrelated).unwrap(), "valuable data");
+        assert_eq!(
+            std::fs::read_to_string(&unrelated).unwrap(),
+            "valuable data"
+        );
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 3);
     }
