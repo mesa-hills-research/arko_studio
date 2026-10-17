@@ -24,6 +24,34 @@ pub struct Header {
     pub starts_partway: bool,
 }
 
+/// Uses the whole saved conversation, adding a newer visible turn that
+/// has not been saved yet. Render the Markdown off the UI thread.
+pub fn with_saved(
+    mut header: Header,
+    visible: Vec<Item>,
+    saved: Option<arko::sessions::SavedConversation>,
+) -> (String, bool) {
+    let Some(saved) = saved else {
+        return (markdown(&header, &visible), header.starts_partway);
+    };
+    header.starts_partway = !saved.reports.is_empty();
+    let mut items = saved.items;
+    let last_saved = items.iter().filter_map(|item| item.message_index).max();
+    if let Some(start) = visible.iter().position(|item| {
+        item.kind == Kind::User && item.is_main() && item.message_index > last_saved
+    }) {
+        items.extend_from_slice(&visible[start..]);
+    }
+    let mut text = markdown(&header, &items);
+    if !saved.reports.is_empty() {
+        text.push_str("\n## Earlier work\n");
+        for report in saved.reports {
+            text.push_str(&format!("\n{}\n", closed(&report)));
+        }
+    }
+    (text, header.starts_partway)
+}
+
 /// The conversation `items` (one agent's, in order) as a Markdown
 /// document.
 pub fn markdown(header: &Header, items: &[Item]) -> String {
@@ -416,11 +444,38 @@ mod engine_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{Header, code, file_name, free_path, markdown, why, write};
+    use super::{Header, STARTS_PARTWAY, code, file_name, free_path, markdown, why, with_saved, write};
     use arko::remote::{CallStatus, Item, Kind, Level};
 
     fn item(kind: Kind, text: &str) -> Item {
         Item::new(kind, text)
+    }
+
+    #[test]
+    fn saved_messages_fill_a_trimmed_transcript_without_losing_a_new_turn() {
+        let mut first = item(Kind::User, "The start.");
+        first.message_index = Some(0);
+        let mut next = item(Kind::User, "A new turn.");
+        next.message_index = Some(2);
+        let saved = arko::sessions::SavedConversation {
+            number: 1,
+            title: "The start.".into(),
+            items: vec![first, item(Kind::Reply, "The first reply.")],
+            images: Default::default(),
+            reports: Vec::new(),
+        };
+        let header = Header { starts_partway: true, ..Header::default() };
+        let (text, partial) = with_saved(header.clone(), vec![next], Some(saved.clone()));
+        assert!(!partial);
+        assert!(text.contains("The start."));
+        assert!(text.contains("A new turn."));
+        assert!(!text.contains(STARTS_PARTWAY));
+        let mut handed_over = saved;
+        handed_over.reports.push("The earlier work was summarized.".into());
+        let (text, partial) = with_saved(header, Vec::new(), Some(handed_over));
+        assert!(partial);
+        assert!(text.contains(STARTS_PARTWAY));
+        assert!(text.contains("The earlier work was summarized."));
     }
 
     #[test]
