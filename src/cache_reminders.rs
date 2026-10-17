@@ -2,9 +2,11 @@
 //! session's prompt cache lapses while it is idle, a notification says so.
 //! Five minutes before (for caches that last 15 minutes or more) a short
 //! one, and at one minute a persistent one with a live countdown, what
-//! each choice costs, and Refresh, which keeps the cache warm. One pair for
-//! each idle period, and none for sessions the user hasn't touched for an
-//! hour. In the background the reminders go to the OS's notifications too.
+//! each choice costs, and Refresh, which keeps the cache warm. While a
+//! question waits for the user, the last one says that answering keeps it
+//! warm instead. One pair for each idle period, and none for sessions the
+//! user hasn't touched for an hour. In the background the reminders go to
+//! the OS's notifications too.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -19,7 +21,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::cache_timer::{expires_at, refresh_choices};
+use crate::cache_timer::{answer_choices, expires_at, refresh_choices, requests_run};
 use crate::figures::{self, clock};
 use crate::live::{LiveEvent, LiveSession};
 use crate::status_bar::{Clock, tabular_figures};
@@ -58,20 +60,21 @@ pub enum Due {
 }
 
 /// What is due for `cache` at `now` (Unix milliseconds), and how long until
-/// it is worth looking again. Nothing while a turn runs (each request
-/// refreshes the cache), with reminders off, or where the cache's lifetime
+/// it is worth looking again. Nothing while requests run (each one
+/// refreshes the cache, see [`requests_run`]), with reminders off, or where
+/// the cache's lifetime
 /// isn't known. Nothing new for a session the user had left alone for an
 /// hour when the cache was last refreshed (`touched_at` is when they last
 /// touched it).
 pub fn plan(
     cache: &CacheStatus,
-    working: bool,
+    requests_run: bool,
     touched_at: i64,
     sent: Sent,
     enabled: bool,
     now: i64,
 ) -> (Option<Due>, Option<i64>) {
-    if working || !enabled {
+    if requests_run || !enabled {
         return (None, None);
     }
     let Some(expires) = expires_at(cache) else {
@@ -213,11 +216,12 @@ impl CacheReminders {
             self.sent = Sent::default();
             self.dismiss(cx);
         }
-        let (due, next, working) = {
+        let (due, next, busy, asking) = {
             let live = session.read(cx);
+            let busy = requests_run(live.activity());
             let (due, next) = plan(
                 &live.reading().cache,
-                live.is_working(),
+                busy,
                 // On screen in front of the user, it counts as touched.
                 if notify::shown_in_front(&session, cx) {
                     now
@@ -228,26 +232,26 @@ impl CacheReminders {
                 enabled,
                 now,
             );
-            (due, next, live.is_working())
+            (due, next, busy, live.question().is_some())
         };
-        if working || !enabled {
+        if busy || !enabled {
             // A request refreshes the cache: the reminder is out of date.
             self.dismiss(cx);
-            if working {
+            if busy {
                 self.sent = Sent::default();
             }
         }
         match due {
             Some(Due::Early) => {
                 self.sent.early = true;
-                self.remind(&session, false, cx);
+                self.remind(&session, false, asking, cx);
             }
             Some(Due::Last) => {
                 self.sent = Sent {
                     early: true,
                     last: true,
                 };
-                self.remind(&session, true, cx);
+                self.remind(&session, true, asking, cx);
             }
             Some(Due::Lapsed) => self.dismiss(cx),
             None => {}
@@ -275,7 +279,15 @@ impl CacheReminders {
     }
 
     /// Shows a reminder: the first (`last` false) or the one that stays.
-    fn remind(&mut self, session: &Entity<LiveSession>, last: bool, cx: &mut Context<Self>) {
+    /// While a question waits (`asking`), answering it keeps the cache warm,
+    /// and the session takes no Refresh.
+    fn remind(
+        &mut self,
+        session: &Entity<LiveSession>,
+        last: bool,
+        asking: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(window) = notify::window_for(session, cx) else {
             return;
         };
@@ -286,7 +298,11 @@ impl CacheReminders {
         let Some(expires) = expires_at(&cache) else {
             return;
         };
-        let choices = refresh_choices(&cache);
+        let choices = if asking {
+            answer_choices(&cache)
+        } else {
+            refresh_choices(&cache)
+        };
         let key = self.key;
         let headline = if last {
             "The prompt cache expires in a minute"
@@ -317,6 +333,7 @@ impl CacheReminders {
                     );
                 }
                 let note = match countdown {
+                    Some(countdown) if asking => last_reminder_while_asking(key, countdown),
                     Some(countdown) => last_reminder(key, countdown, move |_, cx| {
                         this.update(cx, |this, cx| this.refresh(cx)).ok();
                     }),
@@ -461,24 +478,30 @@ pub fn last_reminder(
     refresh: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Notification {
     let refresh = std::rc::Rc::new(refresh);
+    last_reminder_while_asking(key, countdown).action(move |_, _, _| {
+        let refresh = refresh.clone();
+        Button::new(("refresh-cache", key))
+            .primary()
+            .small()
+            .label("Refresh")
+            .on_click(move |_, window, cx| {
+                // (This window is busy with the click: the reminder goes
+                // through it.)
+                window.remove_notification1::<CacheReminder>(ElementId::Integer(key), cx);
+                refresh(window, cx);
+            })
+    })
+}
+
+/// The last reminder while a question waits: what the prompt cache's lapse
+/// is about and a live countdown, with what answering and letting it lapse
+/// do. It stays until it is closed or the cache lapses.
+pub fn last_reminder_while_asking(key: u64, countdown: Entity<Countdown>) -> Notification {
     Notification::new()
         .id1::<CacheReminder>(ElementId::Integer(key))
         .with_type(NotificationType::Warning)
         .title("The prompt cache expires soon")
         .content(move |_, _, _| countdown.clone().into_any_element())
-        .action(move |_, _, _| {
-            let refresh = refresh.clone();
-            Button::new(("refresh-cache", key))
-                .primary()
-                .small()
-                .label("Refresh")
-                .on_click(move |_, window, cx| {
-                    // (This window is busy with the click: the reminder goes
-                    // through it.)
-                    window.remove_notification1::<CacheReminder>(ElementId::Integer(key), cx);
-                    refresh(window, cx);
-                })
-        })
         .autohide(false)
 }
 
@@ -500,7 +523,7 @@ mod tests {
     use crate::backend::FakeBackend;
     use crate::live::LiveSession;
     use crate::tests::open;
-    use arko::remote::{Activity, CacheStatus, Reading};
+    use arko::remote::{Activity, CacheStatus, Question, Reading};
     use gpui_kit::component::WindowExt as _;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{AnyWindowHandle, AppContext as _, ElementId, Entity, TestAppContext};
@@ -808,6 +831,31 @@ mod tests {
         reminded.advance(cx, 30_000);
         assert!(reminded.sent(cx).early);
         assert_eq!(reminded.notes(cx), 1);
+    }
+
+    /// While a question waits, no request keeps the cache warm: the last
+    /// reminder comes, saying answering keeps it warm, without Refresh (the
+    /// session takes none in the middle of a turn).
+    #[gpui_kit::test]
+    fn a_question_waiting_gets_a_reminder_to_answer(cx: &mut TestAppContext) {
+        let reminded = Reminded::new(cx, 5, 230_000);
+        let asking = Activity {
+            working: true,
+            since: Some(NOW - 240_000),
+            question: Some(Question {
+                id: 1,
+                text: "Tabs or spaces?".into(),
+            }),
+        };
+        let reading = cx.read(|cx| reminded.session.read(cx).reading().clone());
+        reminded.session.update(cx, |session, cx| {
+            session.set_status((*reading).clone(), asking, cx)
+        });
+        reminded.advance(cx, 10_000);
+        assert!(reminded.sent(cx).last);
+        assert!(reminded.shows(cx, "cache-countdown"));
+        let key = cx.read(|cx| reminded.session.read(cx).key());
+        assert!(!reminded.shows(cx, ("refresh-cache", key)));
     }
 
     /// An hour-long cache gets a first reminder 5 minutes before.

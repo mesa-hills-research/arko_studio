@@ -25,7 +25,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::cache_timer::{CacheTimer, cache_timer};
+use crate::cache_timer::{CacheTimer, cache_timer, requests_run};
 use crate::context_ring::{ContextDetails, ContextSize, context_button};
 use crate::figures::{self, Turn};
 use crate::layout::WidthClass;
@@ -258,7 +258,7 @@ pub fn next_change(reading: &Reading, activity: &Activity, now: i64) -> Option<i
         Some(Turn::Working { since: Some(since) }) => Some(1000 - (now - since).rem_euclid(1000)),
         _ => None,
     };
-    let cache = match CacheTimer::of(&reading.cache, activity.working, now) {
+    let cache = match CacheTimer::of(&reading.cache, requests_run(activity), now) {
         Some(CacheTimer::Counting { left }) => Some(match left % 1000 {
             0 => 1000,
             part => part,
@@ -529,7 +529,7 @@ impl StatusBar {
         };
         let now = (self.clock)();
         let wide = self.width != WidthClass::Narrow;
-        let cache = CacheTimer::of(&reading.cache, activity.working, now);
+        let cache = CacheTimer::of(&reading.cache, requests_run(&activity), now);
         Shown {
             turn: Turn::of(&activity)
                 .filter(|_| wide)
@@ -589,8 +589,8 @@ impl Render for StatusBar {
             }
             None => self.web_page_open = false,
         }
-        if let Some(timer) =
-            CacheTimer::of(&reading.cache, activity.working, now).filter(|_| shown.cache.is_some())
+        if let Some(timer) = CacheTimer::of(&reading.cache, requests_run(&activity), now)
+            .filter(|_| shown.cache.is_some())
         {
             bar = bar.right(cache_timer(timer, &reading.cache, now, cx));
         }

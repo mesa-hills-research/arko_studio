@@ -390,6 +390,28 @@ fn the_cache_timer_counts_down_while_idle_and_warns_in_its_last_minute(cx: &mut 
     assert_eq!(bar.shown(cx).cache, None);
 }
 
+/// A question waiting for the user stops the turn's requests: the cache
+/// timer shows beside "Waiting for your answer".
+#[gpui_kit::test]
+fn the_cache_timer_counts_while_a_question_waits(cx: &mut TestAppContext) {
+    let bar = bar(cx, 1300.);
+    let mut reading = Reading::default();
+    reading.cache.lifetime = Some(Duration::from_secs(300));
+    reading.cache.refreshed_at = Some(NOW - 180_000);
+    let asking = Activity {
+        question: Some(arko::remote::Question {
+            id: 1,
+            text: "Tabs or spaces?".into(),
+        }),
+        ..working(NOW - 240_000)
+    };
+    bar.show(cx, reading, asking);
+    let shown = bar.shown(cx);
+    assert_eq!(shown.turn.as_deref(), Some("Waiting for your answer"));
+    assert_eq!(shown.cache, Some(("cache 2:00".into(), false)));
+    assert!(cx.read(|cx| bar.bar.read(cx).is_ticking()));
+}
+
 /// A window showing a session that hasn't opened (what it's sent waits in
 /// its queue).
 fn window_with_session(
