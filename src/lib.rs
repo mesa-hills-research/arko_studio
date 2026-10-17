@@ -24,6 +24,7 @@ pub mod sidebar;
 pub mod status_bar;
 pub mod theme_picker;
 pub mod title_bar;
+pub mod transcript;
 pub mod workers_panel;
 pub mod workspace;
 
