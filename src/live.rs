@@ -315,6 +315,13 @@ pub struct LiveSession {
     touched_at: i64,
     /// Counts the times it opened: each opening is a new feed.
     opened: u64,
+    /// The cache is kept warm with a short message: the next turn (or the
+    /// one running) is that message's.
+    refresh_coming: bool,
+    /// The turn running is the cache refresh's message.
+    refresh_running: bool,
+    /// The last turn to end was a cache refresh's.
+    refreshed_last: bool,
     /// How many times what was drained was applied (tests).
     #[cfg(test)]
     applied: usize,
@@ -355,6 +362,9 @@ impl LiveSession {
             answered: None,
             touched_at: crate::figures::now_ms(),
             opened: 0,
+            refresh_coming: false,
+            refresh_running: false,
+            refreshed_last: false,
             #[cfg(test)]
             applied: 0,
             #[cfg(test)]
@@ -622,8 +632,15 @@ impl LiveSession {
             let was = std::mem::replace(&mut self.activity, activity);
             let now = &self.activity;
             let question = |activity: &Activity| activity.question.as_ref().map(|q| q.id);
+            if !was.working && now.working {
+                self.refresh_running = std::mem::take(&mut self.refresh_coming);
+            }
             if was.working && !now.working {
-                if self.shown == 0 {
+                // A cache refresh's message is no news for the user (its
+                // answer may come while its turn already runs).
+                self.refreshed_last = std::mem::take(&mut self.refresh_running)
+                    || std::mem::take(&mut self.refresh_coming);
+                if self.shown == 0 && !self.refreshed_last {
                     self.unseen = true;
                 }
                 cx.emit(LiveEvent::TurnEnded);
@@ -745,6 +762,17 @@ impl LiveSession {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Task<Result<arko::Refreshed, String>> {
+        let answer = self.ask_refresh(cx);
+        cx.spawn(async move |this, cx| {
+            let answer = answer.await;
+            if answer == Ok(arko::Refreshed::Message) {
+                this.update(cx, |this, _| this.refresh_coming = true).ok();
+            }
+            answer
+        })
+    }
+
+    fn ask_refresh(&mut self, cx: &mut Context<Self>) -> Task<Result<arko::Refreshed, String>> {
         #[cfg(test)]
         if let Some(answer) = self.refresh_answer.clone() {
             return Task::ready(answer);
@@ -766,6 +794,12 @@ impl LiveSession {
                 .await
                 .unwrap_or_else(|_| Err("The session has closed.".to_string()))
         })
+    }
+
+    /// Whether the last turn to end was the message that kept the cache
+    /// warm (no news for the user).
+    pub fn turn_was_refresh(&self) -> bool {
+        self.refreshed_last
     }
 
     /// When the user last sent it something or looked at it (Unix
@@ -1282,6 +1316,49 @@ mod tests {
         assert!(indicator(cx).unseen, "no window showed it");
         session.update(cx, |session, cx| session.set_shown(true, cx));
         assert!(!indicator(cx).unseen);
+    }
+
+    /// The turn that keeps the cache warm with a short message is no news:
+    /// it leaves a session nobody shows as it was.
+    #[gpui_kit::test]
+    fn a_cache_refresh_turn_is_no_news(cx: &mut TestAppContext) {
+        cx.update(super::init);
+        let session = cx.new(|cx| {
+            let mut session = LiveSession::blank(cx);
+            session.id = Some(crate::backend::SessionId("s1".into()));
+            session.answer_refresh_with(Ok(arko::Refreshed::Message));
+            session
+        });
+        let turn = |cx: &mut TestAppContext| {
+            for working in [true, false] {
+                session.update(cx, |session, cx| {
+                    session.set_status(
+                        arko::remote::Reading::default(),
+                        Activity {
+                            working,
+                            ..Activity::default()
+                        },
+                        cx,
+                    )
+                });
+            }
+        };
+        session
+            .update(cx, |session, cx| session.refresh_cache(cx))
+            .detach();
+        cx.run_until_parked();
+        turn(cx);
+        let unseen = |cx: &mut TestAppContext| {
+            cx.read(|cx| {
+                super::LiveSessions::indicator(&crate::backend::SessionId("s1".into()), cx).unseen
+            })
+        };
+        assert!(cx.read(|cx| session.read(cx).turn_was_refresh()));
+        assert!(!unseen(cx));
+        // The next turn is news again.
+        turn(cx);
+        assert!(!cx.read(|cx| session.read(cx).turn_was_refresh()));
+        assert!(unseen(cx));
     }
 
     /// What the engine says in a burst (here 4,000 changes of the turn's

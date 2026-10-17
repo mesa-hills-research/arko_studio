@@ -170,6 +170,10 @@ struct TurnNotice;
 /// opens.
 pub fn watch(session: &Entity<LiveSession>, cx: &mut App) {
     cx.subscribe(session, |session, event: &LiveEvent, cx| {
+        // The turn that kept the cache warm is no news.
+        if *event == LiveEvent::TurnEnded && session.read(cx).turn_was_refresh() {
+            return;
+        }
         let window = window_for(&session, cx);
         let shown = shown_in_front(&session, cx);
         let (title, question) = {
