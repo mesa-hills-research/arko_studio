@@ -65,6 +65,8 @@ pub fn account_for(way: &str) -> Option<&'static str> {
 pub struct AccountsPage {
     accounts: Option<Accounts>,
     models: Option<ModelChoices>,
+    /// The models' labels in the model lists, by name.
+    model_labels: Vec<(SharedString, SharedString)>,
     /// The last session's main model: what "Last used" stands for.
     last_model: Option<String>,
     /// Claude Code is being checked again.
@@ -83,6 +85,7 @@ impl AccountsPage {
         let mut this = Self {
             accounts: None,
             models: None,
+            model_labels: Vec::new(),
             last_model: None,
             checking: false,
             home: cx.global::<HomeFolder>().0.clone(),
@@ -168,16 +171,19 @@ impl AccountsPage {
         let backend = cx.global::<SharedBackend>().clone();
         let reading = cx.background_spawn(async move {
             let last = last_model(backend.data_root());
-            (backend.accounts(), backend.models(None), last)
+            let models = backend.models(None);
+            let labels = model_labels(&models);
+            (backend.accounts(), models, labels, last)
         });
         self._load = Some(cx.spawn(async move |this, cx| {
-            let (accounts, models, last) = reading.await;
+            let (accounts, models, labels, last) = reading.await;
             this.update(cx, |this, cx| {
                 // A key, a login or Claude Code changed (here, or in the
                 // terminal app): the composers list their models again.
                 crate::backend::accounts_read(&accounts, cx);
                 this.accounts = Some(accounts);
                 this.models = Some(models);
+                this.model_labels = labels;
                 this.last_model = last;
                 this.checking = false;
                 cx.notify();
@@ -501,16 +507,7 @@ impl AccountsPage {
         chosen: Option<&str>,
     ) -> Vec<(SharedString, SharedString)> {
         let mut options = vec![(SharedString::default(), SharedString::from(first))];
-        for group in self.models.iter().flat_map(|models| &models.groups) {
-            let way = group.name.split(',').next().unwrap_or(&group.name).trim();
-            for model in &group.models {
-                let mut label = format!("{} · {way}", arko::models::display_name(&model.name));
-                if group.needs.is_some() {
-                    label.push_str(" (can’t be used yet)");
-                }
-                options.push((model.name.clone().into(), label.into()));
-            }
-        }
+        options.extend(self.model_labels.iter().cloned());
         if let Some(chosen) = chosen
             && !options.iter().any(|(value, _)| value == chosen)
         {
@@ -701,6 +698,24 @@ impl AccountsPage {
             .keywords(["cc", "claude plan", "install", "sign in", "anthropic"]),
         ])
     }
+}
+
+/// Each model of `models` as the model lists show it, by its name: "Opus
+/// 5.5 · Anthropic API", "(can't be used yet)" when its group needs
+/// something. Made once per reading, since naming a model takes a while.
+fn model_labels(models: &ModelChoices) -> Vec<(SharedString, SharedString)> {
+    let mut labels = Vec::new();
+    for group in &models.groups {
+        let way = group.name.split(',').next().unwrap_or(&group.name).trim();
+        for model in &group.models {
+            let mut label = format!("{} · {way}", arko::models::display_name(&model.name));
+            if group.needs.is_some() {
+                label.push_str(" (can’t be used yet)");
+            }
+            labels.push((model.name.clone().into(), label.into()));
+        }
+    }
+    labels
 }
 
 /// What a key's row is found by.
@@ -1048,6 +1063,51 @@ mod tests {
                 .contains("GEMINI_API_KEY from ~/src/arko/.env comes first again")
         );
         assert_eq!(words("voyage"), None);
+    }
+
+    /// Each model is named once per reading, with the way it's reached.
+    #[test]
+    fn models_are_labelled_with_their_way_and_what_they_need() {
+        use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
+        let models = ModelChoices {
+            groups: vec![
+                ModelGroup {
+                    name: "Anthropic API, billed per token".into(),
+                    needs: None,
+                    models: vec![ModelChoice {
+                        name: "claude-opus-5-5".into(),
+                        alias: "opus".into(),
+                    }],
+                },
+                ModelGroup {
+                    name: "OpenAI, with your API key".into(),
+                    needs: Some("an OpenAI key".into()),
+                    models: vec![ModelChoice {
+                        name: "gpt-6.1-sol".into(),
+                        alias: "sol".into(),
+                    }],
+                },
+            ],
+            default: None,
+            note: None,
+        };
+        let labels: Vec<(String, String)> = super::model_labels(&models)
+            .into_iter()
+            .map(|(name, label)| (name.to_string(), label.to_string()))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                (
+                    "claude-opus-5-5".to_string(),
+                    "Opus 5.5 · Anthropic API".to_string()
+                ),
+                (
+                    "gpt-6.1-sol".to_string(),
+                    "GPT-6.1 Sol · OpenAI (can’t be used yet)".to_string()
+                ),
+            ]
+        );
     }
 
     #[test]
