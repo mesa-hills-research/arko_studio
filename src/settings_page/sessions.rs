@@ -4,7 +4,7 @@
 
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _};
+use gpui_kit::component::{ActiveTheme as _, IconName};
 use gpui_kit::*;
 
 use super::fields::{self, TextKind, TextSetting};
@@ -319,7 +319,7 @@ impl SessionsPage {
                         .id("chat-instructions")
                         .test_support()
                         .w_full()
-                        .child(Textarea::new(&field).small())
+                        .child(Textarea::new(&field))
                 })
                 .on_reset(
                     |cx| !prefs::get(cx).new_sessions.chat_instructions.is_empty(),

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::setting::{SettingField, SettingItem};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, v_flex};
+use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -149,7 +149,8 @@ impl<T: Clone + PartialEq + 'static> TextSetting<T> {
                     .test_support()
                     .when(beside, |this| this.items_end())
                     .gap_1()
-                    .child(Input::new(&input).small().w(rems(9.)))
+                    // The size of the other controls in Settings.
+                    .child(Input::new(&input).w(rems(9.)))
                     .when_some(error.clone(), |this, error| {
                         this.child(
                             div()
