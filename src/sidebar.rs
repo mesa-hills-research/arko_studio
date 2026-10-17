@@ -19,7 +19,7 @@ use gpui_kit::*;
 
 use crate::backend::{BackendError, Mode, SessionEntry, SessionId, SharedBackend};
 use crate::layout::relative_time;
-use crate::live::{LiveEvent, LiveSessions};
+use crate::live::LiveSessions;
 use crate::menus::{DeleteSession, NewSession, RenameSession};
 use crate::prefs;
 
@@ -743,9 +743,14 @@ impl Sidebar {
                 .ok_text("Delete")
                 .ok_variant(ButtonVariant::Danger)
                 .on_ok(move |_, window, cx| {
-                    sidebar
-                        .update(cx, |sidebar, cx| sidebar.delete(id.clone(), window, cx))
-                        .ok();
+                    // After this dialog closes: closing the session may ask
+                    // about its work in a dialog of its own.
+                    let (sidebar, id) = (sidebar.clone(), id.clone());
+                    window.defer(cx, move |window, cx| {
+                        sidebar
+                            .update(cx, |sidebar, cx| sidebar.delete(id, window, cx))
+                            .ok();
+                    });
                     true
                 })
         });
@@ -757,16 +762,12 @@ impl Sidebar {
         if let Some(session) =
             LiveSessions::find(&id, cx).filter(|session| session.read(cx).is_running())
         {
-            let subscription = cx.subscribe_in(&session, window, {
-                let id = id.clone();
-                move |this, _, event: &LiveEvent, window, cx| {
-                    if *event == LiveEvent::Ended {
-                        this.delete(id.clone(), window, cx);
-                    }
-                }
+            let sidebar = cx.entity().downgrade();
+            crate::quit::close_then(vec![session], window, cx, move |window, cx| {
+                sidebar
+                    .update(cx, |sidebar, cx| sidebar.delete(id, window, cx))
+                    .ok();
             });
-            self._subscriptions.push(subscription);
-            crate::quit::close(vec![session], false, window, cx);
             return;
         }
         let backend = cx.global::<SharedBackend>().clone();

@@ -534,6 +534,110 @@ fn closing_a_session_with_a_background_job_asks_first(cx: &mut TestAppContext) {
     assert!(cx.read(|cx| LiveSessions::all(cx).is_empty()));
 }
 
+/// A session running a background job, listed in the sidebar.
+fn a_session_with_a_job(cx: &mut TestAppContext) -> (Mock, App, Entity<LiveSession>, SessionId) {
+    let mock = Mock::start(|index, _| {
+        if index == 0 {
+            let call = arko::testing::tool_call(
+                "j1",
+                "terminal_start",
+                serde_json::json!({ "command": "sleep 60", "terminal": "false" }),
+            );
+            Box::pin(async move { call })
+        } else {
+            answer("Started it.", Duration::ZERO)
+        }
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Start the long job.");
+    app.wait_for_text(cx, "Started it.");
+    let session = app.shown(cx).unwrap();
+    wait_until(cx, "the job in the status", |cx| {
+        cx.read(|cx| !session.read(cx).reading().jobs.is_empty())
+    });
+    let id = cx.read(|cx| session.read(cx).id().cloned().unwrap());
+    wait_until(cx, "the sidebar to list it", |cx| {
+        cx.read(|cx| {
+            let sidebar = app.workspace.read(cx).sidebar().read(cx);
+            sidebar.sessions().iter().any(|entry| entry.id == id)
+        })
+    });
+    (mock, app, session, id)
+}
+
+impl App {
+    /// Delete… on `id` in the sidebar, then Delete in the dialog.
+    fn delete(&self, id: &SessionId, cx: &mut TestAppContext) {
+        act(cx, self.window, |window, cx| {
+            let sidebar = self.workspace.read(cx).sidebar().clone();
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.confirm_delete(id.clone(), window, cx)
+            });
+        });
+        wait_until(cx, "the delete dialog", |cx| {
+            cx.update_window(self.window, |_, window, cx| {
+                window.render_frame(cx);
+                window.has_active_dialog(cx)
+            })
+            .unwrap()
+        });
+        act(cx, self.window, |window, cx| {
+            window.within("dialog").click("ok", cx)
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn deleting_a_session_with_running_work_asks_to_stop_it_then_deletes_it(cx: &mut TestAppContext) {
+    let (_mock, app, session, id) = a_session_with_a_job(cx);
+    app.delete(&id, cx);
+    // The Delete dialog gave way to the question about the job.
+    act(cx, app.window, |window, cx| {
+        assert!(window.try_find("quit-work").is_some());
+        window.within("dialog").click("ok", cx);
+        assert!(!window.has_active_dialog(cx), "no dialog left behind");
+    });
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| *session.read(cx).phase() == Phase::Ended)
+    });
+    wait_until(cx, "the delete", |_| {
+        arko::sessions::list(&app.root).is_empty()
+    });
+    wait_until(cx, "the sidebar to drop it", |cx| {
+        cx.read(|cx| {
+            let sidebar = app.workspace.read(cx).sidebar().read(cx);
+            !sidebar.sessions().iter().any(|entry| entry.id == id)
+        })
+    });
+}
+
+#[gpui_kit::test]
+fn a_cancelled_delete_leaves_nothing_behind_for_a_later_close(cx: &mut TestAppContext) {
+    let (_mock, app, session, id) = a_session_with_a_job(cx);
+    app.delete(&id, cx);
+    act(cx, app.window, |window, cx| {
+        assert!(window.try_find("quit-work").is_some());
+        window.within("dialog").click("cancel", cx);
+        assert!(!window.has_active_dialog(cx), "no dialog left behind");
+    });
+    assert!(cx.read(|cx| session.read(cx).is_running()));
+    // Later, a plain close: the session closes and stays.
+    act(cx, app.window, |window, cx| {
+        window.dispatch_action(Box::new(menus::CloseSession), cx)
+    });
+    act(cx, app.window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| *session.read(cx).phase() == Phase::Ended)
+    });
+    for _ in 0..20 {
+        cx.run_until_parked();
+        cx.executor().advance_clock(crate::live::FRAME);
+    }
+    assert_eq!(arko::sessions::list(&app.root).len(), 1, "still there");
+}
+
 #[gpui_kit::test]
 fn an_agent_session_switches_to_chat_after_saying_what_it_costs(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, body| {
