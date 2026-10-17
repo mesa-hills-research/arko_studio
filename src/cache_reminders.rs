@@ -55,7 +55,7 @@ pub enum Due {
 /// What is due for `cache` at `now` (Unix milliseconds), and how long until
 /// it is worth looking again. Nothing while a turn runs (each request
 /// refreshes the cache), with reminders off, or where the cache's lifetime
-/// isn't known; nothing new for a session last touched an hour ago.
+/// isn't known. Nothing new for a session last touched an hour ago.
 pub fn plan(
     cache: &CacheStatus,
     working: bool,
@@ -507,7 +507,7 @@ mod tests {
             plan(&cache, false, 0, none, true, 0),
             (None, Some(HOUR - EARLY_MS))
         );
-        // At 55 minutes, the first; then the last at 59.
+        // At 55 minutes, the first, then the last at 59.
         assert_eq!(
             plan(&cache, false, 0, none, true, HOUR - EARLY_MS),
             (Some(Due::Early), Some(EARLY_MS - FINAL_MS))

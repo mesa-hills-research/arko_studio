@@ -609,7 +609,7 @@ pub struct CostDetails {
 }
 
 impl CostDetails {
-    /// `report` as `/cost` says it; `None` while it is read.
+    /// `report` as `/cost` says it, `None` while it is read.
     pub fn new(report: Option<CostReport>, reading: &Arc<Reading>) -> Self {
         Self {
             report,

@@ -2,7 +2,7 @@
 //! session's folder, mode and models, its handover sizes, its settings,
 //! its MCP servers, skills and indexes, its ID and data folder. The
 //! settings that can change while it runs change here, through the same
-//! commands the terminal sends; those fixed once the conversation started
+//! commands the terminal sends. Those fixed once the conversation started
 //! say so.
 
 use std::path::{Path, PathBuf};
