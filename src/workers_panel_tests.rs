@@ -182,10 +182,21 @@ fn ended_workers_stay_five_minutes_then_fold_into_finished(cx: &mut TestAppConte
         assert!(window.try_find("workers-finished").is_none());
     })
     .unwrap();
-    // Five minutes on, they move to the collapsed group at the bottom.
+    // Five minutes on, the finished one moves to the collapsed group at the
+    // bottom. The failed one stays until the user has opened it.
     *panel.now.borrow_mut() += ENDED_SHOWS_FOR_MS;
     panel.draw(cx);
+    assert_eq!(
+        panel.rows(cx),
+        [worker("r1"), worker("r3"), PanelRow::Finished(1)]
+    );
+    panel.click(cx, ("worker", 1usize));
+    assert_eq!(panel.open_worker(cx).as_deref(), Some("r3"));
+    panel.click(cx, "workers-back");
     assert_eq!(panel.rows(cx), [worker("r1"), PanelRow::Finished(2)]);
+    // The group's header says one of them failed.
+    let failed = cx.read(|cx| panel.panel.read(cx).finished_failures(*panel.now.borrow()));
+    assert_eq!(failed, 1);
     // Opening the group lists them, still there to read.
     panel.click(cx, "workers-finished");
     let rows = panel.rows(cx);

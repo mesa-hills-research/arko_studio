@@ -10,6 +10,7 @@
 //! Stop and Message. While the worker's view has the focus, the composer
 //! writes to that worker.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -126,6 +127,8 @@ pub struct WorkersPanel {
     /// The transcripts made, the latest last.
     transcripts: Vec<Shown>,
     finished_open: bool,
+    /// The workers the user opened: a failure stays in sight until then.
+    seen: HashSet<String>,
     scroll: ScrollHandle,
     clock: Clock,
     /// Draws again while a time on show goes on.
@@ -161,6 +164,7 @@ impl WorkersPanel {
             open: None,
             transcripts: Vec::new(),
             finished_open: false,
+            seen: HashSet::new(),
             scroll: ScrollHandle::new(),
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
@@ -199,6 +203,7 @@ impl WorkersPanel {
             self.open = None;
             self.cursor = None;
             self.finished_open = false;
+            self.seen.clear();
         }
         let same = source.workers == self.source.workers
             && source.times == self.source.times
@@ -235,14 +240,14 @@ impl WorkersPanel {
             .source
             .workers
             .iter()
-            .filter(|worker| workers::section(worker, now) == Section::Current)
+            .filter(|worker| self.section(worker, now) == Section::Current)
             .map(id)
             .collect();
         let finished: Vec<&WorkerSummary> = self
             .source
             .workers
             .iter()
-            .filter(|worker| workers::section(worker, now) == Section::Finished)
+            .filter(|worker| self.section(worker, now) == Section::Finished)
             .collect();
         if !finished.is_empty() {
             rows.push(PanelRow::Finished(finished.len()));
@@ -254,6 +259,23 @@ impl WorkersPanel {
             }
         }
         rows
+    }
+
+    /// Where `worker` shows at `now`: a failure stays until opened.
+    fn section(&self, worker: &WorkerSummary, now: i64) -> Section {
+        workers::section(worker, now, self.seen.contains(&worker.id))
+    }
+
+    /// How many workers of the "Finished" group failed.
+    pub fn finished_failures(&self, now: i64) -> usize {
+        self.source
+            .workers
+            .iter()
+            .filter(|worker| {
+                worker.state == WorkerState::Failed
+                    && self.section(worker, now) == Section::Finished
+            })
+            .count()
     }
 
     fn worker(&self, id: &str) -> Option<&WorkerSummary> {
@@ -287,6 +309,7 @@ impl WorkersPanel {
             }
         }
         self.cursor = Some(PanelRow::Worker(id.clone()));
+        self.seen.insert(id.to_string());
         self.open = Some(id);
         cx.notify();
     }
@@ -449,7 +472,8 @@ impl WorkersPanel {
         let wait = if counting {
             Some(1000)
         } else {
-            workers::next_move(&self.source.workers, now).map(|at| (at - now).max(0) as u64 + 1)
+            workers::next_move(&self.source.workers, now, |id| self.seen.contains(id))
+                .map(|at| (at - now).max(0) as u64 + 1)
         };
         let Some(wait) = wait else {
             return;
@@ -617,6 +641,7 @@ impl WorkersPanel {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let failed = self.finished_failures(self.now());
         let theme = cx.theme();
         let open = self.finished_open;
         row_base("workers-finished", selected, cx)
@@ -635,7 +660,15 @@ impl WorkersPanel {
                         })
                         .xsmall(),
                     )
-                    .child(format!("Finished ({count})")),
+                    .child(format!("Finished ({count})"))
+                    // Failures show, even folded away.
+                    .when(failed > 0, |this| {
+                        this.child(
+                            div()
+                                .text_color(theme.danger)
+                                .child(format!("· {failed} failed")),
+                        )
+                    }),
             )
             .on_click(cx.listener(move |this, _, window, cx| {
                 let rows = this.rows(this.now());

@@ -71,9 +71,10 @@ pub enum Section {
     Finished,
 }
 
-/// Where `worker` shows at `now`.
-pub fn section(worker: &WorkerSummary, now: i64) -> Section {
-    if worker.state.is_active() {
+/// Where `worker` shows at `now`. A failure stays in sight until the
+/// user has `seen` it (opened it in the panel).
+pub fn section(worker: &WorkerSummary, now: i64, seen: bool) -> Section {
+    if worker.state.is_active() || (worker.state == WorkerState::Failed && !seen) {
         return Section::Current;
     }
     // A worker restored with the session has no start: it ended before.
@@ -84,11 +85,15 @@ pub fn section(worker: &WorkerSummary, now: i64) -> Section {
 }
 
 /// When the next worker of `workers` moves to the "Finished" group, after
-/// `now`, if one will.
-pub fn next_move(workers: &[WorkerSummary], now: i64) -> Option<i64> {
+/// `now`, if one will. `seen` says which ones the user has opened.
+pub fn next_move(workers: &[WorkerSummary], now: i64, seen: impl Fn(&str) -> bool) -> Option<i64> {
     workers
         .iter()
-        .filter(|worker| section(worker, now) == Section::Current && !worker.state.is_active())
+        .filter(|worker| {
+            section(worker, now, seen(&worker.id)) == Section::Current
+                && !worker.state.is_active()
+                && (worker.state != WorkerState::Failed || seen(&worker.id))
+        })
         .filter_map(|worker| worker.ended_at)
         .map(|ended| ended + ENDED_SHOWS_FOR_MS)
         .min()
@@ -217,16 +222,22 @@ mod tests {
             Some(now - ENDED_SHOWS_FOR_MS),
         );
         let restored = worker("r4", WorkerState::Finished, None, Some(now));
-        assert_eq!(section(&running, now), Section::Current);
-        assert_eq!(section(&just_done, now), Section::Current);
-        assert_eq!(section(&long_done, now), Section::Finished);
-        assert_eq!(section(&restored, now), Section::Finished);
+        assert_eq!(section(&running, now, true), Section::Current);
+        assert_eq!(section(&just_done, now, true), Section::Current);
+        assert_eq!(section(&long_done, now, true), Section::Finished);
+        assert_eq!(section(&restored, now, true), Section::Finished);
+        // A failure stays in sight until the user has seen it.
+        assert_eq!(section(&long_done, now, false), Section::Current);
+        assert_eq!(
+            next_move(std::slice::from_ref(&long_done), now, |_| false),
+            None
+        );
         let all = [running, just_done, long_done, restored];
         assert_eq!(
-            next_move(&all, now),
+            next_move(&all, now, |_| true),
             Some(now - 60_000 + ENDED_SHOWS_FOR_MS)
         );
-        assert_eq!(next_move(&all[..1], now), None);
+        assert_eq!(next_move(&all[..1], now, |_| true), None);
     }
 
     #[test]
