@@ -4,17 +4,53 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use gpui_kit::TestAppContext;
+use gpui_kit::component::WindowExt as _;
+use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::{
+    AnyWindowHandle, Bounds, Entity, Point, TestAppContext, WindowBounds, WindowOptions, px, size,
+};
 
+use super::SettingsPage;
 use crate::Startup;
-use crate::backend::{FakeBackend, Mode};
+use crate::backend::account_words::LoginState;
+use crate::backend::{Backend as _, FakeBackend, Mode};
 use crate::prefs;
-use crate::tests::open;
+use crate::tests::{act, open};
+use crate::workspace::{self, Workspace};
 
-fn start_with(cx: &mut TestAppContext, settings: prefs::Prefs) -> Arc<FakeBackend> {
+/// The app on the sample sessions, with `settings`. Dialogs open and
+/// close without fading, so a click lands on the dialog that's there.
+fn start_with(cx: &mut TestAppContext, mut settings: prefs::Prefs) -> Arc<FakeBackend> {
+    settings.appearance.motion = prefs::Motion::Off;
     let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
     cx.update(|cx| crate::init(Startup::for_tests(backend.clone()).with_prefs(settings), cx));
     backend
+}
+
+/// A window `height` tall on Settings' page `page`. A dialog opened in a
+/// window much taller than the test screen can't be clicked.
+fn settings_window(
+    cx: &mut TestAppContext,
+    page: usize,
+    height: f32,
+) -> (AnyWindowHandle, Entity<Workspace>, Entity<SettingsPage>) {
+    let (window, workspace) = cx.update(|cx| {
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: Point::default(),
+                size: size(px(1300.), px(height)),
+            })),
+            ..Default::default()
+        };
+        workspace::open_window(options, cx).unwrap()
+    });
+    cx.run_until_parked();
+    act(cx, window, |window, cx| window.press("secondary-,", cx));
+    let settings = cx.read(|cx| workspace.read(cx).settings().unwrap().clone());
+    cx.update(|cx| settings.update(cx, |settings, cx| settings.show_page(page, cx)));
+    // The page reads the accounts on a background thread.
+    act(cx, window, |_, _| {});
+    (window, workspace, settings)
 }
 
 /// The default mode and model set in Settings are what a new session's
@@ -46,4 +82,83 @@ fn a_new_session_starts_as_settings_say(cx: &mut TestAppContext) {
     let (_, second) = open(cx, 1300.);
     let mode = cx.read(|cx| second.read(cx).session_view().read(cx).draft().mode);
     assert_eq!(mode, Mode::Agent);
+}
+
+/// A key is added in a masked field, replaced, and removed after a
+/// confirmation, all through the backend; keys Arko didn't save can't be
+/// removed here.
+#[gpui_kit::test]
+fn api_keys_are_added_and_removed_through_the_backend(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, _) = settings_window(cx, 2, 1400.);
+    act(cx, window, |window, _| {
+        assert!(window.try_find("key-openrouter").is_some());
+        // The OpenAI key comes from the environment: only Replace.
+        assert!(window.try_find("remove-openai").is_none());
+        assert!(window.try_find("remove-anthropic").is_some());
+    });
+    act(cx, window, |window, cx| window.click("key-openrouter", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        window.input("short", cx);
+    });
+    act(cx, window, |window, cx| window.click("key-save", cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("key-error").is_some());
+    });
+    act(cx, window, |window, cx| window.press("secondary-a", cx));
+    act(cx, window, |window, cx| {
+        window.input("sk-or-v1-0123456789abcdef", cx)
+    });
+    act(cx, window, |window, cx| window.click("key-save", cx));
+    let added = backend.added_keys();
+    assert_eq!(added.last().map(|(id, _)| id.as_str()), Some("openrouter"));
+    act(cx, window, |window, cx| {
+        assert!(!window.has_active_dialog(cx));
+        assert_eq!(window.notifications(cx).len(), 1);
+        // Saved in Arko's folder now: it can be removed.
+        assert!(window.try_find("remove-openrouter").is_some());
+    });
+    act(cx, window, |window, cx| {
+        window.click("remove-openrouter", cx)
+    });
+    assert!(
+        cx.read(|_| backend
+            .accounts()
+            .key("openrouter")
+            .unwrap()
+            .masked
+            .is_some()),
+        "asks first"
+    );
+    act(cx, window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    assert_eq!(backend.accounts().key("openrouter").unwrap().masked, None);
+    act(cx, window, |window, _| {
+        assert!(window.try_find("remove-openrouter").is_none());
+    });
+}
+
+/// Check again reads Claude Code again, and a chosen auth.json becomes the
+/// ChatGPT login.
+#[gpui_kit::test]
+fn logins_are_checked_and_chosen(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, 2, 2400.);
+    let read = backend.accounts_read();
+    act(cx, window, |window, cx| {
+        window.click("check-claude-code", cx)
+    });
+    assert_eq!(backend.accounts_read(), read + 1);
+    let page = cx.read(|cx| settings.read(cx).accounts().clone());
+    act(cx, window, |window, cx| {
+        super::accounts::use_login(&page, "/home/ada/notes.txt".into(), window, cx)
+    });
+    act(cx, window, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1, "says why not");
+        super::accounts::use_login(&page, "/home/ada/.codex/auth.json".into(), window, cx)
+    });
+    let state = cx.read(|cx| page.read(cx).accounts().unwrap().chatgpt.state.clone());
+    assert_eq!(state, LoginState::Ready);
 }

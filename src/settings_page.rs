@@ -24,6 +24,10 @@ use crate::prefs::{self, Keymap, Motion, SendKey, Suggestions, ThemeMode};
 use crate::theme_picker::ThemePicker;
 use crate::{fonts, menus, paths};
 
+mod accounts;
+
+pub use accounts::AccountsPage;
+
 actions!(settings_page, [CloseSettings]);
 
 /// The key context of the Settings page.
@@ -52,6 +56,7 @@ pub struct SettingsPage {
     dark_theme: Entity<ThemePicker>,
     ui_font: Entity<FontPickerState>,
     code_font: Entity<FontPickerState>,
+    accounts: Entity<AccountsPage>,
     /// The page to show, set from outside (the command palette), and how
     /// many times it was: the page list starts afresh on it each time.
     page: usize,
@@ -90,7 +95,9 @@ impl SettingsPage {
             cx,
         );
         let code_font = picker(&appearance.code_font, true, bundled, added, window, cx);
+        let accounts = cx.new(AccountsPage::new);
         let subscriptions = vec![
+            cx.observe(&accounts, |_, _, cx| cx.notify()),
             cx.subscribe(&ui_font, |_, _, event: &FontPickerEvent, cx| {
                 let FontPickerEvent::Change(font) = event else {
                     return;
@@ -115,6 +122,7 @@ impl SettingsPage {
             dark_theme: cx.new(|cx| ThemePicker::new(true, window, cx)),
             ui_font,
             code_font,
+            accounts,
             page: 0,
             shown: 0,
             _subscriptions: subscriptions,
@@ -139,6 +147,10 @@ impl SettingsPage {
 
     pub fn dark_theme(&self) -> &Entity<ThemePicker> {
         &self.dark_theme
+    }
+
+    pub fn accounts(&self) -> &Entity<AccountsPage> {
+        &self.accounts
     }
 
     /// Asks for a font file, copies it into Arko's folder and offers it in
@@ -220,30 +232,7 @@ impl SettingsPage {
         vec![
             self.appearance_page(cx),
             input_page(),
-            planned_page(
-                PAGES[2],
-                IconName::Bot,
-                &[
-                    ("Default mode", "Chat or Agent, for new sessions."),
-                    (
-                        "Default model and effort",
-                        "For the main agent and for workers.",
-                    ),
-                    ("1-hour cache", "For Claude with an API key."),
-                    (
-                        "API keys",
-                        "Anthropic, OpenAI, Gemini, OpenRouter and Voyage: where each comes from, and adding, replacing or removing it.",
-                    ),
-                    (
-                        "ChatGPT login",
-                        "The discovered auth.json, or a file you choose.",
-                    ),
-                    (
-                        "Claude Code",
-                        "Where it's installed and whether you're signed in.",
-                    ),
-                ],
-            ),
+            self.accounts.read(cx).page(&self.accounts, cx),
             sessions_page(),
             notifications_page(),
             planned_page(
@@ -813,7 +802,8 @@ impl Focusable for SettingsPage {
 impl Render for SettingsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pages = self.pages(cx);
-        let nav_width = window.rem_size() * 13.;
+        // Wide enough for "Models & accounts" beside its icon and chevron.
+        let nav_width = window.rem_size() * 14.;
         let theme = cx.theme();
         v_flex()
             .id("settings-page")

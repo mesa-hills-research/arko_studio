@@ -76,6 +76,56 @@ fn narrow_dark() {
     goldens().assert("narrow-dark", &new_window(ThemeMode::Dark, 600.));
 }
 
+/// Settings' page `page` in a window `width` wide, on the sample sessions
+/// and accounts.
+fn settings_window(mode: ThemeMode, width: f32, page: usize) -> Screenshot {
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let opened = std::cell::RefCell::new(None);
+    let window = app
+        .open_window_with(size(px(width), px(1200.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened.replace(Some(workspace));
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.take().unwrap();
+    app.update_window(window, |_, window, cx| {
+        window.dispatch_action(Box::new(arko_studio::menus::OpenSettings), cx)
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.update(|cx| {
+        let settings = workspace.read(cx).settings().unwrap().clone();
+        settings.update(cx, |settings, cx| settings.show_page(page, cx));
+    });
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn settings_accounts_light() {
+    goldens().assert(
+        "settings-accounts-light",
+        &settings_window(ThemeMode::Light, 1300., 2),
+    );
+}
+
+#[test]
+fn settings_accounts_dark() {
+    goldens().assert(
+        "settings-accounts-dark",
+        &settings_window(ThemeMode::Dark, 1300., 2),
+    );
+}
+
 /// The app's icon, the image the transcript's tool call shows.
 const PNG: &[u8] = include_bytes!("../packaging/linux/com.mesahillsresearch.ArkoStudio.png");
 

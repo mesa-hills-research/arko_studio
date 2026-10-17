@@ -14,9 +14,19 @@ use std::time::{Duration, SystemTime};
 
 pub use arko::Holder;
 
+mod accounts;
 mod defaults;
 
+pub use accounts::{Accounts, key_named};
 pub use defaults::{SessionDefaults, takes_cache_1h, web_page_bind};
+
+/// Reading accounts in words, for Settings.
+pub mod account_words {
+    pub use super::accounts::{
+        CACHE_1H_VARIABLE, ChatGptLogin, ClaudeCodeStatus, KeySource, KeyState, LoginSource,
+        LoginState, Problem, Ready, source_words, switch_value, tilde,
+    };
+}
 
 /// A session's id: the name of its folder in `<arko>/sessions`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -332,6 +342,15 @@ pub trait Backend: Send + Sync + 'static {
     /// Starts the sessions started from now on with `defaults`, the
     /// preferences as they are now. It doesn't block.
     fn set_defaults(&self, defaults: SessionDefaults);
+
+    /// The API keys, the ChatGPT login and Claude Code, as they are now.
+    /// It runs `claude`.
+    fn accounts(&self) -> Accounts;
+
+    /// Removes the key of `provider` (as `/keys remove` names it) that
+    /// Arko saved in its folder, from there and from every open session.
+    /// `Ok` says what was done, `Err` why not.
+    fn remove_key(&self, provider: &str) -> Result<String, String>;
 }
 
 /// Gives the backend the preferences sessions start with, now and whenever
@@ -487,14 +506,12 @@ impl Backend for ArkoBackend {
     }
 
     fn add_key(&self, provider: &str, value: &str) -> Result<String, String> {
-        let key = arko::accounts::KEYS
-            .into_iter()
-            .find(|key| key.id == provider)
-            .ok_or_else(|| format!("Arko takes no {provider} key."))?;
-        match arko::accounts::add(&self.root, key, arko::accounts::Secret::new(value)) {
-            arko::accounts::Outcome::Done { said, .. } => Ok(said),
-            arko::accounts::Outcome::Failed(why) => Err(sentence(&why)),
-        }
+        let key = key_named(provider).ok_or_else(|| format!("Arko takes no {provider} key."))?;
+        outcome(arko::accounts::add(
+            &self.root,
+            key,
+            arko::accounts::Secret::new(value),
+        ))
     }
 
     fn set_chatgpt_login(&self, path: &Path) -> Result<(), String> {
@@ -503,6 +520,27 @@ impl Backend for ArkoBackend {
 
     fn set_defaults(&self, defaults: SessionDefaults) {
         *lock(&self.defaults) = defaults;
+    }
+
+    fn accounts(&self) -> Accounts {
+        Accounts::read()
+    }
+
+    fn remove_key(&self, provider: &str) -> Result<String, String> {
+        let key = key_named(provider).ok_or_else(|| format!("Arko takes no {provider} key."))?;
+        outcome(arko::accounts::remove(&self.root, key))
+    }
+}
+
+/// What adding or removing a key did, in sentences: what was done and
+/// what to look out for, or why nothing was.
+fn outcome(outcome: arko::accounts::Outcome) -> Result<String, String> {
+    match outcome {
+        arko::accounts::Outcome::Done { said, warnings } => Ok(std::iter::once(said)
+            .chain(warnings.iter().map(|warning| sentence(warning)))
+            .collect::<Vec<_>>()
+            .join(" ")),
+        arko::accounts::Outcome::Failed(why) => Err(sentence(&why)),
     }
 }
 
@@ -532,18 +570,24 @@ struct FakeState {
     created: u32,
     /// The keys added, by provider.
     keys: Vec<(String, String)>,
+    accounts: Accounts,
+    /// How many times the accounts were read.
+    accounts_read: usize,
 }
 
 impl FakeBackend {
     pub fn new(root: impl Into<PathBuf>, sessions: Vec<SessionEntry>) -> Self {
+        let root = root.into();
         Self {
-            root: root.into(),
+            root: root.clone(),
             models: ModelChoices::default(),
             state: Mutex::new(FakeState {
                 sessions,
                 open: Vec::new(),
                 created: 0,
                 keys: Vec::new(),
+                accounts: Accounts::sample(Path::new("/home/ada"), &root),
+                accounts_read: 0,
             }),
             defaults: Mutex::new(SessionDefaults::default()),
         }
@@ -777,19 +821,61 @@ impl Backend for FakeBackend {
     }
 
     fn add_key(&self, provider: &str, value: &str) -> Result<String, String> {
-        if value.trim().len() < 8 {
+        let value = value.trim();
+        if value.len() < 8 {
             return Err("That doesn’t look like a key.".into());
         }
-        self.with_state(|state| state.keys.push((provider.into(), value.trim().into())));
+        let key = key_named(provider).ok_or_else(|| format!("Arko takes no {provider} key."))?;
+        let dotenv = self.root.join(".env");
+        self.with_state(|state| {
+            state.keys.push((provider.into(), value.into()));
+            if let Some(row) = state.accounts.keys.iter_mut().find(|row| row.key == key) {
+                row.masked = Some(accounts::masked(value, key.prefix));
+                row.variable = key.name;
+                row.source = Some(account_words::KeySource::Arko(dotenv));
+            }
+        });
         Ok(format!("Arko saved the {provider} key."))
     }
 
     fn set_chatgpt_login(&self, path: &Path) -> Result<(), String> {
-        Err(format!("Could not use {}.", path.display()))
+        if path.file_name().is_none_or(|name| name != "auth.json") {
+            return Err(format!(
+                "Could not use {}: it holds no ChatGPT login.",
+                path.display()
+            ));
+        }
+        self.with_state(|state| state.accounts.chatgpt = accounts::chosen_login(path.into()));
+        Ok(())
     }
 
     fn set_defaults(&self, defaults: SessionDefaults) {
         *lock(&self.defaults) = defaults;
+    }
+
+    fn accounts(&self) -> Accounts {
+        self.with_state(|state| {
+            state.accounts_read += 1;
+            state.accounts.clone()
+        })
+    }
+
+    fn remove_key(&self, provider: &str) -> Result<String, String> {
+        self.with_state(|state| {
+            let row = state
+                .accounts
+                .keys
+                .iter_mut()
+                .find(|row| row.key.id == provider)
+                .ok_or_else(|| format!("Arko takes no {provider} key."))?;
+            if !matches!(row.source, Some(account_words::KeySource::Arko(_))) {
+                return Err("Arko didn’t save this key, so it can’t remove it.".into());
+            }
+            row.masked = None;
+            row.source = None;
+            state.keys.retain(|(id, _)| id != provider);
+            Ok(format!("Arko removed the {provider} key from its .env."))
+        })
     }
 }
 
@@ -797,6 +883,16 @@ impl FakeBackend {
     /// The keys added, by provider.
     pub fn added_keys(&self) -> Vec<(String, String)> {
         self.with_state(|state| state.keys.clone())
+    }
+
+    /// How many times the accounts were read (Check again reads them).
+    pub fn accounts_read(&self) -> usize {
+        self.with_state(|state| state.accounts_read)
+    }
+
+    /// Sets what the accounts read as.
+    pub fn set_accounts(&self, accounts: Accounts) {
+        self.with_state(|state| state.accounts = accounts);
     }
 }
 
