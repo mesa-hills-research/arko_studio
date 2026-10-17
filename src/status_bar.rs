@@ -470,8 +470,9 @@ impl StatusBar {
                     .accessibility_label("Web page shared"),
             )
             .content(move |_, _, cx| {
-                let panel =
-                    WebPagePanel::new(&page).on_settings(cx.listener(|state, _, window, cx| {
+                let panel = WebPagePanel::new(&page)
+                    .explained()
+                    .on_settings(cx.listener(|state, _, window, cx| {
                         // Once the focus is back in the window: sent from
                         // inside the popover, the action would go with it.
                         state.dismiss(window, cx);

@@ -312,6 +312,7 @@ fn the_web_pages_popover_shows_its_links_and_stops_sharing(cx: &mut TestAppConte
         window.click("status-web-page", cx)
     });
     assert!(bar.find(cx, "web-page-panel"));
+    assert!(bar.find(cx, "web-page-allows"));
     assert!(bar.find(cx, "web-page-qr"));
     act(cx, bar.window, |window, cx| {
         window.click("web-page-new-key", cx)

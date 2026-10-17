@@ -18,9 +18,9 @@ use gpui_kit::*;
 
 use crate::live::LiveSession;
 
-/// What the page lets others do, in a sentence.
-pub const WHAT_IT_ALLOWS: &str =
-    "Anyone with one of these links can follow this session and send it messages.";
+/// What the page lets others do: one text wherever the page is offered
+/// (here and Settings › Web page).
+pub const WHAT_IT_ALLOWS: &str = "Anyone with a session’s link can follow it from a phone or another computer, and send it messages, answers and commands. Each link holds the session’s key, and New key ends the old links. The page isn’t encrypted: share it on networks you trust.";
 
 /// The command that serves the page on `bind` (`/remote`'s argument: an
 /// address, a port or both, empty for the default).
@@ -127,6 +127,7 @@ type OnClick = std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 pub struct WebPagePanel {
     page: Page,
     session: Option<Entity<LiveSession>>,
+    explained: bool,
     on_settings: Option<OnClick>,
 }
 
@@ -135,8 +136,16 @@ impl WebPagePanel {
         Self {
             page: page.clone(),
             session: None,
+            explained: false,
             on_settings: None,
         }
+    }
+
+    /// Says what the page lets others do ([`WHAT_IT_ALLOWS`]), where
+    /// nothing around the panel does.
+    pub fn explained(mut self) -> Self {
+        self.explained = true;
+        self
     }
 
     /// The session whose page it is: its buttons act on it.
@@ -279,12 +288,16 @@ impl RenderOnce for WebPagePanel {
                             .font_medium()
                             .child("The web page is shared"),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(WHAT_IT_ALLOWS),
-                    ),
+                    .when(self.explained, |this| {
+                        this.child(
+                            div()
+                                .id("web-page-allows")
+                                .test_support()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(WHAT_IT_ALLOWS),
+                        )
+                    }),
             )
             .child(body)
             .child(

@@ -13,8 +13,7 @@ use crate::live::{LiveSession, LiveSessions};
 use crate::prefs::{self, DEFAULT_WEB_PAGE_ADDRESS};
 use crate::web_page::WebPagePanel;
 
-/// What the page lets others do, in a paragraph.
-pub const WHAT_IT_ALLOWS: &str = "Anyone with a session’s link can follow it from a phone or another computer, and send it messages, answers and commands. Each link holds the session’s key, and New key ends the old links. The page isn’t encrypted: share it on networks you trust.";
+pub use crate::web_page::WHAT_IT_ALLOWS;
 
 /// The page's state: the address and port typed in, and the open sessions
 /// it hears from (their pages start and stop).
