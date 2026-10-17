@@ -938,6 +938,9 @@ impl SessionView {
             _ if !has_words => String::new(),
             _ if find.status.searching => "Searching…".to_string(),
             (_, 0) => "No matches".to_string(),
+            (Some(current), total) if find.status.in_full_output => {
+                format!("{} of {total} in the full output", current + 1)
+            }
             (Some(current), total) => format!("{} of {total}", current + 1),
             (None, total) => format!("{total} found"),
         };
@@ -1000,6 +1003,24 @@ impl SessionView {
                                 .font_features(FontFeatures(Arc::new(vec![("tnum".into(), 1)])))
                                 .child(status),
                         )
+                        // A match past the lines its call's details show:
+                        // the whole output opens at it.
+                        .when(find.status.in_full_output, |this| {
+                            this.child(
+                                Button::new("find-show-full")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Show")
+                                    .tooltip("Open the full output at this match")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if let Some(transcript) = this.transcript(cx).cloned() {
+                                            transcript.update(cx, |transcript, cx| {
+                                                transcript.show_match_in_full(window, cx)
+                                            });
+                                        }
+                                    })),
+                            )
+                        })
                         .child(
                             div()
                                 .id("find-previous-tip")

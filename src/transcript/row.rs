@@ -150,7 +150,7 @@ fn apply_diff_patch(item: &Item) -> Option<String> {
 
 /// The longest line a preview shows, in characters: a minified file or a
 /// one-line JSON shows its start.
-const PREVIEW_LINE_CHARS: usize = 500;
+pub(super) const PREVIEW_LINE_CHARS: usize = 500;
 
 /// The first lines of `text` for a preview, each at most
 /// [`PREVIEW_LINE_CHARS`] long, and how many lines it has.
@@ -1396,7 +1396,19 @@ impl TranscriptView {
 /// Shows a command's whole output in a dialog, as a list that lays out only
 /// the lines on screen.
 fn open_output(title: SharedString, text: Arc<str>, window: &mut Window, cx: &mut App) {
-    let viewer = cx.new(|cx| OutputViewer::new(text, cx));
+    open_output_at(title, text, None, window, cx);
+}
+
+/// Shows a command's whole output in a dialog, at the bytes `at` (a match
+/// of a find), marked.
+pub(super) fn open_output_at(
+    title: SharedString,
+    text: Arc<str>,
+    at: Option<std::ops::Range<usize>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let viewer = cx.new(|cx| OutputViewer::new(text, at, cx));
     window.open_dialog(cx, move |dialog, _, _| {
         let viewer = viewer.clone();
         dialog
@@ -1411,10 +1423,12 @@ struct OutputViewer {
     text: Arc<str>,
     lines: Vec<std::ops::Range<usize>>,
     list: ListState,
+    /// The bytes of a match it opened at, marked.
+    marked: Option<std::ops::Range<usize>>,
 }
 
 impl OutputViewer {
-    fn new(text: Arc<str>, _: &mut Context<Self>) -> Self {
+    fn new(text: Arc<str>, at: Option<std::ops::Range<usize>>, _: &mut Context<Self>) -> Self {
         let mut lines = Vec::new();
         let mut start = 0;
         for line in text.split_inclusive('\n') {
@@ -1423,7 +1437,21 @@ impl OutputViewer {
             start = end;
         }
         let list = ListState::new(lines.len(), ListAlignment::Top, px(400.));
-        Self { text, lines, list }
+        // A few lines above the match show where it is.
+        if let Some(at) = &at
+            && let Some(line) = lines.iter().position(|line| at.start <= line.end)
+        {
+            list.scroll_to(ListOffset {
+                item_ix: line.saturating_sub(3),
+                offset_in_item: px(0.),
+            });
+        }
+        Self {
+            text,
+            lines,
+            list,
+            marked: at,
+        }
     }
 
     /// What Copy all copies: the output itself, shared, not a copy of it
@@ -1453,16 +1481,42 @@ impl Render for OutputViewer {
                                 return div().into_any_element();
                             };
                             let viewer = viewer.read(cx);
+                            let range = viewer.lines.get(ix).cloned().unwrap_or_default();
                             let line = viewer
-                                .lines
-                                .get(ix)
-                                .and_then(|range| viewer.text.get(range.clone()))
+                                .text
+                                .get(range.clone())
                                 .unwrap_or_default()
                                 .to_string();
-                            div()
-                                .px_2()
-                                .child(selectable(("output-line", ix as u64), line))
-                                .into_any_element()
+                            // The match it opened at, on its line.
+                            let marked = viewer
+                                .marked
+                                .clone()
+                                .filter(|at| {
+                                    at.start < range.end.max(range.start + 1)
+                                        && at.end > range.start
+                                })
+                                .map(|at| {
+                                    at.start.max(range.start) - range.start
+                                        ..at.end.min(range.end) - range.start
+                                });
+                            let text = match marked {
+                                Some(marked) if line.get(marked.clone()).is_some() => {
+                                    let (_, strong) = super::find::match_colors(cx);
+                                    StyledText::new(line)
+                                        .with_highlights([(
+                                            marked,
+                                            HighlightStyle {
+                                                background_color: Some(strong),
+                                                ..HighlightStyle::default()
+                                            },
+                                        )])
+                                        .into_any_element()
+                                }
+                                _ => {
+                                    selectable(("output-line", ix as u64), line).into_any_element()
+                                }
+                            };
+                            div().px_2().child(text).into_any_element()
                         })
                         .size_full(),
                     ),
@@ -1659,7 +1713,7 @@ mod tests {
     #[gpui_kit::test]
     fn the_output_dialogs_copy_shares_the_output(cx: &mut gpui_kit::TestAppContext) {
         let text: Arc<str> = "line\n".repeat(100_000).into();
-        let viewer = cx.new(|cx| OutputViewer::new(text.clone(), cx));
+        let viewer = cx.new(|cx| OutputViewer::new(text.clone(), None, cx));
         let copy = cx.read(|cx| viewer.read(cx).copy_value());
         assert_eq!(copy.as_ptr(), text.as_ptr());
     }

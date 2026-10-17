@@ -36,9 +36,9 @@ pub(crate) enum Place {
     Block(usize),
     /// Block `n` of the entry's Markdown, shown as its source.
     Source(usize),
-    /// A call's parameters, as its details show them.
+    /// A call's parameters, as its details show them (all of them).
     Parameters,
-    /// A call's output, as its details show them.
+    /// A call's output, as its details show them (all of it).
     Output,
     /// An entry's Markdown before its rows are ready: its source.
     Unready,
@@ -63,6 +63,9 @@ pub struct FindStatus {
     pub total: usize,
     /// The texts are being made ready to search: the count comes then.
     pub searching: bool,
+    /// The match shown is past what its row shows: in the whole output a
+    /// call's "Show all N lines" opens.
+    pub in_full_output: bool,
 }
 
 /// A text lowercased to find words in, and how to map its bytes back.
@@ -162,11 +165,6 @@ impl Gathered {
     }
 }
 
-/// The first lines of a call's text, as its details show them.
-pub(crate) fn shown_lines(text: &str) -> String {
-    row::preview(text).0
-}
-
 /// `words` lowercased, as the texts are.
 fn lowercase(words: &str) -> String {
     words.chars().flat_map(char::to_lowercase).collect()
@@ -177,6 +175,27 @@ fn lowercase(words: &str) -> String {
 #[cfg(test)]
 pub(crate) fn find_all(haystack: &str, needle: &str) -> Vec<Range<usize>> {
     Lowered::new(haystack).find(&lowercase(needle))
+}
+
+/// The bytes at the start of a call's text that its details show as they
+/// are: their first lines, up to the first one cut short.
+pub(crate) fn shown_prefix(text: &str) -> usize {
+    let mut end = 0;
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        if index == row::OUTPUT_LINES {
+            break;
+        }
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        // The preview cuts long lines, and reads lines without their `\r`.
+        if let Some((cut, _)) = content.char_indices().nth(row::PREVIEW_LINE_CHARS) {
+            return end + cut;
+        }
+        if content.ends_with('\r') {
+            return end + content.len() - 1;
+        }
+        end += line.len();
+    }
+    end.min(text.len())
 }
 
 /// The bytes of the code of each fenced code block in `source` (a block of
@@ -506,6 +525,7 @@ impl TranscriptView {
             current: find.current.and_then(|key| find.index_of(key)),
             total: find.total,
             searching: find.lowering.is_some(),
+            in_full_output: self.current_in_full_output(),
         }
     }
 
@@ -730,10 +750,10 @@ impl TranscriptView {
                     item.text.lines().next().unwrap_or_default().to_string(),
                 )];
                 if let Some(parameters) = row::shown_parameters(item) {
-                    texts.push((Place::Parameters, shown_lines(&parameters)));
+                    texts.push((Place::Parameters, parameters.to_string()));
                 }
                 if let Some(output) = row::shown_output(entry) {
-                    texts.push((Place::Output, shown_lines(&output)));
+                    texts.push((Place::Output, output.to_string()));
                 }
                 texts
             }
@@ -742,8 +762,49 @@ impl TranscriptView {
         Gathered::Texts(texts)
     }
 
-    /// Opens what hides the current match, scrolls to it and highlights.
-    /// What the last landing opened closes again, unless this one needs it.
+    /// Whether the current match is past what its call's details show.
+    fn current_in_full_output(&self) -> bool {
+        let Some(found) = self.current_match() else {
+            return false;
+        };
+        self.full_text(&found)
+            .is_some_and(|text| found.range.end > shown_prefix(&text))
+    }
+
+    /// The whole text of a call's parameters or output `found` is in.
+    fn full_text(&self, found: &Match) -> Option<std::sync::Arc<str>> {
+        let entry = self.model.entry(found.entry)?;
+        match found.place {
+            Place::Parameters => row::shown_parameters(&entry.item),
+            Place::Output => row::shown_output(entry),
+            _ => None,
+        }
+    }
+
+    /// Opens the whole output (or parameters) at the current match, when
+    /// its row's first lines don't show it.
+    pub fn show_match_in_full(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(found) = self.current_match() else {
+            return;
+        };
+        let Some(text) = self.full_text(&found) else {
+            return;
+        };
+        let line = self
+            .model
+            .entry(found.entry)
+            .map(|entry| entry.item.text.trim().to_string())
+            .unwrap_or_default();
+        let title = match found.place {
+            Place::Parameters => format!("Parameters of {line}"),
+            _ => format!("Output of {line}"),
+        };
+        row::open_output_at(title.into(), text, Some(found.range), window, cx);
+    }
+
+    /// Opens what hides the current match, scrolls to it if it isn't on
+    /// screen, and highlights. What the last landing opened closes again,
+    /// unless this one needs it.
     fn land(&mut self, cx: &mut Context<Self>) {
         let found = self.current_match();
         let needs = found
@@ -833,10 +894,9 @@ impl TranscriptView {
             return 0;
         };
         match found.place {
-            Place::Parameters => {
-                row::shown_parameters(&entry.item).map_or(0, |text| shown_lines(&text).len())
-            }
-            Place::Output => row::shown_output(entry).map_or(0, |text| shown_lines(&text).len()),
+            Place::Parameters | Place::Output => self
+                .full_text(found)
+                .map_or(0, |text| shown_prefix(&text).max(found.range.end)),
             Place::Source(block) => self
                 .ui
                 .get(&found.entry)
@@ -1145,7 +1205,8 @@ impl TranscriptView {
     }
 
     /// The matches in the text of `place` of the entry `entry`, and which
-    /// is the current one, for a row of plain text.
+    /// is the current one, for a row of plain text. A call's parameters
+    /// and output show their first lines: the matches past them aren't.
     pub(super) fn match_ranges(&self, entry: u64, place: Place) -> Vec<(Range<usize>, bool)> {
         let Some(find) = &self.find else {
             return Vec::new();
@@ -1156,6 +1217,17 @@ impl TranscriptView {
         let Some((_, ranges)) = found.places.iter().find(|(found, _)| *found == place) else {
             return Vec::new();
         };
+        let shown = match place {
+            Place::Parameters | Place::Output => self
+                .model
+                .entry(entry)
+                .and_then(|item| match place {
+                    Place::Parameters => row::shown_parameters(&item.item),
+                    _ => row::shown_output(item),
+                })
+                .map_or(0, |text| shown_prefix(&text)),
+            _ => usize::MAX,
+        };
         let current = find
             .current
             .filter(|key| key.entry == entry && key.place == place)
@@ -1163,6 +1235,7 @@ impl TranscriptView {
         ranges
             .iter()
             .enumerate()
+            .filter(|(_, range)| range.end <= shown)
             .map(|(ordinal, range)| (range.clone(), Some(ordinal) == current))
             .collect()
     }
@@ -1219,7 +1292,7 @@ impl TranscriptView {
 }
 
 /// The background of matches, and of the current one.
-fn match_colors(cx: &App) -> (Hsla, Hsla) {
+pub(super) fn match_colors(cx: &App) -> (Hsla, Hsla) {
     let yellow = cx.theme().yellow;
     (yellow.opacity(0.25), yellow.opacity(0.55))
 }

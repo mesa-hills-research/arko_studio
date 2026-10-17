@@ -590,3 +590,56 @@ fn landing_in_a_long_code_block_in_a_list_shows_it_whole(cx: &mut TestAppContext
     let uncapped = cx.read(|cx| view.read(cx).ui.get(&steps).unwrap().uncapped.len());
     assert_eq!(uncapped, 0);
 }
+
+/// Matches past the lines a call's details show (its first 40, each cut at
+/// 500 characters) are found: the find bar says they're in the full
+/// output, which opens at the match.
+#[gpui_kit::test]
+fn matches_past_an_outputs_first_lines_are_found_in_the_full_output(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    feed.user("Run it.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let output: String = (0..100)
+        .map(|line| match line {
+            80 => "line 80 error[E0308]: mismatched types\n".to_string(),
+            _ => format!("line {line}\n"),
+        })
+        .collect();
+    command(&feed, "cargo build", &output);
+    // The engine keeps a command's whole output when it has more lines
+    // than its first few.
+    let long_line = format!(
+        "warning: first\nwarning: second\nwarning: third\nwarning: fourth\n{}error[E0599] at the end\n",
+        "x".repeat(3000)
+    );
+    command(&feed, "cargo check", &long_line);
+    command(&feed, "cargo fmt", "error[E0425] early\n");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open_feed(cx, &feed, View::Full, 900.);
+    for code in ["E0308", "E0599"] {
+        let status = find(cx, window, &view, code);
+        assert_eq!(status.total, 1, "{code}");
+        assert!(status.in_full_output, "{code}");
+        // Its row shows the first lines, without the match.
+        let build = entry(cx, &view, "cargo build");
+        let check = entry(cx, &view, "cargo check");
+        for id in [build, check] {
+            assert!(
+                cx.read(|cx| view.read(cx).match_ranges(id, Place::Output))
+                    .is_empty()
+            );
+        }
+    }
+    // One the row shows.
+    let status = find(cx, window, &view, "E0425");
+    assert_eq!(status.total, 1);
+    assert!(!status.in_full_output);
+    // The full output opens at the match.
+    find(cx, window, &view, "E0308");
+    cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| view.show_match_in_full(window, cx));
+        use gpui_kit::component::WindowExt as _;
+        assert!(window.has_active_dialog(cx));
+    })
+    .unwrap();
+}
