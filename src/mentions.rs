@@ -342,8 +342,8 @@ fn scan(
 
 /// What is being mentioned in `text` with the caret at `caret`: the range
 /// from the "@" to the caret, and what was typed after the "@". The "@"
-/// starts the text or follows a space, and nothing typed after it is a
-/// space.
+/// starts the text or a word (after a space, or an opening bracket or
+/// quote), and nothing typed after it is a space.
 pub fn typed(text: &str, caret: usize) -> Option<(std::ops::Range<usize>, &str)> {
     let before = text.get(..caret)?;
     let at = before.rfind('@')?;
@@ -351,10 +351,10 @@ pub fn typed(text: &str, caret: usize) -> Option<(std::ops::Range<usize>, &str)>
     if typed.chars().any(char::is_whitespace) {
         return None;
     }
-    let starts_word = before[..at]
-        .chars()
-        .next_back()
-        .is_none_or(char::is_whitespace);
+    let starts_word = before[..at].chars().next_back().is_none_or(|previous| {
+        previous.is_whitespace()
+            || matches!(previous, '(' | '[' | '{' | '"' | '\'' | '`' | '“' | '‘')
+    });
     starts_word.then_some((at..caret, typed))
 }
 
@@ -487,5 +487,7 @@ mod tests {
         assert_eq!(typed("mail me@home", 12), None);
         assert_eq!(typed("@src/main.rs and", 16), None);
         assert_eq!(typed("see @src", 3), None);
+        assert_eq!(typed("(@src", 5), Some((1..5, "src")));
+        assert_eq!(typed("“@doc", 7), Some((3..7, "doc")));
     }
 }

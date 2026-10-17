@@ -725,6 +725,44 @@ fn a_weak_file_match_leaves_enter_to_send(cx: &mut TestAppContext) {
     );
 }
 
+/// Two files of one name show their folders in the composer, and a path
+/// with spaces goes to the model in backticks.
+#[gpui_kit::test]
+fn a_mentions_token_tells_files_of_one_name_apart(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    let root = folder.path().to_path_buf();
+    for dir in ["src/a", "src/b", "docs"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    for file in ["src/a/mod.rs", "src/b/mod.rs", "docs/my notes.md"] {
+        std::fs::write(root.join(file), "").unwrap();
+    }
+    let (_, window, workspace) = start(cx);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    cx.update(|cx| view.update(cx, |view, cx| view.set_draft_folder(root.clone(), cx)));
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    let has_menu = |cx: &mut TestAppContext| cx.read(|cx| composer.read(cx).menu().is_some());
+    act(cx, window, |window, cx| window.input("See @a/mod", cx));
+    crate::testing::wait_until(cx, "the files", has_menu);
+    act(cx, window, |window, cx| window.press("enter", cx));
+    act(cx, window, |window, cx| window.input("and (@notes", cx));
+    crate::testing::wait_until(cx, "the files", has_menu);
+    act(cx, window, |window, cx| window.press("enter", cx));
+    let (labels, text) = cx.read(|cx| {
+        let composer = composer.read(cx);
+        let labels: Vec<String> = composer
+            .textarea()
+            .read(cx)
+            .tokens()
+            .iter()
+            .map(|span| span.token().label().to_string())
+            .collect();
+        (labels, composer.expanded_text(cx))
+    });
+    assert_eq!(labels, ["a/mod.rs", "my notes.md"]);
+    assert_eq!(text, "See src/a/mod.rs and (`docs/my notes.md` ");
+}
+
 /// Branching needs the session to run: a session this app hasn't opened
 /// offers Branch from Here, but disabled.
 #[gpui_kit::test]

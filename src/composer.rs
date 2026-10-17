@@ -921,7 +921,8 @@ impl Composer {
     }
 
     /// Puts the file `path` (relative to the session's folder) in place of
-    /// `range` as a token showing its name, which sends as the path.
+    /// `range` as a token showing its name (with its folder's, when another
+    /// file has the name), which sends as the path.
     fn insert_mention(
         &mut self,
         range: Range<usize>,
@@ -931,8 +932,21 @@ impl Composer {
     ) {
         self.mentioned += 1;
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-        let token =
-            InlineToken::new(format!("file-{}", self.mentioned), path.clone()).with_label(name);
+        let shared = self
+            .files
+            .as_ref()
+            .is_some_and(|(_, _, files)| files.named(&name) > 1);
+        let label = match path.rsplit('/').nth(1) {
+            Some(folder) if shared => format!("{folder}/{name}"),
+            _ => name,
+        };
+        // A path with spaces reads as one in backticks.
+        let sent = if path.contains(char::is_whitespace) {
+            format!("`{path}`")
+        } else {
+            path.clone()
+        };
+        let token = InlineToken::new(format!("file-{}", self.mentioned), sent).with_label(label);
         self.textarea.update(cx, |textarea, cx| {
             match textarea.replace_range_with_token(range.clone(), token, window, cx) {
                 Ok(()) => textarea.insert(" ".to_string(), window, cx),
