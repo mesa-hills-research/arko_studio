@@ -167,7 +167,8 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) -> Entity<CacheReminde
                     this.sent = Sent::default();
                     this.check(cx);
                 }
-                LiveEvent::Ended => {
+                // A session that ended, or never opened, has no cache left.
+                LiveEvent::Ended | LiveEvent::Failed(_) => {
                     this.dismiss(cx);
                     let id = cx.entity_id();
                     cx.update_global::<Reminders, _>(|reminders, _| {
@@ -601,7 +602,7 @@ mod tests {
     use super::{Due, EARLY_MS, FINAL_MS, ReminderClock, Sent, UNTOUCHED_MS, plan};
     use crate::Startup;
     use crate::backend::FakeBackend;
-    use crate::live::LiveSession;
+    use crate::live::{LiveEvent, LiveSession};
     use crate::tests::open;
     use arko::remote::{Activity, CacheStatus, Question, Reading};
     use gpui_kit::component::WindowExt as _;
@@ -945,6 +946,23 @@ mod tests {
         reminded.advance(cx, 61_000);
         assert!(!reminded.shows(cx, "cache-countdown"));
         assert!(cx.delivered_system_notifications().is_empty());
+    }
+
+    /// A session that ended or didn't open leaves no reminders behind.
+    #[gpui_kit::test]
+    fn sessions_gone_leave_no_reminders_behind(cx: &mut TestAppContext) {
+        let reminded = Reminded::new(cx, 5, 230_000);
+        let other = cx.new(|cx| LiveSession::for_tests("s2", cx));
+        cx.update(|cx| super::watch(&other, cx));
+        for (session, event) in [
+            (&reminded.session, LiveEvent::Ended),
+            (&other, LiveEvent::Failed(None)),
+        ] {
+            assert!(cx.read(|cx| super::of(session, cx).is_some()));
+            session.update(cx, |_, cx| cx.emit(event));
+            cx.run_until_parked();
+            assert!(cx.read(|cx| super::of(session, cx).is_none()));
+        }
     }
 
     /// A reminder due while the computer slept comes after it wakes: its
