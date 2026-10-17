@@ -222,13 +222,22 @@ fn editing_a_message_cuts_the_conversation_back_after_asking(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
-fn up_in_the_empty_composer_edits_the_last_message_and_esc_gives_it_back(cx: &mut TestAppContext) {
+fn alt_up_in_the_empty_composer_edits_the_last_message_and_esc_gives_it_back(
+    cx: &mut TestAppContext,
+) {
     let mock = answers();
     let app = start(cx, &mock);
     app.send(cx, "Count the pears.");
     app.wait_for(cx, "Seven pears.");
     app.wait_idle(cx);
+    // ↑ walks the input history, as in a terminal: nothing is cut.
     act(cx, app.window, |window, cx| window.press("up", cx));
+    assert_eq!(app.composer_text(cx), "Count the pears.");
+    assert!(!cx.read(|cx| app.view.read(cx).is_editing()));
+    act(cx, app.window, |window, cx| window.press("down", cx));
+    assert_eq!(app.composer_text(cx), "");
+    // Alt+↑ edits the last message.
+    act(cx, app.window, |window, cx| window.press("alt-up", cx));
     assert_eq!(app.composer_text(cx), "Count the pears.");
     assert!(cx.read(|cx| app.view.read(cx).is_editing()));
     act(cx, app.window, |window, cx| window.press("escape", cx));
@@ -323,7 +332,7 @@ fn branch_instead_goes_on_in_a_new_session_and_leaves_this_one(cx: &mut TestAppC
     app.wait_for(cx, "Three plums.");
     app.wait_idle(cx);
     let original = cx.read(|cx| app.view.read(cx).live_session().cloned().unwrap());
-    act(cx, app.window, |window, cx| window.press("up", cx));
+    act(cx, app.window, |window, cx| window.press("alt-up", cx));
     app.set_composer(cx, "Count the apples.");
     act(cx, app.window, |window, cx| window.press("enter", cx));
     // "Don't ask again" ticked: it is kept with Edit only.
@@ -486,7 +495,7 @@ fn an_edit_that_cant_go_yet_stays_in_the_composer(cx: &mut TestAppContext) {
     let editing = |cx: &mut TestAppContext| cx.read(|cx| app.view.read(cx).is_editing());
     // The dialog asks, then a turn starts from elsewhere: the branch is
     // refused, and the edit is still there.
-    act(cx, app.window, |window, cx| window.press("up", cx));
+    act(cx, app.window, |window, cx| window.press("alt-up", cx));
     app.set_composer(cx, "The plums, carefully worded.");
     act(cx, app.window, |window, cx| window.press("enter", cx));
     act(cx, app.window, |window, _| {
@@ -527,7 +536,7 @@ fn enter_in_the_edit_dialog_edits(cx: &mut TestAppContext) {
     app.send(cx, "Count the pears.");
     app.wait_for(cx, "Seven pears.");
     app.wait_idle(cx);
-    act(cx, app.window, |window, cx| window.press("up", cx));
+    act(cx, app.window, |window, cx| window.press("alt-up", cx));
     app.set_composer(cx, "Count the apples.");
     act(cx, app.window, |window, cx| window.press("enter", cx));
     act(cx, app.window, |window, cx| {

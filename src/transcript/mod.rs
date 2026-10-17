@@ -415,7 +415,7 @@ impl TranscriptView {
         self.renders
     }
 
-    /// The user's latest message that can be edited (↑ in the empty
+    /// The user's latest message that can be edited (Alt+↑ in the empty
     /// composer edits it).
     pub fn last_message(&self) -> Option<u64> {
         self.model.last_message()

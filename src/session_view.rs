@@ -209,7 +209,7 @@ impl SessionView {
             cx.observe(&model_filter, |_, _, cx| cx.notify()),
             cx.on_release(|this, cx| this.window_closed(cx)),
         ];
-        // ↑ in the empty composer edits the latest message, when it can.
+        // Alt+↑ in the empty composer edits the latest message, when it can.
         let view = cx.entity().downgrade();
         composer.update(cx, |composer, _| {
             composer.set_edits_last(move |cx| {
@@ -1170,7 +1170,7 @@ impl SessionView {
         self.editing.is_some()
     }
 
-    /// Whether ↑ in the empty composer edits the latest message now: the
+    /// Whether Alt+↑ in the empty composer edits the latest message now: the
     /// session is between turns, no worker runs, and there is one.
     fn edits_last(&self, cx: &App) -> bool {
         let idle = self

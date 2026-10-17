@@ -37,6 +37,15 @@ use crate::writing::WritingAids;
 /// The key context of the composer's field.
 pub const CONTEXT: &str = "Composer";
 
+actions!(
+    composer,
+    [
+        /// Edits the latest message the conversation can change (Alt+↑ in
+        /// the empty composer). ↑ walks the input history instead.
+        EditLastMessage,
+    ]
+);
+
 /// The most lines the composer grows to before it scrolls.
 pub const MAX_ROWS: usize = 10;
 
@@ -127,7 +136,7 @@ pub enum ComposerEvent {
     /// Esc while the composer is in a mode Esc ends (editing a message,
     /// writing to a worker).
     Cancel,
-    /// ↑ in the empty composer while the latest message can be edited.
+    /// Alt+↑ in the empty composer while the latest message can be edited.
     EditLast,
     /// The text changed.
     Edited,
@@ -349,7 +358,7 @@ pub struct Composer {
     working: bool,
     /// Esc ends a mode first ([`ComposerEvent::Cancel`]).
     cancellable: bool,
-    /// Whether ↑ in the empty composer edits the latest message now.
+    /// Whether Alt+↑ in the empty composer edits the latest message now.
     edits_last: Option<EditsLast>,
     /// The folder whose files "@" mentions: an agent session's.
     mention_folder: Option<PathBuf>,
@@ -524,8 +533,8 @@ impl Composer {
         self.cancellable = cancellable;
     }
 
-    /// Tells whether ↑ in the empty composer edits the latest message (else
-    /// it walks the input history), asked as the key comes.
+    /// Tells whether Alt+↑ in the empty composer edits the latest message,
+    /// asked as the key comes.
     pub fn set_edits_last(&mut self, edits_last: impl Fn(&App) -> bool + 'static) {
         self.edits_last = Some(Rc::new(edits_last));
     }
@@ -1062,16 +1071,43 @@ impl Composer {
         if self.menu.is_some() {
             self.move_menu(-1, cx);
             cx.stop_propagation();
-        } else if self.edits_last.as_ref().is_some_and(|edits| edits(cx))
-            && self.walk.is_none()
-            && self.images.is_empty()
-            && self.textarea.read(cx).value().is_empty()
-        {
-            cx.emit(ComposerEvent::EditLast);
-            cx.stop_propagation();
         } else if self.at_edge(true, cx) && self.walk_history(true, window, cx) {
             cx.stop_propagation();
         }
+    }
+
+    /// Edits the latest message, in the empty composer when the
+    /// conversation can change. ↑ walks the input history, as in a
+    /// terminal, and can't cut a conversation by accident.
+    fn on_edit_last(&mut self, _: &EditLastMessage, _: &mut Window, cx: &mut Context<Self>) {
+        if self.edits_last_now(cx) {
+            cx.emit(ComposerEvent::EditLast);
+            cx.stop_propagation();
+        }
+    }
+
+    /// Alt+↑ on macOS, where the default keymap takes it to the line's
+    /// start, which in the empty composer goes nowhere.
+    fn on_line_start(
+        &mut self,
+        _: &gpui_kit::base::input::cua::MoveBackwardToLineStart,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.edits_last_now(cx) {
+            cx.emit(ComposerEvent::EditLast);
+            cx.stop_propagation();
+        }
+    }
+
+    /// Whether the latest message can be edited from here now: nothing
+    /// typed or attached, and the conversation can change.
+    fn edits_last_now(&self, cx: &App) -> bool {
+        self.menu.is_none()
+            && self.walk.is_none()
+            && self.images.is_empty()
+            && self.textarea.read(cx).value().is_empty()
+            && self.edits_last.as_ref().is_some_and(|edits| edits(cx))
     }
 
     fn on_move_down(&mut self, _: &MoveDown, window: &mut Window, cx: &mut Context<Self>) {
@@ -1337,6 +1373,10 @@ impl Render for Composer {
             .capture_action(cx.listener(Self::on_tab))
             .capture_action(cx.listener(Self::on_enter))
             .capture_action(cx.listener(Self::on_escape))
+            .on_action(cx.listener(Self::on_edit_last))
+            .when(cfg!(target_os = "macos"), |this| {
+                this.capture_action(cx.listener(Self::on_line_start))
+            })
             .on_key_down(cx.listener(Self::on_vim_escape))
             // Files dropped on the composer: images go with the message.
             .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_target))

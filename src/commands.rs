@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use gpui_kit::*;
 
+use crate::composer::EditLastMessage;
 use crate::menus::*;
 use crate::settings_page::CloseSettings;
 use crate::sidebar::{
@@ -215,6 +216,13 @@ pub fn commands() -> Vec<Command> {
         Command::new(Sessions, "Cancel Renaming", CancelRename)
             .keys(&["escape"])
             .context(RENAME_CONTEXT)
+            .not_in_palette(),
+        // Free in every keymap on Linux and Windows. On macOS the default
+        // keymap takes it to a line's start, which the empty composer
+        // turns into this.
+        Command::new(Composer, "Edit the Last Message", EditLastMessage)
+            .keys(&["alt-up"])
+            .context(crate::composer::CONTEXT)
             .not_in_palette(),
         Command::new(Composer, "Expand Composer", ExpandComposer).keys(&["secondary-shift-e"]),
         Command::new(Composer, "Stop", StopTurn).keys(&["secondary-."]),

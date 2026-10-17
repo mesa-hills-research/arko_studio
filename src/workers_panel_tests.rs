@@ -392,7 +392,7 @@ fn writing_to_a_worker_ends_an_edit(cx: &mut TestAppContext) {
             })
         })
     });
-    act(cx, window, |window, cx| window.press("up", cx));
+    act(cx, window, |window, cx| window.press("alt-up", cx));
     assert!(cx.read(|cx| view.read(cx).is_editing()));
     act(cx, window, |window, cx| {
         view.update(cx, |view, cx| {

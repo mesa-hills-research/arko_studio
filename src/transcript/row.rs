@@ -539,7 +539,9 @@ impl TranscriptView {
                     "Nothing comes before the first message to branch from"
                 }
             });
-            (busy, no_branch, view.downgrade(), view.downgrade())
+            // The latest message: Alt+↑ in the empty composer edits it too.
+            let last = self.model.last_message() == Some(id);
+            (busy, no_branch, last, view.downgrade(), view.downgrade())
         });
         // A turn that ended with no reply (stopped, or failed after its
         // retries): its message offers to go again.
@@ -559,12 +561,21 @@ impl TranscriptView {
                         .tab_stop(shown)
                 };
                 h_flex()
-                    .when_some(changes, |this, (busy, no_branch, edit_view, branch_view)| {
+                    .when_some(changes, |this, (busy, no_branch, last, edit_view, branch_view)| {
+                        let edit = action("edit-message", Lucide::SquarePen)
+                            .disabled(busy.is_some())
+                            .accessibility_label("Edit");
+                        let edit = match busy {
+                            Some(busy) => edit.tooltip(busy),
+                            None if last => edit.tooltip_with_action(
+                                "Edit",
+                                &crate::composer::EditLastMessage,
+                                Some(crate::composer::CONTEXT),
+                            ),
+                            None => edit.tooltip("Edit"),
+                        };
                         this.child(
-                            action("edit-message", Lucide::SquarePen)
-                                .disabled(busy.is_some())
-                                .tooltip(busy.unwrap_or("Edit"))
-                                .accessibility_label("Edit")
+                            edit
                                 .on_click(move |_, _, cx| {
                                     edit_view
                                         .update(cx, |this, cx| {

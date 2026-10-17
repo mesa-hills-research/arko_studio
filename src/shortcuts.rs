@@ -204,6 +204,13 @@ mod tests {
         assert_eq!(found("zoom"), ["Zoom In", "Zoom Out"]);
         assert!(found("composer").contains(&"Stop"));
         assert!(found("f2").contains(&"Rename Session…"));
+        // ↑ walks the history, Alt+↑ edits the last message.
+        let edit = shortcuts
+            .iter()
+            .find(|shortcut| shortcut.name == "Edit the Last Message")
+            .expect("in the sheet");
+        assert_eq!(edit.group, crate::commands::Group::Composer);
+        assert_eq!(edit.keys, [gpui_kit::Keystroke::parse("alt-up").unwrap()]);
         assert!(found("nothing like this").is_empty());
     }
 }
