@@ -48,7 +48,8 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
         match item.kind {
             Kind::User => {
                 section(&mut out, "You");
-                let mut text = item.text.trim().to_string();
+                // As typed: the app shows it with Markdown off.
+                let mut text = as_typed(trimmed(&item.text));
                 if !item.is_main() {
                     text = format!("*(to {})* {text}", item.agent);
                 }
@@ -62,7 +63,7 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
                     continue;
                 }
                 section(&mut out, "Arko");
-                out.push_str(&format!("\n{}\n", item.text.trim()));
+                out.push_str(&format!("\n{}\n", closed(trimmed(&item.text))));
             }
             Kind::Message => {
                 section(&mut out, "Arko");
@@ -77,9 +78,11 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
                     continue;
                 }
                 section(&mut out, "Arko");
+                let text = closed(trimmed(&item.text))
+                    .replace("</details", "&lt;/details")
+                    .replace("</DETAILS", "&lt;/DETAILS");
                 out.push_str(&format!(
-                    "\n<details><summary>Thinking</summary>\n\n{}\n\n</details>\n",
-                    item.text.trim()
+                    "\n<details><summary>Thinking</summary>\n\n{text}\n\n</details>\n"
                 ));
             }
             Kind::Call => {
@@ -112,7 +115,9 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
                 out.push_str(&format!("\n> **{label}:** {}\n", quoted(item.text.trim())));
             }
             Kind::Output => {
-                out.push_str(&format!("\n```text\n{}\n```\n", item.text.trim_end()));
+                let text = item.text.trim_end();
+                let fence = fence_for(text);
+                out.push_str(&format!("\n{fence}text\n{text}\n{fence}\n"));
             }
             Kind::Turn => {
                 if !item.text.trim().is_empty() {
@@ -154,6 +159,114 @@ fn code(text: &str) -> String {
         ""
     };
     format!("{fence}{pad}{text}{pad}{fence}")
+}
+
+/// The fence a block of `text` needs: a backtick more than its longest run
+/// of them, and three at least.
+fn fence_for(text: &str) -> String {
+    let mut longest = 0;
+    let mut run = 0;
+    for character in text.chars() {
+        if character == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    "`".repeat((longest + 1).max(3))
+}
+
+/// `text` without the blank lines around it. Its first line keeps its
+/// indentation (an indented code block stays one).
+fn trimmed(text: &str) -> &str {
+    let text = text.trim_end();
+    let blank: usize = text
+        .split_inclusive('\n')
+        .take_while(|line| line.trim().is_empty())
+        .map(str::len)
+        .sum();
+    &text[blank..]
+}
+
+/// Markdown `text` with a code fence it leaves open closed (a reply
+/// stopped halfway through a code block), so that what follows it in the
+/// export isn't code too.
+fn closed(text: &str) -> String {
+    let mut open: Option<(char, usize)> = None;
+    for line in text.lines() {
+        // Inside a list item or a quote, the fence comes after its marks.
+        let line = line.trim_start_matches([' ', '\t', '>']);
+        let fence = ['`', '~'].into_iter().find_map(|mark| {
+            let length = line.chars().take_while(|c| *c == mark).count();
+            (length >= 3).then_some((mark, length))
+        });
+        match (open, fence) {
+            (None, Some(fence)) => open = Some(fence),
+            (Some((mark, length)), Some((closing, closing_length)))
+                if closing == mark
+                    && closing_length >= length
+                    && line[closing_length..].trim().is_empty() =>
+            {
+                open = None
+            }
+            _ => {}
+        }
+    }
+    match open {
+        Some((mark, length)) => format!("{text}\n{}", mark.to_string().repeat(length)),
+        None => text.to_string(),
+    }
+}
+
+/// The user's `text` as they typed it, read as Markdown: what would start
+/// a heading, a quote, a list, a code block or HTML at a line's start is
+/// escaped, and its line breaks are kept.
+fn as_typed(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = String::with_capacity(text.len() + 16);
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let rest = &line[indent..];
+        if indent >= 4 {
+            // Four spaces start a code block: the first one as an entity.
+            out.push_str("&#32;");
+            out.push_str(&line[1..indent]);
+        } else {
+            out.push_str(&line[..indent]);
+        }
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        let first = rest.chars().next();
+        if digits > 0 && matches!(rest[digits..].chars().next(), Some('.' | ')')) {
+            // "1. " starts a list: its mark escaped.
+            out.push_str(&rest[..digits]);
+            out.push('\\');
+            out.push_str(&rest[digits..]);
+        } else if matches!(
+            first,
+            Some('#' | '>' | '-' | '+' | '*' | '=' | '|' | '`' | '~' | '_')
+        ) {
+            out.push('\\');
+            out.push_str(rest);
+        } else {
+            out.push_str(rest);
+        }
+        // A line break as typed, before another line of the same paragraph.
+        if lines
+            .get(index + 1)
+            .is_some_and(|next| !next.trim().is_empty())
+        {
+            out.push('\\');
+        }
+    }
+    // No HTML: what looks like a tag shows as typed.
+    out.replace('<', "\\<")
 }
 
 /// `text` on one line.
@@ -263,6 +376,74 @@ It takes a whole string.
 Done: **streaming** now.
 
 *48 s · $0.21*
+
+## You
+
+Thanks.
+"
+        );
+    }
+
+    /// What a reply, an output, a thinking or the user's text holds keeps
+    /// to its place in the export.
+    #[test]
+    fn odd_text_keeps_its_place() {
+        let header = Header {
+            title: "Odd".into(),
+            mode: "Agent".into(),
+            when: "now".into(),
+            ..Header::default()
+        };
+        let text = markdown(
+            &header,
+            &[
+                item(
+                    Kind::User,
+                    "## Arko\n1. first\n    four spaces\nsee <b>this</b>\n\nnext",
+                ),
+                item(Kind::Reply, "Stopped in code:\n\n```rust\nfn main() {\n"),
+                item(Kind::Output, "a\n```\nb"),
+                item(Kind::Thinking, "Ends with </details> early."),
+                item(Kind::Reply, "    let indented = 1;\n"),
+                item(Kind::User, "Thanks."),
+            ],
+        );
+        assert_eq!(
+            text,
+            "# Odd
+
+*Agent · exported now*
+
+## You
+
+\\## Arko\\
+1\\. first\\
+&#32;   four spaces\\
+see \\<b>this\\</b>
+
+next
+
+## Arko
+
+Stopped in code:
+
+```rust
+fn main() {
+```
+
+````text
+a
+```
+b
+````
+
+<details><summary>Thinking</summary>
+
+Ends with &lt;/details> early.
+
+</details>
+
+    let indented = 1;
 
 ## You
 
