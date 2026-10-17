@@ -315,6 +315,10 @@ pub struct LiveSession {
     /// When the user last sent it something or looked at it, in Unix
     /// milliseconds: cache reminders leave sessions alone after an hour.
     touched_at: i64,
+    /// Counts what this app sent that changes the conversation (input,
+    /// edits, messages sent again), so that a read of it made before one
+    /// of them can tell it's out of date.
+    input_epoch: std::cell::Cell<u64>,
     /// Counts the times it opened: each opening is a new feed.
     opened: u64,
     /// The cache is kept warm with a short message: the next turn (or the
@@ -364,6 +368,7 @@ impl LiveSession {
             quit_agreed: None,
             answered: None,
             touched_at: crate::figures::now_ms(),
+            input_epoch: std::cell::Cell::new(0),
             opened: 0,
             refresh_coming: false,
             refresh_running: false,
@@ -969,6 +974,7 @@ impl LiveSession {
             self.answered = Some(*question);
         }
         self.touched_at = crate::figures::now_ms();
+        self.changes();
         match (&self.phase, &self.link) {
             (Phase::Open | Phase::Closing, Some(link)) => link
                 .input
@@ -1053,6 +1059,7 @@ impl LiveSession {
     /// Cuts the conversation back to just before the user's message `item`
     /// and sends `message` in its place (between turns, no worker running).
     pub fn edit(&self, item: u64, message: arko::Message, cx: &App) -> Task<Result<(), String>> {
+        self.changes();
         self.request(
             |reply| arko::Request::Edit {
                 item,
@@ -1065,7 +1072,42 @@ impl LiveSession {
 
     /// Sends the user's latest message again, for a new reply.
     pub fn regenerate(&self, cx: &App) -> Task<Result<(), String>> {
+        self.changes();
         self.request(|reply| arko::Request::Regenerate { reply }, cx)
+    }
+
+    /// Notes that the app sent something that changes the conversation.
+    fn changes(&self) {
+        self.input_epoch.set(self.input_epoch.get() + 1);
+    }
+
+    /// How many times the app sent something that changes the conversation.
+    /// A read of the conversation made before the latest is out of date.
+    pub fn input_epoch(&self) -> u64 {
+        self.input_epoch.get()
+    }
+
+    /// The current conversation as the session saved it, for an export.
+    /// A running session's engine answers once nothing can still add to
+    /// it, and says when to export otherwise. One that ended, or didn't
+    /// open, is read from what it saved, off the UI thread.
+    pub fn saved_conversation(
+        &self,
+        root: PathBuf,
+        cx: &App,
+    ) -> Task<Result<arko::sessions::SavedConversation, String>> {
+        match self.phase {
+            Phase::Opening | Phase::Open | Phase::Closing => {
+                self.request(|reply| arko::Request::ExportConversation { reply }, cx)
+            }
+            Phase::Sample | Phase::Ended | Phase::Failed(_) => {
+                let id = self.id.clone();
+                cx.background_spawn(async move {
+                    let id = id.ok_or("There is no conversation to export yet.")?;
+                    arko::sessions::conversation(&root, id.as_str(), None)
+                })
+            }
+        }
     }
 
     /// Copies the conversation up to the user's message `before` (left

@@ -827,18 +827,14 @@ impl SessionView {
     /// Exports the conversation shown as Markdown, to a file the user
     /// chooses (Export as Markdown…).
     pub fn export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (items, starts_partway) = self
+        let shown = self
             .transcript(cx)
-            .map(|transcript| {
-                let transcript = transcript.read(cx);
-                (transcript.export_items(), transcript.starts_partway())
-            })
-            .unwrap_or_default();
-        let Some(session) = self.session.as_ref().filter(|_| !items.is_empty()) else {
+            .is_some_and(|transcript| !transcript.read(cx).export_items().is_empty());
+        let Some(live) = self.session.clone().filter(|_| shown) else {
             window.push_notification("There is no conversation to export yet.", cx);
             return;
         };
-        let session = session.read(cx);
+        let session = live.read(cx);
         let header = crate::export::Header {
             title: session.title().to_string(),
             mode: session.mode().label().to_string(),
@@ -847,17 +843,19 @@ impl SessionView {
                 .workspace()
                 .map(|folder| shown_folder(folder, self.home.as_deref())),
             when: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
-            starts_partway,
+            starts_partway: false,
         };
         let root = cx
             .global::<crate::backend::SharedBackend>()
             .data_root()
             .to_path_buf();
-        let id = session.id().cloned();
+        // The session reads it once nothing can still add to it, or says
+        // when to export instead.
+        let reading = session.saved_conversation(root, cx);
+        let epoch = session.input_epoch();
         let exporting = cx.background_spawn(async move {
-            let id = id.ok_or("There is no conversation to export yet.")?;
-            let saved = arko::sessions::conversation(&root, id.as_str(), None)?;
-            Ok::<_, String>(crate::export::with_saved(header, items, saved))
+            let saved = reading.await?;
+            Ok::<_, String>(crate::export::with_saved(header, saved))
         });
         let folder = crate::export::folder(
             session.workspace().map(PathBuf::as_path),
@@ -865,7 +863,19 @@ impl SessionView {
         );
         let name = crate::export::file_name(session.title());
         cx.spawn_in(window, async move |this, cx| {
-            let (text, starts_partway) = match exporting.await {
+            let exported = exporting.await.and_then(|export| {
+                // The view went to another session, or this app sent the
+                // session something since it was read.
+                let current = this
+                    .read_with(cx, |view, cx| {
+                        view.session.as_ref() == Some(&live) && live.read(cx).input_epoch() == epoch
+                    })
+                    .unwrap_or(false);
+                current.then_some(export).ok_or_else(|| {
+                    "The conversation changed while it was read. Export it again.".to_string()
+                })
+            });
+            let (text, starts_partway) = match exported {
                 Ok(export) => export,
                 Err(why) => {
                     cx.update(|window, cx| {

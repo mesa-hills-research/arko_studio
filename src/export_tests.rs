@@ -2,6 +2,7 @@
 //! the mock server.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AppContext as _, TestAppContext};
@@ -13,7 +14,15 @@ use crate::tests::{act, open};
 
 #[gpui_kit::test]
 fn export_writes_the_conversation_where_the_user_chooses(cx: &mut TestAppContext) {
-    let mock = Mock::start(|_, _| reply("a1", "Seven **pears**."));
+    // The reply to the plums takes a moment, long enough to try an export
+    // while it runs.
+    let mock = Mock::start(|_, body| {
+        if body.contains("And the plums?") && !body.contains("And the figs?") {
+            crate::testing::reply_after("a1", "Seven **pears**.", Duration::from_millis(1500))
+        } else {
+            reply("a1", "Seven **pears**.")
+        }
+    });
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("arko");
     let work = temp.path().join("work");
@@ -47,8 +56,25 @@ fn export_writes_the_conversation_where_the_user_chooses(cx: &mut TestAppContext
             })
         })
     });
+    use gpui_kit::component::WindowExt as _;
+    let notes = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| window.notifications(cx).len())
+            .unwrap()
+    };
+    let session = cx.read(|cx| view.read(cx).live_session().unwrap().clone());
     act(cx, window, |window, cx| window.input("And the plums?", cx));
     act(cx, window, |window, cx| window.press("enter", cx));
+    // While the reply comes, the session says to export after it, and no
+    // file is chosen or written.
+    wait_until(cx, "the turn", |cx| {
+        cx.read(|cx| session.read(cx).is_working())
+    });
+    let before = notes(cx);
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ExportMarkdown), cx)
+    });
+    wait_until(cx, "the refusal", |cx| notes(cx) > before);
+    assert!(!cx.did_prompt_for_new_path());
     wait_until(cx, "the second reply", |cx| {
         cx.read(|cx| {
             let session = view.read(cx).live_session().unwrap().read(cx);
@@ -63,6 +89,43 @@ fn export_writes_the_conversation_where_the_user_chooses(cx: &mut TestAppContext
                     .filter(|item| item.kind == arko::remote::Kind::Reply)
                     .count()
                     == 2
+        })
+    });
+    // A message sent as the export starts: the session refuses it, or what
+    // it read is out of date. Either way no file is chosen.
+    let before = notes(cx);
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ExportMarkdown), cx);
+        session.update(cx, |session, cx| {
+            session
+                .send(
+                    arko::Input::Message(arko::Message {
+                        text: "And the figs?".into(),
+                        images: Vec::new(),
+                    }),
+                    cx,
+                )
+                .unwrap()
+        });
+    });
+    wait_until(cx, "the refusal of a changing conversation", |cx| {
+        notes(cx) > before
+    });
+    assert!(!cx.did_prompt_for_new_path());
+    wait_until(cx, "the third reply", |cx| {
+        cx.read(|cx| {
+            let session = session.read(cx);
+            !session.is_working()
+                && session
+                    .feed()
+                    .unwrap()
+                    .subscribe()
+                    .0
+                    .items
+                    .iter()
+                    .filter(|item| item.kind == arko::remote::Kind::Reply)
+                    .count()
+                    == 3
         })
     });
     // The UI has only a late part, as it does when a long feed was trimmed.
@@ -107,20 +170,15 @@ fn export_writes_the_conversation_where_the_user_chooses(cx: &mut TestAppContext
     assert!(text.starts_with("# Count the pears.\n"), "{text}");
     assert!(text.contains("\n## You\n\nCount the pears.\n"), "{text}");
     assert!(text.contains("And the plums?"), "{text}");
+    assert!(text.contains("And the figs?"), "{text}");
     assert!(!text.contains(crate::export::STARTS_PARTWAY), "{text}");
     assert!(text.contains("\n## Arko\n\nSeven **pears**.\n"), "{text}");
-    use gpui_kit::component::WindowExt as _;
-    let session = cx.read(|cx| view.read(cx).live_session().unwrap().clone());
     let id = cx.read(|cx| session.read(cx).id().unwrap().0.clone());
     let marker = root
         .join("sessions")
         .join(&id)
         .join("run/latest-checkpoint");
     let checkpoint = std::fs::read(&marker).unwrap();
-    let notes = |cx: &mut TestAppContext| {
-        cx.update_window(window, |_, window, cx| window.notifications(cx).len())
-            .unwrap()
-    };
     let before = notes(cx);
     std::fs::write(&marker, "missing-checkpoint.json").unwrap();
     act(cx, window, |window, cx| {
