@@ -203,6 +203,7 @@ impl SessionView {
         if self.draft.mode != mode {
             self.draft.mode = mode;
             self.list_models(cx);
+            self.sync_mentions(cx);
             cx.notify();
         }
     }
@@ -211,6 +212,7 @@ impl SessionView {
     pub fn set_draft_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
         self.draft.folder = Some(folder);
         self.list_models(cx);
+        self.sync_mentions(cx);
         cx.notify();
     }
 
@@ -233,6 +235,7 @@ impl SessionView {
             self.recent_folders = folders;
             if self.draft_folder() != before {
                 self.list_models(cx);
+                self.sync_mentions(cx);
             }
             cx.notify();
         }
@@ -547,6 +550,21 @@ impl SessionView {
             composer.set_session_state(reading, working, agent);
             composer.set_cancellable(cancellable);
         });
+        self.sync_mentions(cx);
+    }
+
+    /// "@" in the composer mentions the files of the folder an agent works
+    /// in (the session's, or the new session's), and nothing in a chat.
+    fn sync_mentions(&mut self, cx: &mut Context<Self>) {
+        let folder = match self.mode(cx) {
+            Mode::Chat => None,
+            Mode::Agent => match &self.session {
+                Some(session) => session.read(cx).workspace().cloned(),
+                None => self.draft_folder(),
+            },
+        };
+        self.composer
+            .update(cx, |composer, _| composer.set_mention_folder(folder));
     }
 
     /// The composer's height follows the Expand setting: about 45% of the

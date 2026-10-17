@@ -20,6 +20,7 @@ pub mod fonts;
 pub mod history;
 pub mod layout;
 pub mod live;
+pub mod mentions;
 pub mod menus;
 pub mod palette;
 pub mod paths;

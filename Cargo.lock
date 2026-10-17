@@ -376,6 +376,7 @@ dependencies = [
  "chrono",
  "gpui-kit",
  "gpui-pre-screenshot",
+ "ignore",
  "serde",
  "serde_json",
  "tempfile",

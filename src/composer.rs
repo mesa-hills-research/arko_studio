@@ -46,6 +46,13 @@ pub const PASTE_TOKEN_BYTES: usize = 2048;
 /// The most rows the slash menu lists at once.
 const MENU_ROWS: usize = 8;
 
+/// The most files an @-mention offers.
+const MENTION_ROWS: usize = 50;
+
+/// How long a folder's files listed for @-mentions are used before they
+/// are listed again (the agent may make files meanwhile).
+const FILES_FRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The screen commands the app runs itself. The rest of them belong to the
 /// terminal's full-screen view.
 const APP_COMMANDS: &[&str] = &["/view", "/settings"];
@@ -182,14 +189,24 @@ pub struct MenuItem {
     pub more: bool,
 }
 
+/// What a menu above the field offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuKind {
+    /// Arko's commands, and their words.
+    Command,
+    /// The session folder's files, for an @-mention.
+    Mention,
+}
+
 /// The slash menu: arko's commands while the first word is typed, then the
-/// words an argument may be.
+/// words an argument may be. Also the files an "@" mentions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlashMenu {
     pub items: Vec<MenuItem>,
     pub selected: usize,
     /// The bytes a choice replaces.
     pub range: Range<usize>,
+    pub kind: MenuKind,
 }
 
 /// The commands the menu offers: the session's, and the screen ones the
@@ -220,6 +237,7 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
             items,
             selected: 0,
             range: 0..text.len(),
+            kind: MenuKind::Command,
         });
     };
     let name = &text[..space];
@@ -248,6 +266,7 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
         items,
         selected: 0,
         range: start..text.len(),
+        kind: MenuKind::Command,
     })
 }
 
@@ -279,6 +298,13 @@ pub struct Composer {
     cancellable: bool,
     /// Whether ↑ in the empty composer edits the latest message now.
     edits_last: Option<EditsLast>,
+    /// The folder whose files "@" mentions: an agent session's.
+    mention_folder: Option<PathBuf>,
+    /// The files listed there, and when.
+    files: Option<(PathBuf, std::time::Instant, Arc<Vec<String>>)>,
+    listing: Option<Task<()>>,
+    /// Mentions inserted so far, for their tokens' ids.
+    mentioned: u32,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -323,6 +349,10 @@ impl Composer {
             working: false,
             cancellable: false,
             edits_last: None,
+            mention_folder: None,
+            files: None,
+            listing: None,
+            mentioned: 0,
             _subscriptions: subscriptions,
         }
     }
@@ -412,6 +442,16 @@ impl Composer {
         self.reading = reading;
         self.working = working;
         self.agent = agent;
+    }
+
+    /// Lets "@" mention the files of `folder` (an agent session's), or
+    /// nothing (`None`: a chat).
+    pub fn set_mention_folder(&mut self, folder: Option<PathBuf>) {
+        if self.mention_folder != folder {
+            self.mention_folder = folder;
+            self.files = None;
+            self.listing = None;
+        }
     }
 
     /// Whether Esc ends a mode of the composer before anything else.
@@ -570,7 +610,7 @@ impl Composer {
                         self.walk = None;
                     }
                 }
-                self.update_menu(&text);
+                self.refresh_menu(&text, cx);
                 cx.emit(ComposerEvent::Edited);
                 cx.notify();
             }
@@ -609,11 +649,102 @@ impl Composer {
         });
     }
 
+    /// The menu for the text as it stands: a command's, else the files an
+    /// "@" before the caret mentions.
+    fn refresh_menu(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.update_menu(text);
+        if self.menu.is_none() && self.dismissed.as_deref() != Some(text) {
+            self.menu = self.mention_menu(text, cx);
+        }
+    }
+
+    /// The files an "@" before the caret mentions, best first, once the
+    /// session's folder is listed (in the background, the first time).
+    fn mention_menu(&mut self, text: &str, cx: &mut Context<Self>) -> Option<SlashMenu> {
+        let folder = self.mention_folder.clone()?;
+        let caret = self.textarea.read(cx).selected_range();
+        if !caret.is_empty() {
+            return None;
+        }
+        let (range, typed) = crate::mentions::typed(text, caret.end)?;
+        let listed = self
+            .files
+            .as_ref()
+            .filter(|(listed, _, _)| *listed == folder)
+            .map(|(_, at, files)| (at.elapsed() > FILES_FRESH, files.clone()));
+        let files = match listed {
+            Some((stale, files)) => {
+                // Shown while the folder is listed again.
+                if stale {
+                    self.list_files(folder, cx);
+                }
+                files
+            }
+            None => {
+                self.list_files(folder, cx);
+                return None;
+            }
+        };
+        let items: Vec<MenuItem> = crate::mentions::rank(&files, typed, MENTION_ROWS)
+            .into_iter()
+            .map(|ranked| {
+                let (folder, name) = match ranked.path.rsplit_once('/') {
+                    Some((folder, name)) => (folder.to_string(), name.to_string()),
+                    None => (String::new(), ranked.path.clone()),
+                };
+                MenuItem {
+                    insert: ranked.path,
+                    label: name.into(),
+                    hint: SharedString::default(),
+                    about: folder.into(),
+                    more: true,
+                }
+            })
+            .collect();
+        (!items.is_empty()).then_some(SlashMenu {
+            items,
+            selected: 0,
+            range,
+            kind: MenuKind::Mention,
+        })
+    }
+
+    /// Lists the files of `folder` off the UI thread, then shows the menu
+    /// for what is typed.
+    fn list_files(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        if self.listing.is_some() {
+            return;
+        }
+        let listing = cx.background_spawn({
+            let folder = folder.clone();
+            async move { crate::mentions::list(&folder) }
+        });
+        self.listing = Some(cx.spawn(async move |this, cx| {
+            let files = listing.await;
+            this.update(cx, |this, cx| {
+                this.listing = None;
+                if this.mention_folder.as_ref() != Some(&folder) {
+                    return;
+                }
+                this.files = Some((folder, std::time::Instant::now(), Arc::new(files)));
+                let text = this.text(cx);
+                if this.menu.is_none() && this.dismissed.as_deref() != Some(text.as_str()) {
+                    this.menu = this.mention_menu(&text, cx);
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
     /// The menu's choice is what is typed already: Enter sends it.
     fn menu_completes_text(&self, cx: &App) -> bool {
         let Some(menu) = &self.menu else {
             return false;
         };
+        if menu.kind == MenuKind::Mention {
+            return false;
+        }
         let text = self.text(cx);
         let item = &menu.items[menu.selected];
         text[menu.range.clone()] == item.insert && !item.more
@@ -625,6 +756,10 @@ impl Composer {
             return;
         };
         let item = &menu.items[menu.selected];
+        if menu.kind == MenuKind::Mention {
+            self.insert_mention(menu.range.clone(), item.insert.clone(), window, cx);
+            return;
+        }
         let mut text = self.text(cx);
         let mut insert = item.insert.clone();
         if item.more {
@@ -639,6 +774,33 @@ impl Composer {
         });
         // The words after a command come next.
         self.update_menu(&text);
+        cx.notify();
+    }
+
+    /// Puts the file `path` (relative to the session's folder) in place of
+    /// `range` as a token showing its name, which sends as the path.
+    fn insert_mention(
+        &mut self,
+        range: Range<usize>,
+        path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.mentioned += 1;
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        let token =
+            InlineToken::new(format!("file-{}", self.mentioned), path.clone()).with_label(name);
+        self.textarea.update(cx, |textarea, cx| {
+            match textarea.replace_range_with_token(range.clone(), token, window, cx) {
+                Ok(()) => textarea.insert(" ".to_string(), window, cx),
+                // A token can't go here (an input method is composing): the
+                // path itself.
+                Err(_) => {
+                    textarea.set_selected_range(range, cx);
+                    textarea.replace(format!("{path} "), window, cx);
+                }
+            }
+        });
         cx.notify();
     }
 
