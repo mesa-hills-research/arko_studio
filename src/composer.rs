@@ -338,6 +338,15 @@ impl Composer {
         self.menu.as_ref()
     }
 
+    /// Opens the slash menu for the text as it stands (a command put in the
+    /// composer from the palette).
+    pub fn show_menu(&mut self, cx: &mut Context<Self>) {
+        let text = self.text(cx);
+        self.dismissed = None;
+        self.update_menu(&text);
+        cx.notify();
+    }
+
     /// The message was taken: the composer empties, the history and the
     /// vocabulary learn it.
     pub fn sent(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {

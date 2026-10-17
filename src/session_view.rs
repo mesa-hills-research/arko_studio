@@ -470,7 +470,28 @@ impl SessionView {
         }
     }
 
-    /// Runs the commands the app handles itself; `false` for the others.
+    /// Runs Arko's command `name` as if typed: at once when it takes no
+    /// arguments and a session is open, else it waits in the composer for
+    /// its words (or for the new session's first message).
+    pub fn run_slash(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let takes_words = arko::commands::find(&format!("{name} x")).is_some();
+        if self.session.is_some() && !takes_words {
+            self.send(name.to_string(), window, cx);
+            return;
+        }
+        let text = if takes_words {
+            format!("{name} ")
+        } else {
+            name.to_string()
+        };
+        self.composer.update(cx, |composer, cx| {
+            composer.set_text(&text, window, cx);
+            composer.show_menu(cx);
+        });
+        self.focus_composer(window, cx);
+    }
+
+    /// Runs the commands the app handles itself, `false` for the others.
     fn app_command(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let mut words = text.split_whitespace();
         match (words.next(), words.next(), words.next()) {

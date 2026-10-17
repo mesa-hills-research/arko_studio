@@ -352,3 +352,24 @@ fn closing_a_sample_session_shows_a_new_one(cx: &mut TestAppContext) {
     open_row(window, &workspace, "Split the engine out of main.rs", cx);
     assert!(open_title(&workspace, cx).is_some());
 }
+
+#[gpui_kit::test]
+fn an_arko_command_from_the_palette_waits_in_the_composer(cx: &mut TestAppContext) {
+    let (_, window, workspace) = start(cx);
+    let run = |name: &'static str, cx: &mut TestAppContext| {
+        act(cx, window, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.run(crate::palette::Target::Slash(name), None, window, cx)
+            })
+        });
+    };
+    // A command with arguments waits for them, its words offered.
+    run("/outside", cx);
+    assert_eq!(composer_text(&workspace, cx), "/outside ");
+    act(cx, window, |window, _| {
+        assert!(window.try_find("slash-menu").is_some())
+    });
+    // Without a session, one without arguments waits for the first message.
+    run("/cost", cx);
+    assert_eq!(composer_text(&workspace, cx), "/cost");
+}

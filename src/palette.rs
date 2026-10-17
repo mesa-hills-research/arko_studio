@@ -26,6 +26,9 @@ pub enum Target {
     SettingsPage(usize),
     /// Opens a session.
     Session(SessionId),
+    /// One of Arko's commands (`/cost`), as if typed in the composer: it
+    /// runs at once, or waits there for its arguments.
+    Slash(&'static str),
 }
 
 /// A row: its label, more words it's found by, and what it does.
@@ -41,8 +44,8 @@ pub struct Section {
     pub rows: Vec<Row>,
 }
 
-/// The palette's sections: the commands by group, Settings' pages, the
-/// sessions, and Arko's own commands once the engine gives them.
+/// The palette's sections: the commands by group, Arko's own commands,
+/// Settings' pages and the sessions.
 pub fn sections(sessions: &[SessionEntry]) -> Vec<Section> {
     let commands = commands();
     let mut sections: Vec<Section> = Group::ALL
@@ -67,7 +70,7 @@ pub fn sections(sessions: &[SessionEntry]) -> Vec<Section> {
             }
         })
         .collect();
-    sections.extend(engine_commands());
+    sections.push(arko_commands());
     sections.push(Section {
         title: "Settings",
         rows: settings_page::PAGES
@@ -103,12 +106,21 @@ pub fn sections(sessions: &[SessionEntry]) -> Vec<Section> {
     sections
 }
 
-/// HOOK(engine): Arko's slash commands, as a "Commands" section, once the
-/// engine lists them for the open session (each runs as if typed in the
-/// composer). Until then there are none, and the palette has no such
-/// section.
-fn engine_commands() -> Option<Section> {
-    None
+/// Arko's commands, as the composer's slash menu lists them: each found by
+/// its name and what it does.
+fn arko_commands() -> Section {
+    Section {
+        title: "Arko Commands",
+        rows: arko::commands::COMMANDS
+            .iter()
+            .filter(|command| command.runs == arko::commands::Runs::Session)
+            .map(|command| Row {
+                label: command.name.into(),
+                keywords: vec![command.about.into()],
+                target: Target::Slash(command.name),
+            })
+            .collect(),
+    }
 }
 
 /// Opens the palette over `window`. `run` gets the chosen row's target once
@@ -163,6 +175,7 @@ pub fn open(
                                 Target::Action(action) => Target::Action(action.boxed_clone()),
                                 Target::SettingsPage(page) => Target::SettingsPage(*page),
                                 Target::Session(id) => Target::Session(id.clone()),
+                                Target::Slash(name) => Target::Slash(name),
                             };
                             window.close_dialog(cx);
                             run(target, window, cx);
@@ -227,6 +240,7 @@ mod tests {
                 "Composer",
                 "Transcript",
                 "View",
+                "Arko Commands",
                 "Settings",
                 "Go to Session"
             ]
@@ -255,6 +269,9 @@ mod tests {
             .count();
         assert_eq!(rename, 1);
         assert_eq!(labels("Settings")[0], "Settings: Appearance");
+        // Arko's commands, those of the full-screen terminal view left out.
+        assert!(labels("Arko Commands").contains(&"/cost".to_string()));
+        assert!(!labels("Arko Commands").contains(&"/watch".to_string()));
         // The most recent session first.
         assert_eq!(
             labels("Go to Session")[0],

@@ -772,6 +772,11 @@ impl Workspace {
                 settings.update(cx, |settings, cx| settings.show_page(page, cx));
             }
             palette::Target::Session(id) => self.open_session(id, window, cx),
+            palette::Target::Slash(name) => {
+                self.close_settings(window, cx);
+                self.session_view
+                    .update(cx, |view, cx| view.run_slash(name, window, cx));
+            }
         }
     }
 
