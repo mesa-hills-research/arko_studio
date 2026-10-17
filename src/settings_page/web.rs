@@ -16,6 +16,10 @@ use crate::web_page::WebPagePanel;
 /// What the page lets others do, in a paragraph.
 pub const WHAT_IT_ALLOWS: &str = "Anyone with a session’s link can follow it from a phone or another computer, and send it messages, answers and commands. Each link holds the session’s key, and New key ends the old links. The page isn’t encrypted: share it on networks you trust.";
 
+/// A session sharing its web page, as the page lists it: the session, its
+/// title and its page.
+type Shared = (Entity<LiveSession>, SharedString, arko::remote::Page);
+
 /// The page's state: the address and port typed in, and the open sessions
 /// it hears from (their pages start and stop).
 pub struct WebPageSettings {
@@ -23,8 +27,23 @@ pub struct WebPageSettings {
     port: TextSetting<u16>,
     /// The preferences as the page last showed them.
     seen: prefs::Prefs,
+    /// The sessions sharing their page, as last shown.
+    shared: Vec<Shared>,
     _subscriptions: Vec<Subscription>,
     _sessions: Vec<Subscription>,
+}
+
+/// The open sessions sharing their web page now.
+fn shared_now(cx: &App) -> Vec<Shared> {
+    LiveSessions::all(cx)
+        .into_iter()
+        .filter_map(|session| {
+            let live = session.read(cx);
+            let page = live.reading().page.clone()?;
+            let title = live.title().clone();
+            Some((session, title, page))
+        })
+        .collect()
 }
 
 impl WebPageSettings {
@@ -71,7 +90,7 @@ impl WebPageSettings {
             }),
             cx.observe_global::<LiveSessions>(|this, cx| {
                 this.hear_sessions(cx);
-                cx.notify();
+                this.sync_shared(cx);
             }),
         ];
         // Settings closed while typing: what's typed is saved.
@@ -84,6 +103,7 @@ impl WebPageSettings {
             address,
             port,
             seen: super::shown_prefs(prefs::get(cx)),
+            shared: shared_now(cx),
             _subscriptions: subscriptions,
             _sessions: Vec::new(),
         };
@@ -95,8 +115,18 @@ impl WebPageSettings {
     fn hear_sessions(&mut self, cx: &mut Context<Self>) {
         self._sessions = LiveSessions::all(cx)
             .iter()
-            .map(|session| cx.observe(session, |_, _, cx| cx.notify()))
+            .map(|session| cx.observe(session, |this, _, cx| this.sync_shared(cx)))
             .collect();
+    }
+
+    /// Draws again when a session's page started or stopped, or changed:
+    /// not on the sessions' other changes (a reply streaming in).
+    fn sync_shared(&mut self, cx: &mut Context<Self>) {
+        let shared = shared_now(cx);
+        if shared != self.shared {
+            self.shared = shared;
+            cx.notify();
+        }
     }
 
     /// Why the address and the port typed aren't saved, if they aren't.
@@ -104,16 +134,9 @@ impl WebPageSettings {
         [self.address.error(), self.port.error()]
     }
 
-    pub fn page(&self, cx: &App) -> SettingPage {
+    pub fn page(&self) -> SettingPage {
         let defaults = prefs::WebPagePrefs::default();
-        let shared: Vec<(Entity<LiveSession>, arko::remote::Page)> = LiveSessions::all(cx)
-            .into_iter()
-            .filter_map(|session| {
-                let page = session.read(cx).reading().page.clone()?;
-                Some((session, page))
-            })
-            .collect();
-        let served = if shared.is_empty() {
+        let served = if self.shared.is_empty() {
             vec![
                 SettingItem::new(
                     "No session is shared",
@@ -125,11 +148,11 @@ impl WebPageSettings {
                 .keywords(["links", "qr code", "new key"]),
             ]
         } else {
-            shared
-                .into_iter()
+            self.shared
+                .iter()
+                .cloned()
                 .enumerate()
-                .map(|(ix, (session, page))| {
-                    let title = session.read(cx).title().clone();
+                .map(|(ix, (session, title, page))| {
                     SettingItem::render(move |_, _, cx| {
                         v_flex()
                             .id(("shared-session", ix))

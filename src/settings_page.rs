@@ -406,7 +406,7 @@ impl SettingsPage {
             self.accounts.read(cx).page(&self.accounts, cx),
             self.sessions.read(cx).page(),
             notifications_page(),
-            self.web_page.read(cx).page(cx),
+            self.web_page.read(cx).page(),
             self.extensions.read(cx).page(&self.extensions),
             advanced_page(&this, self.extensions.read(cx).extensions(), cx),
         ]

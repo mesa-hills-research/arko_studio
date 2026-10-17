@@ -517,6 +517,29 @@ fn the_web_page_address_and_port_are_checked_and_used(cx: &mut TestAppContext) {
     assert_eq!(bind.port, Some(9000));
 }
 
+/// An open session's changes that don't start or stop its web page (a
+/// reply streaming in) leave Settings as it is drawn.
+#[gpui_kit::test]
+fn a_sessions_updates_leave_settings_as_drawn(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, 5, 900.);
+    let entry = backend.sessions().unwrap().remove(0);
+    let session = cx.update(|cx| crate::live::LiveSession::resume(&entry, cx));
+    let builds = |cx: &mut TestAppContext| cx.read(|cx| settings.read(cx).builds);
+    let frame = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    };
+    frame(cx);
+    let before = builds(cx);
+    for _ in 0..5 {
+        cx.update(|cx| session.update(cx, |_, cx| cx.notify()));
+        frame(cx);
+    }
+    assert_eq!(builds(cx), before);
+}
+
 /// A project's remembered answer about its MCP servers can be forgotten,
 /// so its next session asks again.
 #[gpui_kit::test]
