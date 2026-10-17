@@ -90,6 +90,8 @@ pub struct Startup {
     backend: Arc<dyn Backend>,
     /// The user's home folder.
     home: Option<PathBuf>,
+    /// Where release builds write their log.
+    logs: Option<PathBuf>,
     /// The user's themes, watched while the app runs.
     themes_folder: Option<ThemesFolder>,
     drafts: BTreeMap<String, String>,
@@ -123,6 +125,7 @@ impl Startup {
             added_fonts,
             backend: Arc::new(ArkoBackend::new(&arko)),
             home: session_view::home_from_env(),
+            logs: paths::logs_folder(),
             themes_folder: Some(ThemesFolder::Watch(paths::themes_folder(&arko))),
             drafts: drafts::load(&drafts::file(&arko)),
             arko: Some(arko),
@@ -144,6 +147,7 @@ impl Startup {
             added_fonts: Vec::new(),
             backend,
             home: Some(PathBuf::from("/home/ada")),
+            logs: Some(PathBuf::from("/home/ada/.local/state").join(APP_ID)),
             themes_folder: None,
             drafts: BTreeMap::new(),
             arko: None,
@@ -188,6 +192,7 @@ pub fn init(startup: Startup, cx: &mut App) {
     cx.set_global(SharedBackend(startup.backend));
     backend::follow_prefs(cx);
     cx.set_global(session_view::HomeFolder(startup.home));
+    cx.set_global(paths::LogsFolder(startup.logs));
     live::init(cx);
     writing::init(startup.arko.as_deref(), cx);
     history::init(startup.arko.clone(), cx);

@@ -885,15 +885,14 @@ fn advanced_page(
 ) -> SettingPage {
     let home = cx.global::<crate::session_view::HomeFolder>().0.clone();
     // The folders as the user's home folder holds them, with `~`.
-    let in_home = |folder: &std::path::Path| {
-        crate::backend::account_words::tilde(
-            folder,
-            crate::session_view::home_from_env().as_deref(),
-        )
-    };
+    let in_home =
+        |folder: &std::path::Path| crate::backend::account_words::tilde(folder, home.as_deref());
     let data = in_home(cx.global::<crate::backend::SharedBackend>().data_root());
-    let logs = paths::logs_folder()
-        .map(|folder| in_home(&folder))
+    let logs = cx
+        .global::<paths::LogsFolder>()
+        .0
+        .as_deref()
+        .map(in_home)
         .unwrap_or_default();
     let mut groups = Vec::new();
     // Only Windows runs commands in a shell the user picks.
