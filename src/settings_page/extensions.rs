@@ -152,7 +152,7 @@ impl ExtensionsPage {
             SettingGroup::new()
                 .title("MCP servers")
                 .description(
-                    "Programs that give the agents more tools. Agent sessions opened from now on start the servers in these files, and a server named in two is taken from the first. Servers over HTTP are skipped: Arko talks to servers over standard input and output.",
+                    "Programs that give the agents more tools. Agent sessions opened from now on start the servers in these files, and a server named in two is taken from the first. Servers over HTTP are skipped, because Arko talks to servers over standard input and output.",
                 )
                 .items(files),
         ];
@@ -170,7 +170,7 @@ impl ExtensionsPage {
             SettingGroup::new()
                 .title("Skills")
                 .description(
-                    "Instructions for particular kinds of work, which the agents load when a task calls for them: a folder with a SKILL.md, or a Markdown file, whose front matter gives a name and a description. Arko reads a project’s .agents/skills, .claude/skills and .skills, then skills in Arko’s folder, ~/.agents/skills and ~/.claude/skills. A skill named as an earlier one gets a number (pdf-2), and the same skill twice is read once.",
+                    "Instructions for particular kinds of work, which the agents load when a task calls for them. A skill is a folder with a SKILL.md, or a Markdown file, whose front matter gives its name and description. Arko reads a project’s .agents/skills, .claude/skills and .skills, then skills in Arko’s folder, ~/.agents/skills and ~/.claude/skills. A skill named as an earlier one gets a number (pdf-2), and the same skill twice is read once.",
                 )
                 .items(skills),
         );
@@ -181,21 +181,21 @@ impl ExtensionsPage {
     }
 }
 
-/// The servers a file sets up, in a line: each one's name and the command
-/// it runs, or why arko skips it.
+/// The servers a file sets up, in a sentence: each one's name and the
+/// command it runs, or why arko skips it.
 fn servers_words(servers: &[McpServer]) -> String {
     if servers.is_empty() {
-        return "No servers.".into();
+        return "It sets up no servers.".into();
     }
     let names: Vec<String> = servers
         .iter()
         .map(|server| match &server.skipped {
-            Some(why) => format!("{} (skipped: {why})", server.name),
+            Some(why) => format!("{} (skipped because {why})", server.name),
             None if server.command.is_empty() => server.name.clone(),
             None => format!("{} ({})", server.name, server.command),
         })
         .collect();
-    format!("{}.", names.join(", "))
+    format!("It sets up {}.", names.join(", "))
 }
 
 fn file_item(file: &McpFile, home: Option<&Path>) -> SettingItem {
@@ -210,8 +210,9 @@ fn file_item(file: &McpFile, home: Option<&Path>) -> SettingItem {
             format!("{path} isn’t there. Servers set up in it start in every agent session.")
         }
         None => format!("{path} isn’t there. Remove it under Advanced, or make it."),
-        Some(Err(why)) => format!("Can’t be read: {why}."),
-        Some(Ok(servers)) => format!("{path}: {}", servers_words(servers)),
+        Some(Err(why)) => format!("It can’t be read ({why})."),
+        Some(Ok(servers)) if file.arko => format!("{path}. {}", servers_words(servers)),
+        Some(Ok(servers)) => servers_words(servers),
     };
     SettingItem::new(title, SettingField::render(|_, _, _| div()))
         .description(description)
@@ -226,13 +227,13 @@ fn project_item(
 ) -> SettingItem {
     let servers = match &project.servers {
         Ok(servers) => servers_words(servers),
-        Err(why) => format!("Can’t be read: {why}."),
+        Err(why) => format!("It can’t be read ({why})."),
     };
     let answer = match project.approval {
-        Approval::Approved => "Approved: they start with its sessions.",
-        Approval::Refused => "Refused: they don’t start.",
-        Approval::NotAsked => "Not asked yet: its next session asks.",
-        Approval::Changed => "Changed since you answered: its next session asks again.",
+        Approval::Approved => "Approved, so they start with its sessions.",
+        Approval::Refused => "Refused, so they don’t start.",
+        Approval::NotAsked => "Not asked yet. Its next session asks.",
+        Approval::Changed => "Changed since you answered, so its next session asks again.",
     };
     let remembered = matches!(project.approval, Approval::Approved | Approval::Refused);
     let folder = project.folder.clone();

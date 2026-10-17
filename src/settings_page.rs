@@ -369,7 +369,7 @@ impl SettingsPage {
                         Ok(()) => added.push(file),
                         Err(why) => window.push_notification(
                             gpui_kit::component::notification::Notification::error(format!(
-                                "{} isn’t added: {why}.",
+                                "{} isn’t added ({why}).",
                                 file.display()
                             )),
                             cx,

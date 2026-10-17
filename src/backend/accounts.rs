@@ -188,7 +188,7 @@ pub fn login_chosen_words(first: Option<&str>) -> String {
                 .to_string()
         }
         Some(source) => format!(
-            "Arko uses this ChatGPT login until Arko Studio quits. After that, {CODEX_AUTH_VARIABLE} {source} comes first again: change it there to replace it for good."
+            "Arko uses this ChatGPT login until Arko Studio quits. After that, {CODEX_AUTH_VARIABLE} {source} comes first again, so change it there to replace it for good."
         ),
     }
 }

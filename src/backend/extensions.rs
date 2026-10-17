@@ -379,13 +379,13 @@ fn server_command(
     if let Some(kind) = entry.get("type").and_then(Value::as_str)
         && kind != "stdio"
     {
-        return skip(&format!("a {kind} server"));
+        return skip(&format!("it’s a {kind} server"));
     }
     if command.trim().is_empty() {
         return if entry.contains_key("url") {
-            skip("an HTTP server")
+            skip("it’s an HTTP server")
         } else {
-            skip("no command")
+            skip("it has no command")
         };
     }
     let args = match args {
@@ -487,7 +487,7 @@ mod tests {
         let named = |name: &str| servers.iter().find(|server| server.name == name).unwrap();
         assert_eq!(named("github").command, "npx -y @github/mcp");
         assert_eq!(named("github").skipped, None);
-        assert_eq!(named("docs").skipped.as_deref(), Some("a http server"));
+        assert_eq!(named("docs").skipped.as_deref(), Some("it’s a http server"));
         let (servers, _) =
             parse(r#"{"mcpServers": [{"name": "files", "command": "mcp-files"}]}"#).unwrap();
         assert_eq!(servers[0].name, "files");

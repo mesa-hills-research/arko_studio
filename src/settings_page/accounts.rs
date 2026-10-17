@@ -921,7 +921,7 @@ pub fn replacing_words(state: &KeyState, home: Option<&std::path::Path>) -> Opti
             Some(format!("It replaces {masked} in Arko’s folder."))
         }
         (Some(masked), Some(source)) => Some(format!(
-            "Arko uses it in place of {masked} until Arko Studio quits. After that, {} {} comes first again: change it there to replace it for good.",
+            "Arko uses it in place of {masked} until Arko Studio quits. After that, {} {} comes first again, so change it there to replace it for good.",
             state.variable,
             source_words(source, home)
         )),
@@ -1054,7 +1054,7 @@ mod tests {
         assert_eq!(
             words("openai").as_deref(),
             Some(
-                "Arko uses it in place of sk-…b20c until Arko Studio quits. After that, OPENAI_API_KEY from the environment comes first again: change it there to replace it for good."
+                "Arko uses it in place of sk-…b20c until Arko Studio quits. After that, OPENAI_API_KEY from the environment comes first again, so change it there to replace it for good."
             )
         );
         assert!(

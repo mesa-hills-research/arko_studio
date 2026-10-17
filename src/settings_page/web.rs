@@ -14,7 +14,7 @@ use crate::prefs::{self, DEFAULT_WEB_PAGE_ADDRESS, THIS_COMPUTER_ONLY};
 use crate::web_page::WebPagePanel;
 
 /// What the page lets others do, in a paragraph.
-pub const WHAT_IT_ALLOWS: &str = "Anyone with a session’s link can follow it from a phone or another computer, and send it messages, answers and commands. Each link holds the session’s key, and New key ends the old links. The page isn’t encrypted: share it on networks you trust.";
+pub const WHAT_IT_ALLOWS: &str = "Anyone with a session’s link can follow it from a phone or another computer, and send it messages, answers and commands. Each link holds the session’s key, and New key ends the old links. The page isn’t encrypted, so share it only on networks you trust.";
 
 /// A session sharing its web page, as the page lists it: the session, its
 /// title and its page.
@@ -182,13 +182,13 @@ impl WebPageSettings {
                     self.address
                         .item("Address", "web-page-address")
                         .description(format!(
-                            "Empty: every network this computer is on ({DEFAULT_WEB_PAGE_ADDRESS}), so a phone or another computer on the same network, a VPN or Tailscale too, can open a session’s page from its link. {THIS_COMPUTER_ONLY} keeps it to this computer.",
+                            "Left empty, the page is served on every network this computer is on ({DEFAULT_WEB_PAGE_ADDRESS}), so a phone or another computer on the same network, a VPN or Tailscale too, can open a session’s page from its link. {THIS_COMPUTER_ONLY} keeps it to this computer.",
                         ))
                         .keywords(["bind", "ip", "network", "remote"]),
                     self.port
                         .item("Port", "web-page-port")
                         .description(format!(
-                            "Empty: {}, or any free port when that one is taken. A port set here goes to the first session that shares its page, and the others take any free port.",
+                            "Left empty, it’s {}, or any free port when that one is taken. A port set here goes to the first session that shares its page, and the others take any free port.",
                             arko::remote::DEFAULT_PORT
                         ))
                         .keywords(["bind", "remote"]),

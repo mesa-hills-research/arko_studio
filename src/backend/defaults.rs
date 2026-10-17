@@ -173,7 +173,7 @@ pub fn keep_readable_mcp_config(files: &mut Vec<PathBuf>) -> Vec<String> {
         Ok(()) => true,
         Err(why) => {
             notes.push(format!(
-                "The MCP config file {} (Settings › Advanced) can’t be read: {why}. Its servers aren’t started.",
+                "The MCP config file {} (Settings › Advanced) can’t be read ({why}), so its servers aren’t started.",
                 file.display()
             ));
             false
@@ -195,7 +195,7 @@ pub fn take_free_port(remote: &mut Option<arko::remote::Bind>) -> Option<String>
     }
     bind.port = None;
     Some(format!(
-        "Port {port}, set in Settings › Web page, is taken, by another session’s page or another program. This session’s page is served on another port: its links show which."
+        "Port {port}, set in Settings › Web page, is taken by another session’s page or another program. This session’s page is served on another port, which its links show."
     ))
 }
 

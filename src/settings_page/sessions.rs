@@ -362,7 +362,7 @@ pub fn parse_handover(text: &str) -> Result<Option<usize>, String> {
         .ok_or_else(|| "Give a number of tokens, such as 200000, 950k or 1.2M.".to_string())?;
     if tokens < MIN_HANDOVER {
         return Err(format!(
-            "At least {}k: a fresh conversation would start near it.",
+            "At least {}k, since a fresh conversation would start near it.",
             MIN_HANDOVER / 1000
         ));
     }
