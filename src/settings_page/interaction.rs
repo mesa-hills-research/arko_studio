@@ -241,6 +241,34 @@ fn api_keys_are_added_and_removed_through_the_backend(cx: &mut TestAppContext) {
     });
 }
 
+/// Enter in the key's field saves the key, as Save does. With nothing
+/// pasted, the dialog stays open and says so.
+#[gpui_kit::test]
+fn enter_in_the_key_field_saves_the_key(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, _) = settings_window(cx, 2, 1400.);
+    act(cx, window, |window, cx| window.click("key-openrouter", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        assert!(window.try_find("key-error").is_some());
+    });
+    act(cx, window, |window, cx| {
+        window.input("sk-or-v1-0123456789abcdef", cx)
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(
+        backend.added_keys(),
+        [(
+            "openrouter".to_string(),
+            "sk-or-v1-0123456789abcdef".to_string()
+        )]
+    );
+    act(cx, window, |window, cx| {
+        assert!(!window.has_active_dialog(cx));
+    });
+}
+
 /// Check again reads Claude Code again, and a chosen auth.json becomes the
 /// ChatGPT login.
 #[gpui_kit::test]

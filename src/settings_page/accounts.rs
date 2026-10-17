@@ -203,8 +203,15 @@ impl AccountsPage {
         };
         window.open_dialog(cx, move |dialog, _, _| {
             let form = form.clone();
+            let saving = form.clone();
             dialog
                 .w(px(460.))
+                // Enter saves, as Save does: the dialog closes once the key
+                // is saved, and stays open with why when it isn't.
+                .on_ok(move |_, window, cx| {
+                    saving.update(cx, |form, cx| form.save(window, cx));
+                    false
+                })
                 .title(
                     h_flex()
                         .gap_2()
@@ -817,6 +824,10 @@ impl KeyForm {
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Saving already (Enter pressed again).
+        if self.busy {
+            return;
+        }
         let value = self.key.read(cx).value().trim().to_string();
         if value.is_empty() {
             self.error = Some("Paste the key first.".into());
