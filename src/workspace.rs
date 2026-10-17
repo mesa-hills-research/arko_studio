@@ -26,6 +26,13 @@ const ACCOUNTS_PAGE: usize = 2;
 /// The Settings page of the web page.
 const WEB_PAGE_PAGE: usize = 5;
 
+/// Why a new session's page can't be shared yet.
+pub const NO_SESSION_TO_SHARE: &str =
+    "Send a message first: the web page shares a session that runs.";
+/// Why a new session's cache can't be refreshed yet.
+pub const NO_CACHE_TO_REFRESH: &str =
+    "Send a message first: a new session has no prompt cache to keep warm.";
+
 /// The narrowest and widest the workers panel docks, in rem.
 const MIN_PANEL_WIDTH: f32 = 16.;
 const MAX_PANEL_WIDTH: f32 = 36.;
@@ -705,7 +712,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.session.clone() else {
+        let Some(session) = self.running_session(NO_SESSION_TO_SHARE, window, cx) else {
             return;
         };
         if session.read(cx).reading().page.is_none() {
@@ -735,7 +742,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.session.clone() else {
+        let Some(session) = self.running_session("The web page isn’t shared.", window, cx) else {
             return;
         };
         if session.read(cx).reading().page.is_none() {
@@ -745,6 +752,20 @@ impl Workspace {
         if let Err(why) = crate::web_page::stop(&session, cx) {
             window.push_notification(why, cx);
         }
+    }
+
+    /// The session shown here, or `None` with `why_not` in a notification:
+    /// a new session runs once its first message is sent.
+    fn running_session(
+        &self,
+        why_not: &'static str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Entity<LiveSession>> {
+        if self.session.is_none() {
+            window.push_notification(Notification::info(why_not), cx);
+        }
+        self.session.clone()
     }
 
     /// Shows `session` here (tests).
@@ -1205,7 +1226,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::share_web_page))
             .on_action(cx.listener(Self::stop_sharing_web_page))
             .on_action(cx.listener(|this, _: &menus::RefreshCache, window, cx| {
-                if let Some(session) = this.session.clone() {
+                if let Some(session) = this.running_session(NO_CACHE_TO_REFRESH, window, cx) {
                     crate::cache_reminders::refresh(&session, window, cx);
                 }
             }))

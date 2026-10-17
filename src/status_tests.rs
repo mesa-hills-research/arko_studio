@@ -624,6 +624,35 @@ fn sharing_the_web_page_serves_it_and_shows_its_links(cx: &mut TestAppContext) {
     assert_eq!(sent(&session, cx), ["/remote 0.0.0.0:9000", "/remote off"]);
 }
 
+/// In a new session, before its first message, Share Web Page, Stop
+/// Sharing Web Page and Refresh Cache each say why they can't, from the
+/// menu and the command palette alike (both send the same action).
+#[gpui_kit::test]
+fn a_new_session_says_why_it_cant_share_yet(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    assert!(cx.read(|cx| workspace.read(cx).live_session().is_none()));
+    let notes = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            gpui_kit::component::WindowExt::notifications(window, cx).len()
+        })
+        .unwrap()
+    };
+    let actions: [Box<dyn gpui_kit::Action>; 3] = [
+        Box::new(crate::menus::ShareWebPage),
+        Box::new(crate::menus::StopSharingWebPage),
+        Box::new(crate::menus::RefreshCache),
+    ];
+    for (said, action) in actions.into_iter().enumerate() {
+        act(cx, window, |window, cx| window.dispatch_action(action, cx));
+        assert_eq!(notes(cx), said + 1);
+    }
+    // The palette offers Share Web Page with the same action.
+    assert!(crate::commands::commands().iter().any(
+        |command| command.in_palette && command.action.partial_eq(&crate::menus::ShareWebPage)
+    ));
+}
+
 /// Refresh Cache asks the session to keep its cache warm, and says why it
 /// couldn't.
 #[gpui_kit::test]
