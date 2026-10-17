@@ -169,7 +169,7 @@ impl SessionsPage {
             .items([
                 self.handover.item("Handover size", "handover-at")
                 .description(format!(
-                    "When the main agent’s context reaches it, the agent writes a report and goes on in a fresh conversation. Like 950k, at least {}k, and held under 95% of what its model takes.",
+                    "When the main agent’s context reaches it, the agent writes a report and goes on in a fresh conversation. Like 950k or 1.2M, at least {}k, and held under 95% of what its model takes.",
                     MIN_HANDOVER / 1000
                 ))
                 .keywords(["context", "tokens", "handover-at", "main agent"]),
@@ -321,23 +321,15 @@ fn confirmations_group() -> SettingGroup {
     ])
 }
 
-/// A handover size as arko's `/handover-at` reads it: `200000`, `200,000`,
-/// `200_000` or `200k`, at least [`MIN_HANDOVER`]. Empty: the model's own.
+/// A handover size: `200000`, `200,000`, `200_000`, `950k`, `250.5k`, `1M`
+/// or `1.2M`, at least [`MIN_HANDOVER`]. Empty: the model's own.
 pub fn parse_handover(text: &str) -> Result<Option<usize>, String> {
     let text = text.trim();
     if text.is_empty() {
         return Ok(None);
     }
-    let digits: String = text.chars().filter(|c| !matches!(c, ',' | '_')).collect();
-    let (digits, scale) = match digits.strip_suffix(['k', 'K']) {
-        Some(digits) => (digits.trim_end(), 1000),
-        None => (digits.as_str(), 1),
-    };
-    let tokens = digits
-        .parse::<usize>()
-        .ok()
-        .and_then(|tokens| tokens.checked_mul(scale))
-        .ok_or_else(|| "Give a number of tokens, such as 200000 or 200k.".to_string())?;
+    let tokens = parse_size(text)
+        .ok_or_else(|| "Give a number of tokens, such as 200000, 950k or 1.2M.".to_string())?;
     if tokens < MIN_HANDOVER {
         return Err(format!(
             "At least {}k: a fresh conversation would start near it.",
@@ -347,9 +339,55 @@ pub fn parse_handover(text: &str) -> Result<Option<usize>, String> {
     Ok(Some(tokens))
 }
 
-/// A number of tokens as the field shows it: `950k`, or the number.
+/// A number of tokens with `k` or `M` for thousands or millions, and
+/// decimals with either, rounded to whole tokens ("1.2M" is 1,200,000).
+fn parse_size(text: &str) -> Option<usize> {
+    let text: String = text.chars().filter(|c| !matches!(c, ',' | '_')).collect();
+    let text = text.trim();
+    let (number, scale) = if let Some(number) = text.strip_suffix(['k', 'K']) {
+        (number, 1_000u128)
+    } else if let Some(number) = text.strip_suffix(['m', 'M']) {
+        (number, 1_000_000)
+    } else {
+        (text, 1)
+    };
+    let number = number.trim();
+    let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+    let digits = |part: &str| part.chars().all(|c| c.is_ascii_digit());
+    // Tokens are whole: decimals only with k or M.
+    if (whole.is_empty() && fraction.is_empty())
+        || !digits(whole)
+        || !digits(fraction)
+        || (scale == 1 && number.contains('.'))
+    {
+        return None;
+    }
+    let whole: u128 = if whole.is_empty() {
+        0
+    } else {
+        whole.parse().ok()?
+    };
+    // The fraction's digits past what a token can show round away.
+    let fraction = &fraction[..fraction.len().min(12)];
+    let part = if fraction.is_empty() {
+        0
+    } else {
+        let tenths = 10u128.pow(fraction.len() as u32);
+        (fraction.parse::<u128>().ok()? * scale * 2 + tenths) / (2 * tenths)
+    };
+    usize::try_from(whole.checked_mul(scale)?.checked_add(part)?).ok()
+}
+
+/// A number of tokens as the field shows it: `1.2M`, `950k`, or the
+/// number.
 pub fn shown_tokens(tokens: usize) -> String {
-    if tokens.is_multiple_of(1000) {
+    if tokens >= 1_000_000 && tokens.is_multiple_of(100_000) {
+        let tenths = tokens / 100_000;
+        match tenths % 10 {
+            0 => format!("{}M", tenths / 10),
+            rest => format!("{}.{rest}M", tenths / 10),
+        }
+    } else if tokens.is_multiple_of(1000) {
         format!("{}k", tokens / 1000)
     } else {
         tokens.to_string()
@@ -419,10 +457,30 @@ mod tests {
                 .unwrap_err()
                 .starts_with("At least 20k")
         );
+        assert!(parse_handover("0").unwrap_err().starts_with("At least 20k"));
         assert!(parse_handover("99999999999999999999999k").is_err());
-        for tokens in [20_000, 950_000, 123_456] {
+        for tokens in [20_000, 950_000, 123_456, 1_000_000, 1_200_000, 1_250_000] {
             assert_eq!(parse_handover(&shown_tokens(tokens)), Ok(Some(tokens)));
         }
+    }
+
+    /// Millions, and decimals with k or M, rounded to whole tokens.
+    #[test]
+    fn handover_sizes_take_millions_and_decimals() {
+        assert_eq!(parse_handover("1M"), Ok(Some(1_000_000)));
+        assert_eq!(parse_handover("1m"), Ok(Some(1_000_000)));
+        assert_eq!(parse_handover("1.2M"), Ok(Some(1_200_000)));
+        assert_eq!(parse_handover("0.95M"), Ok(Some(950_000)));
+        assert_eq!(parse_handover(".5M"), Ok(Some(500_000)));
+        assert_eq!(parse_handover("250.5k"), Ok(Some(250_500)));
+        assert_eq!(parse_handover("1.2345678M"), Ok(Some(1_234_568)));
+        assert!(parse_handover("200000.5").is_err(), "tokens are whole");
+        assert!(parse_handover("1.2.3M").is_err());
+        assert!(parse_handover("M").is_err());
+        assert_eq!(shown_tokens(1_200_000), "1.2M");
+        assert_eq!(shown_tokens(1_000_000), "1M");
+        assert_eq!(shown_tokens(1_250_000), "1250k");
+        assert_eq!(shown_tokens(950_000), "950k");
     }
 
     #[test]
