@@ -74,6 +74,17 @@ pub const CODE_LINES: usize = 40;
 /// embedded images).
 const IMAGE_BUDGET: usize = 64 * 1024 * 1024;
 
+/// How many bytes of encoded images, read from the session's store, a
+/// transcript keeps ready for the image cache: those drawn last.
+const IMAGE_COPIES: usize = 32 * 1024 * 1024;
+
+/// How many block rows keep their views, those drawn last: some screens'
+/// worth, so that scrolling back a little finds them ready.
+const BLOCK_VIEWS: usize = 200;
+
+/// How many views are made between two looks for views to let go.
+const RELEASE_EVERY: usize = 50;
+
 /// The latest entries made ready to show when a transcript starts over (a
 /// session opens, another conversation): the reader sees the end of it at
 /// once, and the older entries are made ready a few at a time.
@@ -143,9 +154,12 @@ struct Doc {
 
 struct Block {
     id: TextBlockId,
-    /// The view of the block, made when its row is first drawn: a long
-    /// session opens without a view per block of its history.
+    /// The view of the block, made when its row is drawn: a long session
+    /// opens without a view per block of its history, and the views of
+    /// rows not drawn for long go ([`BLOCK_VIEWS`]).
     view: Option<Entity<TextViewState>>,
+    /// The frame its row was last drawn in.
+    drawn: usize,
     content: TextBlockContent,
     range: Option<Range<usize>>,
     /// The lines of its longest code block (one in a list item or a quote
@@ -180,13 +194,63 @@ struct EntryUi {
     uncapped: HashSet<usize>,
     /// An edit's diff, made when its details first open.
     diff: Option<Entity<DiffViewState>>,
+    /// A user's message, as its row draws it.
+    text: Option<SharedString>,
 }
 
 /// Returns the current time in Unix milliseconds.
 pub type Clock = Rc<dyn Fn() -> i64>;
 
-/// Reads an image's bytes and MIME type by its ID in the session's store.
-type ImageLookup = Rc<dyn Fn(u64) -> Option<(Arc<[u8]>, String)>>;
+/// Reads an image's bytes and format by its ID in the session's store.
+type ImageLookup = Rc<dyn Fn(u64) -> Option<(Arc<[u8]>, ImageFormat)>>;
+
+/// Images read from the session's store, ready for the image cache: those
+/// drawn last, up to [`IMAGE_COPIES`] bytes. The image cache takes a GPUI
+/// `Image`, which owns its bytes, so an image is copied out of the store
+/// as it is drawn, and the copy goes when other images take its place or
+/// when the store lets the image go.
+#[derive(Default)]
+struct ImageCopies {
+    /// The least recently drawn first.
+    images: Vec<(u64, Arc<Image>)>,
+    bytes: usize,
+}
+
+impl ImageCopies {
+    /// The image `id`, while `lookup` (the store) keeps it.
+    fn get(&mut self, id: u64, lookup: &ImageLookup) -> Option<Arc<Image>> {
+        let kept = self.images.iter().position(|(of, _)| *of == id);
+        let Some((bytes, format)) = lookup(id) else {
+            if let Some(ix) = kept {
+                self.remove(ix);
+            }
+            return None;
+        };
+        if let Some(ix) = kept {
+            let entry = self.images.remove(ix);
+            let image = entry.1.clone();
+            self.images.push(entry);
+            return Some(image);
+        }
+        let image = Arc::new(Image::from_bytes(format, bytes.to_vec()));
+        self.bytes += image.bytes.len();
+        self.images.push((id, image.clone()));
+        while self.bytes > IMAGE_COPIES && self.images.len() > 1 {
+            self.remove(0);
+        }
+        Some(image)
+    }
+
+    fn remove(&mut self, ix: usize) {
+        let (_, image) = self.images.remove(ix);
+        self.bytes -= image.bytes.len();
+    }
+
+    fn clear(&mut self) {
+        self.images.clear();
+        self.bytes = 0;
+    }
+}
 
 /// A session's transcript (the main agent's, or a worker's).
 pub struct TranscriptView {
@@ -223,9 +287,11 @@ pub struct TranscriptView {
     image_cache: Entity<LruImageCache>,
     /// Where the images the items show are read: the session's store.
     images: Option<ImageLookup>,
-    /// The images read so far, by ID, ready for the image cache.
-    image_sources: RefCell<HashMap<u64, Arc<Image>>>,
+    /// The images read from the store last, ready for the image cache.
+    image_copies: Rc<RefCell<ImageCopies>>,
     renders: usize,
+    /// Block views made since the last look for views to let go.
+    views_made: usize,
     /// The rows of each frame drawn, in order.
     #[cfg(test)]
     frames: Vec<usize>,
@@ -285,8 +351,9 @@ impl TranscriptView {
             animated: None,
             image_cache: LruImageCache::new(IMAGE_BUDGET, cx),
             images: None,
-            image_sources: RefCell::default(),
+            image_copies: Rc::default(),
             renders: 0,
+            views_made: 0,
             #[cfg(test)]
             frames: Vec::new(),
             _prefs: observe_prefs,
@@ -351,14 +418,15 @@ impl TranscriptView {
     /// Shows the images the items show (the user's attachments, what tools
     /// returned) from `images`, the session's store.
     pub fn set_images(&mut self, images: arko::images::Images, cx: &mut Context<Self>) {
-        self.set_image_lookup(
-            move |id| {
-                images
-                    .get(id)
-                    .map(|image| (image.bytes.clone(), image.mime.clone()))
-            },
-            cx,
-        );
+        self.images = Some(Rc::new(move |id| {
+            let image = images.get(id)?;
+            Some((
+                image.bytes.clone(),
+                ImageFormat::from_mime_type(&image.mime)?,
+            ))
+        }));
+        self.image_copies.borrow_mut().clear();
+        cx.notify();
     }
 
     /// Reads images by ID from `lookup` instead of a session's store: for
@@ -369,8 +437,11 @@ impl TranscriptView {
         lookup: impl Fn(u64) -> Option<(Arc<[u8]>, String)> + 'static,
         cx: &mut Context<Self>,
     ) {
-        self.images = Some(Rc::new(lookup));
-        self.image_sources.borrow_mut().clear();
+        self.images = Some(Rc::new(move |id| {
+            let (bytes, mime) = lookup(id)?;
+            Some((bytes, ImageFormat::from_mime_type(&mime)?))
+        }));
+        self.image_copies.borrow_mut().clear();
         cx.notify();
     }
 
@@ -473,6 +544,7 @@ impl TranscriptView {
         let text = entry.item.text.clone();
         let mut ui = EntryUi {
             expanded: self.chosen.remove(&id),
+            text: (entry.item.kind == Kind::User).then(|| entry.item.text.clone().into()),
             ..EntryUi::default()
         };
         if ui.expanded == Some(true) {
@@ -518,6 +590,9 @@ impl TranscriptView {
         let Some(ui) = self.ui.get_mut(&id) else {
             return;
         };
+        if entry.item.kind == Kind::User && ui.text.as_deref() != Some(text.as_str()) {
+            ui.text = Some(text.clone().into());
+        }
         let Some(doc) = ui.doc.as_mut() else {
             if needs_doc {
                 let text = text.clone();
@@ -583,6 +658,7 @@ impl TranscriptView {
             Block {
                 id: block.id(),
                 view: None,
+                drawn: 0,
                 code_lines: code_lines(text, &range, &content),
                 content,
                 range,
@@ -599,9 +675,14 @@ impl TranscriptView {
         block: usize,
         cx: &mut Context<Self>,
     ) -> Option<Entity<TextViewState>> {
+        let frame = self.renders;
         let doc = self.ui.get_mut(&id)?.doc.as_mut()?;
         let state = doc.state.clone();
         let row = doc.blocks.get_mut(block)?;
+        row.drawn = frame;
+        if row.view.is_none() {
+            self.views_made += 1;
+        }
         Some(
             row.view
                 .get_or_insert_with(|| {
@@ -609,6 +690,37 @@ impl TranscriptView {
                 })
                 .clone(),
         )
+    }
+
+    /// Lets go of the views of the blocks drawn longest ago, past
+    /// [`BLOCK_VIEWS`], and of the layouts they hold. A row drawn again
+    /// gets a new view, made from its document's parse.
+    fn release_block_views(&mut self) {
+        self.views_made = 0;
+        let blocks = || {
+            self.ui
+                .values()
+                .filter_map(|ui| ui.doc.as_ref())
+                .flat_map(|doc| &doc.blocks)
+                .filter(|block| block.view.is_some())
+        };
+        let mut frames: Vec<usize> = blocks().map(|block| block.drawn).collect();
+        if frames.len() <= BLOCK_VIEWS {
+            return;
+        }
+        frames.sort_unstable();
+        // Those of the last frames stay, whatever their number.
+        let kept_from = frames[frames.len() - BLOCK_VIEWS].min(self.renders.saturating_sub(1));
+        for block in self
+            .ui
+            .values_mut()
+            .filter_map(|ui| ui.doc.as_mut())
+            .flat_map(|doc| &mut doc.blocks)
+        {
+            if block.drawn < kept_from {
+                block.view = None;
+            }
+        }
     }
 
     /// Rebuilds the rows from the model, and tells the list what changed.
@@ -953,34 +1065,49 @@ impl TranscriptView {
     /// The image `id` of the session's store, ready to draw, while the
     /// store keeps it.
     fn image(&self, id: u64) -> Option<Arc<Image>> {
-        if let Some(image) = self.image_sources.borrow().get(&id) {
-            return Some(image.clone());
-        }
-        let (bytes, mime) = (self.images.as_ref()?)(id)?;
-        let format = ImageFormat::from_mime_type(&mime)?;
-        let image = Arc::new(Image::from_bytes(format, bytes.to_vec()));
-        self.image_sources.borrow_mut().insert(id, image.clone());
-        Some(image)
+        let lookup = self.images.as_ref()?;
+        self.image_copies.borrow_mut().get(id, lookup)
     }
 
     /// Opens the image viewer on the image `image` of the entry `entry`,
-    /// with every image of the conversation to browse, in order.
+    /// with every image of the conversation to browse, in order. Each is
+    /// read from the store as the viewer shows it.
     fn open_image(&mut self, entry: u64, image: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(lookup) = self.images.clone() else {
+            return;
+        };
         let mut items = Vec::new();
         let mut selected = 0;
         for shown in self.model.entries() {
             for image_ref in &shown.item.images {
-                let Some(source) = self.image(image_ref.id) else {
+                if lookup(image_ref.id).is_none() {
                     continue;
-                };
+                }
                 if shown.item.id == entry && image_ref.id == image {
                     selected = items.len();
                 }
                 let caption = image_caption(&image_ref.label, image_ref.bytes);
-                items.push(
-                    ImageViewerItem::new(LruImageCache::source(&self.image_cache, source, None))
-                        .with_caption(caption),
+                let (id, copies, lookup, cache) = (
+                    image_ref.id,
+                    self.image_copies.clone(),
+                    lookup.clone(),
+                    self.image_cache.clone(),
                 );
+                #[expect(
+                    clippy::arc_with_non_send_sync,
+                    reason = "GPUI's image sources are Arcs, and GPUI calls them on the UI thread only"
+                )]
+                let source = ImageSource::Custom(Arc::new(move |window, cx| {
+                    let Some(image) = copies.borrow_mut().get(id, &lookup) else {
+                        // The store let it go since the viewer opened.
+                        return Some(Err(ImageCacheError::Asset("Image not kept".into())));
+                    };
+                    match LruImageCache::source(&cache, image, None) {
+                        ImageSource::Custom(load) => load(window, cx),
+                        _ => None,
+                    }
+                }));
+                items.push(ImageViewerItem::new(source).with_caption(caption));
             }
         }
         if !items.is_empty() {
@@ -1032,6 +1159,9 @@ impl Render for TranscriptView {
         }
         #[cfg(test)]
         self.frames.push(self.rows.len());
+        if self.views_made >= RELEASE_EVERY {
+            self.release_block_views();
+        }
         if !self.list.is_scrolled_up() {
             self.new_while_away = 0;
         }

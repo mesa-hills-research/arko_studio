@@ -11,9 +11,9 @@ use arko_agents::AgentEvent;
 use arko_workflows::WorkflowEvent;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Context, Entity, IntoElement, ParentElement as _,
-    Point, Render, SharedString, Styled as _, TestAppContext, Window, WindowBounds, WindowOptions,
-    div, px, size,
+    AnyWindowHandle, AppContext as _, Bounds, Context, ElementId, Entity, IntoElement,
+    ParentElement as _, Point, Render, Styled as _, TestAppContext, Window, WindowBounds,
+    WindowOptions, div, px, size,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -588,7 +588,9 @@ fn showing_all_of_a_code_block_at_the_bottom_keeps_its_top(cx: &mut TestAppConte
     };
     let before = row_top(cx, window, key).expect("on screen");
     cx.update_window(window, |_, window, cx| {
-        window.click(SharedString::from(format!("show-all-{reply}-1")), cx)
+        window
+            .within(super::row::element_id(key))
+            .click("show-all", cx)
     })
     .unwrap();
     settle(cx, window);
@@ -618,7 +620,8 @@ fn a_long_code_block_in_a_list_item_is_capped_too(cx: &mut TestAppContext) {
                 .try_find(super::row::element_id(list))
                 .map(|row| f32::from(row.bounds().size.height));
             let show_all = window
-                .try_find(SharedString::from(format!("show-all-{reply}-1")))
+                .within(super::row::element_id(list))
+                .try_find("show-all")
                 .is_some();
             (height, show_all)
         })
@@ -750,7 +753,7 @@ fn tab_reaches_the_transcript_and_its_thumbnails_but_not_hidden_actions(cx: &mut
         )
     });
     settle(cx, window);
-    let thumbnail = SharedString::from("image-1-1");
+    let thumbnail: ElementId = ("image", 1u64).into();
     let focused = |cx: &mut TestAppContext| {
         cx.update_window(window, |_, window, _| {
             (
@@ -861,6 +864,35 @@ fn the_keyboard_scrolls_the_transcript(cx: &mut TestAppContext) {
     assert_eq!(row_top(cx, window, last), Some(bottom));
 }
 
+#[gpui_kit::test]
+fn rows_draw_without_making_their_ids_or_the_users_text_again(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    // Long enough to be kept on the heap, not in the string itself.
+    let message = "A message of the user's. ".repeat(10);
+    feed.user(&message, Source::App, Delivery::Turn);
+    feed.reply("A reply.");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let user = ids_of(&feed, Kind::User)[0];
+    let block = keys(&view, cx)
+        .into_iter()
+        .find(|key| matches!(key, RowKey::Block { .. }))
+        .unwrap();
+    assert!(matches!(
+        super::row::element_id(block),
+        ElementId::NamedInteger(..)
+    ));
+    let text =
+        |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).ui[&user].text.clone().unwrap());
+    let first = text(cx);
+    for _ in 0..3 {
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+    assert_eq!(text(cx).as_ptr(), first.as_ptr());
+    assert_eq!(text(cx), message.trim());
+}
+
 /// How many times the transcript draws in a second of the test clock.
 fn draws_in_a_second(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> usize {
     for _ in 0..200 {
@@ -959,6 +991,76 @@ fn a_long_transcript_shows_its_end_first_and_the_rest_a_chunk_a_frame(cx: &mut T
 }
 
 #[gpui_kit::test]
+fn block_views_far_off_screen_are_let_go(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    // 400 reply blocks.
+    turns(&feed, 200, 0);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    load_all(cx, window, &view);
+    let views = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            view.read(cx)
+                .ui
+                .values()
+                .filter_map(|ui| ui.doc.as_ref())
+                .flat_map(|doc| &doc.blocks)
+                .filter(|block| block.view.is_some())
+                .count()
+        })
+    };
+    // Up through the whole conversation, a screen at a time.
+    let count = cx.read(|cx| view.read(cx).row_count());
+    let mut most = 0;
+    for ix in (0..count).rev().step_by(4) {
+        scroll_to_row(cx, &view, ix);
+        settle(cx, window);
+        most = most.max(views(cx));
+    }
+    scroll_to_row(cx, &view, 0);
+    settle(cx, window);
+    assert!(row_top(cx, window, user_row(&feed, 0)).is_some());
+    let bound = super::BLOCK_VIEWS + super::RELEASE_EVERY + 20;
+    assert!(most <= bound, "{most} views, more than {bound}");
+    // Back at the end, its rows have views again.
+    view.update(cx, |view, cx| view.scroll_to_end(cx));
+    settle(cx, window);
+    let last = keys(&view, cx)
+        .into_iter()
+        .rev()
+        .find(|key| matches!(key, RowKey::Block { .. }));
+    assert!(row_top(cx, window, last.unwrap()).is_some());
+}
+
+#[gpui_kit::test]
+fn a_transcript_not_drawn_takes_its_updates_a_moment_after_they_come(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    turns(&feed, 5, 1);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let rows = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).row_count());
+    let renders = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).render_count());
+    // Another session shows: the transcript is kept, not drawn.
+    cx.update_window(window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    let (before, drawn) = (rows(cx), renders(cx));
+    // A hundred turns come, in bursts, half a second apart.
+    for _ in 0..10 {
+        turns(&feed, 10, 1);
+        cx.run_until_parked();
+        cx.executor().advance_clock(super::inbox::CATCH_UP);
+        cx.run_until_parked();
+    }
+    assert_eq!(renders(cx), drawn);
+    // They're made into rows as they come: nothing waits for the frame
+    // that shows the transcript again.
+    assert!(rows(cx) >= before + 100 * 5, "{} rows", rows(cx));
+    let waiting = cx.read(|cx| view.read(cx).inbox.take());
+    assert!(waiting.snapshot.is_none() && waiting.updates.is_empty());
+}
+
+#[gpui_kit::test]
 fn a_truncate_and_another_conversation_drop_rows(cx: &mut TestAppContext) {
     start(cx);
     let feed = Feed::new("main");
@@ -1024,16 +1126,143 @@ fn images_show_as_thumbnails_that_open_the_viewer(cx: &mut TestAppContext) {
         )
     });
     settle(cx, window);
-    let tile = |entry: u64, id: u64| SharedString::from(format!("image-{entry}-{id}"));
+    let tile = |id: u64| -> ElementId { ("image", id).into() };
     cx.update_window(window, |_, window, cx| {
-        for (entry, id) in [(1, 1), (2, 2), (2, 3)] {
-            assert!(window.try_find(tile(entry, id)).is_some(), "{entry} {id}");
+        for id in [1, 2, 3] {
+            assert!(window.try_find(tile(id)).is_some(), "{id}");
         }
         assert!(!window.has_active_image_viewer(cx));
-        window.click(tile(2, 2), cx);
+        window.click(tile(2), cx);
         assert!(window.has_active_image_viewer(cx));
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn images_are_read_from_the_store_as_they_show(cx: &mut TestAppContext) {
+    use arko::images::ImageRef;
+    use gpui_kit::component::WindowExt as _;
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+    use std::rc::Rc;
+
+    start(cx);
+    let feed = Feed::new("main");
+    let calls = (1..=40u64)
+        .map(|id| {
+            let mut call = arko::remote::Item::new(Kind::Call, format!("read shots/{id}.png"));
+            call.id = id;
+            call.tool = Some("read_file".into());
+            call.status = Some(CallStatus::Ok);
+            call.images = vec![ImageRef {
+                id,
+                mime: "image/png".into(),
+                label: format!("shots/{id}.png"),
+                bytes: PNG.len(),
+            }];
+            call
+        })
+        .collect();
+    feed.restore(calls);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let store: Rc<RefCell<HashSet<u64>>> = Rc::new(RefCell::new((1..=40).collect()));
+    let kept = store.clone();
+    view.update(cx, |view, cx| {
+        view.set_image_lookup(
+            move |id| {
+                kept.borrow()
+                    .contains(&id)
+                    .then(|| (Arc::<[u8]>::from(PNG), "image/png".to_string()))
+            },
+            cx,
+        )
+    });
+    settle(cx, window);
+    let copies = |cx: &mut TestAppContext| -> Vec<u64> {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            let copies = view.image_copies.borrow();
+            copies.images.iter().map(|(id, _)| *id).collect()
+        })
+    };
+    // The tiles drawn, at the end of the conversation.
+    let drawn = copies(cx);
+    assert!(!drawn.is_empty() && drawn.len() < 10, "{drawn:?}");
+    assert!(drawn.contains(&40));
+    // The viewer, which can browse all 40, reads only the one it shows.
+    cx.update_window(window, |_, window, cx| {
+        window.click(("image", 40u64), cx);
+        assert!(window.has_active_image_viewer(cx));
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(copies(cx).len(), drawn.len());
+    // The store lets an image go: its tile says so, and its copy goes.
+    store.borrow_mut().remove(&40);
+    view.update(cx, |_, cx| cx.notify());
+    settle(cx, window);
+    assert!(!copies(cx).contains(&40));
+}
+
+#[gpui_kit::test]
+fn thumbnails_are_decoded_for_the_zoom(cx: &mut TestAppContext) {
+    use arko::images::ImageRef;
+
+    start(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.zoom = 1.5));
+    let feed = Feed::new("main");
+    let mut user = arko::remote::Item::new(Kind::User, "This icon");
+    user.id = 1;
+    user.images = vec![ImageRef {
+        id: 1,
+        mime: "image/png".into(),
+        label: "icon.png".into(),
+        bytes: PNG.len(),
+    }];
+    feed.restore(vec![user]);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    view.update(cx, |view, cx| {
+        view.set_image_lookup(
+            |_| Some((Arc::<[u8]>::from(PNG), "image/png".to_string())),
+            cx,
+        )
+    });
+    settle(cx, window);
+    let (rem, scale) = cx
+        .update_window(window, |_, window, _| {
+            (f32::from(window.rem_size()), window.scale_factor())
+        })
+        .unwrap();
+    assert!(rem > 16., "{rem}");
+    // The 256 px icon, fit in a tile 7.5 rem high on the screen, and never
+    // made larger than it is.
+    let side = (super::row::THUMBNAIL.1 * rem * scale).min(256.) as usize;
+    let used = cx.read(|cx| view.read(cx).image_cache.read(cx).used_bytes());
+    assert_eq!(used, side * side * 4);
+}
+
+#[test]
+fn image_copies_keep_the_latest_within_their_budget() {
+    use super::{IMAGE_COPIES, ImageCopies, ImageLookup};
+    use gpui_kit::ImageFormat;
+    use std::rc::Rc;
+
+    // Ten images of 4 MB: the copies keep the last ones drawn, within
+    // 32 MB.
+    let lookup: ImageLookup =
+        Rc::new(|id| Some((Arc::from(vec![id as u8; 4 << 20]), ImageFormat::Png)));
+    let mut copies = ImageCopies::default();
+    for id in 1..=10 {
+        assert!(copies.get(id, &lookup).is_some());
+    }
+    assert!(copies.bytes <= IMAGE_COPIES, "{}", copies.bytes);
+    let kept: Vec<u64> = copies.images.iter().map(|(id, _)| *id).collect();
+    assert_eq!(kept, [3, 4, 5, 6, 7, 8, 9, 10]);
+    // Drawn again, an image is the latest, and the oldest goes next.
+    copies.get(3, &lookup);
+    copies.get(11, &lookup);
+    let kept: Vec<u64> = copies.images.iter().map(|(id, _)| *id).collect();
+    assert_eq!(kept, [5, 6, 7, 8, 9, 10, 3, 11]);
 }
 
 #[gpui_kit::test]
@@ -1323,8 +1552,16 @@ fn long_code_blocks_show_forty_lines_until_asked(cx: &mut TestAppContext) {
         assert_eq!(super::row::code_lines(&doc.text[code]), 60);
         assert!(!view.ui[&reply].uncapped.contains(&1));
     });
+    let code = RowKey::Block {
+        id: reply,
+        generation: 0,
+        block: 1,
+        source: false,
+    };
     cx.update_window(window, |_, window, cx| {
-        window.click(SharedString::from(format!("show-all-{reply}-1")), cx);
+        window
+            .within(super::row::element_id(code))
+            .click("show-all", cx);
     })
     .unwrap();
     cx.run_until_parked();
