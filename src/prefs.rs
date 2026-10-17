@@ -121,8 +121,8 @@ impl WebPagePrefs {
 /// Brings a preferences file of an earlier version up to this one's, in
 /// place: the web page's `address`, where this computer only was the
 /// default and saved as such (it couldn't be chosen apart from the
-/// default), becomes `ip` when it names another address, and the default
-/// otherwise.
+/// default), becomes `ip` when it names another address or automatic
+/// sharing is on. An inactive local default follows the new default.
 fn migrate(file: &mut Value) {
     let Some(page) = file.get_mut("web_page").and_then(Value::as_object_mut) else {
         return;
@@ -130,10 +130,11 @@ fn migrate(file: &mut Value) {
     let Some(old) = page.remove("address") else {
         return;
     };
+    let automatic = page.get("share_by_default").and_then(Value::as_bool) == Some(true);
     let chosen = old
         .as_str()
         .map(str::trim)
-        .filter(|address| !address.is_empty() && *address != THIS_COMPUTER_ONLY);
+        .filter(|address| !address.is_empty() && (*address != THIS_COMPUTER_ONLY || automatic));
     if let Some(address) = chosen
         && !page.contains_key("ip")
     {
@@ -622,11 +623,17 @@ impl Unread {
 /// version doesn't know.
 fn read_fields(file: &Value) -> (Prefs, Unread) {
     let mut values = Vec::new();
-    let prefs = serde_json::from_value::<Prefs>(file.clone()).unwrap_or_else(|_| {
+    let mut prefs = serde_json::from_value::<Prefs>(file.clone()).unwrap_or_else(|_| {
         let mut accepted = serde_json::to_value(Prefs::default()).unwrap_or_default();
         take_fields(&mut accepted, file, &mut Vec::new(), &mut values);
         serde_json::from_value(accepted).unwrap_or_default()
     });
+    if prefs.web_page.address.is_none()
+        && file.pointer("/web_page/ip").is_some_and(|ip| !ip.is_null())
+    {
+        // An unreadable restriction must not broaden automatic sharing.
+        prefs.web_page.address = Some(THIS_COMPUTER_ONLY.to_string());
+    }
     let read = serde_json::to_value(&prefs).unwrap_or_default();
     unknown_fields(file, &read, &mut Vec::new(), &mut values);
     (prefs, Unread { values, read })
@@ -647,15 +654,19 @@ fn take_fields(
     };
     for (key, value) in fields {
         path.push(key.clone());
-        if let Some(before) = accepted.pointer(&pointer(path)).cloned() {
-            put(accepted, path, value.clone());
-            if serde_json::from_value::<Prefs>(accepted.clone()).is_err() {
-                put(accepted, path, before.clone());
-                if value.is_object() && before.is_object() {
-                    take_fields(accepted, value, path, unread);
-                } else {
-                    unread.push((path.clone(), value.clone()));
-                }
+        // A default serialization may omit a valid optional field. Let
+        // deserialization decide whether each supplied value is usable.
+        let before = accepted
+            .pointer(&pointer(path))
+            .cloned()
+            .unwrap_or(Value::Null);
+        put(accepted, path, value.clone());
+        if serde_json::from_value::<Prefs>(accepted.clone()).is_err() {
+            put(accepted, path, before.clone());
+            if value.is_object() && before.is_object() {
+                take_fields(accepted, value, path, unread);
+            } else {
+                unread.push((path.clone(), value.clone()));
             }
         }
         path.pop();
@@ -904,6 +915,58 @@ fn schedule_save(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unreadable_sharing_restriction_falls_back_to_this_computer() {
+        let (prefs, _) = read_fields(&serde_json::json!({
+            "web_page": { "ip": 127, "share_by_default": true }
+        }));
+        assert_eq!(prefs.web_page.address(), THIS_COMPUTER_ONLY);
+        assert!(prefs.web_page.share_by_default);
+    }
+
+    #[test]
+    fn old_automatic_local_sharing_stays_local() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("studio.json");
+        for automatic in [false, true] {
+            let file = serde_json::json!({"web_page": {
+                "address": "127.0.0.1", "port": 8765, "share_by_default": automatic
+            }});
+            std::fs::write(&path, file.to_string()).unwrap();
+            let prefs = Prefs::load(&path);
+            assert_eq!(
+                prefs.web_page.address(),
+                if automatic { "127.0.0.1" } else { "0.0.0.0" }
+            );
+            assert_eq!(prefs.web_page.share_by_default, automatic);
+        }
+    }
+
+    #[test]
+    fn an_invalid_sibling_preserves_the_chosen_sharing_address() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("studio.json");
+        for page in [
+            serde_json::json!({"ip": "127.0.0.1", "port": -1, "share_by_default": true}),
+            serde_json::json!({"ip": "127.0.0.1", "port": 9000, "share_by_default": "yes"}),
+            serde_json::json!({"ip": "127.0.0.1", "port": -1, "share_by_default": true, "future": {"x": 1}}),
+        ] {
+            let file = serde_json::json!({"web_page": page, "appearance": {"theme_mode": "dark"}});
+            std::fs::write(&path, file.to_string()).unwrap();
+            let prefs = Prefs::load(&path);
+            assert_eq!(prefs.web_page.address(), "127.0.0.1");
+            assert_eq!(
+                prefs.web_page.share_by_default,
+                page["share_by_default"] == true
+            );
+            assert_eq!(
+                prefs.web_page.port,
+                page["port"].as_u64().map(|port| port as u16)
+            );
+            assert_eq!(prefs.appearance.theme_mode, ThemeMode::Dark);
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -1063,8 +1126,8 @@ mod tests {
     }
 
     /// Earlier versions saved this computer only as the web page's
-    /// address whether or not it was chosen: it becomes the default (every
-    /// network), and another address stays. One chosen since stays.
+    /// address whether or not it was chosen. It follows the new default
+    /// unless automatic sharing is on. Other explicit addresses stay.
     #[test]
     fn an_earlier_web_page_address_moves_to_the_new_default() {
         let folder = tempfile::tempdir().unwrap();
@@ -1076,8 +1139,8 @@ mod tests {
         let page = read(
             r#"{"web_page": {"share_by_default": true, "address": "127.0.0.1", "port": 9000}}"#,
         );
-        assert_eq!(page.address, None);
-        assert_eq!(page.address(), "0.0.0.0");
+        assert_eq!(page.address.as_deref(), Some("127.0.0.1"));
+        assert_eq!(page.address(), "127.0.0.1");
         assert!(page.share_by_default);
         assert_eq!(page.port, Some(9000));
         assert_eq!(
