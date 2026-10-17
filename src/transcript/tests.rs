@@ -1621,7 +1621,12 @@ fn a_selection_across_rows_copies_with_the_keyboard(cx: &mut TestAppContext) {
         })
         .unwrap()
     };
-    let first = bounds(cx, RowKey::User(user));
+    // The user's words, in the bubble at the right of the column.
+    let first = cx
+        .update_window(window, |_, window, _| {
+            window.find(("user-message", user)).bounds()
+        })
+        .unwrap();
     let last = bounds(
         cx,
         RowKey::Block {
@@ -1633,7 +1638,7 @@ fn a_selection_across_rows_copies_with_the_keyboard(cx: &mut TestAppContext) {
     );
     cx.update_window(window, |_, window, cx| {
         window.drag(
-            first.origin + gpui_kit::point(px(30.), first.size.height / 2.),
+            first.origin + gpui_kit::point(px(20.), first.size.height / 2.),
             last.origin + gpui_kit::point(last.size.width - px(20.), last.size.height - px(4.)),
             cx,
         );
@@ -1767,4 +1772,62 @@ fn the_history_comes_off_the_ui_thread_and_rows_opened_before_stay_open(cx: &mut
             Some(true)
         );
     });
+}
+
+/// A user's message is a bubble at the right of the reading column, as wide
+/// as its words up to half the column. A narrow column lets it take the width
+/// of a comfortable line, and a very narrow one all but the room its actions
+/// take beside it.
+#[gpui_kit::test]
+fn a_users_message_is_a_bubble_at_the_right_of_the_column(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Now fuzz it.", Source::App, Delivery::Turn);
+    feed.user(
+        &"Make the parser streaming, and add a test that feeds it a byte at a time. ".repeat(3),
+        Source::App,
+        Delivery::Turn,
+    );
+    let (window, _) = open(cx, &feed, AgentFilter::Main, 600.);
+    let [short, long] = ids_of(&feed, Kind::User)[..] else {
+        panic!("two messages")
+    };
+    let rem = cx
+        .update_window(window, |_, window, _| f32::from(window.rem_size()))
+        .unwrap();
+    // The window's width, and the long message's widest: half the column,
+    // a comfortable line, the column but the actions' room.
+    type Widest = fn(f32, f32) -> f32;
+    let widths: [(f32, Widest); 3] = [
+        (800., |column, _| column / 2.),
+        (480., |_, rem| 17.5 * rem),
+        (300., |column, rem| column - 5.5 * rem),
+    ];
+    for (width, widest) in widths {
+        cx.simulate_window_resize(window, size(px(width), px(600.)));
+        settle(cx, window);
+        cx.update_window(window, |_, window, _| {
+            // The reading column: at most 46 rem, centred, with 1 rem inside
+            // each side.
+            let column = width.min(46. * rem) - 2. * rem;
+            let right = px((width + column) / 2.);
+            let short = window.find(("user-message", short)).bounds();
+            let long_bubble = window.find(("user-message", long)).bounds();
+            assert_eq!(short.right(), right, "{width}");
+            assert_eq!(long_bubble.right(), right, "{width}");
+            assert!(
+                (long_bubble.size.width - px(widest(column, rem))).abs() < px(1.),
+                "{width}: {long_bubble:?}"
+            );
+            assert!(short.size.width < long_bubble.size.width, "{width}");
+            // Its actions sit beside it, inside the column, level with its
+            // first line.
+            let copy = window.find(("copy-user", long)).bounds();
+            assert!(copy.right() <= long_bubble.left(), "{width}");
+            assert!(copy.left() >= px((width - column) / 2.), "{width}");
+            assert!(copy.top() > long_bubble.top(), "{width}");
+            assert!(copy.top() < long_bubble.top() + px(rem), "{width}");
+        })
+        .unwrap();
+    }
 }
