@@ -1289,14 +1289,8 @@ impl SessionView {
             self.finish_edit(Choice::Change, item, message, window, cx);
             return;
         }
-        let (after, no_branch) = self.transcript(cx).map_or((0, None), |transcript| {
-            let transcript = transcript.read(cx);
-            (
-                transcript.messages_after(item),
-                transcript
-                    .branch_loses_context(item)
-                    .then_some(editing::BRANCH_LOSES_THE_SUMMARY),
-            )
+        let after = self.transcript(cx).map_or(0, |transcript| {
+            transcript.read(cx).messages_after(item)
         });
         let agent = self.mode(cx) == Mode::Agent;
         let view = cx.entity().downgrade();
@@ -1304,7 +1298,6 @@ impl SessionView {
             Change::Edit,
             after,
             agent,
-            no_branch,
             window,
             cx,
             move |choice, window, cx| {
@@ -1388,17 +1381,12 @@ impl SessionView {
             return;
         }
         let after = transcript.read(cx).messages_after(last);
-        let no_branch = transcript
-            .read(cx)
-            .branch_loses_context(last)
-            .then_some(editing::BRANCH_LOSES_THE_SUMMARY);
         let agent = self.mode(cx) == Mode::Agent;
         let view = cx.entity().downgrade();
         editing::confirm(
             Change::Regenerate,
             after,
             agent,
-            no_branch,
             window,
             cx,
             move |choice, window, cx| {
@@ -1493,30 +1481,6 @@ impl SessionView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Before the first message there is nothing to copy: the message
-        // starts a new session of the same kind instead.
-        let from_start = before.is_some_and(|item| {
-            self.transcript(cx)
-                .is_some_and(|transcript| transcript.read(cx).message_index(item) == Some(0))
-        });
-        if from_start && let Some(first) = first {
-            let new = {
-                let session = session.read(cx);
-                let models = &session.reading().models;
-                NewSession {
-                    mode: session.mode(),
-                    folder: session.workspace().cloned(),
-                    model: Some(models.main.clone()).filter(|model| !model.is_empty()),
-                    effort: Some(models.main_effort.clone()).filter(|effort| !effort.is_empty()),
-                }
-            };
-            if let Some(text) = &edit {
-                self.edited(text, window, cx);
-            }
-            let created = LiveSession::create(new, arko::Input::Message(first), cx);
-            cx.emit(SessionViewEvent::Created(created));
-            return;
-        }
         let branching = session.read(cx).branch(before, cx);
         cx.spawn_in(window, async move |this, cx| {
             let branched = branching.await;

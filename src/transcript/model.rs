@@ -384,21 +384,6 @@ impl Model {
         last
     }
 
-    /// Whether a branch from the user's message `id` would lose what came
-    /// before it: the conversation's first message, after a handover (the
-    /// messages before it in the transcript were handed over, and the
-    /// handover's summary isn't something a branch can start from).
-    pub fn branch_loses_context(&self, id: u64) -> bool {
-        let Ok(position) = self.position(id) else {
-            return false;
-        };
-        self.entries[position].item.message_index == Some(0)
-            && self.entries[..position].iter().any(|entry| {
-                let item = &entry.item;
-                item.kind == Kind::User && item.is_main() && !is_refresh(item)
-            })
-    }
-
     /// The user's latest message, when its turn ended without a reply
     /// (stopped, or failed after its retries) and nothing runs: Regenerate
     /// sends it again from the message itself.
@@ -1503,25 +1488,6 @@ mod tests {
         assert_eq!(model.messages_after(1), 5);
         assert_eq!(model.messages_after(7), 1);
         assert_eq!(model.last_reply(), Some(8));
-    }
-
-    #[test]
-    fn a_branch_from_the_first_message_after_a_handover_loses_its_summary() {
-        // Handed over: the earlier messages lost their places.
-        let mut before = item(1, Kind::User, "main", "Start the port.");
-        before.delivery = Some(Delivery::Turn);
-        let model = model(vec![
-            before,
-            item(2, Kind::Reply, "main", "Ported half."),
-            message(3, 2, 0, "Go on."),
-            item(4, Kind::Reply, "main", "Done."),
-            message(5, 3, 2, "Thanks."),
-        ]);
-        assert!(model.branch_loses_context(3));
-        assert!(!model.branch_loses_context(5));
-        // A conversation's own first message has nothing before it to lose.
-        let fresh = self::model(vec![message(1, 1, 0, "Start.")]);
-        assert!(!fresh.branch_loses_context(1));
     }
 
     #[test]

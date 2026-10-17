@@ -529,19 +529,9 @@ impl TranscriptView {
         // Edit and Branch, for a message the conversation still has.
         let changes = self.is_editable(id).then(|| {
             let busy = self.busy_reason();
-            // The engine branches from after the first message at the
-            // earliest: before it there is nothing to copy, or after a
-            // handover only the summary, which a branch doesn't take.
-            let no_branch = (item.message_index == Some(0)).then(|| {
-                if self.model.branch_loses_context(id) {
-                    "A branch from here would start without the summary of the work before it"
-                } else {
-                    "Nothing comes before the first message to branch from"
-                }
-            });
             // The latest message: Alt+↑ in the empty composer edits it too.
             let last = self.model.last_message() == Some(id);
-            (busy, no_branch, last, view.downgrade(), view.downgrade())
+            (busy, last, view.downgrade(), view.downgrade())
         });
         // A turn that ended with no reply (stopped, or failed after its
         // retries): its message offers to go again.
@@ -561,7 +551,7 @@ impl TranscriptView {
                         .tab_stop(shown)
                 };
                 h_flex()
-                    .when_some(changes, |this, (busy, no_branch, last, edit_view, branch_view)| {
+                    .when_some(changes, |this, (busy, last, edit_view, branch_view)| {
                         let edit = action("edit-message", Lucide::SquarePen)
                             .disabled(busy.is_some())
                             .accessibility_label("Edit");
@@ -586,8 +576,8 @@ impl TranscriptView {
                         )
                         .child(
                             action("branch-message", Lucide::GitBranch)
-                                .disabled(busy.is_some() || no_branch.is_some())
-                                .tooltip(busy.or(no_branch).unwrap_or(
+                                .disabled(busy.is_some())
+                                .tooltip(busy.unwrap_or(
                                     "Branch: a new session with the conversation before this message",
                                 ))
                                 .accessibility_label("Branch")

@@ -7,7 +7,7 @@ use std::rc::Rc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogFooter;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, WindowExt as _, v_flex};
+use gpui_kit::component::{ActiveTheme as _, WindowExt as _, v_flex};
 use gpui_kit::*;
 
 use crate::prefs;
@@ -64,19 +64,13 @@ pub fn description(change: Change, after: usize, agent: bool) -> String {
 /// What hears the user's choice.
 type Answer = Rc<dyn Fn(Choice, &mut Window, &mut App)>;
 
-/// Why Branch instead can't keep a message that follows a handover: a
-/// branch can't start from the handover's summary yet.
-pub const BRANCH_LOSES_THE_SUMMARY: &str = "A branch from this message would start without the summary of the work before it. Edit it here, or branch from a later message.";
-
 /// Asks before `change` removes the `after` messages after the message:
 /// [Cancel] [Branch instead] [Edit]. "Don't ask again" counts only when the
-/// change is chosen. `answer` hears the choice (nothing on Cancel). With
-/// `no_branch`, Branch instead is disabled, and its tooltip says why.
+/// change is chosen. `answer` hears the choice (nothing on Cancel).
 pub fn confirm(
     change: Change,
     after: usize,
     agent: bool,
-    no_branch: Option<&'static str>,
     window: &mut Window,
     cx: &mut App,
     answer: impl Fn(Choice, &mut Window, &mut App) + 'static,
@@ -136,12 +130,7 @@ pub fn confirm(
                         Button::new("edit-branch")
                             .outline()
                             .label("Branch instead")
-                            .disabled(no_branch.is_some())
-                            .tooltip(
-                                no_branch.unwrap_or(
-                                    "Keep this conversation, and go on in a new session",
-                                ),
-                            )
+                            .tooltip("Keep this conversation, and go on in a new session")
                             .on_click(move |_, window, cx| {
                                 window.close_dialog(cx);
                                 branch(Choice::Branch, window, cx);

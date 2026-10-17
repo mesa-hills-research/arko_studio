@@ -790,7 +790,7 @@ fn edit_dialog_window(mode: ThemeMode) -> Screenshot {
         })
         .unwrap();
     app.update_window(window, |_, window, cx| {
-        editing::confirm(Change::Edit, 3, true, None, window, cx, |_, _, _| {})
+        editing::confirm(Change::Edit, 3, true, window, cx, |_, _, _| {})
     })
     .unwrap();
     app.capture(window).unwrap()

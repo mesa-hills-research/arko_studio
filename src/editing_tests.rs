@@ -582,32 +582,22 @@ fn a_stopped_turns_message_offers_regenerate(cx: &mut TestAppContext) {
     app.close_all(cx);
 }
 
-/// Branch instead disabled with its reason: the dialog stays, and nothing
-/// is chosen.
 #[gpui_kit::test]
-fn a_disabled_branch_instead_does_nothing(cx: &mut TestAppContext) {
-    let backend = Arc::new(crate::backend::FakeBackend::sample(
-        "/arko",
-        std::time::SystemTime::now(),
-    ));
-    cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
-    let (window, _) = open(cx, 1300.);
-    let chosen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    act(cx, window, |window, cx| {
-        let chosen = chosen.clone();
-        crate::editing::confirm(
-            crate::editing::Change::Edit,
-            2,
-            false,
-            Some(crate::editing::BRANCH_LOSES_THE_SUMMARY),
-            window,
-            cx,
-            move |choice, _, _| chosen.borrow_mut().push(choice),
-        )
-    });
-    act(cx, window, |window, cx| window.click("edit-branch", cx));
-    act(cx, window, |window, cx| {
-        assert!(window.has_active_dialog(cx))
-    });
-    assert!(chosen.borrow().is_empty());
+fn branching_instead_of_editing_the_first_message_uses_an_engine_branch(cx: &mut TestAppContext) {
+    let mock = answers();
+    let app = start(cx, &mock);
+    app.send(cx, "Count the pears.");
+    app.wait_for(cx, "Seven pears.");
+    app.wait_idle(cx);
+    let original = cx.read(|cx| app.view.read(cx).live_session().cloned().unwrap());
+    act(cx, app.window, |window, cx| window.press("alt-up", cx));
+    app.set_composer(cx, "Count the apples.");
+    act(cx, app.window, |window, cx| window.press("enter", cx));
+    act(cx, app.window, |window, cx| window.click("edit-branch", cx));
+    wait_until(cx, "the branch's reply", |cx| app.says(cx, "Five apples."));
+    let branch = cx.read(|cx| app.view.read(cx).live_session().cloned().unwrap());
+    assert_ne!(original.entity_id(), branch.entity_id());
+    assert!(cx.read(|cx| branch.read(cx).title().starts_with("Branch of ")));
+    assert!(!app.says(cx, "Seven pears."));
+    app.close_all(cx);
 }

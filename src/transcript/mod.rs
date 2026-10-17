@@ -455,17 +455,6 @@ impl TranscriptView {
         self.model.last_reply()
     }
 
-    /// Whether a branch from the user's message `id` would start without
-    /// the handover's summary that comes before it.
-    pub fn branch_loses_context(&self, id: u64) -> bool {
-        self.model.branch_loses_context(id)
-    }
-
-    /// Where the user's message `id` is in the conversation.
-    pub fn message_index(&self, id: u64) -> Option<usize> {
-        self.model.entry(id)?.item.message_index
-    }
-
     /// The text and the images of the user's message `id`.
     pub fn message(&self, id: u64) -> Option<(String, Vec<arko::images::ImageRef>)> {
         let item = &self.model.entry(id)?.item;
