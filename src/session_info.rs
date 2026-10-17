@@ -65,9 +65,98 @@ pub struct Facts {
     pub skills: Result<SkillsFacts, String>,
 }
 
-/// A handover size as `/handover-at` takes it: "950k".
+/// A handover size as the info shows it and `/handover-at` takes it:
+/// "950k" for whole thousands, else all of it ("950,500"), never rounded.
 pub fn handover_value(tokens: usize) -> String {
-    format!("{}k", tokens / 1000)
+    if tokens.is_multiple_of(1000) {
+        return format!("{}k", tokens / 1000);
+    }
+    let digits = tokens.to_string();
+    let mut grouped = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+/// The smallest handover size a session takes, in tokens.
+pub const MIN_HANDOVER_SIZE: usize = 20_000;
+
+/// The longest a command runs before it moves to the background, in
+/// seconds.
+pub const MAX_BACKGROUND_AFTER: u64 = 3_600;
+
+/// A handover size as typed, read as the session reads `/handover-at`'s:
+/// `200000`, `200,000`, `200_000`, `200k`, `1.2M`, at least
+/// [`MIN_HANDOVER_SIZE`] tokens.
+pub fn parse_handover_size(text: &str) -> Result<usize, String> {
+    let text = text.trim();
+    let invalid = || format!("“{text}” isn’t a number of tokens, such as 200000, 200k or 1.2M.");
+    let digits: String = text.chars().filter(|c| !matches!(c, ',' | '_')).collect();
+    let (digits, scale): (&str, u128) = match digits.strip_suffix(['k', 'K']) {
+        Some(digits) => (digits, 1_000),
+        None => match digits.strip_suffix(['m', 'M']) {
+            Some(digits) => (digits, 1_000_000),
+            None => (digits.as_str(), 1),
+        },
+    };
+    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    let all_digits = |part: &str| part.chars().all(|c| c.is_ascii_digit());
+    if whole.is_empty() || !all_digits(whole) || !all_digits(fraction) || fraction.len() > 9 {
+        return Err(invalid());
+    }
+    let places = 10u128.pow(fraction.len() as u32);
+    let number = format!("{whole}{fraction}")
+        .parse::<u128>()
+        .map_err(|_| invalid())?;
+    let scaled = number.checked_mul(scale).ok_or_else(invalid)?;
+    if scaled % places != 0 {
+        return Err(format!("“{text}” isn’t a whole number of tokens."));
+    }
+    let tokens = usize::try_from(scaled / places).map_err(|_| invalid())?;
+    if tokens < MIN_HANDOVER_SIZE {
+        return Err(format!(
+            "At least {}: an agent’s fresh conversation would start near it.",
+            handover_value(MIN_HANDOVER_SIZE)
+        ));
+    }
+    Ok(tokens)
+}
+
+/// A time as typed, read as the session reads `/background-after`'s:
+/// `90s`, `10m`, `1h` (at most [`MAX_BACKGROUND_AFTER`] seconds), or `off`
+/// (0).
+pub fn parse_background_after(text: &str) -> Result<u64, String> {
+    let text = text.trim().to_ascii_lowercase();
+    if text == "off" {
+        return Ok(0);
+    }
+    let invalid = || {
+        format!(
+            "Give a time such as 90s, 10m or 1h (at most {}m), or off.",
+            MAX_BACKGROUND_AFTER / 60
+        )
+    };
+    let (number, unit) = text.split_at(text.len().saturating_sub(1));
+    let scale = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        _ => return Err(invalid()),
+    };
+    let seconds = number
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_mul(scale))
+        .ok_or_else(invalid)?;
+    if seconds == 0 || seconds > MAX_BACKGROUND_AFTER {
+        return Err(invalid());
+    }
+    Ok(seconds)
 }
 
 /// After how long a running command moves to the background, as
@@ -81,21 +170,31 @@ pub fn background_value(seconds: u64) -> String {
     }
 }
 
-/// The command a field's new value sends, `None` when it says nothing.
-pub fn field_command(field: Field, value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
+/// The command that sets `field` to what was typed (`text`), `None` when
+/// it says nothing or what is set already (`current`), `Err` with why the
+/// text can't be taken.
+pub fn field_command(field: Field, text: &str, current: u64) -> Result<Option<String>, String> {
+    if text.trim().is_empty() {
+        return Ok(None);
     }
-    Some(match field {
-        Field::HandoverMain => format!("/handover-at main {value}"),
-        Field::HandoverWorkers => format!("/handover-at workers {value}"),
-        Field::BackgroundAfter => format!("/background-after {value}"),
-    })
+    let value = match field {
+        Field::HandoverMain | Field::HandoverWorkers => parse_handover_size(text)? as u64,
+        Field::BackgroundAfter => parse_background_after(text)?,
+    };
+    if value == current {
+        return Ok(None);
+    }
+    Ok(Some(match field {
+        Field::HandoverMain => format!("/handover-at main {}", handover_value(value as usize)),
+        Field::HandoverWorkers => {
+            format!("/handover-at workers {}", handover_value(value as usize))
+        }
+        Field::BackgroundAfter => format!("/background-after {}", background_value(value)),
+    }))
 }
 
 /// The fields typed into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Field {
     HandoverMain,
     HandoverWorkers,
@@ -103,6 +202,16 @@ pub enum Field {
 }
 
 impl Field {
+    /// The setting the field changes, in `reading`: tokens or seconds.
+    fn current(self, reading: &Reading) -> u64 {
+        let settings = &reading.settings;
+        match self {
+            Field::HandoverMain => settings.handover_at as u64,
+            Field::HandoverWorkers => settings.workers_handover_at as u64,
+            Field::BackgroundAfter => settings.background_after,
+        }
+    }
+
     /// The field's value in `reading`.
     fn value(self, reading: &Reading) -> String {
         let settings = &reading.settings;
@@ -156,6 +265,8 @@ pub struct SessionInfo {
     open: bool,
     /// Choices shown until the session's status does.
     held: Vec<Held>,
+    /// Why what's typed in a field can't be taken.
+    errors: std::collections::HashMap<Field, SharedString>,
     fields: Vec<(Field, Entity<InputState>)>,
     _load: Option<Task<()>>,
     _session: Option<Subscription>,
@@ -187,8 +298,17 @@ impl SessionInfo {
                             let value = input.read(cx).value().to_string();
                             this.apply(field, &value, window, cx);
                         }
+                        // What's typed is checked as it's typed.
+                        InputEvent::Change => {
+                            let value = input.read(cx).value().to_string();
+                            let current = field.current(&this.reading(cx));
+                            this.set_error(field, field_command(field, &value, current).err(), cx);
+                        }
                         // Leaving a field unapplied shows the setting again.
-                        InputEvent::Blur => this.sync_fields(window, cx),
+                        InputEvent::Blur => {
+                            this.set_error(field, None, cx);
+                            this.sync_fields(window, cx)
+                        }
                         _ => {}
                     }
                 })
@@ -201,6 +321,7 @@ impl SessionInfo {
             facts_for: None,
             open: false,
             held: Vec::new(),
+            errors: std::collections::HashMap::new(),
             fields,
             _load: None,
             _session: None,
@@ -371,11 +492,32 @@ impl SessionInfo {
     }
 
     fn apply(&mut self, field: Field, value: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(session), Some(command)) = (self.session.clone(), field_command(field, value))
-        else {
+        let Some(session) = self.session.clone() else {
             return;
         };
-        run(&session, &command, window, cx);
+        match field_command(field, value, field.current(&self.reading(cx))) {
+            Ok(Some(command)) => run(&session, &command, window, cx),
+            Ok(None) => {}
+            Err(why) => self.set_error(field, Some(why), cx),
+        }
+    }
+
+    /// Shows why what's typed in `field` can't be taken, or nothing.
+    fn set_error(&mut self, field: Field, error: Option<String>, cx: &mut Context<Self>) {
+        let error = error.map(SharedString::from);
+        if self.errors.get(&field) != error.as_ref() {
+            match error {
+                Some(error) => self.errors.insert(field, error),
+                None => self.errors.remove(&field),
+            };
+            cx.notify();
+        }
+    }
+
+    /// Why what's typed in `field` can't be taken (tests).
+    #[cfg(test)]
+    pub fn error(&self, field: Field) -> Option<&SharedString> {
+        self.errors.get(&field)
     }
 
     fn send(&self, command: String, window: &mut Window, cx: &mut App) {
@@ -520,11 +662,23 @@ impl Render for SessionInfo {
                 .ok();
             }
         };
+        let danger = theme.danger;
         let input = |field: Field, this: &Self| {
+            let error = this.errors.get(&field).cloned();
             this.fields
                 .iter()
                 .find(|(kind, _)| *kind == field)
                 .map(|(_, input)| Input::new(input).small().w(rems(6.)))
+                .map(|input| {
+                    v_flex()
+                        .gap_0p5()
+                        // Enter applies the field, and the info stays open.
+                        .on_action(|_: &gpui_kit::base::actions::Confirm, _, _| {})
+                        .child(input)
+                        .when_some(error, |this, error| {
+                            this.child(div().text_xs().text_color(danger).child(error))
+                        })
+                })
         };
 
         let main_model = facts
@@ -925,21 +1079,34 @@ mod tests {
         assert_eq!(background_value(600), "10m");
         assert_eq!(background_value(3_600), "1h");
         assert_eq!(background_value(90), "90s");
+        // Sizes arko capped to what the model leaves room for show whole.
+        assert_eq!(handover_value(950_500), "950,500");
+        assert_eq!(handover_value(1_234_567), "1,234,567");
+        let command = |field, text: &str, current| field_command(field, text, current);
         assert_eq!(
-            field_command(Field::HandoverMain, " 300k ").as_deref(),
-            Some("/handover-at main 300k")
+            command(Field::HandoverMain, " 300k ", 950_000),
+            Ok(Some("/handover-at main 300k".into()))
         );
         assert_eq!(
-            field_command(Field::HandoverWorkers, "200k").as_deref(),
-            Some("/handover-at workers 200k")
+            command(Field::HandoverWorkers, "1.2M", 200_000),
+            Ok(Some("/handover-at workers 1200k".into()))
         );
         assert_eq!(
-            field_command(Field::BackgroundAfter, "off").as_deref(),
-            Some("/background-after off")
+            command(Field::BackgroundAfter, "off", 600),
+            Ok(Some("/background-after off".into()))
         );
-        assert_eq!(field_command(Field::BackgroundAfter, "  "), None);
+        assert_eq!(command(Field::BackgroundAfter, "  ", 600), Ok(None));
+        // What is set already sends nothing, however it's written.
+        assert_eq!(command(Field::HandoverMain, "950,500", 950_500), Ok(None));
+        assert_eq!(command(Field::BackgroundAfter, "600s", 600), Ok(None));
+        // What the session would refuse says why at once.
+        assert!(command(Field::HandoverMain, "300", 950_000).is_err());
+        assert!(command(Field::HandoverMain, "1.2345k", 950_000).is_err());
+        assert!(command(Field::BackgroundAfter, "10 minutes", 600).is_err());
+        assert!(command(Field::BackgroundAfter, "2h", 600).is_err());
         for command in [
             "/handover-at main 300k",
+            "/handover-at main 950,500",
             "/background-after off",
             "/outside on",
             "/text-replies off",
@@ -1218,5 +1385,25 @@ mod view_tests {
             sent(&session, cx),
             ["/outside on", "/handover-at main 300k"]
         );
+        // Enter on the size set already sends nothing. A size the session
+        // would refuse says why under the field, and sends nothing either.
+        for typed in ["950k", "300"] {
+            act(cx, window, |window, cx| {
+                main.update(cx, |input, cx| {
+                    input.set_value(typed, window, cx);
+                    input.focus(window, cx);
+                })
+            });
+            act(cx, window, |window, cx| window.press("enter", cx));
+        }
+        assert_eq!(
+            sent(&session, cx),
+            ["/outside on", "/handover-at main 300k"]
+        );
+        assert!(
+            cx.read(|cx| info.read(cx).error(Field::HandoverMain).is_some()),
+            "no reason under the field"
+        );
+        assert!(shows(window, cx, "session-info"), "Enter closed the info");
     }
 }
