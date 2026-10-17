@@ -37,6 +37,19 @@ use crate::writing::WritingAids;
 /// The key context of the composer's field.
 pub const CONTEXT: &str = "Composer";
 
+/// Binds ↑ and ↓ to the input history in the empty composer, and while it
+/// shows a message from the history, in every keymap. Emacs binds them to
+/// its own line motions, and Vim to its motions, which would leave the
+/// history out. Vim keeps them as motions after a count, an operator or in
+/// visual mode, and j and k stay motions.
+pub(crate) fn init(cx: &mut App) {
+    let context = "ComposerHistory > Input && (keymap != vim || (vim_mode == normal && !vim_count) || vim_mode == insert)";
+    cx.bind_keys([
+        KeyBinding::new("up", MoveUp, Some(context)),
+        KeyBinding::new("down", MoveDown, Some(context)),
+    ]);
+}
+
 actions!(
     composer,
     [
@@ -1450,7 +1463,14 @@ impl Render for Composer {
             .test_support()
             .relative()
             .w_full()
-            .key_context(CONTEXT)
+            // Where the arrows walk the history (see `init`).
+            .key_context(
+                if self.textarea.read(cx).value().is_empty() || self.walk.is_some() {
+                    "Composer ComposerHistory"
+                } else {
+                    CONTEXT
+                },
+            )
             .capture_action(cx.listener(Self::on_move_up))
             .capture_action(cx.listener(Self::on_move_down))
             .capture_action(cx.listener(Self::on_tab))

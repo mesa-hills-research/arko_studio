@@ -185,6 +185,7 @@ impl Startup {
 /// Sets the app up, before its first window.
 pub fn init(startup: Startup, cx: &mut App) {
     gpui_kit::init(cx);
+    composer::init(cx);
     cx.set_app_identity(APP_ID, APP_NAME);
     // Windows and Linux quit with the last window. macOS keeps the app
     // running, as Mac apps do, until Quit.

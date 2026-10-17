@@ -122,6 +122,52 @@ fn up_and_down_walk_the_history_at_the_edges(cx: &mut TestAppContext) {
     assert_eq!(composer_text(&workspace, cx), "Draft", "back to the draft");
 }
 
+/// ↑ and ↓ walk the input history from the empty composer with every
+/// keymap, in Vim's normal and insert modes alike.
+#[gpui_kit::test]
+fn empty_history_arrows_work_in_every_keymap_and_both_vim_modes(cx: &mut TestAppContext) {
+    use crate::prefs::Keymap as InputKeymap;
+    let (_, window, workspace) = start(cx);
+    cx.update(|cx| {
+        crate::history::add("First message", cx);
+        crate::history::add("Second message", cx);
+    });
+    for (keymap, insert) in [
+        (InputKeymap::Standard, false),
+        (InputKeymap::Emacs, false),
+        (InputKeymap::Vim, false),
+        (InputKeymap::Vim, true),
+    ] {
+        cx.update(|cx| prefs::update(cx, |prefs| prefs.input.keymap = keymap));
+        act(cx, window, |window, cx| {
+            if keymap == InputKeymap::Vim {
+                window.press("escape", cx);
+                if insert {
+                    window.press("i", cx);
+                }
+            }
+        });
+        act(cx, window, |window, cx| window.press("up", cx));
+        assert_eq!(
+            composer_text(&workspace, cx),
+            "Second message",
+            "{keymap:?} insert {insert}"
+        );
+        act(cx, window, |window, cx| window.press("up", cx));
+        assert_eq!(composer_text(&workspace, cx), "First message");
+        act(cx, window, |window, cx| window.press("down", cx));
+        act(cx, window, |window, cx| window.press("down", cx));
+        assert_eq!(composer_text(&workspace, cx), "");
+    }
+    // After a count, Vim's ↑ stays a motion.
+    act(cx, window, |window, cx| {
+        window.press("escape", cx);
+        window.press("2", cx);
+        window.press("up", cx);
+    });
+    assert_eq!(composer_text(&workspace, cx), "");
+}
+
 #[gpui_kit::test]
 fn a_long_paste_becomes_a_token_that_sends_whole(cx: &mut TestAppContext) {
     let (_, window, workspace) = start(cx);
