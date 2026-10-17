@@ -187,11 +187,12 @@ pub fn keep_readable_mcp_config(files: &mut Vec<PathBuf>) -> Vec<String> {
 /// chooses its own.
 pub fn takes_cache_1h(name: &str) -> bool {
     let name = name.trim().to_ascii_lowercase();
-    if name.starts_with("cc:") {
+    if name.starts_with("cc:") || name.starts_with("claude-code:") {
         return false;
     }
+    // A `~` asks OpenRouter for the latest of a family.
     if let Some(slug) = name.strip_prefix("openrouter:") {
-        return slug.starts_with("anthropic/");
+        return slug.trim_start_matches('~').starts_with("anthropic/");
     }
     name.starts_with("claude-") || matches!(name.as_str(), "opus" | "sonnet" | "haiku" | "fable")
 }
@@ -347,6 +348,11 @@ mod tests {
             Some(true)
         );
         assert_eq!(cache(Some("cc:claude-opus-5-5"), None), None);
+        assert_eq!(cache(Some("claude-code:opus"), None), None);
+        assert_eq!(
+            cache(Some("openrouter:~anthropic/claude-opus-latest"), None),
+            Some(true)
+        );
         assert_eq!(cache(Some("gpt-6.1-sol"), None), None);
         assert_eq!(cache(None, Some("claude-opus-5-5")), Some(true));
         assert_eq!(cache(None, None), None);
