@@ -491,8 +491,7 @@ fn prepare(
             defaults.apply(&mut options, Some(new.mode), || last_model(root));
         }
     }
-    let mut notes = defaults::keep_readable_mcp_config(&mut options.mcp_config);
-    notes.extend(defaults::take_free_port(&mut options.remote));
+    let notes = defaults::take_free_port(&mut options.remote).into_iter().collect();
     if let Some(configure) = configure {
         configure(&mut options);
     }
@@ -1282,11 +1281,9 @@ mod tests {
         assert_eq!(launched, Ok(true), "start waited for the file");
     }
 
-    /// MCP config files set in Settings that are gone, or aren't MCP config
-    /// files, are left out of a session's options with a note each, since
-    /// arko would refuse to open it.
+    /// The engine reads every configured MCP file and reports problems.
     #[test]
-    fn mcp_config_files_that_cant_be_read_are_left_out_with_a_note() {
+    fn mcp_config_files_are_optional_and_left_for_the_engine_to_read() {
         let temp = tempfile::tempdir().unwrap();
         let good = temp.path().join("servers.json");
         let bad = temp.path().join("notes.json");
@@ -1298,12 +1295,9 @@ mod tests {
         let defaults = SessionDefaults::from_prefs(&prefs);
         let resume = Start::Resume(SessionId("s1".into()));
         let (options, notes) = prepare(Path::new("/arko"), None, &defaults, resume);
-        assert_eq!(options.mcp_config, [good]);
-        assert_eq!(notes.len(), 2, "{notes:?}");
-        assert!(notes[0].contains(&bad.display().to_string()), "{notes:?}");
-        assert!(notes[0].contains("it has no mcpServers"), "{notes:?}");
-        assert!(notes[1].contains(&gone.display().to_string()), "{notes:?}");
-        assert!(notes[1].contains("it isn’t there"), "{notes:?}");
+        assert_eq!(options.mcp_config, [good, bad, gone]);
+        assert!(!options.mcp_config_required);
+        assert!(notes.is_empty(), "{notes:?}");
     }
 
     /// With a port set and every session sharing its page, a session finding
