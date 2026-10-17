@@ -6,7 +6,7 @@
 //! `/resume`) starts the transcript over. A call's result block goes under
 //! its call rather than in a row of its own.
 
-use arko::remote::{Activity, Item, Kind, Level, Snapshot, Update, WorkerSummary};
+use arko::remote::{Activity, Delivery, Item, Kind, Level, Snapshot, Update, WorkerSummary};
 use gpui_kit::SharedString;
 
 use crate::prefs::TranscriptView as View;
@@ -206,6 +206,13 @@ impl Model {
                     !cut
                 });
             }
+            // Text a failed response streamed, which its retry streams again.
+            Update::Remove { id } => {
+                if let Ok(ix) = self.position(id) {
+                    self.entries.remove(ix);
+                    changes.removed.push(id);
+                }
+            }
         }
     }
 
@@ -367,6 +374,9 @@ pub(crate) enum RowKey {
     /// Where the conversation began (`/new`, `/resume`).
     Separator(u64),
     User(u64),
+    /// A message that only kept the prompt cache warm, and its reply, as
+    /// one quiet line.
+    Refresh(u64),
     /// One top-level Markdown block of an entry's text: `generation` changes
     /// when the text is replaced rather than appended to, `source` when it
     /// shows its source.
@@ -550,6 +560,32 @@ fn run(
     (members, ix)
 }
 
+/// Whether `item` is a message that only kept the prompt cache warm.
+fn is_refresh(item: &Item) -> bool {
+    item.is_main() && item.kind == Kind::User && item.delivery == Some(Delivery::Refresh)
+}
+
+/// Where the transcript goes on after the cache refresh at `ix`: past the
+/// agent's answer to it ("Acknowledged") and its turn's footer.
+fn after_refresh(entries: &[Entry], ix: usize) -> usize {
+    let mut next = ix + 1;
+    while let Some(entry) = entries.get(next) {
+        let item = &entry.item;
+        let answer = matches!(
+            item.kind,
+            Kind::Text | Kind::Reply | Kind::Thinking | Kind::Message | Kind::Turn
+        );
+        if !(item.is_main() && answer) {
+            break;
+        }
+        next += 1;
+        if item.kind == Kind::Turn {
+            break;
+        }
+    }
+    next
+}
+
 /// The rows `view` shows of `model`.
 pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
     let filter = model.filter();
@@ -566,6 +602,11 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
         .map_or(0, |first| model.position(first).unwrap_or_else(|ix| ix));
     while ix < entries.len() {
         let entry = &entries[ix];
+        if is_refresh(&entry.item) {
+            rows.push(RowKey::Refresh(entry.item.id), Class::Activity);
+            ix = after_refresh(entries, ix);
+            continue;
+        }
         match show(filter, view, &entry.item) {
             Show::Hidden => ix += 1,
             Show::Count => {
@@ -978,6 +1019,41 @@ mod tests {
                 Gap::Turn
             ]
         );
+    }
+
+    #[test]
+    fn text_a_failed_response_streamed_goes() {
+        let mut model = model(vec![
+            item(1, Kind::User, "main", "go"),
+            item(2, Kind::Text, "main", "Broken"),
+        ]);
+        let mut changes = Changes::default();
+        model.apply(Update::Remove { id: 2 }, &mut changes);
+        model.apply(Update::Remove { id: 9 }, &mut changes);
+        assert_eq!(ids(&model), [1]);
+        assert_eq!(changes.removed, [2]);
+    }
+
+    #[test]
+    fn a_cache_refresh_and_its_answer_are_one_quiet_row() {
+        let mut refresh = item(2, Kind::User, "main", "(keep the cache warm)");
+        refresh.delivery = Some(Delivery::Refresh);
+        let model = model(vec![
+            item(1, Kind::Reply, "main", "done"),
+            refresh,
+            item(3, Kind::Thinking, "main", "short"),
+            item(4, Kind::Reply, "main", "Acknowledged"),
+            item(5, Kind::Turn, "main", "1 s"),
+            item(6, Kind::User, "main", "next"),
+        ]);
+        for view in [View::Full, View::Quiet, View::Messages] {
+            let rows = keys(&model, view);
+            assert_eq!(
+                rows[rows.len() - 2..],
+                [RowKey::Refresh(2), RowKey::User(6)],
+                "{view:?}"
+            );
+        }
     }
 
     #[test]

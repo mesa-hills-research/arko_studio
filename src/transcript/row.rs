@@ -145,6 +145,7 @@ pub(super) fn element_id(key: RowKey) -> ElementId {
     let (name, id): (&'static str, u64) = match key {
         RowKey::Separator(id) => ("separator", id),
         RowKey::User(id) => ("user", id),
+        RowKey::Refresh(id) => ("refresh", id),
         RowKey::Block {
             id,
             generation,
@@ -189,7 +190,7 @@ fn user_tags(item: &Item) -> Vec<String> {
         Some(Delivery::Answer) => tags.push("Answer".into()),
         Some(Delivery::Queued) => tags.push("Queued".into()),
         Some(Delivery::Command) => tags.push("Command".into()),
-        Some(Delivery::Turn) | None => {}
+        Some(Delivery::Turn | Delivery::Refresh) | None => {}
     }
     if item.source == Some(Source::Web) {
         tags.push("From the web page".into());
@@ -251,6 +252,7 @@ impl TranscriptView {
         match key {
             RowKey::Separator(id) => self.separator(id, cx),
             RowKey::User(id) => self.user(id, view, cx),
+            RowKey::Refresh(_) => self.refresh(cx),
             RowKey::Block {
                 id, block, source, ..
             } => self.block(id, block, source, view, cx),
@@ -285,6 +287,18 @@ impl TranscriptView {
             .child(line())
             .child(text)
             .child(line())
+            .into_any_element()
+    }
+
+    /// The quiet line of a message that only kept the prompt cache warm.
+    fn refresh(&self, cx: &App) -> AnyElement {
+        let theme = cx.theme();
+        div()
+            .w_full()
+            .px_2()
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .child("Cache refreshed")
             .into_any_element()
     }
 

@@ -663,6 +663,7 @@ impl TranscriptView {
         self.rows.iter().position(|row| match row.key {
             RowKey::Separator(row)
             | RowKey::User(row)
+            | RowKey::Refresh(row)
             | RowKey::Actions(row)
             | RowKey::Thinking(row)
             | RowKey::Call(row)

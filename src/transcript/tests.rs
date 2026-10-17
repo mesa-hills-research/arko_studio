@@ -439,6 +439,76 @@ fn a_truncate_and_another_conversation_drop_rows(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_failed_responses_text_is_taken_back_and_its_retry_streams_anew(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.turn_started();
+    say(&feed, "main", "Before.\n\n");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let started = || AgentEvent::ModelRequestStarted {
+        model: "gpt-6-luna".into(),
+        subagent: None,
+        sizes: None,
+        bytes_per_token: 3.0,
+    };
+    feed.event(&event("main", started()), None);
+    say(&feed, "main", "Broken");
+    think(&feed, "Hmm");
+    settle(cx, window);
+    assert_eq!(cx.read(|cx| view.read(cx).model.entries().len()), 2);
+    feed.event(
+        &event(
+            "main",
+            AgentEvent::StreamedOutputDiscarded {
+                text_bytes: 6,
+                reasoning_bytes: 3,
+            },
+        ),
+        None,
+    );
+    feed.event(&event("main", started()), None);
+    say(&feed, "main", "Fixed.");
+    settle(cx, window);
+    cx.read(|cx| {
+        let view = view.read(cx);
+        let entries = view.model.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].item.text, "Before.\n\nFixed.");
+        let doc = view.ui[&entries[0].item.id].doc.as_ref().unwrap();
+        assert_eq!(doc.text, "Before.\n\nFixed.");
+        assert_eq!(doc.blocks.len(), 2);
+    });
+}
+
+#[gpui_kit::test]
+fn a_cache_refresh_shows_as_one_quiet_row(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Hi", Source::App, Delivery::Turn);
+    feed.reply("Hello.");
+    feed.user(
+        arko::remote::REFRESH_MESSAGE,
+        Source::App,
+        Delivery::Refresh,
+    );
+    feed.turn_started();
+    say(&feed, "main", "Acknowledged");
+    feed.reply("Acknowledged");
+    feed.turn_ended("1 s · $0.001", None);
+    let (_, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let refresh = item_ids(&feed)[2].0;
+    let rows = keys(&view, cx);
+    assert_eq!(rows.last(), Some(&RowKey::Refresh(refresh)));
+    assert_eq!(
+        rows.iter()
+            .filter(|key| matches!(key, RowKey::Block { .. }))
+            .count(),
+        1,
+        "only the first reply's text"
+    );
+}
+
+#[gpui_kit::test]
 fn the_views_show_more_or_less_of_the_same_feed(cx: &mut TestAppContext) {
     start(cx);
     let feed = Feed::new("main");
