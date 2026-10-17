@@ -18,8 +18,7 @@ use gpui_kit::*;
 
 use crate::live::LiveSession;
 
-/// What the page lets others do: one text wherever the page is offered
-/// (here and Settings › Web page).
+/// What the page lets others do, for Settings › Web page.
 pub const WHAT_IT_ALLOWS: &str = "Anyone with a session’s link can follow it from a phone or another computer, and send it messages, answers and commands. Each link holds the session’s key, and New key ends the old links. The page isn’t encrypted: share it on networks you trust.";
 
 /// The command that serves the page on `bind` (`/remote`'s argument: an
@@ -91,6 +90,27 @@ pub fn qr_link(page: &Page) -> Option<&Link> {
     page.links.iter().find(|link| !link.loopback)
 }
 
+/// What one of the page's links lets someone do.
+pub const ACT_IN_IT: &str =
+    "follow this session and act in it: send messages and commands, answer questions, stop a turn.";
+
+/// Who can open a page other devices reach.
+pub const ON_THIS_NETWORK: &str =
+    "Devices on this network can open the page with these links, which hold the session’s key.";
+
+/// The page isn't encrypted.
+pub const NOT_ENCRYPTED: &str = "The page isn’t encrypted: share it only on networks you trust.";
+
+/// What the panel says the page allows: who can open it, what a link lets
+/// them do, and, for a page other devices reach, that it isn't encrypted.
+pub fn explanation(page: &Page) -> String {
+    if qr_link(page).is_some() {
+        format!("{ON_THIS_NETWORK} Anyone with one can {ACT_IN_IT} {NOT_ENCRYPTED}")
+    } else {
+        format!("Anyone with one of these links can {ACT_IN_IT}")
+    }
+}
+
 /// What the panel says when only this computer can open the page.
 pub const THIS_COMPUTER_ONLY: &str = "Only this computer can open these links. For a phone or another computer, share the page on your network in Settings › Web page (Tailscale’s too), or reach it through an SSH tunnel.";
 
@@ -141,8 +161,8 @@ impl WebPagePanel {
         }
     }
 
-    /// Says what the page lets others do ([`WHAT_IT_ALLOWS`]), where
-    /// nothing around the panel does.
+    /// Says what the page lets others do ([`explanation`]), where nothing
+    /// around the panel does.
     pub fn explained(mut self) -> Self {
         self.explained = true;
         self
@@ -295,7 +315,7 @@ impl RenderOnce for WebPagePanel {
                                 .test_support()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child(WHAT_IT_ALLOWS),
+                                .child(explanation(&self.page)),
                         )
                     }),
             )
@@ -406,6 +426,14 @@ mod tests {
         // A phone can't open this computer's own address.
         assert_eq!(qr_link(&page(vec![local.clone()])), None);
         assert_eq!(qr_link(&page(Vec::new())), None);
+        // On the network, the panel says who can open the page and that
+        // it isn't encrypted.
+        let shared = super::explanation(&page(vec![local.clone(), lan.clone()]));
+        assert!(shared.starts_with(super::ON_THIS_NETWORK), "{shared}");
+        assert!(shared.ends_with(super::NOT_ENCRYPTED), "{shared}");
+        let local = super::explanation(&page(vec![local]));
+        assert!(local.starts_with("Anyone with one of these links can follow"));
+        assert!(!local.contains(super::NOT_ENCRYPTED));
     }
 
     #[gpui_kit::test]
