@@ -146,6 +146,9 @@ pub struct CacheReminders {
     sent: Sent,
     /// The window showing the last reminder.
     shown_in: Option<AnyWindowHandle>,
+    /// The next reminder shows without a sound or an OS copy: it comes back
+    /// after a failed Refresh.
+    quiet: bool,
     _timer: Option<Task<()>>,
     _refresh: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -180,6 +183,7 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) -> Entity<CacheReminde
             period: None,
             sent: Sent::default(),
             shown_in: None,
+            quiet: false,
             _timer: None,
             _refresh: None,
             _subscriptions: subscriptions,
@@ -309,7 +313,8 @@ impl CacheReminders {
         } else {
             "The prompt cache expires in 5 minutes"
         };
-        let system = !notify::app_focused(cx);
+        let quiet = std::mem::take(&mut self.quiet);
+        let system = !quiet && !notify::app_focused(cx);
         let this = cx.entity().downgrade();
         let countdown = last.then(|| {
             let title = title.clone();
@@ -350,7 +355,9 @@ impl CacheReminders {
         if last {
             self.shown_in = Some(window);
         }
-        notify::play_sound(cx);
+        if !quiet {
+            notify::play_sound(cx);
+        }
     }
 
     /// Keeps the cache warm (the reminder's Refresh). The refresh starts a
@@ -361,21 +368,30 @@ impl CacheReminders {
             return;
         };
         let refreshing = session.update(cx, |session, cx| session.refresh_cache(cx));
-        // The reminder's own button took it away already.
-        self.shown_in = None;
+        // The reminder goes (the window busy with the click took it away
+        // already).
+        let reminded = self.shown_in.is_some();
+        self.dismiss(cx);
         let window = notify::window_for(&session, cx);
         self._refresh = Some(cx.spawn(async move |this, cx| {
             let refreshed = refreshing.await;
-            this.update(cx, |_, cx| {
+            this.update(cx, |this, cx| {
                 let message = match refreshed {
                     Ok(arko::Refreshed::OutOfBand { cost, .. }) => Some(Notification::info(
                         format!("Cache refreshed ({}).", figures::dollars(cost)),
                     )),
                     // A short turn keeps it warm: the transcript shows it.
                     Ok(arko::Refreshed::Message) => None,
-                    Err(why) => Some(Notification::error(format!(
-                        "The cache wasn’t refreshed. {why}"
-                    ))),
+                    Err(why) => {
+                        // The reminder comes back, with its countdown, for
+                        // Refresh to be tried again.
+                        if reminded {
+                            this.sent.last = false;
+                            this.quiet = true;
+                            this.check(cx);
+                        }
+                        Some(Notification::error(refresh_failed(&why)))
+                    }
                 };
                 if let (Some(message), Some(window)) = (message, window) {
                     window
@@ -385,6 +401,16 @@ impl CacheReminders {
             })
             .ok();
         }));
+    }
+}
+
+/// What a failed refresh says: the session's own sentence when it tells
+/// what wasn't refreshed, else why, after what.
+pub fn refresh_failed(why: &str) -> String {
+    if why.starts_with("The cache wasn") {
+        why.to_string()
+    } else {
+        format!("The cache wasn’t refreshed. {why}")
     }
 }
 
@@ -765,26 +791,35 @@ mod tests {
         assert!(!reminded.shows(cx, "cache-countdown"));
     }
 
+    /// A failed refresh says why once: the session's sentence as it is,
+    /// the app's own after what failed.
+    #[test]
+    fn a_failed_refresh_says_why_once() {
+        assert_eq!(
+            super::refresh_failed("The cache wasn't refreshed: the server is overloaded"),
+            "The cache wasn't refreshed: the server is overloaded"
+        );
+        assert_eq!(
+            super::refresh_failed("Wait for the turn to end."),
+            "The cache wasn’t refreshed. Wait for the turn to end."
+        );
+    }
+
     /// Refresh asks the session to keep the cache warm, and says why it
-    /// couldn't (this session never opened).
+    /// couldn't (this session never opened). The reminder comes back, its
+    /// countdown running on, so Refresh can be tried again.
     #[gpui_kit::test]
     fn refresh_asks_the_session_and_says_why_not(cx: &mut TestAppContext) {
         let reminded = Reminded::new(cx, 5, 250_000);
         assert!(reminded.sent(cx).last);
         let key = cx.read(|cx| reminded.session.read(cx).key());
-        cx.update_window(reminded.window, |_, window, cx| {
-            window.render_frame(cx);
-            window.click(("refresh-cache", key), cx);
-        })
-        .unwrap();
-        // The reminder leaves, in its exit's time.
+        reminded.click(cx, ("refresh-cache", key));
         reminded.advance(cx, 1_000);
-        assert!(
-            !reminded.shows(cx, "cache-countdown"),
-            "the reminder stayed"
-        );
-        // The reminder gave way to why the refresh failed.
-        assert!(reminded.notes(cx) >= 1);
+        assert!(reminded.sent(cx).last);
+        assert!(reminded.shows(cx, "cache-countdown"));
+        assert!(reminded.shows(cx, ("refresh-cache", key)));
+        // The reminder, and why the refresh failed.
+        assert_eq!(reminded.notes(cx), 2);
     }
 
     /// Refresh keeps the cache warm out of band. arko answers before its
