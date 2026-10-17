@@ -76,11 +76,15 @@ fn narrow_dark() {
     goldens().assert("narrow-dark", &new_window(ThemeMode::Dark, 600.));
 }
 
+/// The app's icon, the image the transcript's tool call shows.
+const PNG: &[u8] = include_bytes!("../packaging/linux/com.mesahillsresearch.ArkoStudio.png");
+
 /// The transcript's feed, fed as a session feeds it.
 mod feed {
     use std::collections::HashMap;
 
-    use arko::remote::{Delivery, Feed, Level, Source, WorkerChange};
+    use arko::images::ImageRef;
+    use arko::remote::{CallStatus, Delivery, Feed, Kind, Level, Source, WorkerChange};
     use arko_agents::AgentEvent;
     use arko_workflows::WorkflowEvent;
     use serde_json::Value;
@@ -154,7 +158,8 @@ pub fn feed(&mut self, chunk: &str) -> Vec<Block> {
 The new test streams a document one byte at a time and compares the blocks with a \
 parse of the whole text.";
 
-    /// A finished turn with each kind of row, and a second one running.
+    /// A finished turn with each kind of row, and a second one running with
+    /// an image a tool returned.
     pub fn representative() -> Feed {
         let feed = Feed::new("main");
         feed.user(
@@ -227,6 +232,18 @@ parse of the whole text.";
             WorkerChange::Started,
         );
         feed.notice(Level::Warn, "rate limited, retrying in 4 s (attempt 1)");
+        // A file read that showed an image (as a resumed session has it).
+        let mut read = arko::remote::Item::new(Kind::Call, "read assets/icon.png");
+        read.id = 1;
+        read.tool = Some("read_file".into());
+        read.status = Some(CallStatus::Ok);
+        read.images = vec![ImageRef {
+            id: 1,
+            mime: "image/png".into(),
+            label: "assets/icon.png".into(),
+            bytes: super::PNG.len(),
+        }];
+        feed.restore(vec![read]);
         call(
             &feed,
             "shell",
@@ -276,6 +293,7 @@ fn transcript_window(mode: ThemeMode, width: f32) -> Screenshot {
                 cx.new(|cx| {
                     let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
                     view.set_clock(move || now, cx);
+                    view.set_image_lookup(|_| Some((PNG.into(), "image/png".into())), cx);
                     for item in open {
                         view.set_expanded(item, true, cx);
                     }

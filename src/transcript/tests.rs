@@ -438,6 +438,52 @@ fn a_truncate_and_another_conversation_drop_rows(cx: &mut TestAppContext) {
     );
 }
 
+/// The app's icon, a PNG.
+const PNG: &[u8] = include_bytes!("../../packaging/linux/com.mesahillsresearch.ArkoStudio.png");
+
+#[gpui_kit::test]
+fn images_show_as_thumbnails_that_open_the_viewer(cx: &mut TestAppContext) {
+    use arko::images::ImageRef;
+    use gpui_kit::component::WindowExt as _;
+
+    start(cx);
+    let feed = Feed::new("main");
+    let image = |id: u64, label: &str| ImageRef {
+        id,
+        mime: "image/png".into(),
+        label: label.into(),
+        bytes: PNG.len(),
+    };
+    let mut user = arko::remote::Item::new(Kind::User, "What does this icon show?");
+    user.id = 1;
+    user.images = vec![image(1, "icon.png")];
+    let mut call = arko::remote::Item::new(Kind::Call, "read shots/");
+    call.id = 2;
+    call.tool = Some("read_file".into());
+    call.status = Some(CallStatus::Ok);
+    call.images = vec![image(2, "shots/a.png"), image(3, "shots/b.png")];
+    feed.restore(vec![user, call]);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    view.update(cx, |view, cx| {
+        // The store kept the first two only.
+        view.set_image_lookup(
+            |id| (id < 3).then(|| (Arc::<[u8]>::from(PNG), "image/png".to_string())),
+            cx,
+        )
+    });
+    settle(cx, window);
+    let tile = |entry: u64, id: u64| SharedString::from(format!("image-{entry}-{id}"));
+    cx.update_window(window, |_, window, cx| {
+        for (entry, id) in [(1, 1), (2, 2), (2, 3)] {
+            assert!(window.try_find(tile(entry, id)).is_some(), "{entry} {id}");
+        }
+        assert!(!window.has_active_image_viewer(cx));
+        window.click(tile(2, 2), cx);
+        assert!(window.has_active_image_viewer(cx));
+    })
+    .unwrap();
+}
+
 #[gpui_kit::test]
 fn a_failed_responses_text_is_taken_back_and_its_retry_streams_anew(cx: &mut TestAppContext) {
     start(cx);
