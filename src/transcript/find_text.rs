@@ -1,8 +1,9 @@
-//! Plain text with the current match, which the find scrolls to by the
-//! line the match is laid out on.
+//! Text holding the current match, which the find scrolls to by the line
+//! the match is laid out on.
 
 use std::{cell::Cell, rc::Rc};
 
+use gpui_kit::base::SelectableText;
 use gpui_kit::*;
 
 use super::Key;
@@ -23,42 +24,36 @@ impl Reveal {
     }
 }
 
-/// `text`, holding the current match `key` at byte `offset`, in the
-/// transcript's `list`.
-pub(super) struct FoundText {
-    text: StyledText,
-    key: Key,
-    offset: usize,
-    reveal: Rc<Reveal>,
-    list: ListState,
+/// A text element that says where it laid out the line holding a byte.
+pub(super) trait Lines: Element {
+    /// The bounds of the line holding byte `offset` of the text, laid out
+    /// in `bounds`, as wide as a caret.
+    fn line(
+        &self,
+        offset: usize,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+    ) -> Option<Bounds<Pixels>>;
 }
 
-impl FoundText {
-    pub fn new(
-        text: StyledText,
-        key: Key,
-        offset: usize,
-        reveal: Rc<Reveal>,
-        list: ListState,
-    ) -> Self {
-        Self {
-            text,
-            key,
-            offset,
-            reveal,
-            list,
-        }
-    }
-
-    /// The bounds of the line the match is on, as the text is laid out.
-    fn line(&self) -> Option<Bounds<Pixels>> {
-        let layout = self.text.layout();
-        let position = layout.position_for_index(self.offset)?;
+impl Lines for StyledText {
+    fn line(&self, offset: usize, _: Bounds<Pixels>, _: &mut Window) -> Option<Bounds<Pixels>> {
+        let layout = self.layout();
+        let position = layout.position_for_index(offset)?;
         Some(Bounds::new(position, size(px(1.), layout.line_height())))
     }
 }
 
-impl IntoElement for FoundText {
+/// Selectable text keeps its layout to itself, so its text is shaped
+/// again, as it lays it out: in the text style it inherits, wrapped to its
+/// width unless the style keeps it on one line. That's the line layout
+/// cache's work the frame it lands, not a new layout each frame.
+pub(super) struct Selectable {
+    pub text: SelectableText,
+    pub content: SharedString,
+}
+
+impl IntoElement for Selectable {
     type Element = Self;
 
     fn into_element(self) -> Self {
@@ -66,12 +61,12 @@ impl IntoElement for FoundText {
     }
 }
 
-impl Element for FoundText {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
+impl Element for Selectable {
+    type RequestLayoutState = <SelectableText as Element>::RequestLayoutState;
+    type PrepaintState = <SelectableText as Element>::PrepaintState;
 
     fn id(&self) -> Option<ElementId> {
-        None
+        self.text.id()
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
@@ -84,7 +79,7 @@ impl Element for FoundText {
         inspector: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
-    ) -> (LayoutId, ()) {
+    ) -> (LayoutId, Self::RequestLayoutState) {
         self.text.request_layout(id, inspector, window, cx)
     }
 
@@ -93,11 +88,11 @@ impl Element for FoundText {
         id: Option<&GlobalElementId>,
         inspector: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        state: &mut (),
+        state: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
-    ) {
-        self.text.prepaint(id, inspector, bounds, state, window, cx);
+    ) -> Self::PrepaintState {
+        self.text.prepaint(id, inspector, bounds, state, window, cx)
     }
 
     fn paint(
@@ -105,12 +100,135 @@ impl Element for FoundText {
         id: Option<&GlobalElementId>,
         inspector: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        layout: &mut (),
-        prepaint: &mut (),
+        state: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
-        let line = self.line();
+        self.text
+            .paint(id, inspector, bounds, state, prepaint, window, cx);
+    }
+}
+
+impl Lines for Selectable {
+    fn line(
+        &self,
+        offset: usize,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+    ) -> Option<Bounds<Pixels>> {
+        let style = window.text_style();
+        let rem = window.rem_size();
+        let line_height = style.line_height_in_pixels(rem);
+        let wrap = (style.white_space == WhiteSpace::Normal).then_some(bounds.size.width);
+        let lines = window
+            .text_system()
+            .shape_text(
+                self.content.clone(),
+                style.font_size.to_pixels(rem),
+                &[style.to_run(self.content.len())],
+                wrap,
+                style.line_clamp,
+            )
+            .ok()?;
+        let mut origin = bounds.origin;
+        let mut start = 0;
+        for line in &lines {
+            let end = start + line.len();
+            if offset > end {
+                origin.y += line.size(line_height).height;
+                start = end + 1;
+                continue;
+            }
+            let position =
+                origin + line.position_for_index(offset.checked_sub(start)?, line_height)?;
+            return Some(Bounds::new(position, size(px(1.), line_height)));
+        }
+        None
+    }
+}
+
+/// `text`, holding the current match `key` at byte `offset`, in the
+/// transcript's `list`.
+pub(super) struct FoundText<T> {
+    text: T,
+    key: Key,
+    offset: usize,
+    reveal: Rc<Reveal>,
+    list: ListState,
+}
+
+impl<T: Lines> FoundText<T> {
+    pub fn new(text: T, key: Key, offset: usize, reveal: Rc<Reveal>, list: ListState) -> Self {
+        Self {
+            text,
+            key,
+            offset,
+            reveal,
+            list,
+        }
+    }
+}
+
+impl<T: Lines> IntoElement for FoundText<T> {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl<T: Lines> Element for FoundText<T> {
+    type RequestLayoutState = T::RequestLayoutState;
+    type PrepaintState = T::PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        self.text.id()
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.text.request_layout(id, inspector, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        state: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.text.prepaint(id, inspector, bounds, state, window, cx)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        state: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.text
+            .paint(id, inspector, bounds, state, prepaint, window, cx);
+        let landing = self.reveal.requested.get() == Some(self.key);
+        if !landing && !cfg!(test) {
+            return;
+        }
+        let line = self.text.line(self.offset, bounds, window);
         #[cfg(test)]
         self.reveal.line.set(line);
         // The line's place counts what is above it in the row (tags,
@@ -118,9 +236,7 @@ impl Element for FoundText {
         // finished this frame and let go of its state. Scrolling also stops
         // it following the latest row, which a reveal asked of the list in
         // layout wouldn't. Only this landing scrolls, never a later frame.
-        if self.reveal.requested.get() == Some(self.key)
-            && let Some(line) = line
-        {
+        if landing && let Some(line) = line {
             let (reveal, key, list) = (self.reveal.clone(), self.key, self.list.clone());
             window.defer(cx, move |window, _| {
                 if reveal.requested.get() != Some(key) {
@@ -141,7 +257,5 @@ impl Element for FoundText {
                 }
             });
         }
-        self.text
-            .paint(id, inspector, bounds, layout, prepaint, window, cx);
     }
 }

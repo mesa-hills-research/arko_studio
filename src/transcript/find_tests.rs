@@ -547,6 +547,36 @@ fn plain_matches_reveal_their_shaped_line_with_wrapping_images_and_zoom(cx: &mut
     }
 }
 
+/// Text with matches stays selectable while the find bar is open: a drag
+/// across a message of the user's with a highlighted match copies it.
+#[gpui_kit::test]
+fn found_text_stays_selectable(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    feed.user("A needle in the hay", Source::App, Delivery::Turn);
+    let (window, view) = open_feed(cx, &feed, View::Full, 600.);
+    settle(cx, window);
+    view.update(cx, |view, cx| {
+        view.find("needle", cx);
+    });
+    settle(cx, window);
+    assert_eq!(cx.read(|cx| view.read(cx).find_status()).total, 1);
+    let id = feed.subscribe().0.items[0].id;
+    cx.update_window(window, |_, window, cx| {
+        let bounds = window.find(("user-message", id)).bounds();
+        let middle = bounds.size.height / 2.;
+        let from = bounds.origin + Point::new(px(2.), middle);
+        let to = bounds.origin + Point::new(bounds.size.width - px(2.), middle);
+        window.drag(from, to, cx);
+        window.press("secondary-c", cx);
+    })
+    .unwrap();
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert_eq!(copied, "A needle in the hay");
+}
+
 fn top(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> gpui_kit::ListOffset {
     cx.read(|cx| view.read(cx).list.top())
 }

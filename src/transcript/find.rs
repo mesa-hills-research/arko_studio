@@ -1278,8 +1278,8 @@ impl TranscriptView {
             .collect()
     }
 
-    /// `text` as the plain text of `place` in a row, its matches marked:
-    /// selectable as usual, and while it has matches, painted with them.
+    /// `text` as the plain text of `place` in a row, selectable as usual,
+    /// with its matches painted on it.
     pub(super) fn marked(
         &self,
         id: impl Into<ElementId>,
@@ -1289,10 +1289,16 @@ impl TranscriptView {
         cx: &App,
     ) -> AnyElement {
         let text = text.into();
-        if self.match_ranges(entry, place).is_empty() {
-            return super::selectable(id, text).into_any_element();
+        let highlights = self.highlights(entry, place, &text, cx);
+        let selectable = super::selectable(id, text.clone());
+        if highlights.is_empty() {
+            return selectable.into_any_element();
         }
-        self.marked_plain(entry, place, text, cx)
+        let selectable = plain::Selectable {
+            text: selectable.highlights(highlights),
+            content: text,
+        };
+        self.found(entry, place, selectable)
     }
 
     /// `text` with the matches of `place` painted on it (for text that
@@ -1305,12 +1311,32 @@ impl TranscriptView {
         cx: &App,
     ) -> AnyElement {
         let text = text.into();
-        let ranges = self.match_ranges(entry, place);
-        if ranges.is_empty() {
+        let highlights = self.highlights(entry, place, &text, cx);
+        if highlights.is_empty() {
             return text.into_any_element();
         }
+        self.found(
+            entry,
+            place,
+            StyledText::new(text).with_highlights(highlights),
+        )
+    }
+
+    /// The matches of `place` in `text`, painted with the current one
+    /// stronger.
+    fn highlights(
+        &self,
+        entry: u64,
+        place: Place,
+        text: &str,
+        cx: &App,
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
+        let ranges = self.match_ranges(entry, place);
+        if ranges.is_empty() {
+            return Vec::new();
+        }
         let (all, strong) = match_colors(cx);
-        let highlights: Vec<(Range<usize>, HighlightStyle)> = ranges
+        ranges
             .into_iter()
             .filter(|(range, _)| text.get(range.clone()).is_some())
             .map(|(range, current)| {
@@ -1322,8 +1348,12 @@ impl TranscriptView {
                     },
                 )
             })
-            .collect();
-        let text = StyledText::new(text).with_highlights(highlights);
+            .collect()
+    }
+
+    /// `text`, which shows `place`'s matches, and which scrolls the
+    /// transcript to the current one as the find lands on it.
+    fn found<T: plain::Lines>(&self, entry: u64, place: Place, text: T) -> AnyElement {
         if let Some(find) = &self.find
             && let Some(key) = find
                 .current
