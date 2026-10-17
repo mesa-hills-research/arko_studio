@@ -730,3 +730,59 @@ fn a_resize_leaves_the_pages_as_they_are(cx: &mut TestAppContext) {
     frame(cx);
     assert!(builds(cx) > before);
 }
+
+/// The choices on Input, Models & accounts and Sessions stay inside their
+/// rows from 460 to 1300 pixels wide: beside their titles where they fit,
+/// under them where they don't, and across a narrow page.
+#[gpui_kit::test]
+fn the_choices_stay_inside_their_rows(cx: &mut TestAppContext) {
+    use gpui_kit::{ElementId, Window, base::test_support::snapshots};
+    start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, 1, 1200.);
+    let show = |cx: &mut TestAppContext, page: usize| {
+        cx.update(|cx| settings.update(cx, |settings, cx| settings.show_page(page, cx)));
+        act(cx, window, |_, _| {});
+    };
+    // The dropdowns' buttons on the page shown, as their right edges.
+    let choices = |window: &Window| {
+        snapshots(window)
+            .into_iter()
+            .filter(|element| {
+                element.path().last() == Some(&ElementId::Name("btn".into()))
+                    && element
+                        .path()
+                        .contains(&ElementId::Name("settings-page".into()))
+            })
+            .map(|element| element.bounds().right())
+            .collect::<Vec<_>>()
+    };
+    // How many choices each page had in view, over all the widths: a
+    // narrow page can push them below the window.
+    let mut checked = [0; 3];
+    for width in (460..=1300).step_by(40) {
+        cx.simulate_window_resize(window, size(px(width as f32), px(1200.)));
+        show(cx, 1);
+        // The paste number field ends where the rows end, in either layout.
+        let mut inset = px(0.);
+        act(cx, window, |window, _| {
+            let page = window.find("settings-page").bounds();
+            let edge = window.within("group-2").find("increment").bounds().right();
+            inset = page.right() - edge;
+        });
+        for (ix, page) in [1, 2, 3].into_iter().enumerate() {
+            show(cx, page);
+            act(cx, window, |window, _| {
+                let edge = window.find("settings-page").bounds().right() - inset;
+                let choices = choices(window);
+                checked[ix] += choices.len();
+                for right in choices {
+                    assert!(
+                        right <= edge + px(1.),
+                        "a choice on page {page} at {width} px ends at {right:?}, past {edge:?}"
+                    );
+                }
+            });
+        }
+    }
+    assert!(checked.iter().all(|&count| count > 20), "{checked:?}");
+}

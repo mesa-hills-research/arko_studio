@@ -142,6 +142,23 @@ fn settings_input_dark() {
     );
 }
 
+/// Where a choice no longer fits beside its title: Send key goes under it.
+#[test]
+fn settings_input_medium_light() {
+    goldens().assert(
+        "settings-input-medium-light",
+        &settings_window(ThemeMode::Light, 980., 1),
+    );
+}
+
+#[test]
+fn settings_input_medium_dark() {
+    goldens().assert(
+        "settings-input-medium-dark",
+        &settings_window(ThemeMode::Dark, 980., 1),
+    );
+}
+
 #[test]
 fn settings_accounts_light() {
     goldens().assert(
