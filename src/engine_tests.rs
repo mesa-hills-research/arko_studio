@@ -408,6 +408,43 @@ fn a_projects_mcp_servers_are_approved_in_a_dialog(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_session_closed_before_it_opened_never_sends_its_first_message(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, _| answer("Hello.", Duration::ZERO));
+    let app = start(cx, &mock);
+    std::fs::write(
+        app.work.join(".mcp.json"),
+        r#"{ "mcpServers": { "echo": { "command": "this-program-isnt-there" } } }"#,
+    )
+    .unwrap();
+    app.send(cx, "Say hello.");
+    // It waits on the approval, and is closed meanwhile.
+    wait_until(cx, "the approval dialog", |cx| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("mcp-approval").is_some()
+        })
+        .unwrap()
+    });
+    let session = app.shown(cx).unwrap();
+    act(cx, app.window, |window, cx| {
+        crate::quit::close(LiveSessions::all(cx), false, window, cx);
+    });
+    // The question is answered for the user: it ends without waiting.
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| !session.read(cx).is_running())
+    });
+    assert!(cx.read(|cx| LiveSessions::all(cx).is_empty()));
+    assert!(
+        mock.bodies.lock().unwrap().is_empty(),
+        "nothing went to the model"
+    );
+    // The message it didn't send is back in the composer.
+    wait_until(cx, "the message back", |cx| {
+        app.composer_text(cx) == "Say hello."
+    });
+}
+
+#[gpui_kit::test]
 fn a_session_open_elsewhere_says_who_has_it(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, _| answer("Done.", Duration::ZERO));
     let temp = tempfile::tempdir().unwrap();

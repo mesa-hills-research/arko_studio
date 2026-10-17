@@ -470,6 +470,7 @@ impl LiveSession {
         }
         self.reading = status.borrow().clone();
         self.apply_reading();
+        // Closed before it opened, only the quit is queued.
         for queued in self.queued.drain(..) {
             let _ = input.send(queued);
         }
@@ -481,7 +482,9 @@ impl LiveSession {
             details,
             images,
         });
-        self.phase = Phase::Open;
+        if self.phase != Phase::Closing {
+            self.phase = Phase::Open;
+        }
         self.opened += 1;
         self.drain(feed, status, quit_asks, cx);
         self.update_indicator(cx);
@@ -890,10 +893,17 @@ impl LiveSession {
     pub fn close(&mut self, agreed: arko::QuitAsk, cx: &mut Context<Self>) {
         match &self.phase {
             Phase::Opening => {
-                // It hasn't opened: it closes as soon as it does.
+                // It hasn't opened: it closes as soon as it does, without
+                // sending what waited for it (a new session's first message
+                // would still go to the model). A question it asks before it
+                // opens is answered: don't open.
+                self.queued.clear();
                 self.queued.push(arko::Input::Quit(Some(Vec::new())));
                 self.quit_agreed = Some(agreed);
                 self.phase = Phase::Closing;
+                if let Some(prompt) = self.prompt.take() {
+                    let _ = prompt.reply.send(PromptAnswer::Cancel);
+                }
             }
             Phase::Open | Phase::Closing => {
                 let jobs = agreed.jobs.iter().map(|job| job.job_id).collect();

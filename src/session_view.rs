@@ -27,9 +27,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::backend::{Mode, ModelChoices, NewSession, SessionEntry, SharedBackend};
-use crate::composer::{Composer, ComposerEvent, Outgoing};
+use crate::composer::{Attached, Composer, ComposerEvent, Outgoing};
 use crate::layout::WidthClass;
-use crate::live::{LiveSession, LiveSessions, Phase, PromptKind};
+use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase, PromptKind};
 use crate::transcript::{AgentFilter, TranscriptEvent, TranscriptView};
 use crate::{drafts, menus, prefs};
 
@@ -105,6 +105,18 @@ pub struct SessionView {
     transcripts: Vec<KeptTranscript>,
     /// Its window closed: it shows nothing and keeps no more drafts.
     closed: bool,
+    /// The first message of the new session that is opening.
+    first: Option<FirstMessage>,
+    /// The images of a first message whose session didn't open, for the
+    /// new session's composer.
+    returned_images: Vec<Attached>,
+}
+
+/// A new session's first message, kept until the session opens.
+struct FirstMessage {
+    text: String,
+    images: Vec<Attached>,
+    _subscription: Subscription,
 }
 
 impl SessionView {
@@ -154,6 +166,8 @@ impl SessionView {
             _draft: None,
             transcripts: Vec::new(),
             closed: false,
+            first: None,
+            returned_images: Vec::new(),
         };
         this.restore_draft(window, cx);
         this.sync_expanded(window, cx);
@@ -335,9 +349,18 @@ impl SessionView {
             .draft_key(cx)
             .and_then(|key| drafts::get(&key, cx))
             .unwrap_or_default();
-        self.composer
-            .update(cx, |composer, cx| composer.set_text(&text, window, cx));
-        self.composer_empty = text.is_empty();
+        let images = if self.session.is_none() {
+            std::mem::take(&mut self.returned_images)
+        } else {
+            Vec::new()
+        };
+        self.composer_empty = text.is_empty() && images.is_empty();
+        self.composer.update(cx, |composer, cx| {
+            composer.set_text(&text, window, cx);
+            for image in images {
+                composer.attach_image(image, cx);
+            }
+        });
     }
 
     /// Shows `session`, or a new session when `None`. The composer keeps
@@ -562,13 +585,14 @@ impl SessionView {
                 .update(cx, |composer, cx| composer.sent(&text, window, cx));
             return;
         }
-        let images: Vec<arko::Attachment> = images.iter().map(|image| image.to_arko()).collect();
+        let attached = images;
+        let images: Vec<arko::Attachment> = attached.iter().map(|image| image.to_arko()).collect();
         let message = arko::Message {
             text: text.clone(),
             images,
         };
         let result = match &self.session {
-            None => self.start_session(message, cx),
+            None => self.start_session(message, attached, cx),
             Some(session) => match session.read(cx).question() {
                 Some(_) if !message.images.is_empty() => Err(
                     "An answer takes text only. Send the images once the question is answered."
@@ -659,6 +683,7 @@ impl SessionView {
     fn start_session(
         &mut self,
         message: arko::Message,
+        images: Vec<Attached>,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let folder = match self.draft.mode {
@@ -674,8 +699,25 @@ impl SessionView {
             model: self.draft.model.clone(),
             effort: self.draft.effort.clone(),
         };
+        let text = message.text.clone();
         let session = LiveSession::create(new, arko::Input::Message(message), cx);
         drafts::set(drafts::NEW_SESSION, "", cx);
+        // Should it not open, the first message comes back to the composer.
+        let subscription = cx.subscribe(&session, |this, _, event: &LiveEvent, cx| match event {
+            LiveEvent::Failed(_) => {
+                if let Some(first) = this.first.take() {
+                    drafts::set(drafts::NEW_SESSION, &first.text, cx);
+                    this.returned_images = first.images;
+                }
+            }
+            LiveEvent::Opened => this.first = None,
+            _ => {}
+        });
+        self.first = Some(FirstMessage {
+            text,
+            images,
+            _subscription: subscription,
+        });
         self.draft.model = None;
         self.draft.effort = None;
         cx.emit(SessionViewEvent::Created(session));
