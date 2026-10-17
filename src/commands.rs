@@ -14,6 +14,7 @@ use crate::sidebar::{
     SelectNext, SelectPrevious,
 };
 use crate::sidebar::{FILTER_CONTEXT, LIST_CONTEXT, RENAME_CONTEXT};
+use crate::workers_panel;
 
 /// The sections of the shortcuts sheet and the palette.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,15 +23,17 @@ pub enum Group {
     Sessions,
     Composer,
     Transcript,
+    Workers,
     View,
 }
 
 impl Group {
-    pub const ALL: [Group; 5] = [
+    pub const ALL: [Group; 6] = [
         Group::General,
         Group::Sessions,
         Group::Composer,
         Group::Transcript,
+        Group::Workers,
         Group::View,
     ];
 
@@ -40,6 +43,7 @@ impl Group {
             Group::Sessions => "Sessions",
             Group::Composer => "Composer",
             Group::Transcript => "Transcript",
+            Group::Workers => "Workers",
             Group::View => "View",
         }
     }
@@ -208,6 +212,47 @@ pub fn commands() -> Vec<Command> {
         Command::new(Transcript, "Copy", gpui_kit::component::input::Copy)
             .keys(&["secondary-c"])
             .context(crate::transcript::CONTEXT)
+            .not_in_palette(),
+        // The workers panel's list, and a worker's view in it.
+        Command::new(Workers, "Previous Worker", workers_panel::SelectPrevious)
+            .keys(&["up"])
+            .context(workers_panel::LIST_CONTEXT)
+            .not_in_palette(),
+        Command::new(Workers, "Next Worker", workers_panel::SelectNext)
+            .keys(&["down"])
+            .context(workers_panel::LIST_CONTEXT)
+            .not_in_palette(),
+        Command::new(Workers, "First Worker", workers_panel::SelectFirst)
+            .keys(&["home"])
+            .context(workers_panel::LIST_CONTEXT)
+            .not_in_palette(),
+        Command::new(Workers, "Last Worker", workers_panel::SelectLast)
+            .keys(&["end"])
+            .context(workers_panel::LIST_CONTEXT)
+            .not_in_palette(),
+        Command::new(Workers, "Next Worker, Then On", workers_panel::TabNext)
+            .keys(&["tab"])
+            .context(workers_panel::LIST_CONTEXT)
+            .not_in_palette(),
+        Command::new(
+            Workers,
+            "Previous Worker, Then Back",
+            workers_panel::TabPrevious,
+        )
+        .keys(&["shift-tab"])
+        .context(workers_panel::LIST_CONTEXT)
+        .not_in_palette(),
+        Command::new(Workers, "Open Worker", workers_panel::OpenSelected)
+            .keys(&["enter"])
+            .context(workers_panel::LIST_CONTEXT)
+            .not_in_palette(),
+        Command::new(Workers, "Back to the Composer", workers_panel::Back)
+            .keys(&["escape"])
+            .context(workers_panel::LIST_CONTEXT)
+            .not_in_palette(),
+        Command::new(Workers, "All Workers", workers_panel::Back)
+            .keys(&["escape"])
+            .context(workers_panel::WORKER_CONTEXT)
             .not_in_palette(),
         Command::new(View, "Toggle Sidebar", ToggleSidebar).keys(&["secondary-\\"]),
         Command::new(View, "Toggle Workers Panel", ToggleWorkersPanel)

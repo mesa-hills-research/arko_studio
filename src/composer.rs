@@ -116,6 +116,9 @@ pub enum ComposerEvent {
     Submit(Outgoing),
     /// Esc while a turn runs: stop it.
     Stop,
+    /// Esc while the composer is in a mode Esc ends (editing a message,
+    /// writing to a worker).
+    Cancel,
     /// The text changed.
     Edited,
 }
@@ -267,6 +270,8 @@ pub struct Composer {
     reading: Arc<Reading>,
     /// A turn runs: Esc stops it.
     working: bool,
+    /// Esc ends a mode first ([`ComposerEvent::Cancel`]).
+    cancellable: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -309,6 +314,7 @@ impl Composer {
             dismissed: None,
             reading: Arc::default(),
             working: false,
+            cancellable: false,
             _subscriptions: subscriptions,
         }
     }
@@ -398,6 +404,11 @@ impl Composer {
         self.reading = reading;
         self.working = working;
         self.agent = agent;
+    }
+
+    /// Whether Esc ends a mode of the composer before anything else.
+    pub fn set_cancellable(&mut self, cancellable: bool) {
+        self.cancellable = cancellable;
     }
 
     /// The images the message takes along.
@@ -733,6 +744,11 @@ impl Composer {
         let textarea = self.textarea.read(cx);
         // Vim's Escape is its own, and a suggestion on show closes first.
         let vim = textarea.current_keymap() == Keymap::Vim;
+        if self.cancellable && !vim && textarea.suggestions().is_empty() {
+            cx.emit(ComposerEvent::Cancel);
+            cx.stop_propagation();
+            return;
+        }
         if self.working && !vim && textarea.suggestions().is_empty() {
             cx.emit(ComposerEvent::Stop);
             cx.stop_propagation();

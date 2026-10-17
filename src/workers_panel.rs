@@ -1,66 +1,1005 @@
 //! The workers panel: the session's workers, opened on demand at the right
 //! (docked on wide windows, a sheet on narrower ones). It never opens by
 //! itself.
+//!
+//! The list shows the workers that run or wait, and those that ended in the
+//! last five minutes, then a collapsed "Finished" group with the rest. Each
+//! row gives the worker's state, task, time over all its runs, its last
+//! action, its context and its calls, the figures right-aligned in tabular
+//! figures so they line up. Choosing a worker shows its own transcript, with
+//! Stop and Message. While the worker's view has the focus, the composer
+//! writes to that worker.
 
+use std::rc::Rc;
+use std::sync::Arc;
+
+use arko::remote::{AgentStatus, Feed, WorkerState, WorkerSummary};
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    h_flex,
+    menu::{DropdownMenu as _, PopupMenuItem},
+    spinner::Spinner,
+    tooltip::Tooltip,
+    v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::live::LiveSession;
 use crate::menus;
+use crate::transcript::{AgentFilter, TranscriptView};
+use crate::workers::{self, Section, WorkerTimes};
 
-pub struct WorkersPanel;
+/// The key contexts of the list and of a worker's view.
+pub const LIST_CONTEXT: &str = "WorkersList";
+pub const WORKER_CONTEXT: &str = "WorkerView";
+
+/// How many workers' transcripts the panel keeps ready.
+const KEPT_TRANSCRIPTS: usize = 3;
+
+actions!(
+    workers_panel,
+    [
+        SelectPrevious,
+        SelectNext,
+        SelectFirst,
+        SelectLast,
+        /// Tab: the next row, or on past the last.
+        TabNext,
+        /// Shift+Tab: the previous row, or back before the first.
+        TabPrevious,
+        OpenSelected,
+        /// From a worker's view back to the list, from the list back to the
+        /// composer.
+        Back,
+    ]
+);
+
+/// What the panel asks of the window.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkersPanelEvent {
+    /// Send this command line to the session (`/stop-workers r1`).
+    Command(String),
+    /// The worker the composer writes to: the one shown while the panel has
+    /// the focus, `None` when the panel lets go of it.
+    Target(Option<SharedString>),
+    /// Message a worker: the composer takes the focus, writing to it.
+    Message(SharedString),
+    /// Esc in the list: the keyboard goes back to the composer.
+    Leave,
+}
+
+/// What the panel shows of the session: its workers, their times and
+/// contexts, and the feed their transcripts come from.
+#[derive(Clone, Default)]
+pub struct PanelSource {
+    pub workers: Vec<WorkerSummary>,
+    pub times: WorkerTimes,
+    pub agents: Vec<AgentStatus>,
+    pub feed: Option<Feed>,
+    pub images: Option<arko::images::Images>,
+    /// Changes when the session (or its opening) changes: the transcripts
+    /// kept are another feed's then.
+    pub key: Option<(EntityId, u64)>,
+}
+
+impl PanelSource {
+    fn of(session: &LiveSession, id: EntityId) -> Self {
+        Self {
+            workers: session.workers().to_vec(),
+            times: session.worker_times().clone(),
+            agents: session.reading().agents.clone(),
+            feed: session.feed().cloned(),
+            images: session.link().map(|link| link.images.clone()),
+            key: Some((id, session.opening())),
+        }
+    }
+}
+
+/// A row of the list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelRow {
+    Worker(SharedString),
+    /// The "Finished (N)" group's header.
+    Finished(usize),
+}
+
+struct Shown {
+    id: SharedString,
+    view: Entity<TranscriptView>,
+}
+
+/// Returns the time, in Unix milliseconds.
+type Clock = Rc<dyn Fn() -> i64>;
+
+pub struct WorkersPanel {
+    session: Option<Entity<LiveSession>>,
+    source: PanelSource,
+    /// The list's focus.
+    focus_handle: FocusHandle,
+    /// A worker's view's focus (its transcript's is inside it).
+    worker_focus: FocusHandle,
+    /// The row the keyboard is on.
+    cursor: Option<PanelRow>,
+    /// The worker whose transcript shows, if any.
+    open: Option<SharedString>,
+    /// The transcripts made, the latest last.
+    transcripts: Vec<Shown>,
+    finished_open: bool,
+    scroll: ScrollHandle,
+    clock: Clock,
+    /// Draws again while a time on show goes on.
+    ticker: Option<Task<()>>,
+    /// The worker the panel last told the composer to write to.
+    target: Option<SharedString>,
+    _session: Option<Subscription>,
+    _focus: Vec<Subscription>,
+}
+
+impl EventEmitter<WorkersPanelEvent> for WorkersPanel {}
+
+impl Focusable for WorkersPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
 
 impl WorkersPanel {
-    pub fn new() -> Self {
-        Self
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        let worker_focus = cx.focus_handle();
+        let focus = vec![
+            // The worker shown takes the composer while its view has the
+            // focus.
+            cx.on_focus_in(&worker_focus, window, |this, _, cx| {
+                let open = this.open.clone();
+                this.set_target(open, cx);
+            }),
+            cx.on_focus_in(&focus_handle, window, |this, _, cx| {
+                this.set_target(None, cx);
+                if this.cursor.is_none() {
+                    this.cursor = this.rows(this.now()).into_iter().next();
+                    cx.notify();
+                }
+            }),
+        ];
+        Self {
+            session: None,
+            source: PanelSource::default(),
+            focus_handle,
+            worker_focus,
+            cursor: None,
+            open: None,
+            transcripts: Vec::new(),
+            finished_open: false,
+            scroll: ScrollHandle::new(),
+            clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
+            ticker: None,
+            target: None,
+            _session: None,
+            _focus: focus,
+        }
     }
-}
 
-impl Default for WorkersPanel {
-    fn default() -> Self {
-        Self::new()
+    /// Shows the workers of `session` (none when `None`).
+    pub fn set_session(&mut self, session: Option<Entity<LiveSession>>, cx: &mut Context<Self>) {
+        if self.session.as_ref().map(Entity::entity_id) == session.as_ref().map(Entity::entity_id) {
+            return;
+        }
+        self._session = session
+            .as_ref()
+            .map(|session| cx.observe(session, |this, session, cx| this.pull(&session, cx)));
+        self.session = session.clone();
+        match session {
+            Some(session) => self.pull(&session, cx),
+            None => self.set_source(PanelSource::default(), cx),
+        }
     }
-}
 
-impl Render for WorkersPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn pull(&mut self, session: &Entity<LiveSession>, cx: &mut Context<Self>) {
+        let source = PanelSource::of(session.read(cx), session.entity_id());
+        self.set_source(source, cx);
+    }
+
+    /// Shows `source`'s workers: from the session, or given (tests and
+    /// screenshots).
+    #[doc(hidden)]
+    pub fn set_source(&mut self, source: PanelSource, cx: &mut Context<Self>) {
+        if source.key != self.source.key {
+            // Another session: its workers and transcripts are others.
+            self.transcripts.clear();
+            self.open = None;
+            self.cursor = None;
+            self.finished_open = false;
+            self.set_target(None, cx);
+        }
+        let same = source.workers == self.source.workers
+            && source.times == self.source.times
+            && source.agents == self.source.agents
+            && source.key == self.source.key;
+        self.source = source;
+        if !same {
+            cx.notify();
+        }
+    }
+
+    /// Reads the time from `clock` instead of the system's: for tests and
+    /// screenshots, whose times must not change.
+    #[doc(hidden)]
+    pub fn set_clock(&mut self, clock: impl Fn() -> i64 + 'static, cx: &mut Context<Self>) {
+        self.clock = Rc::new(clock);
+        cx.notify();
+    }
+
+    fn now(&self) -> i64 {
+        (self.clock)()
+    }
+
+    /// The worker whose transcript shows.
+    pub fn open_worker(&self) -> Option<&SharedString> {
+        self.open.as_ref()
+    }
+
+    /// The worker the composer writes to while the panel has the focus.
+    pub fn target(&self) -> Option<&SharedString> {
+        self.target.as_ref()
+    }
+
+    /// The list's rows at `now`: the current workers in the order they
+    /// started, then the "Finished" group.
+    pub fn rows(&self, now: i64) -> Vec<PanelRow> {
+        let id = |worker: &WorkerSummary| PanelRow::Worker(worker.id.clone().into());
+        let mut rows: Vec<PanelRow> = self
+            .source
+            .workers
+            .iter()
+            .filter(|worker| workers::section(worker, now) == Section::Current)
+            .map(id)
+            .collect();
+        let finished: Vec<&WorkerSummary> = self
+            .source
+            .workers
+            .iter()
+            .filter(|worker| workers::section(worker, now) == Section::Finished)
+            .collect();
+        if !finished.is_empty() {
+            rows.push(PanelRow::Finished(finished.len()));
+            if self.finished_open {
+                // The latest to end first.
+                let mut finished = finished;
+                finished.sort_by_key(|worker| std::cmp::Reverse(worker.ended_at));
+                rows.extend(finished.into_iter().map(id));
+            }
+        }
+        rows
+    }
+
+    fn worker(&self, id: &str) -> Option<&WorkerSummary> {
+        self.source.workers.iter().find(|worker| worker.id == id)
+    }
+
+    /// Shows the worker `id`'s own transcript.
+    pub fn show_worker(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(feed) = self.source.feed.clone() else {
+            return;
+        };
+        if let Some(index) = self.transcripts.iter().position(|shown| shown.id == id) {
+            let shown = self.transcripts.remove(index);
+            self.transcripts.push(shown);
+        } else {
+            let filter = AgentFilter::Worker(id.clone());
+            let images = self.source.images.clone();
+            let view = cx.new(|cx| {
+                let mut view = TranscriptView::new(&feed, filter, window, cx);
+                if let Some(images) = images {
+                    view.set_images(images, cx);
+                }
+                view
+            });
+            self.transcripts.push(Shown {
+                id: id.clone(),
+                view,
+            });
+            if self.transcripts.len() > KEPT_TRANSCRIPTS {
+                self.transcripts.remove(0);
+            }
+        }
+        self.cursor = Some(PanelRow::Worker(id.clone()));
+        self.open = Some(id);
+        cx.notify();
+    }
+
+    /// The transcript of the worker shown.
+    pub fn transcript(&self) -> Option<&Entity<TranscriptView>> {
+        let open = self.open.as_ref()?;
+        self.transcripts
+            .iter()
+            .find(|shown| &shown.id == open)
+            .map(|shown| &shown.view)
+    }
+
+    /// Back to the list.
+    pub fn show_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open.take().is_some() {
+            self.set_target(None, cx);
+            self.focus_handle.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// Gives the panel the keyboard: the worker's view when one shows, else
+    /// the list, on its first row unless it was on one.
+    pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open.is_some() {
+            self.worker_focus.focus(window, cx);
+        } else {
+            if self.cursor.is_none() {
+                self.cursor = self.rows(self.now()).into_iter().next();
+                cx.notify();
+            }
+            self.focus_handle.focus(window, cx);
+        }
+    }
+
+    /// Opens the worker `id` and gives its view the keyboard: the composer
+    /// writes to it.
+    fn enter_worker(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_worker(id.clone(), window, cx);
+        self.worker_focus.focus(window, cx);
+        self.set_target(Some(id), cx);
+    }
+
+    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus_handle.contains_focused(window, cx)
+            || self.worker_focus.contains_focused(window, cx)
+    }
+
+    /// The panel no longer shows: the composer writes to the main agent
+    /// again.
+    pub fn hidden(&mut self, cx: &mut Context<Self>) {
+        self.set_target(None, cx);
+    }
+
+    /// Tells the composer whom it writes to. Told each time, as the composer
+    /// may have gone back to the main agent since (its target's ×).
+    fn set_target(&mut self, target: Option<SharedString>, cx: &mut Context<Self>) {
+        self.target = target.clone();
+        cx.emit(WorkersPanelEvent::Target(target));
+    }
+
+    /// Stops the worker `id`.
+    fn stop(&mut self, id: &str, cx: &mut Context<Self>) {
+        cx.emit(WorkersPanelEvent::Command(format!("/stop-workers {id}")));
+    }
+
+    fn stop_all(&mut self, cx: &mut Context<Self>) {
+        cx.emit(WorkersPanelEvent::Command("/stop-workers".into()));
+    }
+
+    fn message(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        self.target = Some(id.clone());
+        cx.emit(WorkersPanelEvent::Message(id));
+    }
+
+    // ----- the keyboard -----
+
+    fn cursor_index(&self, rows: &[PanelRow]) -> Option<usize> {
+        let cursor = self.cursor.as_ref()?;
+        rows.iter().position(|row| match (row, cursor) {
+            // The group's count changes as workers move in.
+            (PanelRow::Finished(_), PanelRow::Finished(_)) => true,
+            _ => row == cursor,
+        })
+    }
+
+    fn move_cursor(&mut self, step: isize, wrap: bool, cx: &mut Context<Self>) -> bool {
+        let rows = self.rows(self.now());
+        if rows.is_empty() {
+            return false;
+        }
+        let last = rows.len() as isize - 1;
+        let next = match self.cursor_index(&rows) {
+            None if step > 0 => 0,
+            None => last,
+            Some(index) => index as isize + step,
+        };
+        let next = if wrap {
+            next.rem_euclid(last + 1)
+        } else if !(0..=last).contains(&next) {
+            return false;
+        } else {
+            next
+        };
+        self.select(next as usize, &rows, cx);
+        true
+    }
+
+    fn select(&mut self, index: usize, rows: &[PanelRow], cx: &mut Context<Self>) {
+        self.cursor = rows.get(index).cloned();
+        self.scroll.scroll_to_item(index);
+        cx.notify();
+    }
+
+    fn select_previous(&mut self, _: &SelectPrevious, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(-1, true, cx);
+    }
+
+    fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(1, true, cx);
+    }
+
+    fn select_first(&mut self, _: &SelectFirst, _: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.rows(self.now());
+        self.select(0, &rows, cx);
+    }
+
+    fn select_last(&mut self, _: &SelectLast, _: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.rows(self.now());
+        self.select(rows.len().saturating_sub(1), &rows, cx);
+    }
+
+    fn tab_next(&mut self, _: &TabNext, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.move_cursor(1, false, cx) {
+            window.focus_next(cx);
+        }
+    }
+
+    fn tab_previous(&mut self, _: &TabPrevious, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.move_cursor(-1, false, cx) {
+            window.focus_prev(cx);
+        }
+    }
+
+    fn open_selected(&mut self, _: &OpenSelected, window: &mut Window, cx: &mut Context<Self>) {
+        match self.cursor.clone() {
+            Some(PanelRow::Worker(id)) => self.enter_worker(id, window, cx),
+            Some(PanelRow::Finished(_)) => {
+                self.finished_open = !self.finished_open;
+                cx.notify();
+            }
+            None => {}
+        }
+    }
+
+    fn back(&mut self, _: &Back, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open.is_some() {
+            self.show_list(window, cx);
+        } else {
+            cx.emit(WorkersPanelEvent::Leave);
+        }
+    }
+
+    /// Draws again in a second while something on show counts, and when the
+    /// next ended worker moves to the "Finished" group.
+    fn tick(&mut self, now: i64, cx: &mut Context<Self>) {
+        if self.ticker.is_some() {
+            return;
+        }
+        let counting = self
+            .source
+            .workers
+            .iter()
+            .any(|worker| worker.state.is_active());
+        let wait = if counting {
+            Some(1000)
+        } else {
+            workers::next_move(&self.source.workers, now).map(|at| (at - now).max(0) as u64 + 1)
+        };
+        let Some(wait) = wait else {
+            return;
+        };
+        self.ticker = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(wait))
+                .await;
+            this.update(cx, |this, cx| {
+                this.ticker = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    // ----- drawing -----
+
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let running = self
+            .source
+            .workers
+            .iter()
+            .any(|worker| worker.state.is_active());
+        let view = cx.entity().downgrade();
+        h_flex()
+            .flex_none()
+            .h_10()
+            .pl_3()
+            .pr_1()
+            .gap_1()
+            .border_b_1()
+            .border_color(theme.sidebar_border)
+            .child(div().flex_1().text_sm().font_medium().child("Workers"))
+            .child(
+                Button::new("workers-menu")
+                    .ghost()
+                    .xsmall()
+                    .compact()
+                    .icon(Icon::new(Lucide::Ellipsis))
+                    .tooltip("More")
+                    .dropdown_menu(move |menu, _, _| {
+                        let view = view.clone();
+                        menu.item(
+                            PopupMenuItem::new("Stop all workers")
+                                .disabled(!running)
+                                .on_click(move |_, _, cx| {
+                                    view.update(cx, |this, cx| this.stop_all(cx)).ok();
+                                }),
+                        )
+                    }),
+            )
+            .child(close_button())
+    }
+
+    fn render_list(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let now = self.now();
+        let rows = self.rows(now);
+        if rows.is_empty() {
+            return div()
+                .id("workers-empty")
+                .test_support()
+                .flex_1()
+                .p_3()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child("No workers in this session")
+                .into_any_element();
+        }
+        let focused = self.focus_handle.contains_focused(window, cx);
+        let cursor = focused.then(|| self.cursor_index(&rows)).flatten();
+        let children: Vec<AnyElement> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let selected = cursor == Some(index);
+                match row {
+                    PanelRow::Worker(id) => match self.worker(id) {
+                        Some(worker) => self.render_row(index, worker, now, selected, cx),
+                        None => div().into_any_element(),
+                    },
+                    PanelRow::Finished(count) => self.render_group(index, *count, selected, cx),
+                }
+            })
+            .collect();
         v_flex()
-            .id("workers-panel")
-            .size_full()
-            .bg(theme.sidebar)
-            .text_color(theme.sidebar_foreground)
+            .id("workers-list")
+            .test_support()
+            .flex_1()
+            .min_h_0()
+            .p_1()
+            .gap_0p5()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .children(children)
+            .into_any_element()
+    }
+
+    fn render_row(
+        &self,
+        index: usize,
+        worker: &WorkerSummary,
+        now: i64,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme();
+        let id: SharedString = worker.id.clone().into();
+        let title = if worker.title.is_empty() {
+            worker.id.clone()
+        } else {
+            worker.title.clone()
+        };
+        let elapsed = self
+            .source
+            .times
+            .total_ms(&worker.id, now)
+            .map(workers::elapsed_label);
+        let context = self.context_label(&worker.id);
+        let last = workers::last_line(worker)
+            .unwrap_or_else(|| workers::state_label(worker.state).to_string());
+        let open = id.clone();
+        row_base(("worker", index), selected, cx)
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_1p5()
+                    .child(state_mark(worker.state, index, cx))
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(theme.mono_font_family.clone())
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(id.clone()),
+                    )
+                    .child(div().flex_1().min_w_0().truncate().child(title))
+                    .children(elapsed.map(|elapsed| figures(elapsed).text_xs())),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_2()
+                    .pl(rems(1.375))
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(div().flex_1().min_w_0().truncate().child(last))
+                    .children(context.map(figures))
+                    .child(calls(worker.tool_calls)),
+            )
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.enter_worker(open.clone(), window, cx)),
+            )
+            .into_any_element()
+    }
+
+    fn render_group(
+        &self,
+        index: usize,
+        count: usize,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme();
+        let open = self.finished_open;
+        row_base("workers-finished", selected, cx)
+            .mt_1()
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .text_xs()
+                    .font_medium()
+                    .text_color(theme.muted_foreground)
+                    .child(
+                        Icon::new(if open {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .xsmall(),
+                    )
+                    .child(format!("Finished ({count})")),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                let rows = this.rows(this.now());
+                this.finished_open = !this.finished_open;
+                this.cursor = rows.get(index).cloned();
+                this.focus_handle.focus(window, cx);
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    /// What a worker's view says of it: "Running · 4 m · 18 calls · 88k /
+    /// 200k".
+    pub fn facts(&self, id: &str, now: i64) -> String {
+        let mut facts: Vec<String> = Vec::new();
+        if let Some(worker) = self.worker(id) {
+            facts.push(workers::state_label(worker.state).to_string());
+            if let Some(total) = self.source.times.total_ms(&worker.id, now) {
+                facts.push(workers::elapsed_label(total));
+            }
+            facts.push(match worker.tool_calls {
+                1 => "1 call".to_string(),
+                calls => format!("{calls} calls"),
+            });
+        }
+        facts.extend(self.context_label(id));
+        facts.join(" · ")
+    }
+
+    /// "88k / 200k": the worker's context, when known.
+    fn context_label(&self, id: &str) -> Option<String> {
+        let agent = self.source.agents.iter().find(|agent| agent.id == id)?;
+        let tokens = agent.context_tokens?;
+        Some(match agent.context_window {
+            Some(window) => format!(
+                "{} / {}",
+                workers::tokens_label(tokens),
+                workers::tokens_label(window)
+            ),
+            None => workers::tokens_label(tokens),
+        })
+    }
+
+    fn render_worker(&self, id: SharedString, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let now = self.now();
+        let worker = self.worker(&id).cloned();
+        let title = worker
+            .as_ref()
+            .map(|worker| worker.title.clone())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_default();
+        let active = worker
+            .as_ref()
+            .is_some_and(|worker| worker.state.is_active());
+        let facts = self.facts(&id, now);
+        let transcript = self.transcript().map(TranscriptView::cached);
+        let (stop_id, message_id) = (id.clone(), id.clone());
+        let full_title: SharedString = title.clone().into();
+        v_flex()
+            .id("worker-view")
+            .test_support()
+            .key_context(WORKER_CONTEXT)
+            .track_focus(&self.worker_focus)
+            .on_action(cx.listener(Self::back))
+            .flex_1()
+            .min_h_0()
             .child(
                 h_flex()
                     .flex_none()
                     .h_10()
-                    .px_3()
-                    .justify_between()
+                    .pl_1()
+                    .pr_1()
+                    .gap_1()
                     .border_b_1()
                     .border_color(theme.sidebar_border)
-                    .child(div().text_sm().font_medium().child("Workers"))
                     .child(
-                        Button::new("close-workers")
+                        Button::new("workers-back")
                             .ghost()
                             .xsmall()
                             .compact()
-                            .icon(IconName::Close)
-                            .tooltip_with_action("Close", &menus::ToggleWorkersPanel, None)
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(menus::ToggleWorkersPanel), cx)
+                            .icon(Icon::new(Lucide::ChevronLeft))
+                            .tooltip_with_action("All workers", &Back, Some(WORKER_CONTEXT))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.show_list(window, cx)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(theme.mono_font_family.clone())
+                            .text_sm()
+                            .child(id.clone()),
+                    )
+                    .child(
+                        div()
+                            .id("worker-title")
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .font_medium()
+                            .child(title)
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(full_title.clone()).build(window, cx)
                             }),
-                    ),
+                    )
+                    .child(close_button()),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .px_3()
+                    .py_1()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(theme.sidebar_border)
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(
+                        div()
+                            .id("worker-facts")
+                            .test_support()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_features(tabular_figures())
+                            .child(facts),
+                    )
+                    .child(
+                        Button::new("worker-message")
+                            .ghost()
+                            .xsmall()
+                            .label("Message")
+                            .tooltip(format!("Write to {id} in the composer"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.message(message_id.clone(), cx)
+                            })),
+                    )
+                    .when(active, |this| {
+                        this.child(
+                            Button::new("worker-stop")
+                                .ghost()
+                                .xsmall()
+                                .label("Stop")
+                                .tooltip("Stop this worker (its lead can resume it)")
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.stop(&stop_id, cx)),
+                                ),
+                        )
+                    }),
             )
             .child(
                 div()
                     .flex_1()
-                    .p_3()
-                    .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .child("No workers in this session"),
+                    .min_h_0()
+                    .bg(theme.background)
+                    .children(transcript),
             )
+            .into_any_element()
+    }
+}
+
+/// The close button of the panel's headers.
+fn close_button() -> Button {
+    Button::new("close-workers")
+        .ghost()
+        .xsmall()
+        .compact()
+        .icon(IconName::Close)
+        .tooltip_with_action("Close", &menus::ToggleWorkersPanel, None)
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(menus::ToggleWorkersPanel), cx))
+}
+
+/// A row of the list: a frame that shows the keyboard's place and the
+/// pointer's.
+fn row_base(
+    id: impl Into<ElementId>,
+    selected: bool,
+    cx: &App,
+) -> gpui_kit::base::ObservedElement<Stateful<Div>> {
+    let theme = cx.theme();
+    v_flex()
+        .id(id)
+        .test_support()
+        .w_full()
+        .px_2()
+        .py_1p5()
+        .gap_0p5()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.transparent)
+        .text_sm()
+        .when(selected, |this| this.border_color(theme.ring))
+        .hover(|this| {
+            this.bg(theme.sidebar_accent.opacity(0.8))
+                .text_color(theme.sidebar_accent_foreground)
+        })
+}
+
+/// Digits of equal width (OpenType `tnum`), so figures in rows line up.
+fn tabular_figures() -> FontFeatures {
+    FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
+}
+
+/// A figure at the end of a row, in tabular figures: right-aligned rows of
+/// them line up.
+fn figures(text: impl Into<SharedString>) -> Div {
+    div()
+        .flex_none()
+        .font_features(tabular_figures())
+        .child(text.into())
+}
+
+/// `text` in a cell as wide as `widest`, at its `right` or left side: the
+/// cells of every row are as wide, so what is in them lines up.
+fn cell(text: impl Into<SharedString>, widest: &'static str, right: bool) -> Div {
+    div()
+        .grid()
+        .grid_cols(1)
+        .child(
+            div()
+                .col_start(1)
+                .row_start(1)
+                .text_color(transparent_black())
+                .child(widest),
+        )
+        .child(
+            div()
+                .col_start(1)
+                .row_start(1)
+                .when(right, |this| this.text_right())
+                .child(text.into()),
+        )
+}
+
+/// "18 calls", with the number right-aligned in room for three figures and
+/// the word after it, so 1 to 999 calls line up.
+fn calls(count: u32) -> impl IntoElement {
+    h_flex()
+        .flex_none()
+        .gap_1()
+        .font_features(tabular_figures())
+        .child(cell(count.to_string(), "999", true))
+        .child(cell(
+            if count == 1 { "call" } else { "calls" },
+            "calls",
+            false,
+        ))
+}
+
+/// A worker's state as a mark: a spinner while it runs, a ring while it
+/// waits, a filled circle once it ended (in `success` when it finished, in
+/// `danger` when it failed).
+fn state_mark(state: WorkerState, index: usize, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    let dot = |color: Hsla| div().size(px(8.)).rounded_full().bg(color);
+    let mark: AnyElement = match state {
+        WorkerState::Running => Spinner::new()
+            .xsmall()
+            .color(theme.muted_foreground)
+            .into_any_element(),
+        WorkerState::Queued => div()
+            .size(px(8.))
+            .rounded_full()
+            .border_1()
+            .border_color(theme.muted_foreground)
+            .into_any_element(),
+        WorkerState::Finished => dot(theme.success).into_any_element(),
+        WorkerState::Failed => dot(theme.danger).into_any_element(),
+        WorkerState::Stopped => dot(theme.muted_foreground).into_any_element(),
+    };
+    let label = workers::state_label(state);
+    div()
+        .id(("worker-state", index))
+        .flex_none()
+        .size_4()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(mark)
+        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+}
+
+#[cfg(test)]
+#[path = "workers_panel_tests.rs"]
+mod tests;
+
+impl Render for WorkersPanel {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let now = self.now();
+        self.tick(now, cx);
+        let theme = cx.theme();
+        let (background, foreground) = (theme.sidebar, theme.sidebar_foreground);
+        // A worker of another session, or one gone: back to the list.
+        if self
+            .open
+            .as_ref()
+            .is_some_and(|open| self.worker(open).is_none() || self.transcript().is_none())
+        {
+            self.open = None;
+        }
+        let body = match self.open.clone() {
+            Some(id) => self.render_worker(id, cx),
+            None => v_flex()
+                .id("workers-list-view")
+                .key_context(LIST_CONTEXT)
+                .track_focus(&self.focus_handle)
+                .on_action(cx.listener(Self::select_previous))
+                .on_action(cx.listener(Self::select_next))
+                .on_action(cx.listener(Self::select_first))
+                .on_action(cx.listener(Self::select_last))
+                .on_action(cx.listener(Self::tab_next))
+                .on_action(cx.listener(Self::tab_previous))
+                .on_action(cx.listener(Self::open_selected))
+                .on_action(cx.listener(Self::back))
+                .flex_1()
+                .min_h_0()
+                .child(self.render_header(cx))
+                .child(self.render_list(window, cx))
+                .into_any_element(),
+        };
+        v_flex()
+            .id("workers-panel")
+            .test_support()
+            .size_full()
+            .bg(background)
+            .text_color(foreground)
+            .child(body)
     }
 }

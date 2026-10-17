@@ -96,6 +96,9 @@ pub struct SessionView {
     later: Option<u64>,
     /// The composer's rows while expanded.
     expanded_rows: Option<usize>,
+    /// The worker the composer writes to (`/message r1 …`), chosen in the
+    /// workers panel.
+    target: Option<SharedString>,
     model_filter: Entity<InputState>,
     _session: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
@@ -128,6 +131,7 @@ impl SessionView {
             width: WidthClass::Wide,
             later: None,
             expanded_rows: None,
+            target: None,
             model_filter,
             _session: Vec::new(),
             _subscriptions: subscriptions,
@@ -323,6 +327,7 @@ impl SessionView {
         }
         self._session.clear();
         self.later = None;
+        self.target = None;
         self.session = session;
         if let Some(session) = &self.session {
             session.update(cx, |session, cx| session.set_shown(true, cx));
@@ -434,21 +439,44 @@ impl SessionView {
     }
 
     /// What the composer says while empty.
-    pub fn placeholder(&self, cx: &App) -> &'static str {
+    pub fn placeholder(&self, cx: &App) -> SharedString {
         let Some(session) = &self.session else {
-            return "Message Arko";
+            return "Message Arko".into();
         };
+        if let Some(target) = &self.target {
+            return format!("Message {target}").into();
+        }
         let session = session.read(cx);
         if let Some(question) = session.question() {
             if self.later == Some(question.id) {
-                "Answer Arko’s question"
+                "Answer Arko’s question".into()
             } else {
-                "Answer the question above"
+                "Answer the question above".into()
             }
         } else if session.is_working() {
-            "Add to the task — Arko is working"
+            "Add to the task — Arko is working".into()
         } else {
-            "Message Arko"
+            "Message Arko".into()
+        }
+    }
+
+    /// The worker the composer writes to, if any.
+    pub fn target(&self) -> Option<&SharedString> {
+        self.target.as_ref()
+    }
+
+    /// Makes the composer write to the worker `target` (`/message r1 …`),
+    /// or to the main agent again (`None`).
+    pub fn set_target(
+        &mut self,
+        target: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.target != target {
+            self.target = target;
+            self.sync_composer(window, cx);
+            cx.notify();
         }
     }
 
@@ -464,9 +492,11 @@ impl SessionView {
             None => (Arc::default(), false),
         };
         let agent = self.mode(cx) == Mode::Agent;
+        let cancellable = self.target.is_some();
         self.composer.update(cx, |composer, cx| {
-            composer.set_placeholder(placeholder, window, cx);
+            composer.set_placeholder(&placeholder, window, cx);
             composer.set_session_state(reading, working, agent);
+            composer.set_cancellable(cancellable);
         });
     }
 
@@ -496,6 +526,7 @@ impl SessionView {
         match event {
             ComposerEvent::Submit(outgoing) => self.send(outgoing.clone(), window, cx),
             ComposerEvent::Stop => self.stop(window, cx),
+            ComposerEvent::Cancel => self.cancel(window, cx),
             ComposerEvent::Edited => {
                 let composer = self.composer.read(cx);
                 let empty =
@@ -511,6 +542,12 @@ impl SessionView {
                 }));
             }
         }
+    }
+
+    /// Esc in the composer, in a mode Esc ends: back to writing to the main
+    /// agent.
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_target(None, window, cx);
     }
 
     /// Sends what the composer holds (the Send button).
@@ -533,23 +570,37 @@ impl SessionView {
             text: text.clone(),
             images,
         };
-        let result = match &self.session {
-            None => self.start_session(message, cx),
-            Some(session) => match session.read(cx).question() {
-                Some(_) if !message.images.is_empty() => Err(
-                    "An answer takes text only. Send the images once the question is answered."
-                        .to_string(),
-                ),
-                Some(question) => {
-                    let input = arko::Input::Answer {
-                        question: question.id,
-                        text: text.clone(),
-                    };
-                    session.update(cx, |session, cx| session.send(input, cx))
-                }
-                None => session.update(cx, |session, cx| {
-                    session.send(arko::Input::Message(message), cx)
-                }),
+        let result = match (&self.session, &self.target) {
+            (Some(_), Some(_)) if !message.images.is_empty() => Err(
+                "A message to a worker takes text only. Remove the images, or send them to Arko."
+                    .to_string(),
+            ),
+            (Some(session), Some(worker)) => {
+                // As `/message r1 …` typed in the terminal.
+                let input = arko::Input::Message(arko::Message {
+                    text: format!("/message {worker} {}", text.trim()),
+                    images: Vec::new(),
+                });
+                session.update(cx, |session, cx| session.send(input, cx))
+            }
+            (session, _) => match session {
+                None => self.start_session(message, cx),
+                Some(session) => match session.read(cx).question() {
+                    Some(_) if !message.images.is_empty() => Err(
+                        "An answer takes text only. Send the images once the question is answered."
+                            .to_string(),
+                    ),
+                    Some(question) => {
+                        let input = arko::Input::Answer {
+                            question: question.id,
+                            text: text.clone(),
+                        };
+                        session.update(cx, |session, cx| session.send(input, cx))
+                    }
+                    None => session.update(cx, |session, cx| {
+                        session.send(arko::Input::Message(message), cx)
+                    }),
+                },
             },
         };
         match result {
@@ -1319,8 +1370,54 @@ impl SessionView {
         )
     }
 
+    /// "To r1 ×": the worker the composer writes to, and the way back to
+    /// the main agent.
+    fn render_target(&self, target: SharedString, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        h_flex()
+            .id("composer-target")
+            .test_support()
+            .flex_none()
+            .h_6()
+            .pl_2()
+            .gap_1()
+            .rounded(theme.radius)
+            .bg(theme.secondary)
+            .text_xs()
+            .text_color(theme.secondary_foreground)
+            .child(Icon::new(gpui_kit::assets::IconName::Bot).xsmall())
+            .child(format!("To {target}"))
+            .child(
+                div()
+                    .id("clear-target-tip")
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Write to Arko again")
+                            .key_binding(Keystroke::parse("escape").ok().map(Kbd::new))
+                            .build(window, cx)
+                    })
+                    .child(
+                        Button::new("clear-target")
+                            .ghost()
+                            .xsmall()
+                            .compact()
+                            .icon(IconName::Close)
+                            .accessibility_label("Write to Arko again")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.set_target(None, window, cx)
+                                }),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_composer(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chip = self.render_mode_chip(cx);
+        let target = self
+            .target
+            .clone()
+            .map(|target| self.render_target(target, cx));
         let theme = cx.theme();
         let working = self
             .session
@@ -1384,6 +1481,7 @@ impl SessionView {
                             .on_click(cx.listener(|this, _, window, cx| this.attach(window, cx))),
                     )
                     .child(chip)
+                    .children(target)
                     .when_some(later_question, |this, _| {
                         this.child(
                             Button::new("question-chip")
