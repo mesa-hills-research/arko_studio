@@ -39,6 +39,12 @@ pub fn windows_showing(session: &Entity<LiveSession>, cx: &App) -> Vec<AnyWindow
         .collect()
 }
 
+/// Whether the window in front shows `session`.
+pub fn shown_in_front(session: &Entity<LiveSession>, cx: &App) -> bool {
+    cx.active_window()
+        .is_some_and(|active| windows_showing(session, cx).contains(&active))
+}
+
 /// The window to tell the user of `session` in: the active one showing
 /// it, else any showing it, else the active one, else the first.
 pub fn window_for(session: &Entity<LiveSession>, cx: &App) -> Option<AnyWindowHandle> {
@@ -170,9 +176,7 @@ struct TurnNotice;
 pub fn watch(session: &Entity<LiveSession>, cx: &mut App) {
     cx.subscribe(session, |session, event: &LiveEvent, cx| {
         let window = window_for(&session, cx);
-        let shown = cx
-            .active_window()
-            .is_some_and(|active| windows_showing(&session, cx).contains(&active));
+        let shown = shown_in_front(&session, cx);
         let (title, question) = {
             let live = session.read(cx);
             (

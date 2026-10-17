@@ -31,7 +31,8 @@ pub const EARLY_MS: i64 = 5 * 60_000;
 pub const FINAL_MS: i64 = 60_000;
 /// Caches that last less than this get only the last reminder.
 pub const EARLY_FROM_LIFETIME: Duration = Duration::from_secs(15 * 60);
-/// Sessions the user hasn't touched for this long get no reminders.
+/// Sessions the user hadn't touched for this long when their idle period
+/// started get no reminders.
 pub const UNTOUCHED_MS: i64 = 60 * 60_000;
 
 /// The reminders an idle period has had.
@@ -55,7 +56,9 @@ pub enum Due {
 /// What is due for `cache` at `now` (Unix milliseconds), and how long until
 /// it is worth looking again. Nothing while a turn runs (each request
 /// refreshes the cache), with reminders off, or where the cache's lifetime
-/// isn't known. Nothing new for a session last touched an hour ago.
+/// isn't known. Nothing new for a session the user had left alone for an
+/// hour when the cache was last refreshed (`touched_at` is when they last
+/// touched it).
 pub fn plan(
     cache: &CacheStatus,
     working: bool,
@@ -78,7 +81,10 @@ pub fn plan(
         .is_some_and(|lifetime| lifetime >= EARLY_FROM_LIFETIME)
         .then_some(expires - EARLY_MS);
     let last = expires - FINAL_MS;
-    let touched = now - touched_at < UNTOUCHED_MS;
+    // Up to the start of the idle period: the cache's own lifetime (an hour,
+    // say) and the turn before it don't count.
+    let refreshed = cache.refreshed_at.unwrap_or(now);
+    let touched = refreshed - touched_at < UNTOUCHED_MS;
     let due = if now >= last && !sent.last {
         touched.then_some(Due::Last)
     } else if early.is_some_and(|early| now >= early) && !sent.early && !sent.last {
@@ -208,7 +214,12 @@ impl CacheReminders {
             let (due, next) = plan(
                 &live.reading().cache,
                 live.is_working(),
-                live.touched_at(),
+                // On screen in front of the user, it counts as touched.
+                if notify::shown_in_front(&session, cx) {
+                    now
+                } else {
+                    live.touched_at()
+                },
                 self.sent,
                 enabled,
                 now,
@@ -567,14 +578,45 @@ mod tests {
             ..cache.clone()
         };
         assert_eq!(plan(&unknown, false, 0, none, true, at), (None, None));
-        // Last touched an hour before: nothing.
+        // Last touched an hour before the cache was refreshed: nothing.
+        assert_eq!(plan(&cache, false, -UNTOUCHED_MS, none, true, at).0, None);
         assert_eq!(
-            plan(&cache, false, at - UNTOUCHED_MS, none, true, at).0,
-            None
-        );
-        assert_eq!(
-            plan(&cache, false, at - UNTOUCHED_MS + 1, none, true, at).0,
+            plan(&cache, false, -UNTOUCHED_MS + 1, none, true, at).0,
             Some(Due::Last)
+        );
+    }
+
+    /// The hour without the user counts up to the cache's last refresh:
+    /// a long turn or an hour-long cache doesn't use it up.
+    #[test]
+    fn the_hour_left_alone_counts_up_to_the_idle_period() {
+        let minute = 60_000;
+        let hour = |refreshed_at| CacheStatus {
+            refreshed_at: Some(refreshed_at),
+            ..cache(60)
+        };
+        // Sent at 0:00, the turn's last request at 2:00: the cache lapses at
+        // 62:00, the last reminder at 61:00.
+        let early = Sent {
+            early: true,
+            last: false,
+        };
+        assert_eq!(
+            plan(&hour(2 * minute), false, 0, early, true, 61 * minute).0,
+            Some(Due::Last)
+        );
+        // A 6-minute turn: the first reminder at 61:00.
+        assert_eq!(
+            plan(
+                &hour(6 * minute),
+                false,
+                0,
+                Sent::default(),
+                true,
+                61 * minute
+            )
+            .0,
+            Some(Due::Early)
         );
     }
 
@@ -769,9 +811,10 @@ mod tests {
     #[gpui_kit::test]
     fn sessions_left_alone_or_reminders_off_get_none(cx: &mut TestAppContext) {
         let reminded = Reminded::new(cx, 5, 230_000);
-        reminded
-            .session
-            .update(cx, |session, _| session.set_touched_at(NOW - UNTOUCHED_MS));
+        // Left alone for an hour before the cache's last refresh.
+        reminded.session.update(cx, |session, _| {
+            session.set_touched_at(NOW - 230_000 - UNTOUCHED_MS)
+        });
         reminded.advance(cx, 10_000);
         assert_eq!(reminded.sent(cx), Sent::default());
         assert_eq!(reminded.notes(cx), 0);
@@ -783,6 +826,35 @@ mod tests {
             .update(cx, |session, _| session.set_touched_at(NOW));
         reminded.advance(cx, 1_000);
         assert_eq!(reminded.notes(cx), 0);
+    }
+
+    /// A session on screen in the window in front counts as touched, how
+    /// long ago the user last sent it something.
+    #[gpui_kit::test]
+    fn a_session_on_screen_counts_as_touched(cx: &mut TestAppContext) {
+        let reminded = Reminded::new(cx, 5, 230_000);
+        let workspace = cx
+            .update_window(reminded.window, |root, _, cx| {
+                root.downcast::<gpui_kit::base::Root>()
+                    .unwrap()
+                    .read(cx)
+                    .view()
+                    .clone()
+                    .downcast::<crate::workspace::Workspace>()
+                    .unwrap()
+            })
+            .unwrap();
+        cx.update_window(reminded.window, |_, window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_session(reminded.session.clone(), window, cx)
+            })
+        })
+        .unwrap();
+        reminded.session.update(cx, |session, _| {
+            session.set_touched_at(NOW - 3 * UNTOUCHED_MS)
+        });
+        reminded.advance(cx, 10_000);
+        assert!(reminded.sent(cx).last);
     }
 
     #[test]
