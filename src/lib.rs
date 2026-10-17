@@ -14,6 +14,7 @@ pub mod chrome;
 pub mod commands;
 pub mod composer;
 pub mod drafts;
+pub mod figures;
 pub mod fonts;
 pub mod history;
 pub mod layout;
@@ -41,6 +42,8 @@ pub mod writing;
 mod composer_tests;
 #[cfg(test)]
 mod engine_tests;
+#[cfg(test)]
+mod status_tests;
 #[cfg(test)]
 mod testing;
 #[cfg(test)]

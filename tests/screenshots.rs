@@ -337,3 +337,325 @@ fn transcript_narrow_dark() {
         &transcript_window(ThemeMode::Dark, 600.),
     );
 }
+
+/// The status bar's figures, at a fixed moment.
+mod status {
+    use std::time::Duration;
+
+    use arko::remote::{
+        Activity, CostPart, LastRequest, Link, LinkKind, Page, PlanStatus, PlanWindow, Reading,
+    };
+
+    /// The moment the bars are drawn at, in Unix milliseconds.
+    pub const NOW: i64 = 1_800_000_000_000;
+
+    fn lan(url: &str, interface: &str) -> Link {
+        Link {
+            url: url.into(),
+            interface: Some(interface.into()),
+            kind: LinkKind::Lan,
+            loopback: false,
+        }
+    }
+
+    /// A page shared on every interface.
+    pub fn page() -> Page {
+        Page {
+            addr: "0.0.0.0:8765".parse().unwrap(),
+            links: vec![
+                lan(
+                    "http://192.168.1.20:8765/#key=Xq3v9TzK1bR7mWc2LpYd8sNf",
+                    "wlan0",
+                ),
+                Link {
+                    url: "http://100.101.7.12:8765/#key=Xq3v9TzK1bR7mWc2LpYd8sNf".into(),
+                    interface: Some("tailscale0".into()),
+                    kind: LinkKind::Tailscale,
+                    loopback: false,
+                },
+                Link {
+                    url: "http://127.0.0.1:8765/#key=Xq3v9TzK1bR7mWc2LpYd8sNf".into(),
+                    interface: None,
+                    kind: LinkKind::Loopback,
+                    loopback: true,
+                },
+            ],
+            note: None,
+        }
+    }
+
+    /// A session at work: two workers, outside access, the web page, a plan
+    /// near its 5-hour limit, a cost and a context of 142k.
+    pub fn busy() -> Reading {
+        let mut reading = Reading {
+            cost: 1.2,
+            context_tokens: Some(142_318),
+            context_window: Some(1_000_000),
+            workers_running: vec!["r1".into(), "r2".into()],
+            page: Some(page()),
+            plans: vec![PlanStatus {
+                plan: "Claude plan".into(),
+                windows: vec![
+                    PlanWindow {
+                        label: "5 h".into(),
+                        used_percent: 84.,
+                        resets_at: None,
+                    },
+                    PlanWindow {
+                        label: "7 d".into(),
+                        used_percent: 41.,
+                        resets_at: None,
+                    },
+                ],
+                text: String::new(),
+            }],
+            last_request: Some(LastRequest {
+                at: NOW,
+                model: "claude-opus-5-5".into(),
+                sizes: Some(Default::default()),
+                bytes_per_token: 4.,
+            }),
+            ..Reading::default()
+        };
+        reading.settings.outside = true;
+        reading.settings.handover_at = 950_000;
+        reading.costs.main = CostPart {
+            billed: 1.0,
+            list_price: 1.0,
+            input_tokens: 420_000,
+            output_tokens: 18_000,
+            calls: 14,
+        };
+        reading.costs.workers = CostPart {
+            billed: 0.2,
+            list_price: 0.2,
+            input_tokens: 90_000,
+            output_tokens: 4_000,
+            calls: 6,
+        };
+        if let Some(sizes) = reading
+            .last_request
+            .as_mut()
+            .and_then(|request| request.sizes.as_mut())
+        {
+            sizes.system_prompt = 30_000;
+            sizes.tool_definitions = 42_000;
+            sizes.user_text = 60_000;
+            sizes.assistant_text = 120_000;
+            sizes.tool_calls = 40_000;
+            sizes.tool_results = 270_000;
+            sizes.image_tokens = 3_000;
+        }
+        reading.cache.read = Some(140_100);
+        reading.cache.written = Some(2_218);
+        reading
+    }
+
+    /// A turn running for 1:23.
+    pub fn working() -> Activity {
+        Activity {
+            working: true,
+            since: Some(NOW - 83_000),
+            ..Activity::default()
+        }
+    }
+
+    /// An idle session on a plan near its handover size, its 5-minute cache
+    /// in its last minute.
+    pub fn idle() -> Reading {
+        let mut reading = Reading {
+            api_price: Some(3.4),
+            context_tokens: Some(871_204),
+            context_window: Some(1_000_000),
+            ..Reading::default()
+        };
+        reading.settings.handover_at = 950_000;
+        reading.costs.main = CostPart {
+            billed: 0.,
+            list_price: 3.4,
+            input_tokens: 2_400_000,
+            output_tokens: 31_000,
+            calls: 22,
+        };
+        reading.cache.lifetime = Some(Duration::from_secs(300));
+        reading.cache.refreshed_at = Some(NOW - 258_000);
+        reading.cache.tokens = Some(871_204);
+        reading.cache.on_plan = Some("your Claude plan");
+        reading
+    }
+}
+
+/// A status bar alone in a window `width` wide.
+fn status_window(
+    mode: ThemeMode,
+    width: f32,
+    reading: arko::remote::Reading,
+    activity: arko::remote::Activity,
+) -> Screenshot {
+    use arko_studio::layout::{NARROW_BELOW, WidthClass};
+    use arko_studio::status_bar::StatusBar;
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(width), px(28.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |_, cx| {
+                cx.new(|cx| {
+                    let mut bar =
+                        StatusBar::fixed(reading, activity, std::rc::Rc::new(|| status::NOW));
+                    if width < NARROW_BELOW {
+                        bar.set_width(WidthClass::Narrow, cx);
+                    }
+                    bar
+                })
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn status_busy_light() {
+    goldens().assert(
+        "status-busy-light",
+        &status_window(ThemeMode::Light, 1300., status::busy(), status::working()),
+    );
+}
+
+#[test]
+fn status_busy_dark() {
+    goldens().assert(
+        "status-busy-dark",
+        &status_window(ThemeMode::Dark, 1300., status::busy(), status::working()),
+    );
+}
+
+#[test]
+fn status_idle_light() {
+    goldens().assert(
+        "status-idle-light",
+        &status_window(ThemeMode::Light, 1300., status::idle(), Default::default()),
+    );
+}
+
+#[test]
+fn status_idle_dark() {
+    goldens().assert(
+        "status-idle-dark",
+        &status_window(ThemeMode::Dark, 1300., status::idle(), Default::default()),
+    );
+}
+
+#[test]
+fn status_narrow_light() {
+    goldens().assert(
+        "status-narrow-light",
+        &status_window(ThemeMode::Light, 600., status::busy(), status::working()),
+    );
+}
+
+#[test]
+fn status_narrow_dark() {
+    goldens().assert(
+        "status-narrow-dark",
+        &status_window(ThemeMode::Dark, 600., status::busy(), status::working()),
+    );
+}
+
+/// The status bar's popovers side by side: the cost's and the web
+/// page's.
+struct StatusPopovers {
+    reading: Arc<arko::remote::Reading>,
+}
+
+impl gpui_kit::Render for StatusPopovers {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use arko::details::{CostReport, CostShare};
+        use arko_studio::status_bar::CostDetails;
+        use arko_studio::web_page::WebPagePanel;
+        use gpui_kit::component::{ActiveTheme as _, h_flex};
+        use gpui_kit::{IntoElement as _, ParentElement as _, Styled as _, div};
+
+        let theme = cx.theme();
+        let card = |content: gpui_kit::AnyElement| {
+            div()
+                .p_3()
+                .bg(theme.popover)
+                .text_color(theme.popover_foreground)
+                .border_1()
+                .border_color(theme.border)
+                .rounded(theme.radius_lg)
+                .child(content)
+        };
+        let share = |billed: f64, input: usize, output: usize| CostShare {
+            billed,
+            api: billed,
+            input,
+            output,
+            plan: None,
+        };
+        let cost = CostReport {
+            main: share(1.0, 420_000, 18_000),
+            workers: share(0.2, 90_000, 4_000),
+            plans: Vec::new(),
+            embeddings: Some((120_000, 0.01)),
+        };
+        h_flex()
+            .size_full()
+            .items_start()
+            .gap_4()
+            .p_4()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .font_family(theme.font_family.clone())
+            .child(card(
+                CostDetails::new(Some(cost), &self.reading).into_any_element(),
+            ))
+            .child(card(WebPagePanel::new(&status::page()).into_any_element()))
+    }
+}
+
+fn status_popovers(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let reading = Arc::new(status::busy());
+    let window = app
+        .open_window_with(size(px(1100.), px(520.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| StatusPopovers { reading }))
+                .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn status_popovers_light() {
+    goldens().assert("status-popovers-light", &status_popovers(ThemeMode::Light));
+}
+
+#[test]
+fn status_popovers_dark() {
+    goldens().assert("status-popovers-dark", &status_popovers(ThemeMode::Dark));
+}

@@ -695,6 +695,34 @@ impl LiveSession {
         cx.background_spawn(async move { details.switch_cost(to.into()) })
     }
 
+    /// A session that hasn't opened, with the id `id` (tests).
+    #[cfg(test)]
+    pub fn for_tests(id: &str, cx: &mut App) -> Self {
+        let mut this = Self::blank(cx);
+        this.id = Some(SessionId(id.into()));
+        this
+    }
+
+    /// Takes `reading` and `activity` as if the engine had sent them
+    /// (tests).
+    #[cfg(test)]
+    pub fn set_status(&mut self, reading: Reading, activity: Activity, cx: &mut Context<Self>) {
+        self.apply(
+            Drained {
+                reading: Some(Arc::new(reading)),
+                activity: Some(activity),
+                ..Drained::default()
+            },
+            cx,
+        );
+    }
+
+    /// The input kept until it opens (tests).
+    #[cfg(test)]
+    pub fn queued(&self) -> &[arko::Input] {
+        &self.queued
+    }
+
     fn ended(&mut self, cx: &mut Context<Self>) {
         self.phase = Phase::Ended;
         self.activity = Activity::default();
