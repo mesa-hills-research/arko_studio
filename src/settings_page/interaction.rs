@@ -383,6 +383,39 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     assert_eq!(typed[2].as_ref(), "off");
 }
 
+/// The chat instructions type as Settings › Input says, as it changes
+/// with Settings open.
+#[gpui_kit::test]
+fn the_chat_instructions_follow_the_input_settings(cx: &mut TestAppContext) {
+    start_with(cx, prefs::Prefs::default());
+    let (_, _, settings) = settings_window(cx, 3, 900.);
+    let page = cx.read(|cx| settings.read(cx).sessions().clone());
+    let typing = |cx: &mut TestAppContext| cx.read(|cx| page.read(cx).instructions_input(cx));
+    assert_eq!(
+        typing(cx),
+        (
+            true,
+            crate::composer::text_keymap(prefs::Keymap::Standard),
+            true
+        )
+    );
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.input.smooth_typing = false;
+            prefs.input.keymap = prefs::Keymap::Vim;
+            prefs.input.spell_check = false;
+        })
+    });
+    assert_eq!(
+        typing(cx),
+        (
+            false,
+            crate::composer::text_keymap(prefs::Keymap::Vim),
+            false
+        )
+    );
+}
+
 /// Opening Settings reads nothing on the UI thread: the installed fonts
 /// and the accounts are read in the background while the page shows, and
 /// the fonts once for the app.

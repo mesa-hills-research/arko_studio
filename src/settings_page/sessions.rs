@@ -120,6 +120,7 @@ impl SessionsPage {
                 this.handover.follow(window, cx);
                 this.workers_handover.follow(window, cx);
                 this.background_after.follow(window, cx);
+                this.follow_input(cx);
                 // Instructions changed elsewhere (a reset) show, and what's
                 // typed but not saved yet stays.
                 let text = prefs::get(cx).new_sessions.chat_instructions.clone();
@@ -154,6 +155,36 @@ impl SessionsPage {
             seen: super::shown_prefs(prefs::get(cx)),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Types in the chat instructions as Settings › Input says, as it
+    /// changes: smooth typing, the keys, spell check.
+    fn follow_input(&mut self, cx: &mut Context<Self>) {
+        let input = prefs::get(cx).input.clone();
+        self.chat_instructions.update(cx, |field, cx| {
+            if field.has_smooth_caret() != input.smooth_typing {
+                field.set_smooth_caret(input.smooth_typing, cx);
+            }
+            let keymap = crate::composer::text_keymap(input.keymap);
+            if field.current_keymap() != keymap {
+                field.set_keymap(keymap, cx);
+            }
+            if field.is_spell_checking() != input.spell_check {
+                field.set_spell_checking(input.spell_check, cx);
+            }
+        });
+    }
+
+    /// Whether the chat instructions type with smooth typing, the keys and
+    /// spell check Settings › Input sets (tests).
+    #[cfg(test)]
+    pub fn instructions_input(&self, cx: &App) -> (bool, gpui_kit::component::input::Keymap, bool) {
+        let field = self.chat_instructions.read(cx);
+        (
+            field.has_smooth_caret(),
+            field.current_keymap(),
+            field.is_spell_checking(),
+        )
     }
 
     /// Saves the chat instructions typed.
