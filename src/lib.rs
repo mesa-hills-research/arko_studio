@@ -10,23 +10,29 @@ pub mod appearance;
 pub mod assets;
 pub mod backend;
 mod bundled_themes;
+pub mod cache_reminders;
+pub mod cache_timer;
 pub mod chrome;
 pub mod commands;
 pub mod composer;
+pub mod context_ring;
 pub mod drafts;
 pub mod editing;
 pub mod export;
+pub mod figures;
 pub mod fonts;
 pub mod history;
 pub mod layout;
 pub mod live;
 pub mod mentions;
 pub mod menus;
+pub mod notify;
 pub mod palette;
 pub mod paths;
 pub mod prefs;
 pub mod prompts;
 pub mod quit;
+pub mod session_info;
 pub mod session_view;
 pub mod settings_page;
 pub mod shortcuts;
@@ -35,6 +41,7 @@ pub mod status_bar;
 pub mod theme_picker;
 pub mod title_bar;
 pub mod transcript;
+pub mod web_page;
 pub mod workers;
 pub mod workers_panel;
 pub mod workspace;
@@ -44,6 +51,8 @@ pub mod writing;
 mod composer_tests;
 #[cfg(test)]
 mod engine_tests;
+#[cfg(test)]
+mod status_tests;
 #[cfg(test)]
 mod testing;
 #[cfg(test)]

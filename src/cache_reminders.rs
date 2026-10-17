@@ -1,0 +1,728 @@
+//! Cache reminders (Settings › Notifications › Cache reminders): before a
+//! session's prompt cache lapses while it is idle, a notification says so.
+//! Five minutes before (for caches that last 15 minutes or more) a short
+//! one, and at one minute a persistent one with a live countdown, what
+//! each choice costs, and Refresh, which keeps the cache warm. One pair for
+//! each idle period, and none for sessions the user hasn't touched for an
+//! hour. In the background the reminders go to the OS's notifications too.
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use arko::remote::CacheStatus;
+use gpui_kit::component::notification::{Notification, NotificationType};
+use gpui_kit::component::{
+    ActiveTheme as _, Sizable as _, WindowExt as _,
+    button::{Button, ButtonVariants as _},
+    v_flex,
+};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+
+use crate::cache_timer::{expires_at, refresh_choices};
+use crate::figures::{self, clock};
+use crate::live::{LiveEvent, LiveSession};
+use crate::status_bar::{Clock, tabular_figures};
+use crate::{notify, prefs};
+
+/// How long before the cache lapses the first reminder comes.
+pub const EARLY_MS: i64 = 5 * 60_000;
+/// How long before it lapses the last one comes, and stays.
+pub const FINAL_MS: i64 = 60_000;
+/// Caches that last less than this get only the last reminder.
+pub const EARLY_FROM_LIFETIME: Duration = Duration::from_secs(15 * 60);
+/// Sessions the user hasn't touched for this long get no reminders.
+pub const UNTOUCHED_MS: i64 = 60 * 60_000;
+
+/// The reminders an idle period has had.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sent {
+    pub early: bool,
+    pub last: bool,
+}
+
+/// What to do about a session's cache now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Due {
+    /// The first reminder.
+    Early,
+    /// The last one, which stays until the cache lapses.
+    Last,
+    /// The cache has lapsed: the last reminder goes.
+    Lapsed,
+}
+
+/// What is due for `cache` at `now` (Unix milliseconds), and how long until
+/// it is worth looking again. Nothing while a turn runs (each request
+/// refreshes the cache), with reminders off, or where the cache's lifetime
+/// isn't known. Nothing new for a session last touched an hour ago.
+pub fn plan(
+    cache: &CacheStatus,
+    working: bool,
+    touched_at: i64,
+    sent: Sent,
+    enabled: bool,
+    now: i64,
+) -> (Option<Due>, Option<i64>) {
+    if working || !enabled {
+        return (None, None);
+    }
+    let Some(expires) = expires_at(cache) else {
+        return (None, None);
+    };
+    if now >= expires {
+        return (sent.last.then_some(Due::Lapsed), None);
+    }
+    let early = cache
+        .lifetime
+        .is_some_and(|lifetime| lifetime >= EARLY_FROM_LIFETIME)
+        .then_some(expires - EARLY_MS);
+    let last = expires - FINAL_MS;
+    let touched = now - touched_at < UNTOUCHED_MS;
+    let due = if now >= last && !sent.last {
+        touched.then_some(Due::Last)
+    } else if early.is_some_and(|early| now >= early) && !sent.early && !sent.last {
+        touched.then_some(Due::Early)
+    } else {
+        None
+    };
+    // The next moment something may be due: a reminder not sent yet, or the
+    // lapse, which takes the last reminder away.
+    let next = [
+        early.filter(|early| *early > now && !sent.early),
+        Some(last).filter(|last| *last > now && !sent.last),
+        (sent.last || due == Some(Due::Last)).then_some(expires),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .map(|at| at - now);
+    (due, next)
+}
+
+/// The clock the reminders read, in Unix milliseconds (tests set their
+/// own).
+pub struct ReminderClock(pub Clock);
+
+impl Global for ReminderClock {}
+
+fn now(cx: &App) -> i64 {
+    match cx.try_global::<ReminderClock>() {
+        Some(clock) => (clock.0)(),
+        None => figures::now_ms(),
+    }
+}
+
+/// The reminders of each session the app opened.
+#[derive(Default)]
+struct Reminders(HashMap<EntityId, Entity<CacheReminders>>);
+
+impl Global for Reminders {}
+
+/// Identifies a session's reminder among the window's notifications.
+struct CacheReminder;
+
+/// One session's reminders.
+pub struct CacheReminders {
+    session: WeakEntity<LiveSession>,
+    /// The session's key, which tells its notifications apart.
+    key: u64,
+    sent: Sent,
+    /// The window showing the last reminder.
+    shown_in: Option<AnyWindowHandle>,
+    _timer: Option<Task<()>>,
+    _refresh: Option<Task<()>>,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// Reminds the user of `session`'s cache, as Settings say. Called once for
+/// each session the app opens.
+pub fn watch(session: &Entity<LiveSession>, cx: &mut App) -> Entity<CacheReminders> {
+    let reminders = cx.new(|cx| {
+        let subscriptions = vec![
+            cx.observe(session, |this: &mut CacheReminders, _, cx| this.check(cx)),
+            cx.subscribe(session, |this, _, event: &LiveEvent, cx| match event {
+                // A turn starts a new idle period when it ends.
+                LiveEvent::TurnEnded => {
+                    this.sent = Sent::default();
+                    this.check(cx);
+                }
+                LiveEvent::Ended => {
+                    this.dismiss(cx);
+                    let id = cx.entity_id();
+                    cx.update_global::<Reminders, _>(|reminders, _| {
+                        reminders.0.retain(|_, entity| entity.entity_id() != id)
+                    });
+                }
+                _ => {}
+            }),
+            cx.observe_global::<prefs::PrefsStore>(|this, cx| this.check(cx)),
+        ];
+        let mut this = CacheReminders {
+            session: session.downgrade(),
+            key: session.read(cx).key(),
+            sent: Sent::default(),
+            shown_in: None,
+            _timer: None,
+            _refresh: None,
+            _subscriptions: subscriptions,
+        };
+        this.check(cx);
+        this
+    });
+    cx.default_global::<Reminders>()
+        .0
+        .insert(session.entity_id(), reminders.clone());
+    reminders
+}
+
+impl CacheReminders {
+    /// The reminders the idle period has had.
+    pub fn sent(&self) -> Sent {
+        self.sent
+    }
+
+    /// Looks at the session's cache: shows what is due, and looks again
+    /// when something next may be.
+    fn check(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        let now = now(cx);
+        let enabled = prefs::get(cx).notifications.cache_reminders;
+        let (due, next, working) = {
+            let live = session.read(cx);
+            let (due, next) = plan(
+                &live.reading().cache,
+                live.is_working(),
+                live.touched_at(),
+                self.sent,
+                enabled,
+                now,
+            );
+            (due, next, live.is_working())
+        };
+        if working || !enabled {
+            // A request refreshes the cache: the reminder is out of date.
+            self.dismiss(cx);
+            if working {
+                self.sent = Sent::default();
+            }
+        }
+        match due {
+            Some(Due::Early) => {
+                self.sent.early = true;
+                self.remind(&session, false, cx);
+            }
+            Some(Due::Last) => {
+                self.sent = Sent {
+                    early: true,
+                    last: true,
+                };
+                self.remind(&session, true, cx);
+            }
+            Some(Due::Lapsed) => self.dismiss(cx),
+            None => {}
+        }
+        self._timer = next.map(|wait| {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(wait.max(1) as u64))
+                    .await;
+                this.update(cx, |this, cx| this.check(cx)).ok();
+            })
+        });
+    }
+
+    /// Takes the last reminder away.
+    fn dismiss(&mut self, cx: &mut App) {
+        if let Some(window) = self.shown_in.take() {
+            let key = self.key;
+            window
+                .update(cx, |_, window, cx| {
+                    window.remove_notification1::<CacheReminder>(ElementId::Integer(key), cx)
+                })
+                .ok();
+        }
+    }
+
+    /// Shows a reminder: the first (`last` false) or the one that stays.
+    fn remind(&mut self, session: &Entity<LiveSession>, last: bool, cx: &mut Context<Self>) {
+        let Some(window) = notify::window_for(session, cx) else {
+            return;
+        };
+        let (title, cache) = {
+            let live = session.read(cx);
+            (live.title().to_string(), live.reading().cache.clone())
+        };
+        let Some(expires) = expires_at(&cache) else {
+            return;
+        };
+        let choices = refresh_choices(&cache);
+        let key = self.key;
+        let headline = if last {
+            "The prompt cache expires in a minute"
+        } else {
+            "The prompt cache expires in 5 minutes"
+        };
+        let system = !notify::app_focused(cx);
+        let this = cx.entity().downgrade();
+        let countdown = last.then(|| {
+            let title = title.clone();
+            let choices = choices.clone();
+            cx.new(|cx| Countdown::new(title, choices, expires, cx))
+        });
+        let opens = session.clone();
+        window
+            .update(cx, |_, window, cx| {
+                if system {
+                    window.push_notification(
+                        Notification::new()
+                            .title(headline)
+                            .message(format!("{title}. {choices}"))
+                            .on_click({
+                                let opens = opens.clone();
+                                move |_, window, cx| notify::open_in(&opens, window, cx)
+                            })
+                            .system(),
+                        cx,
+                    );
+                }
+                let note = match countdown {
+                    Some(countdown) => last_reminder(key, countdown, move |_, cx| {
+                        this.update(cx, |this, cx| this.refresh(cx)).ok();
+                    }),
+                    None => Notification::new()
+                        .id1::<CacheReminder>(ElementId::Integer(key))
+                        .with_type(NotificationType::Warning)
+                        .title(headline)
+                        .message(format!("{title}. {choices}"))
+                        .on_click(move |_, window, cx| notify::open_in(&opens, window, cx)),
+                };
+                window.push_notification(note, cx);
+            })
+            .ok();
+        if last {
+            self.shown_in = Some(window);
+        }
+        notify::play_sound(cx);
+    }
+
+    /// Keeps the cache warm (the reminder's Refresh). A refresh the user
+    /// asks for starts a new idle period, with its own reminders.
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        let refreshing = session.update(cx, |session, cx| session.refresh_cache(cx));
+        // The reminder's own button took it away already.
+        self.shown_in = None;
+        let window = notify::window_for(&session, cx);
+        self._refresh = Some(cx.spawn(async move |this, cx| {
+            let refreshed = refreshing.await;
+            this.update(cx, |this, cx| {
+                let message = match refreshed {
+                    Ok(arko::Refreshed::OutOfBand { cost, .. }) => {
+                        this.sent = Sent::default();
+                        this.check(cx);
+                        Some(Notification::info(format!(
+                            "Cache refreshed ({}).",
+                            figures::dollars(cost)
+                        )))
+                    }
+                    // A short turn keeps it warm: the transcript shows it.
+                    Ok(arko::Refreshed::Message) => None,
+                    Err(why) => Some(Notification::error(format!(
+                        "The cache wasn’t refreshed. {why}"
+                    ))),
+                };
+                if let (Some(message), Some(window)) = (message, window) {
+                    window
+                        .update(cx, |_, window, cx| window.push_notification(message, cx))
+                        .ok();
+                }
+            })
+            .ok();
+        }));
+    }
+}
+
+/// The last reminder's text: the session, the time left, what each choice
+/// costs. It counts down each second until the cache lapses.
+pub struct Countdown {
+    title: String,
+    choices: String,
+    expires: i64,
+    _tick: Task<()>,
+}
+
+impl Countdown {
+    /// A countdown to `expires` (Unix milliseconds) for the session titled
+    /// `title`, with `choices` under it.
+    pub fn new(title: String, choices: String, expires: i64, cx: &mut Context<Self>) -> Self {
+        let tick = cx.spawn(async move |this, cx| {
+            loop {
+                let left = match this.update(cx, |this, cx| {
+                    cx.notify();
+                    this.expires - now(cx)
+                }) {
+                    Ok(left) if left > 0 => left,
+                    _ => break,
+                };
+                // To the next whole second of the time left.
+                let wait = match left % 1000 {
+                    0 => 1000,
+                    part => part,
+                };
+                cx.background_executor()
+                    .timer(Duration::from_millis(wait as u64))
+                    .await;
+            }
+        });
+        Self {
+            title,
+            choices,
+            expires,
+            _tick: tick,
+        }
+    }
+}
+
+impl Render for Countdown {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let left = (self.expires - now(cx)).max(0);
+        let theme = cx.theme();
+        v_flex()
+            .id("cache-countdown")
+            .test_support()
+            .gap_0p5()
+            .text_sm()
+            .child(div().truncate().child(self.title.clone()))
+            .child(
+                div()
+                    .font_features(tabular_figures())
+                    .child(format!("{} left", clock(left + 999))),
+            )
+            .when(!self.choices.is_empty(), |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(self.choices.clone()),
+                )
+            })
+    }
+}
+
+/// Keeps `session`'s cache warm now (Session › Refresh Cache), from
+/// `window`, saying how it went as the reminder's Refresh does.
+pub fn refresh(session: &Entity<LiveSession>, window: &mut Window, cx: &mut App) {
+    let reminders = cx
+        .try_global::<Reminders>()
+        .and_then(|reminders| reminders.0.get(&session.entity_id()).cloned())
+        .unwrap_or_else(|| watch(session, cx));
+    let key = session.read(cx).key();
+    // (This window is busy with the command: its reminder goes through it.)
+    window.remove_notification1::<CacheReminder>(ElementId::Integer(key), cx);
+    reminders.update(cx, |reminders, cx| reminders.refresh(cx));
+}
+
+/// The last reminder: what the prompt cache's lapse is about, a live
+/// countdown with what each choice costs, and Refresh, which runs
+/// `refresh` (the reminder goes first). It stays until it is closed or the
+/// cache lapses. `key` tells the session's reminder apart.
+pub fn last_reminder(
+    key: u64,
+    countdown: Entity<Countdown>,
+    refresh: impl Fn(&mut Window, &mut App) + 'static,
+) -> Notification {
+    let refresh = std::rc::Rc::new(refresh);
+    Notification::new()
+        .id1::<CacheReminder>(ElementId::Integer(key))
+        .with_type(NotificationType::Warning)
+        .title("The prompt cache expires soon")
+        .content(move |_, _, _| countdown.clone().into_any_element())
+        .action(move |_, _, _| {
+            let refresh = refresh.clone();
+            Button::new(("refresh-cache", key))
+                .primary()
+                .small()
+                .label("Refresh")
+                .on_click(move |_, window, cx| {
+                    // (This window is busy with the click: the reminder goes
+                    // through it.)
+                    window.remove_notification1::<CacheReminder>(ElementId::Integer(key), cx);
+                    refresh(window, cx);
+                })
+        })
+        .autohide(false)
+}
+
+/// A session's reminders (tests).
+#[cfg(test)]
+pub fn of(session: &Entity<LiveSession>, cx: &App) -> Option<Entity<CacheReminders>> {
+    cx.try_global::<Reminders>()?
+        .0
+        .get(&session.entity_id())
+        .cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    // Named, not `super::*`: GPUI's glob brings a `test` macro that would
+    // shadow Rust's.
+    use super::{Due, EARLY_MS, FINAL_MS, ReminderClock, Sent, UNTOUCHED_MS, plan};
+    use crate::Startup;
+    use crate::backend::FakeBackend;
+    use crate::live::LiveSession;
+    use crate::tests::open;
+    use arko::remote::{Activity, CacheStatus, Reading};
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AnyWindowHandle, AppContext as _, ElementId, Entity, TestAppContext};
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
+
+    fn cache(minutes: u64) -> CacheStatus {
+        CacheStatus {
+            lifetime: Some(Duration::from_secs(minutes * 60)),
+            refreshed_at: Some(0),
+            tokens: Some(180_000),
+            miss_cost: Some(0.9),
+            refresh_cost: Some(0.04),
+            ..CacheStatus::default()
+        }
+    }
+
+    const HOUR: i64 = 3_600_000;
+
+    #[test]
+    fn an_hour_long_cache_gets_both_reminders() {
+        let cache = cache(60);
+        let none = Sent::default();
+        // At first: nothing, look again at 55 minutes.
+        assert_eq!(
+            plan(&cache, false, 0, none, true, 0),
+            (None, Some(HOUR - EARLY_MS))
+        );
+        // At 55 minutes, the first, then the last at 59.
+        assert_eq!(
+            plan(&cache, false, 0, none, true, HOUR - EARLY_MS),
+            (Some(Due::Early), Some(EARLY_MS - FINAL_MS))
+        );
+        let early = Sent {
+            early: true,
+            last: false,
+        };
+        assert_eq!(
+            plan(&cache, false, 0, early, true, HOUR - FINAL_MS),
+            (Some(Due::Last), Some(FINAL_MS))
+        );
+        // It lapses: the last one goes.
+        let both = Sent {
+            early: true,
+            last: true,
+        };
+        assert_eq!(
+            plan(&cache, false, 0, both, true, HOUR),
+            (Some(Due::Lapsed), None)
+        );
+        assert_eq!(plan(&cache, false, 0, both, true, HOUR - 30_000).0, None);
+    }
+
+    #[test]
+    fn a_5_minute_cache_gets_only_the_last_reminder() {
+        let cache = cache(5);
+        let none = Sent::default();
+        assert_eq!(
+            plan(&cache, false, 0, none, true, 0),
+            (None, Some(4 * 60_000))
+        );
+        assert_eq!(
+            plan(&cache, false, 0, none, true, 4 * 60_000).0,
+            Some(Due::Last)
+        );
+    }
+
+    #[test]
+    fn no_reminders_while_working_off_unknown_or_untouched() {
+        let cache = cache(5);
+        let none = Sent::default();
+        let at = 4 * 60_000 + 1;
+        assert_eq!(plan(&cache, true, 0, none, true, at), (None, None));
+        assert_eq!(plan(&cache, false, 0, none, false, at), (None, None));
+        let unknown = CacheStatus {
+            lifetime: None,
+            ..cache.clone()
+        };
+        assert_eq!(plan(&unknown, false, 0, none, true, at), (None, None));
+        // Last touched an hour before: nothing.
+        assert_eq!(
+            plan(&cache, false, at - UNTOUCHED_MS, none, true, at).0,
+            None
+        );
+        assert_eq!(
+            plan(&cache, false, at - UNTOUCHED_MS + 1, none, true, at).0,
+            Some(Due::Last)
+        );
+    }
+
+    /// A session showing its cache's figures, its reminders on the test's
+    /// clock, in a window in front.
+    struct Reminded {
+        window: AnyWindowHandle,
+        session: Entity<LiveSession>,
+        now: Rc<Cell<i64>>,
+    }
+
+    const NOW: i64 = 1_800_000_000_000;
+
+    impl Reminded {
+        fn new(cx: &mut TestAppContext, lifetime_minutes: u64, refreshed_ago: i64) -> Self {
+            let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+            cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+            let (window, _) = open(cx, 1300.);
+            cx.update_window(window, |_, window, _| window.activate_window())
+                .unwrap();
+            let now = Rc::new(Cell::new(NOW));
+            let clock = now.clone();
+            cx.update(|cx| cx.set_global(ReminderClock(Rc::new(move || clock.get()))));
+            let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+            let reading = Reading {
+                cache: CacheStatus {
+                    refreshed_at: Some(NOW - refreshed_ago),
+                    ..cache(lifetime_minutes)
+                },
+                ..Reading::default()
+            };
+            session.update(cx, |session, cx| {
+                session.set_touched_at(NOW);
+                session.set_status(reading, Activity::default(), cx);
+            });
+            cx.update(|cx| super::watch(&session, cx));
+            cx.run_until_parked();
+            Self {
+                window,
+                session,
+                now,
+            }
+        }
+
+        fn advance(&self, cx: &mut TestAppContext, ms: i64) {
+            self.now.set(self.now.get() + ms);
+            cx.executor()
+                .advance_clock(Duration::from_millis(ms as u64));
+            cx.run_until_parked();
+        }
+
+        fn sent(&self, cx: &mut TestAppContext) -> Sent {
+            cx.read(|cx| super::of(&self.session, cx).unwrap().read(cx).sent())
+        }
+
+        fn notes(&self, cx: &mut TestAppContext) -> usize {
+            cx.update_window(self.window, |_, window, cx| window.notifications(cx).len())
+                .unwrap()
+        }
+
+        fn shows(&self, cx: &mut TestAppContext, id: impl Into<ElementId>) -> bool {
+            cx.update_window(self.window, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find(id).is_some()
+            })
+            .unwrap()
+        }
+    }
+
+    /// A 5-minute cache: at its last minute a reminder comes that counts
+    /// down, with Refresh. It goes when the cache lapses.
+    #[gpui_kit::test]
+    fn the_last_minute_brings_a_reminder_that_counts_down(cx: &mut TestAppContext) {
+        // 70 s left.
+        let reminded = Reminded::new(cx, 5, 230_000);
+        assert_eq!(reminded.sent(cx), Sent::default());
+        assert_eq!(reminded.notes(cx), 0);
+        reminded.advance(cx, 10_000);
+        assert!(reminded.sent(cx).last);
+        assert_eq!(reminded.notes(cx), 1);
+        assert!(reminded.shows(cx, "cache-countdown"));
+        let key = cx.read(|cx| reminded.session.read(cx).key());
+        assert!(reminded.shows(cx, ("refresh-cache", key)));
+        // It lapses: the reminder goes.
+        reminded.advance(cx, 61_000);
+        reminded.advance(cx, 1_000);
+        assert!(!reminded.shows(cx, "cache-countdown"));
+    }
+
+    /// Refresh asks the session to keep the cache warm, and says why it
+    /// couldn't (this session never opened).
+    #[gpui_kit::test]
+    fn refresh_asks_the_session_and_says_why_not(cx: &mut TestAppContext) {
+        let reminded = Reminded::new(cx, 5, 250_000);
+        assert!(reminded.sent(cx).last);
+        let key = cx.read(|cx| reminded.session.read(cx).key());
+        cx.update_window(reminded.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(("refresh-cache", key), cx);
+        })
+        .unwrap();
+        // The reminder leaves, in its exit's time.
+        reminded.advance(cx, 1_000);
+        assert!(
+            !reminded.shows(cx, "cache-countdown"),
+            "the reminder stayed"
+        );
+        // The reminder gave way to why the refresh failed.
+        assert!(reminded.notes(cx) >= 1);
+    }
+
+    /// An hour-long cache gets a first reminder 5 minutes before.
+    #[gpui_kit::test]
+    fn an_hour_long_cache_is_reminded_twice(cx: &mut TestAppContext) {
+        // 6 minutes left.
+        let reminded = Reminded::new(cx, 60, 54 * 60_000);
+        assert_eq!(reminded.sent(cx), Sent::default());
+        reminded.advance(cx, 60_000);
+        assert_eq!(
+            reminded.sent(cx),
+            Sent {
+                early: true,
+                last: false
+            }
+        );
+        assert_eq!(reminded.notes(cx), 1);
+        reminded.advance(cx, 4 * 60_000);
+        assert!(reminded.sent(cx).last);
+        assert!(reminded.shows(cx, "cache-countdown"));
+    }
+
+    /// None for a session the user left alone for an hour, nor with
+    /// reminders off.
+    #[gpui_kit::test]
+    fn sessions_left_alone_or_reminders_off_get_none(cx: &mut TestAppContext) {
+        let reminded = Reminded::new(cx, 5, 230_000);
+        reminded
+            .session
+            .update(cx, |session, _| session.set_touched_at(NOW - UNTOUCHED_MS));
+        reminded.advance(cx, 10_000);
+        assert_eq!(reminded.sent(cx), Sent::default());
+        assert_eq!(reminded.notes(cx), 0);
+        cx.update(|cx| {
+            crate::prefs::update(cx, |prefs| prefs.notifications.cache_reminders = false)
+        });
+        reminded
+            .session
+            .update(cx, |session, _| session.set_touched_at(NOW));
+        reminded.advance(cx, 1_000);
+        assert_eq!(reminded.notes(cx), 0);
+    }
+
+    #[test]
+    fn a_lapse_without_a_reminder_shown_does_nothing() {
+        assert_eq!(
+            plan(&cache(5), false, 0, Sent::default(), true, 300_000),
+            (None, None)
+        );
+    }
+}

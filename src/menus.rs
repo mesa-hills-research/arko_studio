@@ -49,6 +49,9 @@ actions!(
         OpenDataFolder,
         CloseSession,
         OpenAccounts,
+        ShareWebPage,
+        StopSharingWebPage,
+        RefreshCache,
     ]
 );
 
@@ -248,6 +251,10 @@ fn session_menu() -> Menu {
         MenuItem::action("Stop", StopTurn),
         MenuItem::action("Move Command to Background", MoveToBackground),
         MenuItem::action("Hand Over Now", HandOverNow),
+        MenuItem::action("Refresh Cache", RefreshCache),
+        MenuItem::separator(),
+        MenuItem::action("Share Web Page", ShareWebPage),
+        MenuItem::action("Stop Sharing Web Page", StopSharingWebPage),
         MenuItem::separator(),
         MenuItem::action("Close Session", CloseSession),
         MenuItem::action("Delete Session…", DeleteSession),

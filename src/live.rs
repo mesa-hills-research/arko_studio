@@ -130,6 +130,9 @@ pub struct Link {
     /// The images of the session's messages and tools, by the ids the feed
     /// gives them.
     pub images: arko::images::Images,
+    /// The session's facts as it opened (its MCP servers, skills and
+    /// indexes in a line each).
+    pub banner: arko::Banner,
 }
 
 /// What a session asks of the window that shows it.
@@ -307,6 +310,9 @@ pub struct LiveSession {
     quit_agreed: Option<arko::QuitAsk>,
     /// The question this app answered last.
     answered: Option<u64>,
+    /// When the user last sent it something or looked at it, in Unix
+    /// milliseconds: cache reminders leave sessions alone after an hour.
+    touched_at: i64,
     /// Counts the times it opened: each opening is a new feed.
     opened: u64,
     /// How many times what was drained was applied (tests).
@@ -344,6 +350,7 @@ impl LiveSession {
             quit_ask: None,
             quit_agreed: None,
             answered: None,
+            touched_at: crate::figures::now_ms(),
             opened: 0,
             #[cfg(test)]
             applied: 0,
@@ -385,11 +392,19 @@ impl LiveSession {
             this.launch(start, cx);
             this
         });
-        // One the backend refused to start doesn't run.
-        if !matches!(session.read(cx).phase, Phase::Failed(_)) {
+        // One the backend refused to start doesn't run, so it has nothing
+        // to tell the user later either.
+        let runs = !matches!(session.read(cx).phase, Phase::Failed(_));
+        if runs {
             LiveSessions::add(session.clone(), cx);
         }
         session.update(cx, |session, cx| session.update_indicator(cx));
+        // Its turns and questions reach the user away from it, and so does
+        // its cache's lapse.
+        if runs {
+            crate::notify::watch(&session, cx);
+            crate::cache_reminders::watch(&session, cx);
+        }
         session
     }
 
@@ -473,6 +488,7 @@ impl LiveSession {
             requests,
             quit_asks,
             images,
+            banner,
             ..
         } = seam;
         self.prompt = None;
@@ -493,6 +509,7 @@ impl LiveSession {
             requests,
             details,
             images,
+            banner,
         });
         if self.phase != Phase::Closing {
             self.phase = Phase::Open;
@@ -715,6 +732,73 @@ impl LiveSession {
         cx.background_spawn(async move { details.switch_cost(to.into()) })
     }
 
+    /// Keeps the main agent's prompt cache warm (between turns): out of
+    /// band where the provider allows, else with a short message whose
+    /// reply the transcript shows as "Cache refreshed". The task says how,
+    /// or why not.
+    pub fn refresh_cache(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<arko::Refreshed, String>> {
+        let Some(link) = &self.link else {
+            return Task::ready(Err("The session isn’t open.".to_string()));
+        };
+        let (reply, answer) = oneshot::channel();
+        if link
+            .requests
+            .send(arko::Request::RefreshCache { reply })
+            .is_err()
+        {
+            return Task::ready(Err("The session has closed.".to_string()));
+        }
+        self.touched_at = crate::figures::now_ms();
+        cx.background_spawn(async move {
+            answer
+                .await
+                .unwrap_or_else(|_| Err("The session has closed.".to_string()))
+        })
+    }
+
+    /// When the user last sent it something or looked at it (Unix
+    /// milliseconds).
+    pub fn touched_at(&self) -> i64 {
+        self.touched_at
+    }
+
+    /// A session that hasn't opened, with the id `id` (tests).
+    #[cfg(test)]
+    pub fn for_tests(id: &str, cx: &mut App) -> Self {
+        let mut this = Self::blank(cx);
+        this.id = Some(SessionId(id.into()));
+        this
+    }
+
+    /// Takes `reading` and `activity` as if the engine had sent them
+    /// (tests).
+    #[cfg(test)]
+    pub fn set_status(&mut self, reading: Reading, activity: Activity, cx: &mut Context<Self>) {
+        self.apply(
+            Drained {
+                reading: Some(Arc::new(reading)),
+                activity: Some(activity),
+                ..Drained::default()
+            },
+            cx,
+        );
+    }
+
+    /// The input kept until it opens (tests).
+    #[cfg(test)]
+    pub fn queued(&self) -> &[arko::Input] {
+        &self.queued
+    }
+
+    /// Makes it as if the user last touched it at `at` (tests).
+    #[cfg(test)]
+    pub fn set_touched_at(&mut self, at: i64) {
+        self.touched_at = at;
+    }
+
     fn ended(&mut self, cx: &mut Context<Self>) {
         self.phase = Phase::Ended;
         self._feed.clear();
@@ -813,6 +897,7 @@ impl LiveSession {
         if shown {
             self.shown += 1;
             self.unseen = false;
+            self.touched_at = crate::figures::now_ms();
         } else {
             self.shown = self.shown.saturating_sub(1);
         }
@@ -825,6 +910,7 @@ impl LiveSession {
         if let arko::Input::Answer { question, .. } = &input {
             self.answered = Some(*question);
         }
+        self.touched_at = crate::figures::now_ms();
         match (&self.phase, &self.link) {
             (Phase::Open | Phase::Closing, Some(link)) => link
                 .input
