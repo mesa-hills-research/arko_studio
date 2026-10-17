@@ -9,7 +9,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::appearance;
-use crate::backend::{SessionEntry, SessionId};
+use crate::backend::{SessionEntry, SessionId, SharedBackend};
 use crate::layout::WidthClass;
 use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase};
 use crate::prefs::{self, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
@@ -829,23 +829,23 @@ impl Workspace {
         }
     }
 
-    /// Branches the session `id`, open in this app, from its latest
-    /// message: a new session with its whole conversation, titled "Branch
-    /// of …", which this window opens. The session runs on.
+    /// Branches an open or saved session and opens the result here.
     fn branch_session(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = LiveSessions::find(&id, cx) else {
-            window.push_notification("Open the session to branch it.", cx);
-            return;
+        let branching = if let Some(session) = LiveSessions::find(&id, cx) {
+            let entry = session.read(cx).branch_entry(id.clone());
+            let answer = session.read(cx).branch(None, cx);
+            cx.background_spawn(async move {
+                answer.await.map(|id| SessionEntry { id, ..entry })
+            })
+        } else {
+            let backend = cx.global::<SharedBackend>().clone();
+            cx.background_spawn(async move { backend.branch(&id).map_err(|error| error.message()) })
         };
-        let branching = session.read(cx).branch(None, cx);
         cx.spawn_in(window, async move |this, cx| {
             let branched = branching.await;
             this.update_in(cx, |this, window, cx| match branched {
-                Ok(branch) => {
-                    let entry = session.read(cx).branch_entry(branch);
-                    this.open_branch(entry, None, None, window, cx);
-                }
-                Err(why) => window.push_notification(why, cx),
+                Ok(entry) => this.open_branch(entry, None, None, window, cx),
+                Err(why) => window.push_notification(Notification::error(why), cx),
             })
             .ok();
         })

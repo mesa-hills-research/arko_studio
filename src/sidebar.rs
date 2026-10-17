@@ -1025,10 +1025,8 @@ impl Sidebar {
                     .context_menu(move |menu, _, cx| {
                         let id = menu_id.clone();
                         let sidebar = sidebar.clone();
-                        // The engine branches a session it runs: one open
-                        // in this app.
-                        let open = LiveSessions::find(&id, cx)
-                            .is_some_and(|session| *session.read(cx).phase() == Phase::Open);
+                        let ready = LiveSessions::find(&id, cx)
+                            .is_none_or(|session| *session.read(cx).phase() == Phase::Open);
                         let branch = {
                             let id = id.clone();
                             let sidebar = sidebar.clone();
@@ -1054,7 +1052,7 @@ impl Sidebar {
                             .item(PopupMenuItem::new("Open in New Window").on_click(open_new))
                             .item(
                                 PopupMenuItem::new("Branch from Here")
-                                    .disabled(!open)
+                                    .disabled(!ready)
                                     .on_click(branch),
                             )
                             .when_some(workspace.clone(), |menu, folder| {

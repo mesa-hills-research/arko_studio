@@ -793,10 +793,9 @@ fn the_first_at_says_the_files_are_being_listed(cx: &mut TestAppContext) {
     });
 }
 
-/// Branching needs the session to run: a session this app hasn't opened
-/// offers Branch from Here, but disabled.
+/// Branch from Here also works for a session this app hasn't opened.
 #[gpui_kit::test]
-fn branch_from_here_waits_for_the_session_to_run(cx: &mut TestAppContext) {
+fn branch_from_here_accepts_a_closed_session(cx: &mut TestAppContext) {
     let (_, window, workspace) = start(cx);
     let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     cx.update(|cx| {
@@ -820,7 +819,7 @@ fn branch_from_here_waits_for_the_session_to_run(cx: &mut TestAppContext) {
         window.within("popup-menu").click(2usize, cx);
     });
     assert!(
-        !heard
+        heard
             .borrow()
             .iter()
             .any(|event| matches!(event, crate::sidebar::SidebarEvent::Branch(_))),

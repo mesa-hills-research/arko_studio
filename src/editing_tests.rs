@@ -370,6 +370,28 @@ fn branch_instead_goes_on_in_a_new_session_and_leaves_this_one(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+fn the_sidebar_branches_a_closed_session_without_opening_the_original(cx: &mut TestAppContext) {
+    let mock = answers();
+    let app = start(cx, &mock);
+    app.send(cx, "Count the pears.");
+    app.wait_for(cx, "Seven pears.");
+    app.wait_idle(cx);
+    let original = cx.read(|cx| app.view.read(cx).live_session().unwrap().read(cx).id().cloned().unwrap());
+    app.close_all(cx);
+    let row = crate::tests::row_of(&app.workspace, "Count the pears.", cx);
+    act(cx, app.window, |window, cx| window.right_click(("row", row), cx));
+    act(cx, app.window, |window, cx| window.within("popup-menu").click(2usize, cx));
+    wait_until(cx, "the saved branch", |cx| {
+        cx.read(|cx| app.view.read(cx).live_session().is_some_and(|session| {
+            session.read(cx).title().starts_with("Branch of ")
+        }))
+    });
+    app.wait_for(cx, "Seven pears.");
+    assert!(cx.read(|cx| LiveSessions::find(&original, cx).is_none()));
+    app.close_all(cx);
+}
+
+#[gpui_kit::test]
 fn the_sidebar_branches_an_open_session_from_its_latest_message(cx: &mut TestAppContext) {
     let mock = answers();
     let app = start(cx, &mock);

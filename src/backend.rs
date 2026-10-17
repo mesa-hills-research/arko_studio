@@ -310,6 +310,9 @@ pub trait Backend: Send + Sync + 'static {
     /// Refuses while the session is open anywhere, this app included.
     fn delete(&self, id: &SessionId) -> Result<(), BackendError>;
 
+    /// Branches a closed session from its saved conversation, off the UI thread.
+    fn branch(&self, id: &SessionId) -> Result<SessionEntry, BackendError>;
+
     /// The models a new session in `folder` (none: a chat) can start on,
     /// and the one arko chooses when neither the composer nor Settings
     /// chose one. May run `claude auth status`.
@@ -535,6 +538,13 @@ impl Backend for ArkoBackend {
         arko::sessions::delete(&self.root, id.as_str())
             .map(|_| ())
             .map_err(delete_error)
+    }
+
+    fn branch(&self, id: &SessionId) -> Result<SessionEntry, BackendError> {
+        let branch = arko::sessions::branch(&self.root, id.as_str())
+            .map_err(|error| BackendError::Other(error.to_string()))?;
+        self.sessions()?.into_iter().find(|entry| entry.id.as_str() == branch)
+            .ok_or_else(|| BackendError::NotFound(SessionId(branch)))
     }
 
     fn models(&self, folder: Option<&Path>) -> ModelChoices {
@@ -874,6 +884,22 @@ impl Backend for FakeBackend {
             }
             state.sessions.remove(index);
             Ok(())
+        })
+    }
+
+    fn branch(&self, id: &SessionId) -> Result<SessionEntry, BackendError> {
+        self.with_state(|state| {
+            let mut entry = state.sessions.iter().find(|entry| &entry.id == id)
+                .cloned().ok_or_else(|| BackendError::NotFound(id.clone()))?;
+            if let Some(holder) = &entry.holder {
+                return Err(BackendError::Other(format!(
+                    "The session is open in {}, so branch it there.", holder.describe()
+                )));
+            }
+            entry.id = SessionId(format!("branch-{}", state.sessions.len()));
+            entry.title = format!("Branch of {}", entry.title);
+            state.sessions.push(entry.clone());
+            Ok(entry)
         })
     }
 
