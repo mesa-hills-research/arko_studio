@@ -163,6 +163,7 @@ fn layout_button(
         .icon(icon)
         .selected(selected)
         .tooltip_with_action(label, tooltip_action.as_ref(), None)
+        .accessibility_label(label)
         .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
 }
 

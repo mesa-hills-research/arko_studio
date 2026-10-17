@@ -49,6 +49,7 @@ impl Render for WorkersPanel {
                             .compact()
                             .icon(IconName::Close)
                             .tooltip_with_action("Close", &menus::ToggleWorkersPanel, None)
+                            .accessibility_label("Close workers")
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(menus::ToggleWorkersPanel), cx)
                             }),

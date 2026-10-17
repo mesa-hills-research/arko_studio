@@ -885,6 +885,11 @@ impl Sidebar {
                         } else {
                             "Show conversations"
                         })
+                        .accessibility_label(if expanded {
+                            "Hide conversations"
+                        } else {
+                            "Show conversations"
+                        })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
                             this.toggle_conversations(&id, cx);
@@ -908,7 +913,7 @@ impl Sidebar {
                 let asking = background && indicator.question;
                 let unseen = indicator.unseen;
                 base.role(Role::TreeItem)
-                    .aria_label(SharedString::from(title.clone()))
+                    .aria_label(SharedString::from(row_label(&title, working, asking, unseen)))
                     .aria_selected(is_active)
                     .when(conversations, |this| this.aria_expanded(expanded))
                     .pl(rems(1.25))
@@ -1070,6 +1075,22 @@ impl Sidebar {
     }
 }
 
+/// A session row as a screen reader names it: the title, and the state the
+/// row's marks show.
+fn row_label(title: &str, working: bool, asking: bool, unseen: bool) -> String {
+    let mut label = title.to_string();
+    if working {
+        label.push_str(", working");
+    }
+    if asking {
+        label.push_str(", a question waits");
+    }
+    if unseen {
+        label.push_str(", new reply");
+    }
+    label
+}
+
 /// Tells the user why a backend call failed.
 fn show_error(what: &str, error: &BackendError, window: &mut Window, cx: &mut App) {
     window.push_notification(
@@ -1192,12 +1213,28 @@ impl Render for Sidebar {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{CHATS, Row, rows};
+    use super::{CHATS, Row, row_label, rows};
     use crate::backend::Backend as _;
     use crate::backend::{ConversationEntry, FakeBackend, Mode, SessionEntry, SessionId};
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn a_rows_name_carries_its_marks() {
+        assert_eq!(
+            row_label("Fix the parser", false, false, false),
+            "Fix the parser"
+        );
+        assert_eq!(
+            row_label("Fix the parser", true, false, true),
+            "Fix the parser, working, new reply"
+        );
+        assert_eq!(
+            row_label("Fix the parser", false, true, false),
+            "Fix the parser, a question waits"
+        );
+    }
 
     fn sample() -> (Vec<SessionEntry>, SystemTime) {
         let now = SystemTime::now();

@@ -1470,6 +1470,11 @@ impl SessionView {
                                 &menus::ExpandComposer,
                                 None,
                             )
+                            .accessibility_label(if expanded {
+                                "Shrink composer"
+                            } else {
+                                "Expand composer"
+                            })
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(menus::ExpandComposer), cx)
                             }),
@@ -1486,6 +1491,7 @@ impl SessionView {
                             .compact()
                             .icon(Icon::new(gpui_kit::assets::IconName::Paperclip))
                             .tooltip("Attach")
+                            .accessibility_label("Attach")
                             .on_click(cx.listener(|this, _, window, cx| this.attach(window, cx))),
                     )
                     .child(chip)

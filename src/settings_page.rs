@@ -855,6 +855,7 @@ impl Render for SettingsPage {
                             .compact()
                             .icon(IconName::Close)
                             .tooltip_with_action("Close", &CloseSettings, Some(CONTEXT))
+                            .accessibility_label("Close settings")
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseRequested))),
                     ),
             )
