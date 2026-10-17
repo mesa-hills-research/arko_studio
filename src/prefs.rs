@@ -27,6 +27,8 @@ pub struct Prefs {
     /// How much of a session the transcript shows, app-wide.
     pub view: TranscriptView,
     pub sessions: SessionPrefs,
+    /// Sharing sessions on the web page (Settings › Web page).
+    pub web_page: WebPagePrefs,
 }
 
 impl Default for Prefs {
@@ -40,6 +42,53 @@ impl Default for Prefs {
             workers_panel: PanelPrefs::default(),
             view: TranscriptView::Full,
             sessions: SessionPrefs::default(),
+            web_page: WebPagePrefs::default(),
+        }
+    }
+}
+
+/// The address the web page is served on when nothing else is chosen:
+/// this computer only.
+pub const DEFAULT_WEB_PAGE_ADDRESS: &str = "127.0.0.1";
+
+/// Where sessions serve their web page, and whether they do from the start.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebPagePrefs {
+    /// Every session serves its web page as it opens.
+    pub share_by_default: bool,
+    /// The IP address to serve on: `127.0.0.1` reaches this computer only,
+    /// `0.0.0.0` every network it's on.
+    pub address: String,
+    /// `None`: arko's port (8765), or any free one when that's taken.
+    pub port: Option<u16>,
+}
+
+impl Default for WebPagePrefs {
+    fn default() -> Self {
+        Self {
+            share_by_default: false,
+            address: DEFAULT_WEB_PAGE_ADDRESS.into(),
+            port: None,
+        }
+    }
+}
+
+impl WebPagePrefs {
+    /// The argument `/remote` takes to serve there: empty for the defaults,
+    /// else `0.0.0.0`, `9000`, `0.0.0.0:9000` or `[::]:9000`.
+    pub fn bind_argument(&self) -> String {
+        let address = self.address.trim();
+        let address = (!address.is_empty() && address != DEFAULT_WEB_PAGE_ADDRESS)
+            .then_some(address.trim_start_matches('[').trim_end_matches(']'));
+        match (address, self.port) {
+            (None, None) => String::new(),
+            (None, Some(port)) => port.to_string(),
+            (Some(address), None) => address.to_string(),
+            (Some(address), Some(port)) if address.contains(':') => {
+                format!("[{address}]:{port}")
+            }
+            (Some(address), Some(port)) => format!("{address}:{port}"),
         }
     }
 }
@@ -556,6 +605,28 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(leftovers, ["studio.json"]);
+    }
+
+    #[test]
+    fn the_web_page_address_becomes_the_remote_argument() {
+        let page = |address: &str, port: Option<u16>| WebPagePrefs {
+            share_by_default: false,
+            address: address.into(),
+            port,
+        };
+        assert_eq!(WebPagePrefs::default().bind_argument(), "");
+        assert_eq!(page("", None).bind_argument(), "");
+        assert_eq!(page("127.0.0.1", Some(9000)).bind_argument(), "9000");
+        assert_eq!(page(" 0.0.0.0 ", None).bind_argument(), "0.0.0.0");
+        assert_eq!(page("0.0.0.0", Some(9000)).bind_argument(), "0.0.0.0:9000");
+        assert_eq!(page("::", Some(9000)).bind_argument(), "[::]:9000");
+        assert_eq!(page("[::1]", None).bind_argument(), "::1");
+        // Each reads back as the same address and port.
+        for (address, port) in [("0.0.0.0", Some(9000)), ("::", Some(9000)), ("::1", None)] {
+            let bind = arko::remote::parse_bind(&page(address, port).bind_argument()).unwrap();
+            assert_eq!(bind.ip, address.parse::<std::net::IpAddr>().unwrap());
+            assert_eq!(bind.port, port);
+        }
     }
 
     #[test]
