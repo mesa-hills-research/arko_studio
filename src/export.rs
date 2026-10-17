@@ -89,7 +89,7 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
                 }
                 out.push_str(&format!("\n{text}\n"));
                 for image in &item.images {
-                    out.push_str(&format!("\n*[image: {}]*\n", image_label(&image.label)));
+                    out.push_str(&format!("\n*[Image · {}]*\n", image_label(&image.label)));
                 }
             }
             Kind::Text | Kind::Reply | Kind::Question => {
@@ -137,10 +137,10 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
                 }
                 if item.status == Some(CallStatus::Failed) {
                     let why = item.outcome.as_deref().unwrap_or("failed");
-                    entry.push_str(&format!(" (failed: {})", one_line(why)));
+                    entry.push_str(&format!(" (failed, {})", one_line(why)));
                 }
                 for image in &item.images {
-                    entry.push_str(&format!(" *[image: {}]*", image_label(&image.label)));
+                    entry.push_str(&format!(" *[Image · {}]*", image_label(&image.label)));
                 }
                 out.push_str(&entry);
                 out.push('\n');
@@ -151,7 +151,10 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
                     Some(Level::Warn) => "Warning",
                     _ => "Note",
                 };
-                out.push_str(&format!("\n> **{label}:** {}\n", quoted(item.text.trim())));
+                out.push_str(&format!(
+                    "\n> **{label}**\n>\n> {}\n",
+                    quoted(item.text.trim())
+                ));
             }
             Kind::Output => {
                 let text = item.text.trim_end();
@@ -166,7 +169,10 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
             Kind::WorkerLine => {
                 section(&mut out, "Arko");
                 let worker = item.worker.as_deref().unwrap_or("A worker");
-                out.push_str(&format!("\n*{worker} started: {}*\n", one_line(&item.text)));
+                out.push_str(&format!(
+                    "\n*{worker} started — {}*\n",
+                    one_line(&item.text)
+                ));
             }
             Kind::Conversation => {
                 out.push_str(&format!("\n---\n\n*{}*\n", one_line(&item.text)));
@@ -530,9 +536,11 @@ It takes a whole string.
 </details>
 
 - `read src/parse.rs:1-120`
-- `$ cargo test -p parse` (failed: exit 101)
+- `$ cargo test -p parse` (failed, exit 101)
 
-> **Warning:** rate limited, retrying
+> **Warning**
+>
+> rate limited, retrying
 
 Done: **streaming** now.
 
@@ -543,6 +551,36 @@ Done: **streaming** now.
 Thanks.
 "
         );
+    }
+
+    #[test]
+    fn attachments_workers_and_notices_keep_their_labels() {
+        let image = arko::images::ImageRef {
+            id: 1,
+            mime: "image/png".into(),
+            label: "diagram.png".into(),
+            bytes: 42,
+        };
+        let mut user = item(Kind::User, "Check this.");
+        user.images = vec![image.clone()];
+        let mut call = item(Kind::Call, "read diagram.png");
+        call.images = vec![image];
+        let mut worker = item(Kind::WorkerLine, "Check the parser");
+        worker.worker = Some("r1".into());
+        let text = markdown(
+            &Header::default(),
+            &[
+                user,
+                call,
+                worker,
+                item(Kind::Notice, "The folder is missing.").level(Level::Error),
+                item(Kind::Notice, "Try again."),
+            ],
+        );
+        assert_eq!(text.matches("*[Image · diagram.png]*").count(), 2);
+        assert!(text.contains("*r1 started — Check the parser*"));
+        assert!(text.contains("> **Error**\n>\n> The folder is missing."));
+        assert!(text.contains("> **Note**\n>\n> Try again."));
     }
 
     /// What a reply, an output, a thinking or the user's text holds keeps
