@@ -149,6 +149,9 @@ impl AppTitleBar {
         title_bar_item(
             Popover::new("session-info-popover")
                 .anchor(Anchor::TopCenter)
+                // The button narrows with the title bar, and the title in it
+                // ends with an ellipsis.
+                .trigger_style(StyleRefinement::default().min_w_0())
                 .open(self.info_open)
                 .on_open_change(move |open, _, cx| {
                     let open = *open;
@@ -181,53 +184,46 @@ impl Render for AppTitleBar {
             // skips the close check. This sends it through the check instead. Only
             // Linux uses it: macOS and Windows close through the system.
             .on_close_window(|_, window, cx| chrome::close_window(window, cx))
-            .child(
+            // The menus, on Windows and Linux (macOS has them in its menu bar).
+            .when(!mac, |this| {
+                this.child(title_bar_item(self.menu_bar.clone()))
+            })
+            // The session's title, centred on the window. It moves aside for
+            // the menus when they leave too little room, and is cut short
+            // when it doesn't fit between them and the layout buttons. The
+            // bar stays a drag area around it.
+            .center(
                 h_flex()
-                    .size_full()
+                    .id("session-title")
+                    .test_support()
                     .min_w_0()
-                    .gap_1()
-                    // The menus (Windows and Linux; macOS has them in the menu bar).
-                    .when(!mac, |this| {
-                        this.child(title_bar_item(self.menu_bar.clone()))
-                    })
-                    // The session's title, centred in the space left, and cut
-                    // short when it doesn't fit. The bar stays a drag area
-                    // around it.
-                    .child(
-                        h_flex()
-                            .id("session-title")
-                            .test_support()
-                            .flex_1()
-                            .min_w_0()
-                            .justify_center()
-                            .child(title),
-                    )
-                    // The layout buttons, together at the right end, before
-                    // the window buttons on Windows and Linux.
-                    .child(
-                        title_bar_item(
-                            h_flex()
-                                .id("layout-buttons")
-                                .gap_0p5()
-                                .child(layout_button(
-                                    "toggle-sidebar",
-                                    IconName::PanelLeft,
-                                    self.sidebar_open,
-                                    "Toggle sidebar",
-                                    Box::new(menus::ToggleSidebar),
-                                ))
-                                .when_some(self.workers, |this, open| {
-                                    this.child(layout_button(
-                                        "toggle-workers",
-                                        IconName::PanelRight,
-                                        open,
-                                        "Toggle workers panel",
-                                        Box::new(menus::ToggleWorkersPanel),
-                                    ))
-                                }),
-                        )
-                        .mr_1(),
-                    ),
+                    .child(title),
+            )
+            // The layout buttons, together at the right end, before the
+            // window buttons on Windows and Linux.
+            .suffix(
+                title_bar_item(
+                    h_flex()
+                        .id("layout-buttons")
+                        .gap_0p5()
+                        .child(layout_button(
+                            "toggle-sidebar",
+                            IconName::PanelLeft,
+                            self.sidebar_open,
+                            "Toggle sidebar",
+                            Box::new(menus::ToggleSidebar),
+                        ))
+                        .when_some(self.workers, |this, open| {
+                            this.child(layout_button(
+                                "toggle-workers",
+                                IconName::PanelRight,
+                                open,
+                                "Toggle workers panel",
+                                Box::new(menus::ToggleWorkersPanel),
+                            ))
+                        }),
+                )
+                .mr_1(),
             )
     }
 }
@@ -262,4 +258,67 @@ fn layout_button(
 /// presses on this element. Text and empty space stay draggable.
 pub fn title_bar_item(child: impl IntoElement) -> Div {
     h_flex().occlude().child(child)
+}
+
+#[cfg(test)]
+mod tests {
+    // Named, not `super::*`: GPUI's glob brings a `test` macro that would
+    // shadow Rust's.
+    use crate::Startup;
+    use crate::tests::{act, open, row_of};
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{Bounds, Pixels, TestAppContext, px, size};
+    use std::sync::Arc;
+    use std::time::SystemTime;
+
+    fn start(cx: &mut TestAppContext) {
+        let backend = Arc::new(crate::backend::FakeBackend::sample(
+            "/arko",
+            SystemTime::now(),
+        ));
+        cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    }
+
+    /// The bounds of the title's button, of the menus (none on macOS) and of
+    /// the first layout button.
+    fn title_bar(
+        cx: &mut TestAppContext,
+        window: gpui_kit::AnyWindowHandle,
+    ) -> [Option<Bounds<Pixels>>; 3] {
+        let mut bounds = [None; 3];
+        act(cx, window, |window, _| {
+            bounds = ["session-title-button", "app-menu-bar", "toggle-sidebar"]
+                .map(|id| window.try_find(id).map(|element| element.bounds()));
+        });
+        bounds
+    }
+
+    /// The session's title sits in the middle of the window rather than of
+    /// the space between the menus and the layout buttons, and a narrow
+    /// window cuts it short between them.
+    #[gpui_kit::test]
+    fn the_title_is_centred_on_the_window_and_cut_short_between_the_menus_and_buttons(
+        cx: &mut TestAppContext,
+    ) {
+        start(cx);
+        let (window, workspace) = open(cx, 1300.);
+        let row = row_of(&workspace, "Fix the handover size for workers", cx);
+        act(cx, window, |window, cx| window.click(("row", row), cx));
+
+        let [title, menus, button] = title_bar(cx, window);
+        let (wide, button) = (title.unwrap(), button.unwrap());
+        assert!((wide.center().x - px(650.)).abs() < px(1.), "{wide:?}");
+        assert!(wide.right() <= button.left());
+
+        cx.simulate_window_resize(window, size(px(500.), px(720.)));
+        let [title, narrow_menus, button] = title_bar(cx, window);
+        let (title, button) = (title.unwrap(), button.unwrap());
+        assert!(title.size.width < wide.size.width, "{title:?} {wide:?}");
+        assert!(title.size.width > px(0.), "{title:?}");
+        assert!(title.right() <= button.left(), "{title:?} {button:?}");
+        assert_eq!(menus.is_some(), cfg!(not(target_os = "macos")));
+        if let Some(menus) = narrow_menus {
+            assert!(title.left() >= menus.right(), "{menus:?} {title:?}");
+        }
+    }
 }

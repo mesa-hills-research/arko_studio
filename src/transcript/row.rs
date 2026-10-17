@@ -34,6 +34,12 @@ const SPINNER_FPS: f32 = 12.;
 
 /// The reading column's widest.
 const COLUMN: f32 = 46.;
+/// The width, in rem, a user's message may take even when that is more than
+/// half the column, the width of a comfortable line.
+const USER_BUBBLE_WIDTH: f32 = 17.5;
+/// The room, in rem, kept at the left of a user's message for its actions
+/// (four small buttons).
+const USER_ACTIONS_ROOM: f32 = 5.5;
 /// Lines of a call's output shown before "Show all N lines".
 pub(super) const OUTPUT_LINES: usize = 40;
 /// Rows of an edit's diff shown before it scrolls inside.
@@ -538,106 +544,155 @@ impl TranscriptView {
         // A turn that ended with no reply (stopped, or failed after its
         // retries): its message offers to go again.
         let regenerate = (self.model.regenerable_message() == Some(id)).then(|| view.downgrade());
+        // Edit, Branch and Copy show on hover, beside the bubble at its left,
+        // level with its first line.
+        let actions = HoverActions {
+            id: ("user-actions", id).into(),
+            shown: self.hovered == Some(id),
+            build: Box::new(move |shown| {
+                let action = |name: &'static str, icon: Lucide| {
+                    Button::new((name, id))
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::new(icon))
+                        .text_color(muted)
+                        .tab_stop(shown)
+                };
+                h_flex()
+                    .when_some(changes, |this, (busy, no_branch, edit_view, branch_view)| {
+                        this.child(
+                            action("edit-message", Lucide::SquarePen)
+                                .disabled(busy.is_some())
+                                .tooltip(busy.unwrap_or("Edit"))
+                                .accessibility_label("Edit")
+                                .on_click(move |_, _, cx| {
+                                    edit_view
+                                        .update(cx, |this, cx| {
+                                            this.change(TranscriptEvent::Edit(id), cx)
+                                        })
+                                        .ok();
+                                }),
+                        )
+                        .child(
+                            action("branch-message", Lucide::GitBranch)
+                                .disabled(busy.is_some() || no_branch.is_some())
+                                .tooltip(busy.or(no_branch).unwrap_or(
+                                    "Branch: a new session with the conversation before this message",
+                                ))
+                                .accessibility_label("Branch")
+                                .on_click(move |_, _, cx| {
+                                    branch_view
+                                        .update(cx, |this, cx| {
+                                            this.change(TranscriptEvent::Branch(id), cx)
+                                        })
+                                        .ok();
+                                }),
+                        )
+                    })
+                    .when_some(regenerate, |this, regenerate_view| {
+                        this.child(
+                            action("regenerate-message", Lucide::RotateCcw)
+                                .tooltip("Send it again for a reply")
+                                .accessibility_label("Regenerate")
+                                .on_click(move |_, _, cx| {
+                                    regenerate_view
+                                        .update(cx, |this, cx| {
+                                            this.change(TranscriptEvent::Regenerate, cx)
+                                        })
+                                        .ok();
+                                }),
+                        )
+                    })
+                    .child(
+                        div().id(("copy-user", id)).test_support().child(
+                            Button::new("button")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .tooltip("Copy")
+                                .text_color(muted)
+                                .tab_stop(shown)
+                                .on_click(move |_, _, cx| {
+                                    copy_view
+                                        .update(cx, |this, cx| this.copy_entry(id, true, cx))
+                                        .ok();
+                                }),
+                        ),
+                    )
+                    .into_any_element()
+            }),
+        };
+        // The message is a bubble at the right of the column, as wide as its
+        // words up to half the column. The space at its left gives way first
+        // as the column narrows, down to the room the actions take, so a
+        // narrow column gives the bubble the width of a comfortable line and
+        // a very narrow one nearly all of it.
         h_flex()
-            .id(("user-message", id))
             .w_full()
             .items_start()
-            .gap_1()
-            .pl_3()
-            .pr_1()
-            .py_2()
-            .rounded(theme.radius)
-            .bg(theme.secondary)
-            .text_color(theme.secondary_foreground)
             .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_1()
-                    .when(!tags.is_empty(), |this| {
-                        this.child(div().text_xs().text_color(muted).child(tags.join(" · ")))
-                    })
-                    .children(self.thumbnails(item, view, cx))
-                    .child(self.marked(("user-text", id), id, Place::Text, text, cx)),
+                div()
+                    .flex_grow(1000.)
+                    .flex_basis(px(0.))
+                    .max_w(relative(0.5))
+                    .min_w(rems(USER_ACTIONS_ROOM)),
             )
-            // Edit, Branch and Copy show on hover, in a column of their own
-            // beside the text.
-            .child(div().flex_none().child(HoverActions {
-                id: ("user-actions", id).into(),
-                shown: self.hovered == Some(id),
-                build: Box::new(move |shown| {
-                    let action = |name: &'static str, icon: Lucide| {
-                        Button::new((name, id))
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::new(icon))
-                            .text_color(muted)
-                            .tab_stop(shown)
-                    };
-                    h_flex()
-                        .when_some(changes, |this, (busy, no_branch, edit_view, branch_view)| {
-                            this.child(
-                                action("edit-message", Lucide::SquarePen)
-                                    .disabled(busy.is_some())
-                                    .tooltip(busy.unwrap_or("Edit"))
-                                    .accessibility_label("Edit")
-                                    .on_click(move |_, _, cx| {
-                                        edit_view
-                                            .update(cx, |this, cx| {
-                                                this.change(TranscriptEvent::Edit(id), cx)
-                                            })
-                                            .ok();
-                                    }),
+            .child(
+                h_flex()
+                    .flex_grow(1.)
+                    .flex_basis(rems(USER_BUBBLE_WIDTH))
+                    .min_w_0()
+                    .justify_end()
+                    .child(
+                        v_flex()
+                            .id(("user-message", id))
+                            .test_support()
+                            .relative()
+                            .min_w_0()
+                            .gap_1()
+                            .px_3()
+                            .py_2()
+                            .rounded(theme.radius)
+                            .bg(theme.secondary)
+                            .text_color(theme.secondary_foreground)
+                            .when(!tags.is_empty(), |this| {
+                                this.child(
+                                    div().text_xs().text_color(muted).child(tags.join(" · ")),
+                                )
+                            })
+                            .children(self.thumbnails(item, view, cx))
+                            .child(
+                                div()
+                                    // The words on one line, with no height,
+                                    // make the bubble as wide as they are.
+                                    // Text that wraps answers a later
+                                    // question about its width with the
+                                    // width it last wrapped at.
+                                    .child(
+                                        div()
+                                            .h_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .child(text.clone()),
+                                    )
+                                    .child(self.marked(
+                                        ("user-text", id),
+                                        id,
+                                        Place::Text,
+                                        text,
+                                        cx,
+                                    )),
                             )
                             .child(
-                                action("branch-message", Lucide::GitBranch)
-                                    .disabled(busy.is_some() || no_branch.is_some())
-                                    .tooltip(busy.or(no_branch).unwrap_or(
-                                        "Branch: a new session with the conversation before this message",
-                                    ))
-                                    .accessibility_label("Branch")
-                                    .on_click(move |_, _, cx| {
-                                        branch_view
-                                            .update(cx, |this, cx| {
-                                                this.change(TranscriptEvent::Branch(id), cx)
-                                            })
-                                            .ok();
-                                    }),
-                            )
-                        })
-                        .when_some(regenerate, |this, regenerate_view| {
-                            this.child(
-                                action("regenerate-message", Lucide::RotateCcw)
-                                    .tooltip("Send it again for a reply")
-                                    .accessibility_label("Regenerate")
-                                    .on_click(move |_, _, cx| {
-                                        regenerate_view
-                                            .update(cx, |this, cx| {
-                                                this.change(TranscriptEvent::Regenerate, cx)
-                                            })
-                                            .ok();
-                                    }),
-                            )
-                        })
-                        .child(
-                            div().id(("copy-user", id)).test_support().child(
-                                Button::new("button")
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Copy)
-                                    .tooltip("Copy")
-                                    .text_color(muted)
-                                    .tab_stop(shown)
-                                    .on_click(move |_, _, cx| {
-                                        copy_view
-                                            .update(cx, |this, cx| this.copy_entry(id, true, cx))
-                                            .ok();
-                                    }),
+                                div()
+                                    .absolute()
+                                    .top(rems(0.625))
+                                    .right_full()
+                                    .pr_1()
+                                    .child(actions),
                             ),
-                        )
-                        .into_any_element()
-                }),
-            }))
+                    ),
+            )
             .into_any_element()
     }
 
