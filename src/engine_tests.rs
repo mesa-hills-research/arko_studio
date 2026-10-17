@@ -330,7 +330,7 @@ fn a_slash_command_is_completed_from_the_menu_and_runs(cx: &mut TestAppContext) 
 fn a_session_streams_on_while_the_window_shows_another(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, body| {
         if body.contains("The slow one.") {
-            answer("Slow answer.", Duration::from_secs(2))
+            answer("Slow answer.", Duration::from_secs(6))
         } else {
             answer("Quick answer.", Duration::ZERO)
         }
