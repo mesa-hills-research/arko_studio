@@ -590,10 +590,20 @@ impl SessionView {
     /// answer. The composer empties once it is taken.
     pub fn send(&mut self, outgoing: Outgoing, window: &mut Window, cx: &mut Context<Self>) {
         let Outgoing { text, images } = outgoing;
-        if images.is_empty() && self.app_command(text.trim(), window, cx) {
-            self.composer
-                .update(cx, |composer, cx| composer.sent(&text, window, cx));
-            return;
+        if images.is_empty() {
+            match self.app_command(text.trim(), window, cx) {
+                Ok(true) => {
+                    self.composer
+                        .update(cx, |composer, cx| composer.sent(&text, window, cx));
+                    return;
+                }
+                Ok(false) => {}
+                // Left in the composer to put right.
+                Err(why) => {
+                    window.push_notification(why, cx);
+                    return;
+                }
+            }
         }
         let attached = images;
         let images: Vec<arko::Attachment> = attached.iter().map(|image| image.to_arko()).collect();
@@ -666,8 +676,14 @@ impl SessionView {
         self.focus_composer(window, cx);
     }
 
-    /// Runs the commands the app handles itself, `false` for the others.
-    fn app_command(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    /// Runs the commands the app handles itself, `false` for the others,
+    /// and says why when one can't run.
+    fn app_command(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
         let mut words = text.split_whitespace();
         match (words.next(), words.next(), words.next()) {
             (Some("/view"), Some(view), None) => {
@@ -675,23 +691,34 @@ impl SessionView {
                     "full" => prefs::TranscriptView::Full,
                     "quiet" => prefs::TranscriptView::Quiet,
                     "messages" => prefs::TranscriptView::Messages,
-                    _ => return false,
+                    _ => return Ok(false),
                 };
                 prefs::update(cx, |prefs| prefs.view = view);
-                true
+                Ok(true)
             }
             (Some("/settings"), None, None) => {
                 window.dispatch_action(Box::new(menus::OpenSettings), cx);
-                true
+                Ok(true)
             }
-            // A new session's model, before it starts.
+            // A new session's model, before it starts: one of those listed,
+            // by its name or its alias, once the list is known.
             (Some("/model"), Some(model), effort)
                 if self.session.is_none() && model != "worker" =>
             {
-                self.set_draft_model(model.to_string(), effort.map(str::to_string), cx);
-                true
+                let name = match &self.models {
+                    Some((_, choices)) => choices
+                        .groups
+                        .iter()
+                        .flat_map(|group| &group.models)
+                        .find(|choice| choice.name == model || choice.alias == model)
+                        .map(|choice| choice.name.clone())
+                        .ok_or_else(|| format!("Arko has no model called “{model}”."))?,
+                    None => model.to_string(),
+                };
+                self.set_draft_model(name, effort.map(str::to_string), cx);
+                Ok(true)
             }
-            _ => false,
+            _ => Ok(false),
         }
     }
 

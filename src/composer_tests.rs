@@ -343,6 +343,18 @@ fn the_mode_chip_lists_the_models_and_picks_one(cx: &mut TestAppContext) {
         "Agent · Opus 5.5 · high"
     );
     assert_eq!(open_title(&workspace, cx), None, "no session started");
+    // A name that isn't listed is refused, and stays to be put right.
+    act(cx, window, |window, cx| {
+        window.input("/model claude-sonnet-5", cx)
+    });
+    act(cx, window, |window, cx| window.press("escape", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(composer_text(&workspace, cx), "/model claude-sonnet-5");
+    assert_eq!(
+        cx.read(|cx| view.read(cx).draft().model.clone()).as_deref(),
+        Some("claude-opus-5-5")
+    );
+    assert_eq!(open_title(&workspace, cx), None);
 }
 
 #[gpui_kit::test]
