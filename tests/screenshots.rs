@@ -663,3 +663,56 @@ fn status_popovers_light() {
 fn status_popovers_dark() {
     goldens().assert("status-popovers-dark", &status_popovers(ThemeMode::Dark));
 }
+
+/// The last cache reminder, at 0:42 before the cache lapses, over an empty
+/// window.
+fn cache_reminder(mode: ThemeMode) -> Screenshot {
+    use arko_studio::cache_reminders::{Countdown, ReminderClock, last_reminder};
+    use gpui_kit::AppContext as _;
+    use gpui_kit::component::WindowExt as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| {
+        arko_studio::init(startup, cx);
+        cx.set_global(ReminderClock(std::rc::Rc::new(|| status::NOW)));
+    });
+    let window = app
+        .open_window_with(size(px(560.), px(240.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| gpui_kit::Empty))
+                .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.update(|cx| {
+        window
+            .update(cx, |_, window, cx| {
+                let countdown = cx.new(|cx| {
+                    Countdown::new(
+                        "Split the engine out of main.rs".into(),
+                        "Refresh ≈ $0.04 · Letting it expire re-caches ≈ $0.90".into(),
+                        status::NOW + 42_000,
+                        cx,
+                    )
+                });
+                window.push_notification(last_reminder(1, countdown, |_, _| {}), cx);
+            })
+            .unwrap();
+    });
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn cache_reminder_light() {
+    goldens().assert("cache-reminder-light", &cache_reminder(ThemeMode::Light));
+}
+
+#[test]
+fn cache_reminder_dark() {
+    goldens().assert("cache-reminder-dark", &cache_reminder(ThemeMode::Dark));
+}

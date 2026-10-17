@@ -304,6 +304,9 @@ pub struct LiveSession {
     quit_agreed: Option<arko::QuitAsk>,
     /// The question this app answered last.
     answered: Option<u64>,
+    /// When the user last sent it something or looked at it, in Unix
+    /// milliseconds: cache reminders leave sessions alone after an hour.
+    touched_at: i64,
     /// Counts the times it opened: each opening is a new feed.
     opened: u64,
     /// How many times what was drained was applied (tests).
@@ -337,6 +340,7 @@ impl LiveSession {
             quit_ask: None,
             quit_agreed: None,
             answered: None,
+            touched_at: crate::figures::now_ms(),
             opened: 0,
             #[cfg(test)]
             applied: 0,
@@ -378,8 +382,10 @@ impl LiveSession {
         });
         LiveSessions::add(session.clone(), cx);
         session.update(cx, |session, cx| session.update_indicator(cx));
-        // Its turns and questions reach the user away from it.
+        // Its turns and questions reach the user away from it, and so does
+        // its cache's lapse.
         crate::notify::watch(&session, cx);
+        crate::cache_reminders::watch(&session, cx);
         session
     }
 
@@ -697,6 +703,39 @@ impl LiveSession {
         cx.background_spawn(async move { details.switch_cost(to.into()) })
     }
 
+    /// Keeps the main agent's prompt cache warm (between turns): out of
+    /// band where the provider allows, else with a short message whose
+    /// reply the transcript shows as "Cache refreshed". The task says how,
+    /// or why not.
+    pub fn refresh_cache(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<arko::Refreshed, String>> {
+        let Some(link) = &self.link else {
+            return Task::ready(Err("The session isn’t open.".to_string()));
+        };
+        let (reply, answer) = oneshot::channel();
+        if link
+            .requests
+            .send(arko::Request::RefreshCache { reply })
+            .is_err()
+        {
+            return Task::ready(Err("The session has closed.".to_string()));
+        }
+        self.touched_at = crate::figures::now_ms();
+        cx.background_spawn(async move {
+            answer
+                .await
+                .unwrap_or_else(|_| Err("The session has closed.".to_string()))
+        })
+    }
+
+    /// When the user last sent it something or looked at it (Unix
+    /// milliseconds).
+    pub fn touched_at(&self) -> i64 {
+        self.touched_at
+    }
+
     /// A session that hasn't opened, with the id `id` (tests).
     #[cfg(test)]
     pub fn for_tests(id: &str, cx: &mut App) -> Self {
@@ -723,6 +762,12 @@ impl LiveSession {
     #[cfg(test)]
     pub fn queued(&self) -> &[arko::Input] {
         &self.queued
+    }
+
+    /// Makes it as if the user last touched it at `at` (tests).
+    #[cfg(test)]
+    pub fn set_touched_at(&mut self, at: i64) {
+        self.touched_at = at;
     }
 
     fn ended(&mut self, cx: &mut Context<Self>) {
@@ -817,6 +862,7 @@ impl LiveSession {
         if shown {
             self.shown += 1;
             self.unseen = false;
+            self.touched_at = crate::figures::now_ms();
         } else {
             self.shown = self.shown.saturating_sub(1);
         }
@@ -829,6 +875,7 @@ impl LiveSession {
         if let arko::Input::Answer { question, .. } = &input {
             self.answered = Some(*question);
         }
+        self.touched_at = crate::figures::now_ms();
         match (&self.phase, &self.link) {
             (Phase::Open | Phase::Closing, Some(link)) => link
                 .input
