@@ -170,7 +170,7 @@ impl ExtensionsPage {
             SettingGroup::new()
                 .title("Skills")
                 .description(
-                    "Instructions for particular kinds of work, which the agents load when a task calls for them. Arko reads a project’s .agents/skills, .claude/skills and .skills, then skills in Arko’s folder, ~/.agents/skills and ~/.claude/skills. A skill in more than one keeps the first.",
+                    "Instructions for particular kinds of work, which the agents load when a task calls for them: a folder with a SKILL.md, or a Markdown file, whose front matter gives a name and a description. Arko reads a project’s .agents/skills, .claude/skills and .skills, then skills in Arko’s folder, ~/.agents/skills and ~/.claude/skills. A skill named as an earlier one gets a number (pdf-2), and the same skill twice is read once.",
                 )
                 .items(skills),
         );

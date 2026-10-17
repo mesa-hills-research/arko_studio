@@ -287,6 +287,16 @@ fn parse_file(path: &Path) -> Result<(Vec<McpServer>, Value), String> {
 }
 
 fn parse(text: &str) -> Result<(Vec<McpServer>, Value), String> {
+    parse_with(text, &|name| std::env::var(name).ok())
+}
+
+/// The servers in an MCP config file's `text`, as arko starts them: those
+/// arko skips say why, as it says it. `lookup` gives the values of the
+/// `${VAR}`s in their commands, as the environment does for arko.
+fn parse_with(
+    text: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Vec<McpServer>, Value), String> {
     let value: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
     let raw = value
         .get("mcpServers")
@@ -310,92 +320,144 @@ fn parse(text: &str) -> Result<(Vec<McpServer>, Value), String> {
         .into_iter()
         .enumerate()
         .filter(|(_, (_, entry))| entry.get("disabled").and_then(Value::as_bool) != Some(true))
-        .map(|(index, (name, entry))| {
-            let name = name
-                .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| format!("server {}", index + 1));
-            let command = entry.get("command").and_then(Value::as_str).unwrap_or("");
-            let args: Vec<String> = entry
-                .get("args")
-                .and_then(Value::as_array)
-                .map(|args| {
-                    args.iter()
-                        .map(|arg| match arg {
-                            Value::String(text) => text.clone(),
-                            other => other.to_string(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let kind = entry.get("type").and_then(Value::as_str);
-            let skipped = match kind {
-                Some(kind) if kind != "stdio" => Some(format!("a {kind} server")),
-                _ if command.trim().is_empty() && entry.get("url").is_some() => {
-                    Some("an HTTP server".to_string())
+        .map(
+            |(index, (name, entry))| match name.filter(|name| !name.trim().is_empty()) {
+                None => McpServer {
+                    name: format!("server {}", index + 1),
+                    command: String::new(),
+                    skipped: Some("it has no name".to_string()),
+                },
+                Some(name) => {
+                    let (command, skipped) = match server_command(entry, lookup) {
+                        Ok(command) => (command, None),
+                        Err((command, why)) => (command, Some(why)),
+                    };
+                    McpServer {
+                        name,
+                        command,
+                        skipped,
+                    }
                 }
-                _ if command.trim().is_empty() => Some("no command".to_string()),
-                _ => None,
-            };
-            McpServer {
-                name,
-                command: std::iter::once(command.to_string())
-                    .chain(args)
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                skipped,
-            }
-        })
+            },
+        )
         .collect();
     Ok((servers, raw))
 }
 
-/// The skills in the folder at `path`: each folder in it with a
-/// `SKILL.md`, by name.
+/// A server's command line as its entry writes it, or that and why arko
+/// skips the server (`mcp::server` in arko).
+fn server_command(
+    entry: &Value,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<String, (String, String)> {
+    let Some(entry) = entry.as_object() else {
+        return Err((String::new(), "it isn’t an object".to_string()));
+    };
+    let command = entry.get("command").and_then(Value::as_str).unwrap_or("");
+    let text = |value: &Value| match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(_) | Value::Bool(_) => Some(value.to_string()),
+        _ => None,
+    };
+    let args: Result<Vec<String>, &str> = match entry.get("args") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(args)) => args
+            .iter()
+            .map(|arg| text(arg).ok_or("an argument isn’t text"))
+            .collect(),
+        Some(_) => Err("its args aren’t a list"),
+    };
+    let shown = std::iter::once(command.to_string())
+        .chain(args.clone().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let skip = |why: &str| Err((shown.clone(), why.to_string()));
+    if let Some(kind) = entry.get("type").and_then(Value::as_str)
+        && kind != "stdio"
+    {
+        return skip(&format!("a {kind} server"));
+    }
+    if command.trim().is_empty() {
+        return if entry.contains_key("url") {
+            skip("an HTTP server")
+        } else {
+            skip("no command")
+        };
+    }
+    let args = match args {
+        Ok(args) => args,
+        Err(why) => return skip(why),
+    };
+    let env: Vec<String> = match entry.get("env") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Object(env)) => match env.values().map(text).collect::<Option<_>>() {
+            Some(values) => values,
+            None => return skip("an env value isn’t text"),
+        },
+        Some(_) => return skip("its env isn’t an object"),
+    };
+    let unset = std::iter::once(command.to_string())
+        .chain(args)
+        .chain(env)
+        .find_map(|text| unset_variable(&text, lookup));
+    match unset {
+        Some(name) => skip(&format!("it uses ${{{name}}}, which isn’t set")),
+        None => Ok(shown),
+    }
+}
+
+/// The first `${VAR}` in `text` that isn't set and has no default
+/// (`${VAR:-default}`), as arko expands them.
+fn unset_variable(text: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        let length = rest[start..].find('}')?;
+        let inner = &rest[start + 2..start + length];
+        let (name, default) = match inner.split_once(":-") {
+            Some((name, default)) => (name, Some(default)),
+            None => (inner, None),
+        };
+        if default.is_none() && lookup(name).is_none() {
+            return Some(name.to_string());
+        }
+        rest = &rest[start + length + 1..];
+    }
+    None
+}
+
+/// The skills in the folder at `path`, as the agents load them, read by
+/// arko_agents' own loader: each folder with a `SKILL.md`, each other
+/// `.md` file and each `.skill` bundle whose front matter gives a name
+/// and a description. Others are skipped, as they are for the agents.
 fn skills_in(path: &Path) -> Vec<Skill> {
-    let Ok(entries) = std::fs::read_dir(path) else {
+    let config = arko_agents::SkillsConfig {
+        workspace_source: None,
+        global_sources: vec![arko_agents::SkillSource {
+            path: path.display().to_string(),
+            include: None,
+            exclude: None,
+        }],
+        on_invalid_skill: arko_agents::InvalidSkillPolicy::Warn,
+        load_skill_interception: None,
+    };
+    let Ok(skills) = arko_agents::SkillManager::load(&config, path) else {
         return Vec::new();
     };
-    let mut skills: Vec<Skill> = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let text = std::fs::read_to_string(entry.path().join("SKILL.md")).ok()?;
-            let folder = entry.file_name().to_string_lossy().into_owned();
-            let (name, description) = front_matter(&text);
-            Some(Skill {
-                name: name.unwrap_or(folder),
-                description: description.unwrap_or_default(),
-            })
+    let found = skills.prompt_context();
+    let mut skills: Vec<Skill> = found
+        .on_demand_skills
+        .iter()
+        .map(|skill| Skill {
+            name: skill.name.clone(),
+            description: skill.description.clone(),
         })
+        .chain(found.auto_loaded_skills.iter().map(|skill| Skill {
+            name: skill.name.clone(),
+            description: String::new(),
+        }))
         .collect();
     skills.sort_by(|a, b| a.name.cmp(&b.name));
     skills
-}
-
-/// A `SKILL.md`'s name and description, from its front matter.
-fn front_matter(text: &str) -> (Option<String>, Option<String>) {
-    let mut lines = text.lines();
-    if lines.next().map(str::trim) != Some("---") {
-        return (None, None);
-    }
-    let (mut name, mut description) = (None, None);
-    for line in lines {
-        if line.trim() == "---" {
-            break;
-        }
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.trim().trim_matches(['"', '\'']).trim();
-        if value.is_empty() {
-            continue;
-        }
-        match key.trim() {
-            "name" => name = Some(value.to_string()),
-            "description" => description = Some(value.to_string()),
-            _ => {}
-        }
-    }
-    (name, description)
 }
 
 #[cfg(test)]
@@ -471,6 +533,87 @@ mod tests {
         forget_approval(&temp.path().join("none"), &project).unwrap();
     }
 
+    /// Servers arko skips show as skipped, with why: no name, not an
+    /// object, arguments or environment of the wrong kind, a `${VAR}` that
+    /// isn't set.
+    #[test]
+    fn servers_arko_skips_say_why() {
+        let lookup = |name: &str| (name == "TOKEN").then(|| "secret".to_string());
+        let (servers, _) = parse_with(
+            r#"{"mcpServers": {
+                "gh": {"command": "npx", "args": ["--token", "${TOKEN}"]},
+                "unset": {"command": "npx", "args": ["${SURELY_UNSET}"]},
+                "fallback": {"command": "npx", "args": ["${SURELY_UNSET:-none}"]},
+                "args": {"command": "x", "args": "not-a-list"},
+                "env": {"command": "x", "env": {"A": ["no"]}},
+                "notobj": "npx"
+            }}"#,
+            &lookup,
+        )
+        .unwrap();
+        let skipped = |name: &str| {
+            servers
+                .iter()
+                .find(|server| server.name == name)
+                .unwrap()
+                .skipped
+                .clone()
+        };
+        assert_eq!(skipped("gh"), None);
+        assert_eq!(
+            servers[servers.iter().position(|s| s.name == "gh").unwrap()].command,
+            "npx --token ${TOKEN}",
+            "as the file writes it"
+        );
+        assert_eq!(
+            skipped("unset").as_deref(),
+            Some("it uses ${SURELY_UNSET}, which isn’t set")
+        );
+        assert_eq!(skipped("fallback"), None);
+        assert_eq!(skipped("args").as_deref(), Some("its args aren’t a list"));
+        assert_eq!(skipped("env").as_deref(), Some("an env value isn’t text"));
+        assert_eq!(skipped("notobj").as_deref(), Some("it isn’t an object"));
+        let (servers, _) =
+            parse_with(r#"{"mcpServers": [{"command": "unnamed"}]}"#, &lookup).unwrap();
+        assert_eq!(servers[0].skipped.as_deref(), Some("it has no name"));
+    }
+
+    /// Skills are read as the agents load them: a folder's SKILL.md or a
+    /// flat Markdown file with a name and a description, folded lines
+    /// included. Hidden entries and files without them are skipped.
+    #[test]
+    fn skills_are_listed_as_the_agents_load_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let skills = temp.path().join("skills");
+        write(
+            &skills.join("no-front-matter/SKILL.md"),
+            "Just instructions",
+        );
+        write(
+            &skills.join(".hidden/SKILL.md"),
+            "---\nname: hidden\ndescription: d\n---\nhidden body",
+        );
+        write(
+            &skills.join("flat.md"),
+            "---\nname: flat\ndescription: A flat one\n---\nflat body",
+        );
+        write(
+            &skills.join("folded/SKILL.md"),
+            "---\nname: folded\ndescription: >\n  Long text\n  over lines\n---\nfolded body",
+        );
+        let found: Vec<(String, String)> = skills_in(&skills)
+            .into_iter()
+            .map(|skill| (skill.name, skill.description))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("flat".to_string(), "A flat one".to_string()),
+                ("folded".to_string(), "Long text over lines".to_string()),
+            ]
+        );
+    }
+
     #[test]
     fn skill_folders_are_found_the_projects_first_each_once() {
         let temp = tempfile::tempdir().unwrap();
@@ -500,7 +643,7 @@ mod tests {
                 description: "Read PDFs".into()
             }]
         );
-        assert_eq!(found.skills[1].skills[0].name, "notes");
+        assert!(found.skills[1].skills.is_empty(), "no front matter");
         assert!(found.skills[2].skills.is_empty());
     }
 }
