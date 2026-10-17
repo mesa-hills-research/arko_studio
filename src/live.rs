@@ -126,6 +126,9 @@ pub struct Link {
     input: mpsc::UnboundedSender<arko::Input>,
     requests: mpsc::UnboundedSender<arko::Request>,
     pub details: Arc<arko::details::Details>,
+    /// The images of the session's messages and tools, by the ids the feed
+    /// gives them.
+    pub images: arko::images::Images,
 }
 
 /// What a session asks of the window that shows it.
@@ -301,6 +304,8 @@ pub struct LiveSession {
     quit_agreed: Option<arko::QuitAsk>,
     /// The question this app answered last.
     answered: Option<u64>,
+    /// Counts the times it opened: each opening is a new feed.
+    opened: u64,
     /// How many times what was drained was applied (tests).
     #[cfg(test)]
     applied: usize,
@@ -332,6 +337,7 @@ impl LiveSession {
             quit_ask: None,
             quit_agreed: None,
             answered: None,
+            opened: 0,
             #[cfg(test)]
             applied: 0,
             _tasks: Vec::new(),
@@ -454,6 +460,7 @@ impl LiveSession {
             input,
             requests,
             quit_asks,
+            images,
             ..
         } = seam;
         self.prompt = None;
@@ -472,8 +479,10 @@ impl LiveSession {
             input,
             requests,
             details,
+            images,
         });
         self.phase = Phase::Open;
+        self.opened += 1;
         self.drain(feed, status, quit_asks, cx);
         self.update_indicator(cx);
         cx.emit(LiveEvent::Opened);
@@ -727,6 +736,12 @@ impl LiveSession {
     /// Whether it runs, or is about to: input reaches it.
     pub fn is_running(&self) -> bool {
         matches!(self.phase, Phase::Opening | Phase::Open | Phase::Closing)
+    }
+
+    /// Which opening of the session its feed is: it changes when the session
+    /// opens again (after switching between Chat and Agent).
+    pub fn opening(&self) -> u64 {
+        self.opened
     }
 
     pub fn link(&self) -> Option<&Link> {

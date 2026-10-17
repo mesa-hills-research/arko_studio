@@ -29,7 +29,8 @@ use gpui_kit::*;
 use crate::backend::{Mode, ModelChoices, NewSession, SessionEntry, SharedBackend};
 use crate::composer::{Composer, ComposerEvent};
 use crate::layout::WidthClass;
-use crate::live::{LiveSession, Phase, PromptKind};
+use crate::live::{LiveSession, LiveSessions, Phase, PromptKind};
+use crate::transcript::{AgentFilter, TranscriptEvent, TranscriptView};
 use crate::{drafts, menus, prefs};
 
 /// How many recent folders Change… offers.
@@ -59,6 +60,20 @@ pub enum SessionViewEvent {
     OpenAccounts,
     /// Show the session's waiting prompt again.
     ShowPrompt,
+    /// The reader opened a worker's card in the transcript.
+    OpenWorker(SharedString),
+}
+
+/// How many sessions' transcripts the window keeps ready: switching back to
+/// one of them shows it at once, where it was.
+const KEPT_TRANSCRIPTS: usize = 4;
+
+/// A session's transcript, for the opening of its feed it shows.
+struct KeptTranscript {
+    session: EntityId,
+    opening: u64,
+    view: Entity<TranscriptView>,
+    _events: Subscription,
 }
 
 impl EventEmitter<SessionViewEvent> for SessionView {}
@@ -86,6 +101,8 @@ pub struct SessionView {
     _subscriptions: Vec<Subscription>,
     _models: Option<Task<()>>,
     _draft: Option<Task<()>>,
+    /// The transcripts of the sessions shown last, the latest last.
+    transcripts: Vec<KeptTranscript>,
 }
 
 impl SessionView {
@@ -116,6 +133,7 @@ impl SessionView {
             _subscriptions: subscriptions,
             _models: None,
             _draft: None,
+            transcripts: Vec::new(),
         };
         this.restore_draft(window, cx);
         this.sync_expanded(window, cx);
@@ -311,12 +329,77 @@ impl SessionView {
             self._session
                 .push(cx.observe_in(session, window, |this, _, window, cx| {
                     this.sync_composer(window, cx);
+                    this.sync_transcript(window, cx);
                     cx.notify();
                 }));
         }
         self.restore_draft(window, cx);
         self.sync_composer(window, cx);
+        self.sync_transcript(window, cx);
         cx.notify();
+    }
+
+    /// Makes the shown session's transcript ready: the one kept for it, or a
+    /// new one once its feed is there (and again when it opens anew).
+    fn sync_transcript(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Sessions that ended don't come back.
+        self.transcripts.retain(|kept| {
+            LiveSessions::all(cx)
+                .iter()
+                .any(|session| session.entity_id() == kept.session)
+        });
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let (opening, link) = {
+            let session = session.read(cx);
+            (session.opening(), session.link().cloned())
+        };
+        let Some(link) = link else {
+            return;
+        };
+        let found = self
+            .transcripts
+            .iter()
+            .position(|kept| kept.session == session.entity_id() && kept.opening == opening);
+        let kept = match found {
+            Some(index) => self.transcripts.remove(index),
+            None => {
+                self.transcripts
+                    .retain(|kept| kept.session != session.entity_id());
+                let view = cx.new(|cx| {
+                    let mut view = TranscriptView::new(&link.feed, AgentFilter::Main, window, cx);
+                    // The thumbnails of the session's images.
+                    view.set_images(link.images.clone(), cx);
+                    view
+                });
+                let events = cx.subscribe(&view, |_, _, event: &TranscriptEvent, cx| {
+                    let TranscriptEvent::OpenWorker(id) = event;
+                    cx.emit(SessionViewEvent::OpenWorker(id.clone()));
+                });
+                KeptTranscript {
+                    session: session.entity_id(),
+                    opening,
+                    view,
+                    _events: events,
+                }
+            }
+        };
+        self.transcripts.push(kept);
+        if self.transcripts.len() > KEPT_TRANSCRIPTS {
+            self.transcripts.remove(0);
+        }
+    }
+
+    /// The transcript the window shows, once the session's feed is there.
+    pub fn transcript(&self, cx: &App) -> Option<&Entity<TranscriptView>> {
+        let session = self.session.as_ref()?;
+        let opening = session.read(cx).opening();
+        self.transcripts
+            .iter()
+            .rev()
+            .find(|kept| kept.session == session.entity_id() && kept.opening == opening)
+            .map(|kept| &kept.view)
     }
 
     pub fn set_width(&mut self, width: WidthClass, cx: &mut Context<Self>) {
@@ -1119,9 +1202,9 @@ impl SessionView {
             })
     }
 
-    /// What the transcript's place shows until the transcript view comes:
-    /// the session's state.
-    fn render_transcript(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// What the transcript's place shows while there is no transcript: a new
+    /// session's line, or the session's state.
+    fn render_state(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let Some(session) = &self.session else {
             return self.render_draft_line(cx).into_any_element();
@@ -1129,11 +1212,7 @@ impl SessionView {
         let session = session.read(cx);
         let text: SharedString = match session.phase() {
             Phase::Opening if session.id().is_none() => "Starting the session…".into(),
-            Phase::Opening => "Opening the session…".into(),
-            Phase::Open | Phase::Closing => {
-                // TODO: the transcript.
-                format!("{} · {}", session.title(), session.model()).into()
-            }
+            Phase::Opening | Phase::Open | Phase::Closing => "Opening the session…".into(),
             Phase::Sample => "A sample session: it shows, but doesn’t run.".into(),
             Phase::Ended => "The session has closed.".into(),
             Phase::Failed(why) => why.clone().into(),
@@ -1431,6 +1510,11 @@ impl Render for SessionView {
         let narrow = self.width == WidthClass::Narrow;
         let question = self.render_question(cx);
         let prompt = self.render_prompt(cx);
+        // The transcript spans the column (its rows centre themselves, so
+        // the wheel and the scrollbar work across it), and draws again only
+        // when it changes.
+        let transcript = self.transcript(cx).map(TranscriptView::cached);
+        let state = transcript.is_none().then(|| self.render_state(cx));
         let theme = cx.theme();
         v_flex()
             .id("session-view")
@@ -1440,29 +1524,32 @@ impl Render for SessionView {
             .text_color(theme.foreground)
             .items_center()
             .child(
-                // The reading column: centred and at most ~46 rem wide, full
-                // width on narrow windows.
-                v_flex()
-                    .size_full()
-                    .when(!narrow, |this| this.max_w(rems(46.)))
-                    .px_4()
-                    .child(
-                        div()
-                            .id("transcript")
-                            .flex_1()
-                            .min_h_0()
-                            .flex()
+                div()
+                    .id("transcript")
+                    .test_support()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .children(transcript)
+                    .when_some(state, |this, state| {
+                        this.flex()
                             .items_center()
                             .justify_center()
-                            .child(self.render_transcript(cx)),
-                    )
-                    .child(
-                        v_flex()
-                            .pb_3()
-                            .children(prompt)
-                            .children(question)
-                            .child(self.render_composer(window, cx)),
-                    ),
+                            .px_4()
+                            .child(state)
+                    }),
+            )
+            .child(
+                // The composer's column: centred and at most ~46 rem wide, full
+                // width on narrow windows.
+                v_flex()
+                    .w_full()
+                    .when(!narrow, |this| this.max_w(rems(46.)))
+                    .px_4()
+                    .pb_3()
+                    .children(prompt)
+                    .children(question)
+                    .child(self.render_composer(window, cx)),
             )
     }
 }

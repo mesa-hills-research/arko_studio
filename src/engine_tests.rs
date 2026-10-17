@@ -15,6 +15,7 @@ use crate::live::{LiveSession, LiveSessions, Phase};
 use crate::sidebar::Row;
 use crate::testing::{self, Answer, Mock, reply, reply_after, wait_until};
 use crate::tests::{act, open, open_title};
+use crate::transcript::TranscriptView;
 use crate::workspace::Workspace;
 use crate::{Startup, menus};
 
@@ -102,6 +103,28 @@ impl App {
         });
     }
 
+    /// The shown transcript, once the window has drawn it.
+    fn transcript(&self, cx: &mut TestAppContext) -> Option<Entity<TranscriptView>> {
+        cx.update_window(self.window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .session_view()
+                .read(cx)
+                .transcript(cx)
+                .cloned()
+        })
+    }
+
+    /// Waits for the shown transcript to have at least `rows` rows.
+    fn wait_for_rows(&self, cx: &mut TestAppContext, rows: usize) {
+        wait_until(cx, "the transcript's rows", |cx| {
+            self.transcript(cx)
+                .is_some_and(|view| cx.read(|cx| view.read(cx).row_count()) >= rows)
+        });
+    }
+
     fn composer_text(&self, cx: &mut TestAppContext) -> String {
         cx.read(|cx| {
             self.workspace
@@ -155,6 +178,29 @@ fn a_first_message_starts_a_session_and_its_reply_arrives(cx: &mut TestAppContex
     assert_eq!(app.composer_text(cx), "");
     app.wait_for_text(cx, "Seven pears.");
     assert!(mock.was_sent("Count the pears."));
+    // The transcript shows the message and its reply.
+    app.wait_for_rows(cx, 2);
+    // Typing in the composer draws the composer, not the transcript.
+    let transcript = app.transcript(cx).unwrap();
+    let draw = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        cx.update_window(app.window, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    };
+    draw(cx);
+    draw(cx);
+    let drawn = cx.read(|cx| transcript.read(cx).render_count());
+    for key in ["a", "b", "c", "backspace"] {
+        // As the platform delivers it (the test's `press` draws the whole
+        // window again, around the key).
+        cx.update_window(app.window, |_, window, cx| {
+            window.dispatch_keystroke(gpui_kit::Keystroke::parse(key).unwrap(), cx)
+        })
+        .unwrap();
+        draw(cx);
+    }
+    assert_eq!(app.composer_text(cx), "ab");
+    assert_eq!(cx.read(|cx| transcript.read(cx).render_count()), drawn);
     // It's in Arko's folder, listed in the sidebar and kept in the history.
     wait_until(cx, "the sidebar to list it", |cx| {
         cx.read(|cx| {
@@ -244,8 +290,13 @@ fn the_agents_question_is_answered_from_the_composer(cx: &mut TestAppContext) {
     });
     app.send(cx, "Two spaces.");
     app.wait_for_text(cx, "Indented with two spaces.");
-    act(cx, app.window, |window, _| {
-        assert!(window.try_find("question-chip").is_none());
+    // The window follows the session a frame later.
+    wait_until(cx, "the question to close", |cx| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("question-chip").is_none()
+        })
+        .unwrap()
     });
     app.close_all(cx);
 }
@@ -322,6 +373,8 @@ fn a_session_streams_on_while_the_window_shows_another(cx: &mut TestAppContext) 
     });
     assert!(!indicator(cx).unseen);
     assert_eq!(cx.read(|cx| LiveSessions::all(cx).len()), 2);
+    // Its transcript was kept, with the answer that came meanwhile.
+    app.wait_for_rows(cx, 2);
     app.close_all(cx);
 }
 
@@ -497,6 +550,8 @@ fn an_agent_session_switches_to_chat_after_saying_what_it_costs(cx: &mut TestApp
     wait_until(cx, "the turn to end", |cx| {
         cx.read(|cx| !session.read(cx).is_working())
     });
+    app.wait_for_rows(cx, 2);
+    let before = app.transcript(cx).unwrap();
     act(cx, app.window, |window, cx| window.click("mode-model", cx));
     act(cx, app.window, |window, cx| window.click("mode-chat", cx));
     wait_until(cx, "the switch dialog", |cx| {
@@ -522,6 +577,13 @@ fn an_agent_session_switches_to_chat_after_saying_what_it_costs(cx: &mut TestApp
     assert_eq!(
         app.shown(cx).map(|shown| shown.entity_id()),
         Some(session.entity_id())
+    );
+    // The reopened session's feed has a transcript of its own, with the
+    // conversation so far.
+    app.wait_for_rows(cx, 2);
+    assert_ne!(
+        app.transcript(cx).map(|view| view.entity_id()),
+        Some(before.entity_id())
     );
     app.send(cx, "Now just talk.");
     app.wait_for_text(cx, "Talking.");

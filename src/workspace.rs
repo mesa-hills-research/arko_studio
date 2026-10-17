@@ -536,6 +536,21 @@ impl Workspace {
                     prompts::show(session, window, cx);
                 }
             }
+            // TODO: the panel shows that worker's own transcript.
+            SessionViewEvent::OpenWorker(_) => self.show_workers(window, cx),
+        }
+    }
+
+    /// Makes sure the workers panel shows: docked, or as a sheet.
+    fn show_workers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.width.docks_panel() {
+            if !self.workers_open {
+                self.workers_open = true;
+                self.sync_chrome(window, cx);
+                cx.notify();
+            }
+        } else if self.sheet != Some(Edge::Panel) {
+            self.open_sheet(Edge::Panel, window, cx);
         }
     }
 
