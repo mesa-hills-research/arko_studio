@@ -514,6 +514,32 @@ fn mcp_config_files_are_added_and_removed(cx: &mut TestAppContext) {
     assert!(cx.read(|cx| prefs::get(cx).advanced.mcp_config.is_empty()));
 }
 
+/// Add… under Advanced takes MCP config files only: another file is
+/// refused with why, and the others are added.
+#[gpui_kit::test]
+fn only_mcp_config_files_are_added(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, 7, 2400.);
+    let temp = tempfile::tempdir().unwrap();
+    let good = temp.path().join("servers.json");
+    let notes = temp.path().join("notes.txt");
+    std::fs::write(
+        &good,
+        r#"{"mcpServers": {"files": {"command": "mcp-files"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(&notes, "Buy pears.").unwrap();
+    act(cx, window, |window, cx| {
+        settings.update(cx, |settings, cx| {
+            settings.add_checked_mcp_configs(vec![notes.clone(), good.clone()], window, cx)
+        })
+    });
+    assert_eq!(backend.defaults().mcp_config, [good]);
+    act(cx, window, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1, "says why not");
+    });
+}
+
 /// Moving or resizing the window changes its placement in the preferences
 /// many times a second: the pages aren't built again for it. A preference
 /// they show still shows at once.

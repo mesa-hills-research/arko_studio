@@ -266,6 +266,18 @@ fn mcp_file(path: &Path, arko: bool) -> McpFile {
     }
 }
 
+/// Whether arko can read the MCP config file at `path`: why not, when it
+/// can't (it isn't there, it isn't JSON, it has no `mcpServers`).
+pub fn check_mcp_file(path: &Path) -> Result<(), String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => parse(&text).map(|_| ()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err("it isn’t there".to_string())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// The servers in the MCP config file at `path`, in Claude Code's format
 /// (servers by name) or arko's (a list of servers with names), and its
 /// `mcpServers` as written.

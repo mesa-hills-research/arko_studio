@@ -315,8 +315,52 @@ impl SettingsPage {
             let Ok(Ok(Some(paths))) = paths.await else {
                 return;
             };
-            this.update(cx, |this, cx| this.add_mcp_configs(paths, cx))
-                .ok();
+            this.update_in(cx, |this, window, cx| {
+                this.add_checked_mcp_configs(paths, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Adds the files of `files` that are MCP config files, read in the
+    /// background, and says why each other one isn't added.
+    pub fn add_checked_mcp_configs(
+        &mut self,
+        files: Vec<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let checking = cx.background_spawn(async move {
+            files
+                .into_iter()
+                .map(|file| {
+                    let checked = crate::backend::extensions::check_mcp_file(&file);
+                    (file, checked)
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let checked = checking.await;
+            this.update_in(cx, |this, window, cx| {
+                let mut added = Vec::new();
+                for (file, checked) in checked {
+                    match checked {
+                        Ok(()) => added.push(file),
+                        Err(why) => window.push_notification(
+                            gpui_kit::component::notification::Notification::error(format!(
+                                "{} isn’t added: {why}.",
+                                file.display()
+                            )),
+                            cx,
+                        ),
+                    }
+                }
+                if !added.is_empty() {
+                    this.add_mcp_configs(added, cx);
+                }
+            })
+            .ok();
         })
         .detach();
     }
@@ -356,6 +400,7 @@ impl SettingsPage {
     }
 
     fn pages(&self, cx: &mut Context<Self>) -> Vec<SettingPage> {
+        let this = cx.entity();
         vec![
             self.appearance_page(cx),
             input_page(),
@@ -364,7 +409,7 @@ impl SettingsPage {
             notifications_page(),
             self.web_page.read(cx).page(cx),
             self.extensions.read(cx).page(&self.extensions),
-            advanced_page(&cx.entity(), cx),
+            advanced_page(&this, self.extensions.read(cx).extensions(), cx),
         ]
     }
 
@@ -812,7 +857,13 @@ fn notifications_page() -> SettingPage {
         ]))
 }
 
-fn advanced_page(this: &Entity<SettingsPage>, cx: &App) -> SettingPage {
+/// Settings › Advanced, with `read`, what Extensions last read of the MCP
+/// config files.
+fn advanced_page(
+    this: &Entity<SettingsPage>,
+    read: Option<&crate::backend::extensions::Extensions>,
+    cx: &App,
+) -> SettingPage {
     let home = cx.global::<crate::session_view::HomeFolder>().0.clone();
     // The folders as the user's home folder holds them, with `~`.
     let in_home = |folder: &std::path::Path| {
@@ -848,12 +899,29 @@ fn advanced_page(this: &Entity<SettingsPage>, cx: &App) -> SettingPage {
             ),
         );
     }
+    // What Extensions read of each file: one that isn't there, or can't be
+    // read, is left out of the sessions.
     let mut files: Vec<SettingItem> = prefs::get(cx)
         .advanced
         .mcp_config
         .iter()
         .enumerate()
         .map(|(ix, file)| {
+            let state = read
+                .and_then(|read| {
+                    read.files
+                        .iter()
+                        .find(|read| !read.arko && read.path == *file)
+                })
+                .map(|read| &read.servers);
+            let description = match state {
+                Some(None) => "It isn’t there, so sessions leave it out.".to_string(),
+                Some(Some(Err(why))) => {
+                    format!("It can’t be read ({why}), so sessions leave it out.")
+                }
+                _ => "Sessions opened from now on start the servers in it. Extensions lists them."
+                    .to_string(),
+            };
             let file = file.clone();
             SettingItem::new(
                 crate::backend::account_words::tilde(&file, home.as_deref()),
@@ -871,7 +939,7 @@ fn advanced_page(this: &Entity<SettingsPage>, cx: &App) -> SettingPage {
                         })
                 }),
             )
-            .description("Every session starts the servers in it. Extensions lists them.")
+            .description(description)
             .keywords(["mcp", "--mcp-config", "servers"])
         })
         .collect();

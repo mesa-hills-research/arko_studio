@@ -161,6 +161,27 @@ impl SessionDefaults {
     }
 }
 
+/// Leaves out of `files`, the MCP config files set in Settings, those that
+/// can't be read, and says why for each. arko stops a session that names
+/// a file it can't read, as `--mcp-config` does for one run, while these
+/// are kept for every session. Arko's `mcp.json` and a project's are read
+/// by arko, which notes their problems itself. It reads the files: call it
+/// off the UI thread.
+pub fn keep_readable_mcp_config(files: &mut Vec<PathBuf>) -> Vec<String> {
+    let mut notes = Vec::new();
+    files.retain(|file| match super::extensions::check_mcp_file(file) {
+        Ok(()) => true,
+        Err(why) => {
+            notes.push(format!(
+                "The MCP config file {} (Settings › Advanced) can’t be read: {why}. Its servers aren’t started.",
+                file.display()
+            ));
+            false
+        }
+    });
+    notes
+}
+
 /// Whether the model `name` (as `/model` takes it) keeps Anthropic's 1-hour
 /// prompt cache: Claude by API key, directly or on OpenRouter. Claude Code
 /// chooses its own.

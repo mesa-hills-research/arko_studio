@@ -446,19 +446,20 @@ impl ArkoBackend {
     /// The options a session starts with. It reads files: call it off the
     /// UI thread.
     pub fn options(&self, start: Start) -> arko::Options {
-        prepare(&self.root, self.configure.as_ref(), &self.defaults(), start)
+        prepare(&self.root, self.configure.as_ref(), &self.defaults(), start).0
     }
 }
 
-/// The options a session in Arko's folder `root` starts with. It reads
-/// files (the last session's model): it runs on the thread that starts
-/// the session.
+/// The options a session in Arko's folder `root` starts with, and notes
+/// for the user about what was left out of them. It reads files (the last
+/// session's model, the MCP config files): it runs on the thread that
+/// starts the session.
 fn prepare(
     root: &Path,
     configure: Option<&Configure>,
     defaults: &SessionDefaults,
     start: Start,
-) -> arko::Options {
+) -> (arko::Options, Vec<String>) {
     let mut options = arko::Options {
         root: Some(root.to_path_buf()),
         ..arko::Options::default()
@@ -487,10 +488,11 @@ fn prepare(
             defaults.apply(&mut options, Some(new.mode), || last_model(root));
         }
     }
+    let notes = defaults::keep_readable_mcp_config(&mut options.mcp_config);
     if let Some(configure) = configure {
         configure(&mut options);
     }
-    options
+    (options, notes)
 }
 
 impl Backend for ArkoBackend {
@@ -548,7 +550,10 @@ impl Backend for ArkoBackend {
         let starting = std::thread::Builder::new()
             .name("arko-studio-start".into())
             .spawn(move || {
-                let options = prepare(&root, configure.as_ref(), &defaults, start);
+                let (options, notes) = prepare(&root, configure.as_ref(), &defaults, start);
+                for note in &notes {
+                    prompter.note(arko::Level::Warn, note);
+                }
                 let running = arko::spawn(options, prompter);
                 // Without an answer, the session stopped as it opened, and
                 // so does the app's.
@@ -1246,6 +1251,30 @@ mod tests {
             }
         }
         assert_eq!(launched, Ok(true), "start waited for the file");
+    }
+
+    /// MCP config files set in Settings that are gone, or aren't MCP config
+    /// files, are left out of a session's options with a note each, since
+    /// arko would refuse to open it.
+    #[test]
+    fn mcp_config_files_that_cant_be_read_are_left_out_with_a_note() {
+        let temp = tempfile::tempdir().unwrap();
+        let good = temp.path().join("servers.json");
+        let bad = temp.path().join("notes.json");
+        let gone = temp.path().join("gone.json");
+        std::fs::write(&good, r#"{"mcpServers": {}}"#).unwrap();
+        std::fs::write(&bad, "{}").unwrap();
+        let mut prefs = crate::prefs::Prefs::default();
+        prefs.advanced.mcp_config = vec![good.clone(), bad.clone(), gone.clone()];
+        let defaults = SessionDefaults::from_prefs(&prefs);
+        let resume = Start::Resume(SessionId("s1".into()));
+        let (options, notes) = prepare(Path::new("/arko"), None, &defaults, resume);
+        assert_eq!(options.mcp_config, [good]);
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(notes[0].contains(&bad.display().to_string()), "{notes:?}");
+        assert!(notes[0].contains("it has no mcpServers"), "{notes:?}");
+        assert!(notes[1].contains(&gone.display().to_string()), "{notes:?}");
+        assert!(notes[1].contains("it isn’t there"), "{notes:?}");
     }
 
     /// A chat is created in no folder of the user's, even when one was
