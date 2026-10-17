@@ -217,14 +217,15 @@ pub(super) fn render(
         Gap::Section => 1.,
         Gap::Turn => 1.75,
     };
-    // The row the keyboard is on shows a ring, laid over it: nothing moves.
+    // The row the keyboard is on shows a ring, laid over it so nothing
+    // moves, while the keyboard is in use.
     let cursor = this.is_cursor(row.key, window, cx);
-    let ring = cursor.then(|| {
+    let ring = (cursor && window.last_input_was_keyboard()).then(|| {
         let theme = cx.theme();
         div()
             .absolute()
-            .top(px(-2.))
-            .bottom(px(-2.))
+            .top_neg_0p5()
+            .bottom_neg_0p5()
             .left_2()
             .right_2()
             .border_2()
