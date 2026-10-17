@@ -51,12 +51,16 @@ pub struct SessionPrefs {
     /// Quitting, or closing a session, asks first when background jobs or
     /// workers would stop.
     pub ask_before_quit: bool,
+    /// Switching an open session between Chat and Agent asks first, with
+    /// what it costs.
+    pub ask_before_switch: bool,
 }
 
 impl Default for SessionPrefs {
     fn default() -> Self {
         Self {
             ask_before_quit: true,
+            ask_before_switch: true,
         }
     }
 }

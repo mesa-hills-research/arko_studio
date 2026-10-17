@@ -698,6 +698,13 @@ impl SessionView {
             Some(session) => session.read(cx).reading().models.has_workers,
             None => true,
         };
+        let can_switch = match &self.session {
+            None => true,
+            Some(session) => {
+                let session = session.read(cx);
+                *session.phase() == Phase::Open && !session.is_working()
+            }
+        };
         let session_without_models = self.session.is_some() && choices.groups.is_empty();
 
         let rows = choices
@@ -804,8 +811,8 @@ impl SessionView {
                 ToggleGroup::new("mode")
                     .segmented()
                     .small()
-                    // HOOK(engine): an open session switches with D4.
-                    .disabled(self.session.is_some())
+                    // An open session switches between turns only.
+                    .disabled(!can_switch)
                     .child(
                         Toggle::new("mode-chat")
                             .label("Chat")
@@ -818,18 +825,34 @@ impl SessionView {
                     )
                     .on_click({
                         let view = view.clone();
-                        move |checks, _, cx| {
+                        let popover = popover.clone();
+                        move |checks, window, cx| {
                             // The toggle whose state changed is the one clicked.
                             let clicked = if checks[0] != (mode == Mode::Chat) {
                                 Mode::Chat
                             } else {
                                 Mode::Agent
                             };
-                            view.update(cx, |view, cx| view.set_draft_mode(clicked, cx))
+                            let open = view
+                                .update(cx, |view, _| view.session.is_some())
+                                .unwrap_or(false);
+                            // An open session asks in a dialog.
+                            if open {
+                                popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+                            }
+                            view.update(cx, |view, cx| view.choose_mode(clicked, window, cx))
                                 .ok();
                         }
                     }),
             )
+            .when(self.session.is_some() && !can_switch, |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("Switching between Chat and Agent waits for the turn to end."),
+                )
+            })
             .when(started && !session_without_models, |this| {
                 this.child(
                     div()
@@ -886,6 +909,78 @@ impl SessionView {
                 )
             })
             .into_any_element()
+    }
+
+    /// Chat or Agent: a new session just switches; an open one asks first
+    /// (what changes, what it costs, the folder), between turns.
+    pub fn choose_mode(&mut self, to: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.session.clone() else {
+            self.set_draft_mode(to, cx);
+            return;
+        };
+        if session.read(cx).mode() == to {
+            return;
+        }
+        if session.read(cx).is_working() {
+            window.push_notification("Wait for the turn to end.", cx);
+            return;
+        }
+        // The folder an agent works in: where the session worked before,
+        // else the recent ones.
+        let mut folders: Vec<PathBuf> = session.read(cx).workspace().cloned().into_iter().collect();
+        for folder in self.recent_folders.iter().chain(self.home.iter()) {
+            if !folders.contains(folder) {
+                folders.push(folder.clone());
+            }
+        }
+        if !prefs::get(cx).sessions.ask_before_switch {
+            let folder = folders.first().cloned().filter(|_| to == Mode::Agent);
+            self.switch_mode(session, to, folder, window, cx);
+            return;
+        }
+        let cost = session.read(cx).switch_cost(to, cx);
+        let home = self.home.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let cost = cost.await;
+            this.update_in(cx, |_, window, cx| {
+                let view = cx.entity().downgrade();
+                crate::prompts::confirm_switch(
+                    to,
+                    cost,
+                    folders,
+                    home,
+                    window,
+                    cx,
+                    move |folder, window, cx| {
+                        let session = session.clone();
+                        view.update(cx, |view, cx| {
+                            view.switch_mode(session, to, folder, window, cx)
+                        })
+                        .ok();
+                    },
+                );
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn switch_mode(
+        &mut self,
+        session: Entity<LiveSession>,
+        to: Mode,
+        folder: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let switching = session.update(cx, |session, cx| session.switch_mode(to, folder, cx));
+        cx.spawn_in(window, async move |_, cx| {
+            if let Err(why) = switching.await {
+                cx.update(|window, cx| window.push_notification(why, cx))
+                    .ok();
+            }
+        })
+        .detach();
     }
 
     fn choose_model(

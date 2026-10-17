@@ -388,8 +388,13 @@ impl LiveSession {
                 }));
                 self._tasks.push(cx.spawn(async move |this, cx| {
                     // It fails when the session didn't open: then `failed` said why.
-                    if ended.await.is_ok() {
-                        this.update(cx, |this, cx| this.ended(cx)).ok();
+                    if let Ok(end) = ended.await {
+                        this.update(cx, |this, cx| match end {
+                            // It switched between Chat and Agent: it opens again.
+                            arko::RunEnd::Reopen => this.reopen(cx),
+                            _ => this.ended(cx),
+                        })
+                        .ok();
                     }
                 }));
                 self._tasks.push(cx.spawn(async move |this, cx| {
@@ -591,6 +596,67 @@ impl LiveSession {
             };
             LiveSessions::set_indicator(id, indicator, cx);
         }
+    }
+
+    /// Opens the session again after its engine closed it to switch modes:
+    /// a new seam, the same entity, so every window keeps showing it.
+    fn reopen(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.id.clone() else {
+            return self.ended(cx);
+        };
+        self.link = None;
+        self.activity = Activity::default();
+        self.launch(Start::Resume(id), cx);
+        cx.notify();
+    }
+
+    /// Switches the session between Chat and Agent (between turns): the
+    /// engine closes it and it opens again in `to`, the conversation going
+    /// on in place. An agent works in `folder` (none: where it worked
+    /// before). The task says why not, if not.
+    pub fn switch_mode(
+        &mut self,
+        to: Mode,
+        folder: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let Some(link) = &self.link else {
+            return Task::ready(Err("The session isn’t open.".to_string()));
+        };
+        let (reply, answer) = oneshot::channel();
+        let request = arko::Request::SwitchMode {
+            to: to.into(),
+            workspace: folder.clone(),
+            reply,
+        };
+        if link.requests.send(request).is_err() {
+            return Task::ready(Err("The session has closed.".to_string()));
+        }
+        cx.spawn(async move |this, cx| {
+            let answer = answer
+                .await
+                .unwrap_or_else(|_| Err("The session has closed.".to_string()));
+            if answer.is_ok() {
+                this.update(cx, |this, cx| {
+                    this.mode = to;
+                    if to == Mode::Agent && folder.is_some() {
+                        this.workspace = folder;
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
+            answer
+        })
+    }
+
+    /// What switching to `to` costs (the conversation re-read without its
+    /// cache), worked out off the UI thread; `None` when not known.
+    pub fn switch_cost(&self, to: Mode, cx: &App) -> Task<Option<arko::details::SwitchCost>> {
+        let Some(details) = self.link.as_ref().map(|link| link.details.clone()) else {
+            return Task::ready(None);
+        };
+        cx.background_spawn(async move { details.switch_cost(to.into()) })
     }
 
     fn ended(&mut self, cx: &mut Context<Self>) {

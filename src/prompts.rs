@@ -10,6 +10,7 @@
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -427,6 +428,192 @@ fn show_mcp(session: Entity<LiveSession>, request: McpRequest, window: &mut Wind
     });
 }
 
+/// A token count as the context ring labels it: "8.2k", "142k", "1.02M".
+pub fn short_tokens(tokens: usize) -> String {
+    match tokens {
+        0..1_000 => tokens.to_string(),
+        1_000..10_000 => format!("{:.1}k", tokens as f64 / 1e3),
+        10_000..1_000_000 => format!("{}k", (tokens as f64 / 1e3).round()),
+        _ => format!("{:.2}M", tokens as f64 / 1e6),
+    }
+}
+
+/// What switching costs, in a sentence: the conversation is read again
+/// without its cache.
+pub fn switch_cost_text(cost: Option<&arko::details::SwitchCost>) -> String {
+    match cost {
+        Some(cost) => match (cost.dollars, cost.plan) {
+            (Some(dollars), _) => format!(
+                "Arko re-reads this conversation without its cache: about {} tokens, ≈ ${dollars:.2}.",
+                short_tokens(cost.tokens)
+            ),
+            (None, Some(plan)) => format!(
+                "Arko re-reads this conversation without its cache: about {} tokens of {plan}.",
+                short_tokens(cost.tokens)
+            ),
+            (None, None) => format!(
+                "Arko re-reads this conversation without its cache: about {} tokens.",
+                short_tokens(cost.tokens)
+            ),
+        },
+        None => "Arko re-reads this conversation without its cache.".to_string(),
+    }
+}
+
+/// Asks before switching an open session between Chat and Agent: what
+/// changes, what it costs, and for Agent the folder it works in (`folders`:
+/// the choices, the first chosen). `answer` hears the folder (none for
+/// Chat) on Switch. "Don't ask again" counts only on Switch.
+pub fn confirm_switch(
+    to: crate::backend::Mode,
+    cost: Option<arko::details::SwitchCost>,
+    folders: Vec<std::path::PathBuf>,
+    home: Option<std::path::PathBuf>,
+    window: &mut Window,
+    cx: &mut App,
+    answer: impl Fn(Option<std::path::PathBuf>, &mut Window, &mut App) + 'static,
+) {
+    use crate::backend::Mode;
+    let answer = std::rc::Rc::new(answer);
+    let dont_ask = std::rc::Rc::new(std::cell::Cell::new(false));
+    let folder = std::rc::Rc::new(std::cell::RefCell::new(folders.first().cloned()));
+    let (title, change) = match to {
+        Mode::Agent => (
+            "Switch to Agent mode?",
+            "From your next message the agent has its tools and Arko’s agent instructions, and works in the folder below.",
+        ),
+        Mode::Chat => (
+            "Switch to Chat mode?",
+            "From your next message Arko answers without tools, as a chat.",
+        ),
+    };
+    let description = format!("{change} {}", switch_cost_text(cost.as_ref()));
+    window.open_alert_dialog(cx, move |alert, _, cx| {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let (checked, remembered) = (dont_ask.clone(), dont_ask.clone());
+        let (chosen, shown) = (folder.clone(), folder.clone());
+        let folders = folders.clone();
+        let home = home.clone();
+        let ok = answer.clone();
+        alert
+            .title(title)
+            .description(description.clone())
+            .content(move |content, _, _| {
+                let checked = checked.clone();
+                let current = shown.borrow().clone();
+                let choices = folders.clone();
+                let chosen = chosen.clone();
+                let home = home.clone();
+                content.child(
+                    v_flex()
+                        .id("switch-mode")
+                        .test_support()
+                        .gap_2()
+                        .text_sm()
+                        .when(to == Mode::Agent, |this| {
+                            let label = current
+                                .as_deref()
+                                .map(|folder| {
+                                    crate::session_view::shown_folder(folder, home.as_deref())
+                                })
+                                .unwrap_or_else(|| "Choose a folder".to_string());
+                            this.child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().text_color(muted).child("Folder"))
+                                    .child(
+                                        Button::new("switch-folder")
+                                            .outline()
+                                            .small()
+                                            .label(label)
+                                            .dropdown_caret(true)
+                                            .dropdown_menu(move |menu, _, _| {
+                                                let menu = choices.iter().fold(menu, |menu, path| {
+                                                    let chosen = chosen.clone();
+                                                    let path = path.clone();
+                                                    menu.item(
+                                                        gpui_kit::component::menu::PopupMenuItem::new(
+                                                            crate::session_view::shown_folder(
+                                                                &path,
+                                                                home.as_deref(),
+                                                            ),
+                                                        )
+                                                        .on_click(move |_, window, _| {
+                                                            *chosen.borrow_mut() =
+                                                                Some(path.clone());
+                                                            window.refresh();
+                                                        }),
+                                                    )
+                                                });
+                                                let chosen = chosen.clone();
+                                                menu.separator().item(
+                                                    gpui_kit::component::menu::PopupMenuItem::new(
+                                                        "Browse…",
+                                                    )
+                                                    .on_click(move |_, window, cx| {
+                                                        browse_into(chosen.clone(), window, cx)
+                                                    }),
+                                                )
+                                            }),
+                                    ),
+                            )
+                        })
+                        .child(
+                            Checkbox::new("dont-ask-switch")
+                                .label("Don’t ask again")
+                                .checked(checked.get())
+                                .on_click(move |on, window, _| {
+                                    checked.set(*on);
+                                    window.refresh();
+                                }),
+                        ),
+                )
+            })
+            .confirm()
+            .ok_text("Switch")
+            .on_ok({
+                let folder = folder.clone();
+                move |_, window, cx| {
+                    let chosen = folder.borrow().clone();
+                    if to == Mode::Agent && chosen.is_none() {
+                        window.push_notification("Choose a folder for the agent first.", cx);
+                        return false;
+                    }
+                    if remembered.get() {
+                        prefs::update(cx, |prefs| prefs.sessions.ask_before_switch = false);
+                    }
+                    ok(chosen.filter(|_| to == Mode::Agent), window, cx);
+                    true
+                }
+            })
+    });
+}
+
+/// Asks for a folder, and puts it in `chosen`.
+fn browse_into(
+    chosen: std::rc::Rc<std::cell::RefCell<Option<std::path::PathBuf>>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let paths = cx.prompt_for_paths(PathPromptOptions {
+        files: false,
+        directories: true,
+        multiple: false,
+        prompt: Some("Choose".into()),
+    });
+    window
+        .spawn(cx, async move |cx| {
+            if let Ok(Ok(Some(paths))) = paths.await
+                && let Some(folder) = paths.into_iter().next()
+            {
+                *chosen.borrow_mut() = Some(folder);
+                cx.update(|window, _| window.refresh()).ok();
+            }
+        })
+        .detach();
+}
+
 /// What closing some sessions would stop: each session's title, and its
 /// jobs and workers.
 pub type Work = Vec<(SharedString, arko::QuitAsk)>;
@@ -525,4 +712,38 @@ pub fn confirm_stop(
                 true
             })
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{short_tokens, switch_cost_text};
+
+    #[test]
+    fn token_counts_read_as_the_context_ring_says() {
+        assert_eq!(short_tokens(820), "820");
+        assert_eq!(short_tokens(8_200), "8.2k");
+        assert_eq!(short_tokens(142_318), "142k");
+        assert_eq!(short_tokens(1_020_000), "1.02M");
+    }
+
+    #[test]
+    fn a_switch_says_what_it_costs() {
+        let cost = |dollars, plan| arko::details::SwitchCost {
+            tokens: 180_000,
+            dollars,
+            plan,
+        };
+        assert_eq!(
+            switch_cost_text(Some(&cost(Some(0.9), None))),
+            "Arko re-reads this conversation without its cache: about 180k tokens, ≈ $0.90."
+        );
+        assert_eq!(
+            switch_cost_text(Some(&cost(None, Some("your Claude plan")))),
+            "Arko re-reads this conversation without its cache: about 180k tokens of your Claude plan."
+        );
+        assert_eq!(
+            switch_cost_text(None),
+            "Arko re-reads this conversation without its cache."
+        );
+    }
 }

@@ -480,3 +480,54 @@ fn closing_a_session_with_a_background_job_asks_first(cx: &mut TestAppContext) {
     // The job stopped with it.
     assert!(cx.read(|cx| LiveSessions::all(cx).is_empty()));
 }
+
+#[gpui_kit::test]
+fn an_agent_session_switches_to_chat_after_saying_what_it_costs(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, body| {
+        if body.contains("Now just talk.") {
+            answer("Talking.", Duration::ZERO)
+        } else {
+            answer("Working.", Duration::ZERO)
+        }
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Start working.");
+    app.wait_for_text(cx, "Working.");
+    let session = app.shown(cx).unwrap();
+    wait_until(cx, "the turn to end", |cx| {
+        cx.read(|cx| !session.read(cx).is_working())
+    });
+    act(cx, app.window, |window, cx| window.click("mode-model", cx));
+    act(cx, app.window, |window, cx| window.click("mode-chat", cx));
+    wait_until(cx, "the switch dialog", |cx| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("switch-mode").is_some()
+        })
+        .unwrap()
+    });
+    act(cx, app.window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    // The engine closes the session and the app opens it again, as a chat:
+    // the window goes on showing it.
+    wait_until(cx, "the session to open again as a chat", |cx| {
+        cx.read(|cx| {
+            let session = session.read(cx);
+            session.mode() == crate::backend::Mode::Chat
+                && *session.phase() == Phase::Open
+                && session.reading().models.started
+        })
+    });
+    assert_eq!(
+        app.shown(cx).map(|shown| shown.entity_id()),
+        Some(session.entity_id())
+    );
+    app.send(cx, "Now just talk.");
+    app.wait_for_text(cx, "Talking.");
+    assert_eq!(
+        arko::sessions::list(&app.root)[0].mode,
+        arko::sessions::Mode::Chat
+    );
+    app.close_all(cx);
+}
