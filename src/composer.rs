@@ -2,23 +2,30 @@
 //!
 //! GPUI Kit's textarea, with the send key from Settings › Input (Mod+Enter
 //! always sends too), smooth typing, spell checking and word suggestions
-//! from the shared writing tools, long pastes as tokens, the input history
-//! on ↑ and ↓ at its edges, and a menu of arko's slash commands. It is a
+//! from the shared writing tools, long pastes as tokens, images pasted,
+//! dropped or attached as tiles, the input history on ↑ and ↓ at its edges,
+//! and a menu of arko's slash commands. It is a
 //! view of its own, so typing never draws the transcript or the rest of the
 //! window again. The session view around it decides what a sent message is
 //! (a message, a note, an answer, a command) and clears it once taken.
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use arko::remote::Reading;
+use gpui_kit::component::attachment::{
+    Attachment, AttachmentContent, AttachmentMedia, AttachmentTitle,
+};
 use gpui_kit::component::input::{
     Enter, Escape, IndentInline, InlineToken, InputEvent, InputToken, Keymap, MoveDown, MoveUp,
     SubmitKey, SuggestionOptions, Textarea, TextareaState,
 };
-use gpui_kit::component::{ActiveTheme as _, IconName, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::writing::WordSuggestions;
 use gpui_kit::*;
@@ -43,12 +50,70 @@ const MENU_ROWS: usize = 8;
 /// terminal's full-screen view.
 const APP_COMMANDS: &[&str] = &["/view", "/settings"];
 
+/// An image the next message takes along.
+#[derive(Clone)]
+pub struct Attached {
+    pub name: Option<String>,
+    /// The image, which its tile previews.
+    image: Arc<Image>,
+}
+
+impl std::fmt::Debug for Attached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attached")
+            .field("name", &self.name)
+            .field("mime", &self.image.format().mime_type())
+            .field("bytes", &self.image.bytes().len())
+            .finish()
+    }
+}
+
+impl Attached {
+    pub fn new(format: ImageFormat, bytes: Vec<u8>, name: Option<String>) -> Self {
+        Self {
+            name,
+            image: Arc::new(Image::from_bytes(format, bytes)),
+        }
+    }
+
+    /// As arko sends it with a message.
+    pub fn to_arko(&self) -> arko::Attachment {
+        arko::Attachment {
+            bytes: Arc::from(self.image.bytes()),
+            mime: self.image.format().mime_type().to_string(),
+            name: self.name.clone(),
+        }
+    }
+}
+
+/// The image format of the file at `path`, by its extension; `None` for
+/// other files.
+pub fn image_format(path: &Path) -> Option<ImageFormat> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match extension.as_str() {
+        "png" => ImageFormat::Png,
+        "jpg" | "jpeg" => ImageFormat::Jpeg,
+        "gif" => ImageFormat::Gif,
+        "webp" => ImageFormat::Webp,
+        "bmp" => ImageFormat::Bmp,
+        "tif" | "tiff" => ImageFormat::Tiff,
+        _ => return None,
+    })
+}
+
+/// What the user sends: the text (tokens expanded) and the images.
+#[derive(Debug, Clone)]
+pub struct Outgoing {
+    pub text: String,
+    pub images: Vec<Attached>,
+}
+
 /// What the composer asks of the view around it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ComposerEvent {
-    /// The user sent this text (tokens expanded). The view clears the
-    /// composer with [`Composer::sent`] once it takes it.
-    Submit(String),
+    /// The user sent this. The view clears the composer with
+    /// [`Composer::sent`] once it takes it.
+    Submit(Outgoing),
     /// Esc while a turn runs: stop it.
     Stop,
     /// The text changed.
@@ -187,6 +252,11 @@ pub struct Composer {
     suggestions: Rc<WordSuggestions>,
     /// Each paste token's text, by the token's id.
     pastes: HashMap<SharedString, String>,
+    /// The images the message takes along.
+    images: Vec<Attached>,
+    /// The session works in a folder: files other than images go in as
+    /// their paths.
+    agent: bool,
     pasted: u32,
     /// Walking the input history: where, and the draft it started from.
     walk: Option<(usize, String)>,
@@ -231,6 +301,8 @@ impl Composer {
             textarea,
             suggestions,
             pastes: HashMap::new(),
+            images: Vec::new(),
+            agent: true,
             pasted: 0,
             walk: None,
             menu: None,
@@ -320,10 +392,91 @@ impl Composer {
         });
     }
 
-    /// The session's status, for the slash menu, and whether a turn runs.
-    pub fn set_session_state(&mut self, reading: Arc<Reading>, working: bool) {
+    /// The session's status, for the slash menu, whether a turn runs, and
+    /// whether it works in a folder.
+    pub fn set_session_state(&mut self, reading: Arc<Reading>, working: bool, agent: bool) {
         self.reading = reading;
         self.working = working;
+        self.agent = agent;
+    }
+
+    /// The images the message takes along.
+    pub fn images(&self) -> &[Attached] {
+        &self.images
+    }
+
+    /// Adds an image to the message.
+    pub fn attach_image(&mut self, image: Attached, cx: &mut Context<Self>) {
+        self.images.push(image);
+        cx.emit(ComposerEvent::Edited);
+        cx.notify();
+    }
+
+    fn remove_image(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.images.len() {
+            self.images.remove(index);
+            cx.emit(ComposerEvent::Edited);
+            cx.notify();
+        }
+    }
+
+    /// Files given to the composer (dropped, pasted, attached): images go
+    /// with the message, read off the UI thread. In an agent session other
+    /// files go in the text as their paths.
+    pub fn attach_paths(
+        &mut self,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (images, others): (Vec<PathBuf>, Vec<PathBuf>) = paths
+            .into_iter()
+            .partition(|path| image_format(path).is_some());
+        if !others.is_empty() {
+            if self.agent {
+                let text: Vec<String> = others
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect();
+                self.textarea.update(cx, |textarea, cx| {
+                    textarea.insert(format!("{} ", text.join(" ")), window, cx)
+                });
+            } else {
+                window.push_notification(
+                    "A chat takes images. Other files go to an agent session.",
+                    cx,
+                );
+            }
+        }
+        if images.is_empty() {
+            return;
+        }
+        let reading = cx.background_spawn(async move {
+            images
+                .into_iter()
+                .map(|path| {
+                    let format = image_format(&path)?;
+                    let bytes = std::fs::read(&path).ok()?;
+                    let name = path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned());
+                    Some(Attached::new(format, bytes, name))
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let read = reading.await;
+            this.update_in(cx, |this, window, cx| {
+                if read.iter().any(Option::is_none) {
+                    window.push_notification("An image couldn’t be read.", cx);
+                }
+                for image in read.into_iter().flatten() {
+                    this.attach_image(image, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Tall (`rows` lines) or growing with its text.
@@ -350,6 +503,7 @@ impl Composer {
     /// The message was taken: the composer empties, the history and the
     /// vocabulary learn it.
     pub fn sent(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.images.clear();
         crate::history::add(text, cx);
         // The last sentence of a message sent with Enter often has no full
         // stop: learn it now, as typed.
@@ -394,11 +548,14 @@ impl Composer {
 
     fn submit(&mut self, cx: &mut Context<Self>) {
         let text = self.expanded_text(cx);
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && self.images.is_empty() {
             return;
         }
         self.menu = None;
-        cx.emit(ComposerEvent::Submit(text));
+        cx.emit(ComposerEvent::Submit(Outgoing {
+            text,
+            images: self.images.clone(),
+        }));
     }
 
     /// Asks to send what is typed (the Send button).
@@ -625,6 +782,32 @@ impl Composer {
         }
     }
 
+    /// The images the message takes along, as tiles above the text, each
+    /// with its remove control.
+    fn render_images(&self, cx: &mut Context<Self>) -> AnyElement {
+        h_flex()
+            .id("composer-images")
+            .test_support()
+            .flex_wrap()
+            .gap_2()
+            .pb_2()
+            .children(self.images.iter().enumerate().map(|(index, attached)| {
+                let name: SharedString = attached
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "Pasted image".to_string())
+                    .into();
+                Attachment::new()
+                    .id(("image", index))
+                    .small()
+                    .media(AttachmentMedia::new().src(attached.image.clone()))
+                    .content(AttachmentContent::new().title(AttachmentTitle::new(name.clone())))
+                    .tooltip(name)
+                    .on_remove(cx.listener(move |this, _, _, cx| this.remove_image(index, cx)))
+            }))
+            .into_any_element()
+    }
+
     fn render_menu(&self, menu: &SlashMenu, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         // The rows around the selected one.
@@ -711,6 +894,8 @@ impl Render for Composer {
         let this = cx.entity().downgrade();
         let paste_lines = prefs::get(cx).input.paste_token_lines;
         let menu = self.menu.clone();
+        let drop_target = cx.theme().drop_target;
+        let tiles = (!self.images.is_empty()).then(|| self.render_images(cx));
         div()
             .id("composer-field")
             .relative()
@@ -721,7 +906,13 @@ impl Render for Composer {
             .capture_action(cx.listener(Self::on_tab))
             .capture_action(cx.listener(Self::on_enter))
             .capture_action(cx.listener(Self::on_escape))
+            // Files dropped on the composer: images go with the message.
+            .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_target))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.attach_paths(paths.paths().to_vec(), window, cx)
+            }))
             .when_some(menu, |this, menu| this.child(self.render_menu(&menu, cx)))
+            .children(tiles)
             .child(
                 Textarea::new(&self.textarea)
                     .appearance(false)
@@ -736,6 +927,37 @@ impl Render for Composer {
                         }
                     })
                     .on_paste(move |item, window, cx| {
+                        // Images go with the message; copied files as dropped.
+                        let mut images = Vec::new();
+                        let mut paths = Vec::new();
+                        for entry in item.entries() {
+                            match entry {
+                                ClipboardEntry::Image(image) => images.push(Attached::new(
+                                    image.format(),
+                                    image.bytes().to_vec(),
+                                    None,
+                                )),
+                                ClipboardEntry::ExternalPaths(external) => {
+                                    paths.extend(external.paths().iter().cloned())
+                                }
+                                _ => {}
+                            }
+                        }
+                        if !images.is_empty() || !paths.is_empty() {
+                            let this = this.clone();
+                            window.defer(cx, move |window, cx| {
+                                this.update(cx, |this, cx| {
+                                    for image in images {
+                                        this.attach_image(image, cx);
+                                    }
+                                    if !paths.is_empty() {
+                                        this.attach_paths(paths, window, cx);
+                                    }
+                                })
+                                .ok();
+                            });
+                            return true;
+                        }
                         let Some(text) = item.text() else {
                             return false;
                         };

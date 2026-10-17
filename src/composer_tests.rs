@@ -373,3 +373,63 @@ fn an_arko_command_from_the_palette_waits_in_the_composer(cx: &mut TestAppContex
     run("/cost", cx);
     assert_eq!(composer_text(&workspace, cx), "/cost");
 }
+
+#[gpui_kit::test]
+fn a_pasted_image_waits_as_a_tile_until_sent_or_removed(cx: &mut TestAppContext) {
+    let (_, window, workspace) = start(cx);
+    let image =
+        gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, crate::testing::PNG.to_vec());
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_image(&image)));
+    act(cx, window, |window, cx| window.press("ctrl-v", cx));
+    let composer = cx.read(|cx| {
+        workspace
+            .read(cx)
+            .session_view()
+            .read(cx)
+            .composer()
+            .clone()
+    });
+    assert_eq!(cx.read(|cx| composer.read(cx).images().len()), 1);
+    assert_eq!(composer_text(&workspace, cx), "", "no text pasted");
+    act(cx, window, |window, _| {
+        assert!(window.try_find("composer-images").is_some());
+        // With an image, there's something to send.
+        assert!(window.try_find("send").is_some());
+    });
+    // Its remove control shows on hover.
+    let tile: gpui_kit::ElementId = ("image", 0usize).into();
+    let remove = gpui_kit::ElementId::from((tile, "remove"));
+    act(cx, window, |window, cx| {
+        let tiles = window.find("composer-images").bounds();
+        let over = tiles.origin + gpui_kit::point(gpui_kit::px(12.), gpui_kit::px(12.));
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: over,
+                pressed_button: None,
+                modifiers: gpui_kit::Modifiers::default(),
+            }),
+            cx,
+        );
+    });
+    act(cx, window, |window, cx| window.click(remove, cx));
+    assert!(cx.read(|cx| composer.read(cx).images().is_empty()));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("composer-images").is_none())
+    });
+}
+
+#[test]
+fn image_files_are_known_by_their_extension() {
+    use crate::composer::image_format;
+    use std::path::Path;
+    assert_eq!(
+        image_format(Path::new("a/shot.PNG")),
+        Some(gpui_kit::ImageFormat::Png)
+    );
+    assert_eq!(
+        image_format(Path::new("photo.jpeg")),
+        Some(gpui_kit::ImageFormat::Jpeg)
+    );
+    assert_eq!(image_format(Path::new("notes.md")), None);
+    assert_eq!(image_format(Path::new("Makefile")), None);
+}

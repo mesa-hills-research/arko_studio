@@ -27,7 +27,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::backend::{Mode, ModelChoices, NewSession, SessionEntry, SharedBackend};
-use crate::composer::{Composer, ComposerEvent};
+use crate::composer::{Composer, ComposerEvent, Outgoing};
 use crate::layout::WidthClass;
 use crate::live::{LiveSession, LiveSessions, Phase, PromptKind};
 use crate::transcript::{AgentFilter, TranscriptEvent, TranscriptView};
@@ -463,9 +463,10 @@ impl SessionView {
             }
             None => (Arc::default(), false),
         };
+        let agent = self.mode(cx) == Mode::Agent;
         self.composer.update(cx, |composer, cx| {
             composer.set_placeholder(placeholder, window, cx);
-            composer.set_session_state(reading, working);
+            composer.set_session_state(reading, working, agent);
         });
     }
 
@@ -493,10 +494,12 @@ impl SessionView {
         cx: &mut Context<Self>,
     ) {
         match event {
-            ComposerEvent::Submit(text) => self.send(text.clone(), window, cx),
+            ComposerEvent::Submit(outgoing) => self.send(outgoing.clone(), window, cx),
             ComposerEvent::Stop => self.stop(window, cx),
             ComposerEvent::Edited => {
-                let empty = self.composer.read(cx).textarea().read(cx).text().len() == 0;
+                let composer = self.composer.read(cx);
+                let empty =
+                    composer.textarea().read(cx).text().len() == 0 && composer.images().is_empty();
                 if empty != self.composer_empty {
                     self.composer_empty = empty;
                     cx.notify();
@@ -518,28 +521,36 @@ impl SessionView {
     /// Sends `text`: runs the app's own commands, starts a new session with
     /// it, or gives it to the open session as a message, a note or an
     /// answer. The composer empties once it is taken.
-    pub fn send(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        let trimmed = text.trim();
-        if self.app_command(trimmed, window, cx) {
+    pub fn send(&mut self, outgoing: Outgoing, window: &mut Window, cx: &mut Context<Self>) {
+        let Outgoing { text, images } = outgoing;
+        if images.is_empty() && self.app_command(text.trim(), window, cx) {
             self.composer
                 .update(cx, |composer, cx| composer.sent(&text, window, cx));
             return;
         }
+        let images: Vec<arko::Attachment> = images.iter().map(|image| image.to_arko()).collect();
+        let message = arko::Message {
+            text: text.clone(),
+            images,
+        };
         let result = match &self.session {
-            None => self.start_session(text.clone(), cx),
-            Some(session) => {
-                let input = match session.read(cx).question() {
-                    Some(question) => arko::Input::Answer {
+            None => self.start_session(message, cx),
+            Some(session) => match session.read(cx).question() {
+                Some(_) if !message.images.is_empty() => Err(
+                    "An answer takes text only. Send the images once the question is answered."
+                        .to_string(),
+                ),
+                Some(question) => {
+                    let input = arko::Input::Answer {
                         question: question.id,
                         text: text.clone(),
-                    },
-                    None => arko::Input::Message(arko::Message {
-                        text: text.clone(),
-                        images: Vec::new(),
-                    }),
-                };
-                session.update(cx, |session, cx| session.send(input, cx))
-            }
+                    };
+                    session.update(cx, |session, cx| session.send(input, cx))
+                }
+                None => session.update(cx, |session, cx| {
+                    session.send(arko::Input::Message(message), cx)
+                }),
+            },
         };
         match result {
             Ok(()) => {
@@ -559,7 +570,14 @@ impl SessionView {
     pub fn run_slash(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let takes_words = arko::commands::find(&format!("{name} x")).is_some();
         if self.session.is_some() && !takes_words {
-            self.send(name.to_string(), window, cx);
+            self.send(
+                Outgoing {
+                    text: name.to_string(),
+                    images: Vec::new(),
+                },
+                window,
+                cx,
+            );
             return;
         }
         let text = if takes_words {
@@ -603,8 +621,12 @@ impl SessionView {
         }
     }
 
-    /// Starts the new session with `text` as its first message.
-    fn start_session(&mut self, text: String, cx: &mut Context<Self>) -> Result<(), String> {
+    /// Starts the new session with `message` as its first.
+    fn start_session(
+        &mut self,
+        message: arko::Message,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         let folder = match self.draft.mode {
             Mode::Agent => Some(
                 self.draft_folder()
@@ -618,11 +640,7 @@ impl SessionView {
             model: self.draft.model.clone(),
             effort: self.draft.effort.clone(),
         };
-        let first = arko::Input::Message(arko::Message {
-            text,
-            images: Vec::new(),
-        });
-        let session = LiveSession::create(new, first, cx);
+        let session = LiveSession::create(new, arko::Input::Message(message), cx);
         drafts::set(drafts::NEW_SESSION, "", cx);
         self.draft.model = None;
         self.draft.effort = None;
@@ -666,31 +684,22 @@ impl SessionView {
         }
     }
 
-    /// Attach: in an agent session, the files' paths go in the text.
+    /// Attach: images go with the message; in an agent session other files
+    /// go in the text as their paths.
     fn attach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode(cx) == Mode::Chat {
-            // TODO: images with a message, once the engine sends them.
-            window.push_notification("Attaching images comes with a later version.", cx);
-            return;
-        }
+        let agent = self.mode(cx) == Mode::Agent;
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
-            directories: true,
+            directories: agent,
             multiple: true,
             prompt: Some("Attach".into()),
         });
         let composer = self.composer.downgrade();
         cx.spawn_in(window, async move |_, cx| {
             if let Ok(Ok(Some(paths))) = paths.await {
-                let text: Vec<String> = paths
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect();
                 composer
                     .update_in(cx, |composer, window, cx| {
-                        composer.textarea().update(cx, |textarea, cx| {
-                            textarea.insert(format!("{} ", text.join(" ")), window, cx)
-                        });
+                        composer.attach_paths(paths, window, cx);
                         composer.focus(window, cx);
                     })
                     .ok();

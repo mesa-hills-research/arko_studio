@@ -593,3 +593,53 @@ fn an_agent_session_switches_to_chat_after_saying_what_it_costs(cx: &mut TestApp
     );
     app.close_all(cx);
 }
+
+#[gpui_kit::test]
+fn an_image_goes_with_the_message(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, _| answer("A single pixel.", Duration::ZERO));
+    let app = start(cx, &mock);
+    let composer = cx.read(|cx| {
+        app.workspace
+            .read(cx)
+            .session_view()
+            .read(cx)
+            .composer()
+            .clone()
+    });
+    cx.update(|cx| {
+        composer.update(cx, |composer, cx| {
+            composer.attach_image(
+                crate::composer::Attached::new(
+                    gpui_kit::ImageFormat::Png,
+                    testing::PNG.to_vec(),
+                    Some("pixel.png".into()),
+                ),
+                cx,
+            )
+        })
+    });
+    app.send(cx, "What is this?");
+    app.wait_for_text(cx, "A single pixel.");
+    assert!(mock.was_sent("What is this?"));
+    assert!(
+        mock.was_sent("data:image/png;base64,"),
+        "the image went to the model"
+    );
+    // The message keeps its image, for the transcript's thumbnail.
+    let session = app.shown(cx);
+    let images = cx.read(|cx| {
+        session
+            .and_then(|session| session.read(cx).feed().cloned())
+            .map(|feed| {
+                feed.subscribe()
+                    .0
+                    .items
+                    .iter()
+                    .find(|item| item.text == "What is this?")
+                    .map(|item| item.images.len())
+            })
+    });
+    assert_eq!(images, Some(Some(1)));
+    assert!(cx.read(|cx| composer.read(cx).images().is_empty()), "sent");
+    app.close_all(cx);
+}
