@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use arko::remote::Reading;
 use gpui_kit::component::attachment::{
-    Attachment, AttachmentContent, AttachmentMedia, AttachmentTitle,
+    Attachment, AttachmentContent, AttachmentMedia, AttachmentStatus, AttachmentTitle,
 };
 use gpui_kit::component::input::{
     Enter, Escape, IndentInline, InlineToken, InputEvent, InputToken, Keymap, MoveDown, MoveUp,
@@ -276,6 +276,8 @@ pub struct Composer {
     reading: Arc<Reading>,
     /// A turn runs: Esc stops it.
     working: bool,
+    /// The model the images go to, which says which it can't take.
+    image_model: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -318,6 +320,7 @@ impl Composer {
             dismissed: None,
             reading: Arc::default(),
             working: false,
+            image_model: None,
             _subscriptions: subscriptions,
         }
     }
@@ -407,6 +410,25 @@ impl Composer {
         self.reading = reading;
         self.working = working;
         self.agent = agent;
+    }
+
+    /// Gives the model the images go to: the main agent's.
+    pub fn set_image_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
+        if self.image_model != model {
+            self.image_model = model;
+            cx.notify();
+        }
+    }
+
+    /// Why the model can't take `image`, if it can't.
+    fn refusal(&self, image: &Attached) -> Option<String> {
+        let model = self.image_model.as_deref()?;
+        arko::models::image_refusal(model, image.image.format().mime_type())
+    }
+
+    /// Why the message can't go with its images, if it can't.
+    pub fn image_refusal(&self) -> Option<String> {
+        self.images.iter().find_map(|image| self.refusal(image))
     }
 
     /// The images the message takes along.
@@ -808,13 +830,19 @@ impl Composer {
                     .clone()
                     .unwrap_or_else(|| "Pasted image".to_string())
                     .into();
-                Attachment::new()
+                let tile = Attachment::new()
                     .id(("image", index))
                     .small()
                     .media(AttachmentMedia::new().src(attached.image.clone()))
                     .content(AttachmentContent::new().title(AttachmentTitle::new(name.clone())))
-                    .tooltip(name)
-                    .on_remove(cx.listener(move |this, _, _, cx| this.remove_image(index, cx)))
+                    .on_remove(cx.listener(move |this, _, _, cx| this.remove_image(index, cx)));
+                // A tile the model can't take says why.
+                match self.refusal(attached) {
+                    Some(why) => tile
+                        .status(AttachmentStatus::Failed)
+                        .tooltip(crate::backend::sentence(&why)),
+                    None => tile.tooltip(name),
+                }
             }))
             .into_any_element()
     }

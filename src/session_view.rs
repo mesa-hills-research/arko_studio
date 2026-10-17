@@ -207,7 +207,26 @@ impl SessionView {
     ) {
         self.draft.model = Some(model);
         self.draft.effort = effort;
+        self.sync_image_model(cx);
         cx.notify();
+    }
+
+    /// The main agent's model, which the composer's images go to: the shown
+    /// session's, or the one a new session would start on.
+    fn image_model(&self, cx: &App) -> Option<String> {
+        match &self.session {
+            Some(session) => {
+                let main = &session.read(cx).reading().models.main;
+                (!main.is_empty()).then(|| main.clone())
+            }
+            None => self.draft_model(),
+        }
+    }
+
+    fn sync_image_model(&mut self, cx: &mut Context<Self>) {
+        let model = self.image_model(cx);
+        self.composer
+            .update(cx, |composer, cx| composer.set_image_model(model, cx));
     }
 
     /// The folders Change… offers, from the sessions in the sidebar.
@@ -259,6 +278,7 @@ impl SessionView {
             let models = listing.await;
             this.update(cx, |this, cx| {
                 this.models = Some((folder, models));
+                this.sync_image_model(cx);
                 cx.notify();
             })
             .ok();
@@ -527,6 +547,7 @@ impl SessionView {
             composer.set_placeholder(placeholder, window, cx);
             composer.set_session_state(reading, working, agent);
         });
+        self.sync_image_model(cx);
     }
 
     /// The composer's height follows the Expand setting: about 45% of the
@@ -606,6 +627,19 @@ impl SessionView {
             }
         }
         let attached = images;
+        // Images the model can't take stay, with the message, until the
+        // user removes them or picks another model.
+        if !attached.is_empty()
+            && let Some(why) = self.composer.read(cx).image_refusal()
+        {
+            window.push_notification(
+                format!(
+                    "The message wasn't sent: {why}. Send it without images, or switch to a model that takes them."
+                ),
+                cx,
+            );
+            return;
+        }
         let images: Vec<arko::Attachment> = attached.iter().map(|image| image.to_arko()).collect();
         let message = arko::Message {
             text: text.clone(),

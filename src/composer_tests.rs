@@ -525,6 +525,48 @@ fn a_pasted_image_waits_as_a_tile_until_sent_or_removed(cx: &mut TestAppContext)
     });
 }
 
+#[gpui_kit::test]
+fn an_image_the_model_cant_take_is_refused_before_sending(cx: &mut TestAppContext) {
+    // A 1×1 GIF, which Gemini doesn't take.
+    const GIF: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;";
+    let (_, window, workspace) = start(cx);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.set_draft_model("gemini-3.1-pro-preview".into(), None, cx)
+        });
+        composer.update(cx, |composer, cx| {
+            composer.attach_image(
+                crate::composer::Attached::new(
+                    gpui_kit::ImageFormat::Gif,
+                    GIF.to_vec(),
+                    Some("dot.gif".into()),
+                ),
+                cx,
+            )
+        });
+    });
+    let refusal = cx.read(|cx| composer.read(cx).image_refusal());
+    assert!(
+        refusal.as_deref().is_some_and(|why| why.contains("GIF")),
+        "{refusal:?}"
+    );
+    act(cx, window, |window, cx| window.input("What is this?", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    // Nothing went: the text and the image stay for the user to change.
+    assert_eq!(open_title(&workspace, cx), None);
+    assert_eq!(composer_text(&workspace, cx), "What is this?");
+    assert_eq!(cx.read(|cx| composer.read(cx).images().len()), 1);
+    // A model that takes it clears the warning.
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.set_draft_model("claude-opus-5-5".into(), None, cx)
+        })
+    });
+    assert_eq!(cx.read(|cx| composer.read(cx).image_refusal()), None);
+}
+
 #[test]
 fn image_files_are_known_by_their_extension() {
     use crate::composer::image_format;
