@@ -302,6 +302,7 @@ fn image_label(label: &str) -> &str {
 pub fn file_name(title: &str) -> String {
     let name: String = title
         .chars()
+        .filter(|character| !is_format(*character))
         .map(|character| match character {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => ' ',
             character if character.is_control() => ' ',
@@ -313,9 +314,50 @@ pub fn file_name(title: &str) -> String {
     let name = name.trim_matches(['.', ' ']);
     if name.is_empty() {
         "Conversation.md".to_string()
+    } else if is_reserved(name) {
+        // Windows keeps these names for devices, with any extension.
+        format!("Conversation {name}.md")
     } else {
         format!("{name}.md")
     }
+}
+
+/// Whether `name` is one Windows keeps for a device (`CON`, `aux`,
+/// `COM1`), whatever follows a dot.
+fn is_reserved(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end()
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|device| {
+            stem.strip_prefix(device).is_some_and(|number| {
+                matches!(
+                    number,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        })
+}
+
+/// Whether `character` is an invisible formatting character: one that
+/// turns text right to left, joins or hides, which a file name shouldn't
+/// carry.
+fn is_format(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+    )
 }
 
 /// A file in `folder` named `name`, or `name` with a number when that one
@@ -571,5 +613,12 @@ Thanks.
         assert_eq!(code("`x"), "`` `x ``");
         assert_eq!(file_name("Fix: a/b \"quoted\"?"), "Fix a b quoted.md");
         assert_eq!(file_name("  ..  "), "Conversation.md");
+        // Names Windows keeps for devices, and invisible characters that
+        // turn the name around.
+        assert_eq!(file_name("CON"), "Conversation CON.md");
+        assert_eq!(file_name("aux"), "Conversation aux.md");
+        assert_eq!(file_name("com1"), "Conversation com1.md");
+        assert_eq!(file_name("Console"), "Console.md");
+        assert_eq!(file_name("report\u{202E}dm.exe"), "reportdm.exe.md");
     }
 }
