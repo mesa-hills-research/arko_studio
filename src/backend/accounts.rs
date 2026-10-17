@@ -29,8 +29,9 @@ impl Accounts {
     /// `.env` files it reads (Arko's folder `root`'s last), the ChatGPT
     /// login, Claude Code. It runs `claude`: call it off the UI thread.
     pub fn read(root: &Path) -> Self {
+        let keys = key_states_in(root);
         Self {
-            keys: arko::accounts::key_states(),
+            keys,
             chatgpt: arko::accounts::chatgpt_login(None),
             claude_code: arko::accounts::claude_code(),
             cache_1h: arko::Env::for_folder_in(None, true, Some(root))
@@ -93,6 +94,15 @@ impl Accounts {
             cache_1h: None,
         }
     }
+}
+
+/// The API keys as arko finds them for Arko's folder `root`, reading the
+/// `.env` files as they are now: arko in the terminal, or the user, may
+/// have changed them since the app started. What sessions read before one
+/// is open (the ChatGPT login too) then comes from these files.
+pub fn key_states_in(root: &Path) -> Vec<KeyState> {
+    arko::accounts::use_env(arko::Env::for_folder_in(None, true, Some(root)));
+    arko::accounts::key_states()
 }
 
 /// The key arko takes for `provider`, as `/keys add` names it.
@@ -192,6 +202,28 @@ mod tests {
             "from the environment"
         );
         assert_eq!(tilde(Path::new("/srv/x"), Some(home)), "/srv/x");
+    }
+
+    /// A key written to Arko's `.env` after the app started (by arko in the
+    /// terminal, or by hand) shows on its row.
+    #[test]
+    fn key_rows_read_the_env_files_as_they_are_now() {
+        if std::env::var_os("OPENROUTER_API_KEY").is_some() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let set = |root: &Path| {
+            key_states_in(root)
+                .into_iter()
+                .any(|state| state.key.id == "openrouter" && state.masked.is_some())
+        };
+        assert!(!set(root.path()));
+        std::fs::write(
+            root.path().join(".env"),
+            "OPENROUTER_API_KEY=sk-or-v1-notarealkey0000000000\n",
+        )
+        .unwrap();
+        assert!(set(root.path()));
     }
 
     #[test]
