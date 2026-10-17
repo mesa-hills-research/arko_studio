@@ -162,7 +162,9 @@ impl RenderOnce for WebPagePanel {
         let qr = qr.and_then(|(url, label)| Some((qr_image(&url, cx)?, label)));
         let theme = cx.theme();
         let mono = theme.mono_font_family.clone();
-        let _ = window;
+        // As tall as the window allows: the links and the QR code scroll,
+        // the buttons stay.
+        let tallest = window.viewport_size().height * 0.8;
         let session = self.session.clone();
         let act = move |command: fn(&Entity<LiveSession>, &mut App) -> Result<(), String>| {
             let session = session.clone();
@@ -175,27 +177,12 @@ impl RenderOnce for WebPagePanel {
                 }
             }
         };
-        v_flex()
-            .id("web-page-panel")
-            .test_support()
-            .w(rems(20.))
+        let body = v_flex()
+            .id("web-page-body")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
             .gap_3()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_medium()
-                            .child("The web page is shared"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(WHAT_IT_ALLOWS),
-                    ),
-            )
             .child(v_flex().id("web-page-links").gap_1().children(
                 self.page.links.iter().enumerate().map(|(ix, link)| {
                     h_flex()
@@ -275,9 +262,34 @@ impl RenderOnce for WebPagePanel {
                         .text_color(theme.muted_foreground)
                         .child(crate::backend::sentence(&note)),
                 )
-            })
+            });
+        v_flex()
+            .id("web-page-panel")
+            .test_support()
+            .w(rems(20.))
+            .max_h(tallest)
+            .gap_3()
+            .child(
+                v_flex()
+                    .flex_none()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_medium()
+                            .child("The web page is shared"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(WHAT_IT_ALLOWS),
+                    ),
+            )
+            .child(body)
             .child(
                 h_flex()
+                    .flex_none()
                     .justify_end()
                     .gap_2()
                     .child(

@@ -65,6 +65,11 @@ fn start(cx: &mut TestAppContext) {
 /// A status bar alone in a window, showing a session that hasn't opened
 /// (what it's sent waits in its queue), at [`NOW`].
 fn bar(cx: &mut TestAppContext, width: f32) -> Bar {
+    bar_of_height(cx, width, 400.)
+}
+
+/// The same, in a window `height` tall.
+fn bar_of_height(cx: &mut TestAppContext, width: f32, height: f32) -> Bar {
     start(cx);
     let now = Rc::new(Cell::new(NOW));
     let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
@@ -72,7 +77,7 @@ fn bar(cx: &mut TestAppContext, width: f32) -> Bar {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: Point::default(),
-                size: size(px(width), px(400.)),
+                size: size(px(width), px(height)),
             })),
             ..Default::default()
         };
@@ -315,6 +320,48 @@ fn the_web_pages_popover_shows_its_links_and_stops_sharing(cx: &mut TestAppConte
         window.click("web-page-stop", cx)
     });
     assert_eq!(sent(&bar.session, cx), ["/remote new-key", "/remote off"]);
+}
+
+/// In a short window, the web page's popover fits: its links and QR code
+/// scroll, and its buttons stay in reach.
+#[gpui_kit::test]
+fn the_web_pages_popover_fits_a_short_window(cx: &mut TestAppContext) {
+    let bar = bar_of_height(cx, 1300., 320.);
+    let mut reading = busy();
+    if let Some(page) = reading.page.as_mut() {
+        page.links = (0..10)
+            .map(|n| {
+                link(
+                    &format!("http://10.0.0.{n}:8765/#key=k"),
+                    &format!("veth{n}"),
+                )
+            })
+            .collect();
+    }
+    bar.show(cx, reading, Activity::default());
+    act(cx, bar.window, |window, cx| {
+        window.click("status-web-page", cx)
+    });
+    let (panel, viewport) = cx
+        .update_window(bar.window, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window
+                    .try_find("web-page-panel")
+                    .map(|found| found.bounds()),
+                window.viewport_size(),
+            )
+        })
+        .unwrap();
+    let panel = panel.expect("the popover shows");
+    assert!(
+        panel.origin.y >= px(0.) && panel.origin.y + panel.size.height <= viewport.height,
+        "{panel:?} in {viewport:?}"
+    );
+    act(cx, bar.window, |window, cx| {
+        window.click("web-page-stop", cx)
+    });
+    assert_eq!(sent(&bar.session, cx), ["/remote off"]);
 }
 
 /// A page only this computer can open has no QR code: the popover says how
