@@ -856,3 +856,28 @@ fn a_page_that_doesnt_start_says_so(cx: &mut TestAppContext) {
     app.close_all(cx);
     assert!(!opened, "the popover opened by itself");
 }
+
+/// The info opened while its session still opens reads the session's
+/// details once it has opened.
+#[gpui_kit::test]
+fn the_info_opened_as_the_session_opens_reads_its_details(cx: &mut TestAppContext) {
+    use crate::testing::wait_until;
+
+    let app = OnEngine::start(cx, 1300.);
+    act(cx, app.window, |window, cx| {
+        window.input("Count the pears.", cx)
+    });
+    act(cx, app.window, |window, cx| window.press("enter", cx));
+    let session = app.shown(cx).expect("the session shows at once");
+    let title_bar = cx.read(|cx| app.workspace.read(cx).title_bar().clone());
+    title_bar.update(cx, |bar, cx| bar.toggle_info(cx));
+    assert!(
+        cx.read(|cx| session.read(cx).link().is_none()),
+        "the session opened before the info"
+    );
+    let info = cx.read(|cx| title_bar.read(cx).info().clone());
+    wait_until(cx, "the session's details", |cx| {
+        cx.read(|cx| info.read(cx).facts().is_some())
+    });
+    app.close_all(cx);
+}

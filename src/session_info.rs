@@ -123,6 +123,10 @@ pub struct SessionInfo {
     session: Option<Entity<LiveSession>>,
     preview: Option<Preview>,
     facts: Option<Facts>,
+    /// The session and its opening the facts are read for.
+    facts_for: Option<(EntityId, u64)>,
+    /// The info shows: its facts follow the session's openings.
+    open: bool,
     fields: Vec<(Field, Entity<InputState>)>,
     _load: Option<Task<()>>,
     _session: Option<Subscription>,
@@ -165,6 +169,8 @@ impl SessionInfo {
             session: None,
             preview: None,
             facts: None,
+            facts_for: None,
+            open: false,
             fields,
             _load: None,
             _session: None,
@@ -183,16 +189,45 @@ impl SessionInfo {
             return;
         }
         self.facts = None;
+        self.facts_for = None;
         self._load = None;
         self._session = session.as_ref().map(|session| {
             cx.observe_in(session, window, |this, _, window, cx| {
                 this.sync_fields(window, cx);
+                this.follow_facts(cx);
                 cx.notify();
             })
         });
         self.session = session;
         self.sync_fields(window, cx);
+        self.follow_facts(cx);
         cx.notify();
+    }
+
+    /// The info shows (`true`) or no longer does. Shown, its facts are
+    /// read, and read again when the session opens anew.
+    pub fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.open = open;
+        if open {
+            self.load(cx);
+        }
+    }
+
+    /// While the info shows, reads the facts of an opening of the session
+    /// they aren't read for: the session opened after the info, or opened
+    /// again (after a switch between Chat and Agent).
+    fn follow_facts(&mut self, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
+        let Some(session) = &self.session else {
+            return;
+        };
+        let live = session.read(cx);
+        let opening = (session.entity_id(), live.opening());
+        if live.link().is_some() && self.facts_for != Some(opening) {
+            self.load(cx);
+        }
     }
 
     pub fn session(&self) -> Option<&Entity<LiveSession>> {
@@ -217,14 +252,14 @@ impl SessionInfo {
     /// Reads the session's details again, off the UI thread (as the info
     /// opens).
     pub fn load(&mut self, cx: &mut Context<Self>) {
-        let Some(details) = self
-            .session
-            .as_ref()
-            .and_then(|session| session.read(cx).link())
-            .map(|link| link.details.clone())
-        else {
+        let Some((details, opening)) = self.session.as_ref().and_then(|session| {
+            let live = session.read(cx);
+            let details = live.link()?.details.clone();
+            Some((details, (session.entity_id(), live.opening())))
+        }) else {
             return;
         };
+        self.facts_for = Some(opening);
         let load = cx.background_spawn(async move {
             Facts {
                 session: details.session(),
