@@ -970,16 +970,7 @@ impl SessionView {
         let find = self.find.as_ref()?;
         let theme = cx.theme();
         let has_words = !find.input.read(cx).value().trim().is_empty();
-        let status = match (find.status.current, find.status.total) {
-            _ if !has_words => String::new(),
-            _ if find.status.searching => "Searching…".to_string(),
-            (_, 0) => "No matches".to_string(),
-            (Some(current), total) if find.status.in_full_output => {
-                format!("{} of {total} in the full output", current + 1)
-            }
-            (Some(current), total) => format!("{} of {total}", current + 1),
-            (None, total) => format!("{total} found"),
-        };
+        let status = find_status_text(find.status, has_words);
         let key_tip = |label: &'static str, key: &'static str| {
             move |window: &mut Window, cx: &mut App| {
                 Tooltip::new(label)
@@ -1388,7 +1379,7 @@ impl SessionView {
                     if let Some(note) = images_not_kept(lost) {
                         let them = if lost == 1 { "it" } else { "them" };
                         window.push_notification(
-                            format!("{note}: the branch sends the message without {them}."),
+                            format!("{note}, so the branch sends the message without {them}."),
                             cx,
                         );
                     }
@@ -2892,6 +2883,23 @@ impl Render for SessionView {
     }
 }
 
+/// What the find bar says of where its find is.
+fn find_status_text(status: FindStatus, has_words: bool) -> String {
+    match (status.current, status.total) {
+        _ if !has_words => String::new(),
+        _ if status.searching => "Searching…".to_string(),
+        (_, 0) => "No matches".to_string(),
+        (Some(current), total) if status.in_full_output => {
+            format!("{} of {total} in the full output", current + 1)
+        }
+        (Some(current), total) => format!("{} of {total}", current + 1),
+        // Matches, none of them on show (words that matched nothing
+        // before).
+        (None, 1) => "1 match".to_string(),
+        (None, total) => format!("{total} matches"),
+    }
+}
+
 /// A conversation exported as Markdown, ready to write.
 pub(crate) struct Export {
     pub text: String,
@@ -2937,7 +2945,10 @@ fn write_export(export: Export, path: PathBuf, window: &mut Window, cx: &mut App
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{images_not_kept, mode_description, recent_folders, shown_folder_from};
+    use super::{
+        FindStatus, find_status_text, images_not_kept, mode_description, recent_folders,
+        shown_folder_from,
+    };
     use crate::backend::Backend as _;
     use crate::backend::{FakeBackend, Mode, SessionEntry};
     use std::path::{Path, PathBuf};
@@ -2953,6 +2964,20 @@ mod tests {
             mode_description(Mode::Agent, true),
             "Agent: works in a folder with tools and workers. Switching re-reads the conversation without its cache."
         );
+    }
+
+    #[test]
+    fn the_find_bar_says_where_the_find_is() {
+        let status = |current: Option<usize>, total: usize| FindStatus {
+            current,
+            total,
+            ..FindStatus::default()
+        };
+        assert_eq!(find_status_text(status(Some(2), 12), true), "3 of 12");
+        assert_eq!(find_status_text(status(None, 12), true), "12 matches");
+        assert_eq!(find_status_text(status(None, 1), true), "1 match");
+        assert_eq!(find_status_text(status(None, 0), true), "No matches");
+        assert_eq!(find_status_text(status(None, 12), false), "");
     }
 
     #[test]
