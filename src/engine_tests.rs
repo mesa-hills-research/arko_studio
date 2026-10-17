@@ -919,3 +919,27 @@ fn an_image_goes_with_the_message(cx: &mut TestAppContext) {
     assert!(cx.read(|cx| composer.read(cx).images().is_empty()), "sent");
     app.close_all(cx);
 }
+
+/// MCP config files set in Settings › Advanced that are gone, or aren't MCP
+/// config files, are left out: a new session opens anyway, its message
+/// sent, and says which it left out.
+#[gpui_kit::test]
+fn a_session_opens_without_the_mcp_config_files_it_cant_read(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, _| answer("Hello.", Duration::ZERO));
+    let app = start(cx, &mock);
+    let folder = app.root.parent().unwrap().to_path_buf();
+    let invalid = folder.join("notes.json");
+    std::fs::write(&invalid, "{}").unwrap();
+    let files = vec![folder.join("gone.json"), invalid];
+    cx.update(|cx| crate::prefs::update(cx, |prefs| prefs.advanced.mcp_config = files));
+    app.send(cx, "Say hello.");
+    app.wait_for_text(cx, "Hello.");
+    let session = app.shown(cx).unwrap();
+    assert_eq!(cx.read(|cx| session.read(cx).phase().clone()), Phase::Open);
+    assert!(mock.was_sent("Say hello."));
+    let notes = cx
+        .update_window(app.window, |_, window, cx| window.notifications(cx).len())
+        .unwrap();
+    assert!(notes >= 2, "{notes} notifications");
+    app.close_all(cx);
+}

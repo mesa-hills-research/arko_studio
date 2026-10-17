@@ -16,13 +16,20 @@ use crate::prefs::{self, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
 use crate::session_view::{Branched, SessionView, SessionViewEvent, recent_folders};
 use crate::settings_page::{CloseRequested, SettingsPage};
 use crate::sidebar::{Sidebar, SidebarEvent};
-use crate::status_bar::StatusBar;
+use crate::status_bar::{STATUS_BAR_HEIGHT, StatusBar};
 use crate::title_bar::AppTitleBar;
 use crate::workers_panel::{WorkersPanel, WorkersPanelEvent};
 use crate::{about, chrome, menus, palette, prompts, quit, shortcuts};
 
 /// The Settings page of models and accounts.
 const ACCOUNTS_PAGE: usize = 2;
+/// The Settings page of the web page.
+const WEB_PAGE_PAGE: usize = 5;
+
+/// Why a new session's page can't be shared yet.
+pub const NO_SESSION_TO_SHARE: &str = "Send a message first, then share the session’s web page.";
+/// Why a new session's cache can't be refreshed yet.
+pub const NO_CACHE_TO_REFRESH: &str = "A new session has no prompt cache until its first message.";
 
 /// The narrowest and widest the workers panel docks, in rem.
 const MIN_PANEL_WIDTH: f32 = 16.;
@@ -697,17 +704,27 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.session.clone() else {
+        let Some(session) = self.running_session(NO_SESSION_TO_SHARE, window, cx) else {
             return;
         };
         if session.read(cx).reading().page.is_none() {
-            let bind = prefs::get(cx).web_page.bind_argument();
-            if let Err(why) = crate::web_page::share(&session, &bind, cx) {
+            let page = prefs::get(cx).web_page.clone();
+            if page.ip().is_none() {
+                window.push_notification(
+                    Notification::warning(format!(
+                        "“{}” in Settings › Web page isn’t an IP address, so the page is served on this computer only.",
+                        page.address()
+                    )),
+                    cx,
+                );
+            }
+            if let Err(why) = crate::web_page::share(&session, &page.bind_argument(), cx) {
                 window.push_notification(why, cx);
                 return;
             }
         }
-        self.status_bar.update(cx, |bar, cx| bar.show_web_page(cx));
+        self.status_bar
+            .update(cx, |bar, cx| bar.show_web_page(window, cx));
     }
 
     /// Stops serving the shown session's web page.
@@ -717,7 +734,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.session.clone() else {
+        let Some(session) = self.running_session("The web page isn’t shared.", window, cx) else {
             return;
         };
         if session.read(cx).reading().page.is_none() {
@@ -727,6 +744,20 @@ impl Workspace {
         if let Err(why) = crate::web_page::stop(&session, cx) {
             window.push_notification(why, cx);
         }
+    }
+
+    /// The session shown here, or `None` with `why_not` in a notification:
+    /// a new session runs once its first message is sent.
+    fn running_session(
+        &self,
+        why_not: &'static str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Entity<LiveSession>> {
+        if self.session.is_none() {
+            window.push_notification(Notification::info(why_not), cx);
+        }
+        self.session.clone()
     }
 
     /// Shows `session` here (tests).
@@ -1071,13 +1102,23 @@ impl Workspace {
 
     fn render_main(&self) -> AnyElement {
         match &self.settings {
-            // Drawn again when its page changes, not whenever the window is.
-            Some(settings) => AnyView::from(settings.clone())
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element(),
+            Some(settings) => pane(settings),
+            // Not kept itself: GPUI draws every kept view inside a kept view
+            // that draws again, and the session view draws with each
+            // keystroke and blink of the caret. Its transcript is kept.
             None => self.session_view.clone().into_any_element(),
         }
     }
+}
+
+/// A pane of the window filling its place, kept from frame to frame and
+/// drawn again only when something in it changed: a frame drawn for one
+/// view (a tick of the status bar's clock, the composer's caret) takes the
+/// panes around it from the frame before.
+fn pane<V: Render>(view: &Entity<V>) -> AnyElement {
+    view.clone()
+        .cached(StyleRefinement::default().size_full())
+        .into_any_element()
 }
 
 /// The strip along a docked pane's inner edge that resizes it.
@@ -1116,6 +1157,8 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::testing::rendered("Workspace");
         let theme = cx.theme();
         let (background, foreground, font_family, border) = (
             theme.background,
@@ -1196,7 +1239,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::share_web_page))
             .on_action(cx.listener(Self::stop_sharing_web_page))
             .on_action(cx.listener(|this, _: &menus::RefreshCache, window, cx| {
-                if let Some(session) = this.session.clone() {
+                if let Some(session) = this.running_session(NO_CACHE_TO_REFRESH, window, cx) {
                     crate::cache_reminders::refresh(&session, window, cx);
                 }
             }))
@@ -1204,6 +1247,12 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &menus::OpenAccounts, window, cx| {
                 this.open_accounts(None, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &menus::OpenWebPageSettings, window, cx| {
+                    let settings = this.show_settings(window, cx);
+                    settings.update(cx, |settings, cx| settings.show_page(WEB_PAGE_PAGE, cx));
+                }),
+            )
             .on_action(cx.listener(|this, _: &menus::ExportMarkdown, window, cx| {
                 this.session_view
                     .update(cx, |view, cx| view.export(window, cx));
@@ -1244,7 +1293,14 @@ impl Render for Workspace {
                 }),
             )
             .on_drop(cx.listener(|this, _: &ResizeDrag, _, cx| this.finish_resize(cx)))
-            .child(self.title_bar.clone())
+            .child(
+                self.title_bar.clone().cached(
+                    StyleRefinement::default()
+                        .w_full()
+                        .flex_none()
+                        .h(gpui_kit::component::TITLE_BAR_HEIGHT),
+                ),
+            )
             .child(
                 h_flex()
                     .id("panes")
@@ -1262,7 +1318,7 @@ impl Render for Workspace {
                                 .w(rems(sidebar_width))
                                 .border_r_1()
                                 .border_color(border)
-                                .child(self.sidebar.clone())
+                                .child(pane(&self.sidebar))
                                 .child(resize_handle(Edge::Sidebar, cx)),
                         )
                     })
@@ -1284,7 +1340,7 @@ impl Render for Workspace {
                                 .w(rems(panel_width))
                                 .border_l_1()
                                 .border_color(border)
-                                .child(self.workers.clone())
+                                .child(pane(&self.workers))
                                 .child(resize_handle(Edge::Panel, cx)),
                         )
                     }),
@@ -1294,7 +1350,12 @@ impl Render for Workspace {
                     .id("status-bar")
                     .test_support()
                     .flex_none()
-                    .child(self.status_bar.clone()),
+                    .w_full()
+                    .child(
+                        self.status_bar
+                            .clone()
+                            .cached(StyleRefinement::default().w_full().h(STATUS_BAR_HEIGHT)),
+                    ),
             )
     }
 }

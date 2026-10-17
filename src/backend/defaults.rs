@@ -161,16 +161,55 @@ impl SessionDefaults {
     }
 }
 
+/// Leaves out of `files`, the MCP config files set in Settings, those that
+/// can't be read, and says why for each. arko stops a session that names
+/// a file it can't read, as `--mcp-config` does for one run, while these
+/// are kept for every session. Arko's `mcp.json` and a project's are read
+/// by arko, which notes their problems itself. It reads the files: call it
+/// off the UI thread.
+pub fn keep_readable_mcp_config(files: &mut Vec<PathBuf>) -> Vec<String> {
+    let mut notes = Vec::new();
+    files.retain(|file| match super::extensions::check_mcp_file(file) {
+        Ok(()) => true,
+        Err(why) => {
+            notes.push(format!(
+                "The MCP config file {} (Settings › Advanced) can’t be read ({why}), so its servers aren’t started.",
+                file.display()
+            ));
+            false
+        }
+    });
+    notes
+}
+
+/// Leaves the web page's set port to the session that serves on it first:
+/// when `remote` names a port something serves on already (most often
+/// another session sharing its page), this session's page goes on any free
+/// port instead of not being served, and the note says so. It binds the
+/// port for a moment: call it off the UI thread.
+pub fn take_free_port(remote: &mut Option<arko::remote::Bind>) -> Option<String> {
+    let bind = remote.as_mut()?;
+    let port = bind.port?;
+    if std::net::TcpListener::bind((bind.ip, port)).is_ok() {
+        return None;
+    }
+    bind.port = None;
+    Some(format!(
+        "Port {port}, set in Settings › Web page, is taken by another session’s page or another program. This session’s page is served on another port, which its links show."
+    ))
+}
+
 /// Whether the model `name` (as `/model` takes it) keeps Anthropic's 1-hour
 /// prompt cache: Claude by API key, directly or on OpenRouter. Claude Code
 /// chooses its own.
 pub fn takes_cache_1h(name: &str) -> bool {
     let name = name.trim().to_ascii_lowercase();
-    if name.starts_with("cc:") {
+    if name.starts_with("cc:") || name.starts_with("claude-code:") {
         return false;
     }
+    // A `~` asks OpenRouter for the latest of a family.
     if let Some(slug) = name.strip_prefix("openrouter:") {
-        return slug.starts_with("anthropic/");
+        return slug.trim_start_matches('~').starts_with("anthropic/");
     }
     name.starts_with("claude-") || matches!(name.as_str(), "opus" | "sonnet" | "haiku" | "fable")
 }
@@ -178,15 +217,10 @@ pub fn takes_cache_1h(name: &str) -> bool {
 /// Where the web page is served, from the preferences: `None` when the
 /// address isn't an IP address.
 pub fn web_page_bind(page: &prefs::WebPagePrefs) -> Option<arko::remote::Bind> {
-    let address = page.address.trim();
+    let address = page.address();
     let address = address.trim_start_matches('[').trim_end_matches(']');
-    let ip = if address.is_empty() {
-        prefs::DEFAULT_WEB_PAGE_ADDRESS.parse().ok()?
-    } else {
-        address.parse::<IpAddr>().ok()?
-    };
     Some(arko::remote::Bind {
-        ip,
+        ip: address.parse::<IpAddr>().ok()?,
         port: page.port,
     })
 }
@@ -294,7 +328,7 @@ mod tests {
         prefs.new_sessions.outside_access = true;
         prefs.advanced.mcp_config = vec![PathBuf::from("/home/ada/mcp.json")];
         prefs.web_page.share_by_default = true;
-        prefs.web_page.address = "0.0.0.0".into();
+        prefs.web_page.address = Some("0.0.0.0".into());
         prefs.web_page.port = Some(9000);
         let mut options = new_options();
         SessionDefaults::from_prefs(&prefs).apply(&mut options, None, || None);
@@ -326,6 +360,11 @@ mod tests {
             Some(true)
         );
         assert_eq!(cache(Some("cc:claude-opus-5-5"), None), None);
+        assert_eq!(cache(Some("claude-code:opus"), None), None);
+        assert_eq!(
+            cache(Some("openrouter:~anthropic/claude-opus-latest"), None),
+            Some(true)
+        );
         assert_eq!(cache(Some("gpt-6.1-sol"), None), None);
         assert_eq!(cache(None, Some("claude-opus-5-5")), Some(true));
         assert_eq!(cache(None, None), None);
@@ -341,9 +380,14 @@ mod tests {
         let mut prefs = Prefs::default();
         assert_eq!(SessionDefaults::from_prefs(&prefs).web_page, None);
         prefs.web_page.share_by_default = true;
+        // Every network this computer is on, by default.
         let bind = SessionDefaults::from_prefs(&prefs).web_page.unwrap();
-        assert_eq!(bind, arko::remote::Bind::default());
-        prefs.web_page.address = "[::1]".into();
+        assert_eq!(bind.ip.to_string(), "0.0.0.0");
+        assert_eq!(bind.port, None);
+        prefs.web_page.address = Some("127.0.0.1".into());
+        let bind = SessionDefaults::from_prefs(&prefs).web_page.unwrap();
+        assert_eq!(bind, arko::remote::Bind::default(), "arko's own");
+        prefs.web_page.address = Some("[::1]".into());
         assert_eq!(
             SessionDefaults::from_prefs(&prefs)
                 .web_page
@@ -352,7 +396,7 @@ mod tests {
                 .to_string(),
             "::1"
         );
-        prefs.web_page.address = "my-laptop".into();
+        prefs.web_page.address = Some("my-laptop".into());
         assert_eq!(SessionDefaults::from_prefs(&prefs).web_page, None);
     }
 

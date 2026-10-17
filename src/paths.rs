@@ -47,6 +47,12 @@ pub fn fonts_folder(arko: &Path) -> PathBuf {
     arko.join("fonts")
 }
 
+/// Where release builds write their log, as the app found it at start
+/// ([`logs_folder`]).
+pub struct LogsFolder(pub Option<PathBuf>);
+
+impl gpui_kit::Global for LogsFolder {}
+
 /// Where release builds write their log: the platform's log folder, under
 /// the app id.
 pub fn logs_folder() -> Option<PathBuf> {

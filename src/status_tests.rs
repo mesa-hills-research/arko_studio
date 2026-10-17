@@ -65,6 +65,11 @@ fn start(cx: &mut TestAppContext) {
 /// A status bar alone in a window, showing a session that hasn't opened
 /// (what it's sent waits in its queue), at [`NOW`].
 fn bar(cx: &mut TestAppContext, width: f32) -> Bar {
+    bar_of_height(cx, width, 400.)
+}
+
+/// The same, in a window `height` tall.
+fn bar_of_height(cx: &mut TestAppContext, width: f32, height: f32) -> Bar {
     start(cx);
     let now = Rc::new(Cell::new(NOW));
     let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
@@ -72,7 +77,7 @@ fn bar(cx: &mut TestAppContext, width: f32) -> Bar {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: Point::default(),
-                size: size(px(width), px(400.)),
+                size: size(px(width), px(height)),
             })),
             ..Default::default()
         };
@@ -307,6 +312,20 @@ fn the_web_pages_popover_shows_its_links_and_stops_sharing(cx: &mut TestAppConte
         window.click("status-web-page", cx)
     });
     assert!(bar.find(cx, "web-page-panel"));
+    assert!(bar.find(cx, "web-page-allows"));
+    // Each link's copy button says which link it copies.
+    let label = cx
+        .update_window(bar.window, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(("copy-web-page-link", 0usize))
+                .and_then(|found| found.label().map(str::to_string))
+        })
+        .unwrap();
+    assert_eq!(
+        label.as_deref(),
+        Some("Copy the Local network · wlan0 link")
+    );
     assert!(bar.find(cx, "web-page-qr"));
     act(cx, bar.window, |window, cx| {
         window.click("web-page-new-key", cx)
@@ -315,6 +334,90 @@ fn the_web_pages_popover_shows_its_links_and_stops_sharing(cx: &mut TestAppConte
         window.click("web-page-stop", cx)
     });
     assert_eq!(sent(&bar.session, cx), ["/remote new-key", "/remote off"]);
+}
+
+/// In a short window, the web page's popover fits: its links and QR code
+/// scroll, and its buttons stay in reach.
+#[gpui_kit::test]
+fn the_web_pages_popover_fits_a_short_window(cx: &mut TestAppContext) {
+    let bar = bar_of_height(cx, 1300., 320.);
+    let mut reading = busy();
+    if let Some(page) = reading.page.as_mut() {
+        page.links = (0..10)
+            .map(|n| {
+                link(
+                    &format!("http://10.0.0.{n}:8765/#key=k"),
+                    &format!("veth{n}"),
+                )
+            })
+            .collect();
+    }
+    bar.show(cx, reading, Activity::default());
+    act(cx, bar.window, |window, cx| {
+        window.click("status-web-page", cx)
+    });
+    let (panel, viewport) = cx
+        .update_window(bar.window, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window
+                    .try_find("web-page-panel")
+                    .map(|found| found.bounds()),
+                window.viewport_size(),
+            )
+        })
+        .unwrap();
+    let panel = panel.expect("the popover shows");
+    assert!(
+        panel.origin.y >= px(0.) && panel.origin.y + panel.size.height <= viewport.height,
+        "{panel:?} in {viewport:?}"
+    );
+    act(cx, bar.window, |window, cx| {
+        window.click("web-page-stop", cx)
+    });
+    assert_eq!(sent(&bar.session, cx), ["/remote off"]);
+}
+
+/// A page only this computer can open has no QR code: the popover says how
+/// to reach it from a phone, and opens Settings › Web page.
+#[gpui_kit::test]
+fn a_page_only_this_computer_opens_has_no_qr_code(cx: &mut TestAppContext) {
+    let (window, workspace, session) = window_with_session(cx);
+    let mut reading = busy();
+    reading.page = Some(Page {
+        addr: "127.0.0.1:8765".parse().unwrap(),
+        links: vec![Link {
+            url: "http://127.0.0.1:8765/#key=k".into(),
+            interface: None,
+            kind: LinkKind::Loopback,
+            loopback: true,
+        }],
+        note: None,
+    });
+    session.update(cx, |session, cx| {
+        session.set_status(reading, Activity::default(), cx)
+    });
+    cx.run_until_parked();
+    act(cx, window, |window, cx| window.click("status-web-page", cx));
+    let shows = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    assert!(shows(cx, "web-page-panel"));
+    assert!(!shows(cx, "web-page-qr"));
+    assert!(shows(cx, "web-page-this-computer"));
+    act(cx, window, |window, cx| {
+        window.click("web-page-settings", cx)
+    });
+    let settings = cx.read(|cx| workspace.read(cx).settings().cloned());
+    assert_eq!(
+        settings.map(|settings| cx.read(|cx| settings.read(cx).page())),
+        Some(5)
+    );
+    assert!(!shows(cx, "web-page-panel"), "the popover stayed open");
 }
 
 #[gpui_kit::test]
@@ -390,6 +493,28 @@ fn the_cache_timer_counts_down_while_idle_and_warns_in_its_last_minute(cx: &mut 
     assert_eq!(bar.shown(cx).cache, None);
 }
 
+/// A question waiting for the user stops the turn's requests: the cache
+/// timer shows beside "Waiting for your answer".
+#[gpui_kit::test]
+fn the_cache_timer_counts_while_a_question_waits(cx: &mut TestAppContext) {
+    let bar = bar(cx, 1300.);
+    let mut reading = Reading::default();
+    reading.cache.lifetime = Some(Duration::from_secs(300));
+    reading.cache.refreshed_at = Some(NOW - 180_000);
+    let asking = Activity {
+        question: Some(arko::remote::Question {
+            id: 1,
+            text: "Tabs or spaces?".into(),
+        }),
+        ..working(NOW - 240_000)
+    };
+    bar.show(cx, reading, asking);
+    let shown = bar.shown(cx);
+    assert_eq!(shown.turn.as_deref(), Some("Waiting for your answer"));
+    assert_eq!(shown.cache, Some(("cache 2:00".into(), false)));
+    assert!(cx.read(|cx| bar.bar.read(cx).is_ticking()));
+}
+
 /// A window showing a session that hasn't opened (what it's sent waits in
 /// its queue).
 fn window_with_session(
@@ -412,6 +537,74 @@ fn window_with_session(
     (window, workspace, session)
 }
 
+/// The draws of each of the window's views over five seconds, after two
+/// to settle, the bar reading `now`.
+fn draws_in_five_seconds(
+    cx: &mut TestAppContext,
+    now: &Rc<Cell<i64>>,
+) -> std::collections::BTreeMap<&'static str, usize> {
+    let second = |cx: &mut TestAppContext| {
+        now.set(now.get() + 1_000);
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+    };
+    second(cx);
+    second(cx);
+    crate::testing::count_renders();
+    for _ in 0..5 {
+        second(cx);
+    }
+    crate::testing::renders()
+}
+
+/// Each second the cache timer counts, the bar draws again, and the title
+/// bar and the sidebar beside it don't.
+#[gpui_kit::test]
+fn a_tick_of_the_bars_clock_leaves_the_other_panes_alone(cx: &mut TestAppContext) {
+    let (window, workspace, session) = window_with_session(cx);
+    let now = Rc::new(Cell::new(NOW));
+    let bar = cx.read(|cx| workspace.read(cx).status_bar().clone());
+    let clock = now.clone();
+    bar.update(cx, |bar, cx| {
+        bar.set_clock(Rc::new(move || clock.get()), cx)
+    });
+    // Nothing focused: the composer's caret doesn't blink.
+    cx.update_window(window, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    act(cx, window, |window, cx| window.blur(cx));
+    let mut reading = Reading::default();
+    reading.cache.lifetime = Some(Duration::from_secs(3_600));
+    reading.cache.refreshed_at = Some(NOW - 300_000);
+    session.update(cx, |session, cx| {
+        session.set_status(reading, Activity::default(), cx)
+    });
+    cx.run_until_parked();
+    assert!(cx.read(|cx| bar.read(cx).is_ticking()));
+    let draws = draws_in_five_seconds(cx, &now);
+    assert_eq!(draws.get("StatusBar"), Some(&5), "{draws:?}");
+    for pane in ["AppTitleBar", "Sidebar"] {
+        assert_eq!(draws.get(pane), None, "{pane} drew again: {draws:?}");
+    }
+}
+
+/// The composer's caret blinks twice a second: the window draws again
+/// around it, but not its title bar, sidebar and status bar.
+#[gpui_kit::test]
+fn the_composers_caret_leaves_the_other_panes_alone(cx: &mut TestAppContext) {
+    let (window, _, _) = window_with_session(cx);
+    cx.update_window(window, |_, window, _| window.activate_window())
+        .unwrap();
+    let draws = draws_in_five_seconds(cx, &Rc::new(Cell::new(NOW)));
+    assert!(
+        draws.get("Workspace").is_some_and(|draws| *draws >= 5),
+        "{draws:?}"
+    );
+    for pane in ["AppTitleBar", "Sidebar", "StatusBar"] {
+        assert_eq!(draws.get(pane), None, "{pane} drew again: {draws:?}");
+    }
+}
+
 /// Share Web Page serves the page where Settings say and shows its links
 /// once it's up. Stop Sharing Web Page stops it.
 #[gpui_kit::test]
@@ -419,7 +612,7 @@ fn sharing_the_web_page_serves_it_and_shows_its_links(cx: &mut TestAppContext) {
     let (window, workspace, session) = window_with_session(cx);
     cx.update(|cx| {
         crate::prefs::update(cx, |prefs| {
-            prefs.web_page.address = "0.0.0.0".into();
+            prefs.web_page.address = Some("0.0.0.0".into());
             prefs.web_page.port = Some(9000);
         })
     });
@@ -442,6 +635,35 @@ fn sharing_the_web_page_serves_it_and_shows_its_links(cx: &mut TestAppContext) {
         window.dispatch_action(Box::new(crate::menus::StopSharingWebPage), cx)
     });
     assert_eq!(sent(&session, cx), ["/remote 0.0.0.0:9000", "/remote off"]);
+}
+
+/// In a new session, before its first message, Share Web Page, Stop
+/// Sharing Web Page and Refresh Cache each say why they can't, from the
+/// menu and the command palette alike (both send the same action).
+#[gpui_kit::test]
+fn a_new_session_says_why_it_cant_share_yet(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    assert!(cx.read(|cx| workspace.read(cx).live_session().is_none()));
+    let notes = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            gpui_kit::component::WindowExt::notifications(window, cx).len()
+        })
+        .unwrap()
+    };
+    let actions: [Box<dyn gpui_kit::Action>; 3] = [
+        Box::new(crate::menus::ShareWebPage),
+        Box::new(crate::menus::StopSharingWebPage),
+        Box::new(crate::menus::RefreshCache),
+    ];
+    for (said, action) in actions.into_iter().enumerate() {
+        act(cx, window, |window, cx| window.dispatch_action(action, cx));
+        assert_eq!(notes(cx), said + 1);
+    }
+    // The palette offers Share Web Page with the same action.
+    assert!(crate::commands::commands().iter().any(
+        |command| command.in_palette && command.action.partial_eq(&crate::menus::ShareWebPage)
+    ));
 }
 
 /// Refresh Cache asks the session to keep its cache warm, and says why it
@@ -534,4 +756,175 @@ fn the_bar_and_the_info_follow_a_session_on_the_engine(cx: &mut TestAppContext) 
     wait_until(cx, "the session to end", |cx| {
         cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
     });
+}
+
+/// A window on arko's engine, its model arko's mock, sessions working in a
+/// temporary folder.
+struct OnEngine {
+    _temp: tempfile::TempDir,
+    _mock: crate::testing::Mock,
+    window: AnyWindowHandle,
+    workspace: Entity<crate::workspace::Workspace>,
+}
+
+impl OnEngine {
+    fn start(cx: &mut TestAppContext, width: f32) -> Self {
+        use crate::testing::{Mock, reply};
+
+        let mock = Mock::start(|index, _| reply(&format!("a{index}"), "Done."));
+        cx.executor().allow_parking();
+        let temp = tempfile::tempdir().unwrap();
+        let (root, work) = (temp.path().join("arko"), temp.path().join("work"));
+        std::fs::create_dir_all(&work).unwrap();
+        let backend =
+            Arc::new(crate::backend::ArkoBackend::new(&root).with_configure(mock.configure()));
+        cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+        let (window, workspace) = open(cx, width);
+        let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+        cx.update(|cx| view.update(cx, |view, cx| view.set_draft_folder(work.clone(), cx)));
+        Self {
+            _temp: temp,
+            _mock: mock,
+            window,
+            workspace,
+        }
+    }
+
+    fn shown(&self, cx: &mut TestAppContext) -> Option<Entity<LiveSession>> {
+        cx.read(|cx| self.workspace.read(cx).live_session().cloned())
+    }
+
+    /// Sends a first message and waits for its turn to end.
+    fn first_turn(&self, cx: &mut TestAppContext) -> Entity<LiveSession> {
+        act(cx, self.window, |window, cx| {
+            window.input("Count the pears.", cx)
+        });
+        act(cx, self.window, |window, cx| window.press("enter", cx));
+        crate::testing::wait_until(cx, "the turn's end", |cx| {
+            self.shown(cx).is_some_and(|session| {
+                cx.read(|cx| {
+                    let session = session.read(cx);
+                    session.reading().context_tokens.is_some() && !session.is_working()
+                })
+            })
+        });
+        self.shown(cx).unwrap()
+    }
+
+    fn command(&self, cx: &mut TestAppContext, session: &Entity<LiveSession>, text: &str) {
+        act(cx, self.window, |window, cx| {
+            crate::status_bar::run(session, text, window, cx)
+        });
+    }
+
+    fn close_all(&self, cx: &mut TestAppContext) {
+        act(cx, self.window, |window, cx| {
+            let sessions = crate::live::LiveSessions::all(cx);
+            crate::quit::close(sessions, false, window, cx);
+        });
+        crate::testing::wait_until(cx, "the sessions to end", |cx| {
+            cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
+        });
+    }
+}
+
+/// Where the session's page is served.
+fn page_addr(
+    session: &Entity<LiveSession>,
+    cx: &mut TestAppContext,
+) -> Option<std::net::SocketAddr> {
+    cx.read(|cx| {
+        session
+            .read(cx)
+            .reading()
+            .page
+            .as_ref()
+            .map(|page| page.addr)
+    })
+}
+
+/// Share Web Page serves where Settings say (here this computer only),
+/// even in a session that served on every network before.
+#[gpui_kit::test]
+fn sharing_serves_where_settings_say_not_where_the_page_was(cx: &mut TestAppContext) {
+    use crate::testing::wait_until;
+
+    let app = OnEngine::start(cx, 1300.);
+    cx.update(|cx| {
+        crate::prefs::update(cx, |prefs| {
+            prefs.web_page.address = Some("127.0.0.1".into())
+        })
+    });
+    let session = app.first_turn(cx);
+    app.command(cx, &session, "/remote 0.0.0.0");
+    wait_until(cx, "the page on every network", |cx| {
+        page_addr(&session, cx).is_some_and(|addr| addr.ip().is_unspecified())
+    });
+    app.command(cx, &session, "/remote off");
+    wait_until(cx, "the page off", |cx| page_addr(&session, cx).is_none());
+    act(cx, app.window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ShareWebPage), cx)
+    });
+    wait_until(cx, "the page again", |cx| page_addr(&session, cx).is_some());
+    let addr = page_addr(&session, cx).unwrap();
+    app.close_all(cx);
+    assert!(addr.ip().is_loopback(), "served on {addr}");
+}
+
+/// A page that doesn't start (its port is taken) says so where the user
+/// asked for it, and its popover doesn't open by itself when a page
+/// starts later.
+#[gpui_kit::test]
+fn a_page_that_doesnt_start_says_so(cx: &mut TestAppContext) {
+    use crate::testing::wait_until;
+    use gpui_kit::component::WindowExt as _;
+
+    let app = OnEngine::start(cx, 1300.);
+    let session = app.first_turn(cx);
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port();
+    cx.update(|cx| crate::prefs::update(cx, |prefs| prefs.web_page.port = Some(port)));
+    let notes = |cx: &mut TestAppContext| {
+        cx.update_window(app.window, |_, window, cx| window.notifications(cx).len())
+            .unwrap()
+    };
+    let before = notes(cx);
+    act(cx, app.window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ShareWebPage), cx)
+    });
+    wait_until(cx, "a notification", |cx| notes(cx) > before);
+    // The user starts the page at the composer.
+    drop(taken);
+    app.command(cx, &session, "/remote on");
+    wait_until(cx, "the page", |cx| page_addr(&session, cx).is_some());
+    let bar = cx.read(|cx| app.workspace.read(cx).status_bar().clone());
+    act(cx, app.window, |_, _| {});
+    let opened = cx.read(|cx| bar.read(cx).is_web_page_open());
+    app.close_all(cx);
+    assert!(!opened, "the popover opened by itself");
+}
+
+/// The info opened while its session still opens reads the session's
+/// details once it has opened.
+#[gpui_kit::test]
+fn the_info_opened_as_the_session_opens_reads_its_details(cx: &mut TestAppContext) {
+    use crate::testing::wait_until;
+
+    let app = OnEngine::start(cx, 1300.);
+    act(cx, app.window, |window, cx| {
+        window.input("Count the pears.", cx)
+    });
+    act(cx, app.window, |window, cx| window.press("enter", cx));
+    let session = app.shown(cx).expect("the session shows at once");
+    let title_bar = cx.read(|cx| app.workspace.read(cx).title_bar().clone());
+    title_bar.update(cx, |bar, cx| bar.toggle_info(cx));
+    assert!(
+        cx.read(|cx| session.read(cx).link().is_none()),
+        "the session opened before the info"
+    );
+    let info = cx.read(|cx| title_bar.read(cx).info().clone());
+    wait_until(cx, "the session's details", |cx| {
+        cx.read(|cx| info.read(cx).facts().is_some())
+    });
+    app.close_all(cx);
 }

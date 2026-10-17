@@ -30,6 +30,33 @@ use crate::status_bar::run;
 /// Why some settings can't change any more.
 pub const FIXED: &str = "Fixed once the conversation started.";
 
+/// How long a switch or a segment shows the user's choice before the
+/// session's status does (the status comes about half a second after a
+/// change, and says why not when the session refused it).
+pub const HOLD: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// What a control (by its id) shows of `settings`: "on" or "off" for a
+/// switch, the choice's name for a segmented group.
+fn current(control: &str, settings: &arko::remote::LiveSettings) -> Option<String> {
+    let switch = |on: bool| Some(if on { "on" } else { "off" }.to_string());
+    match control {
+        "outside-access" => switch(settings.outside),
+        "text-replies" => switch(settings.text_replies),
+        "cc-compact" => switch(settings.cc_compact),
+        "project-workers" => switch(settings.worker_project_instructions),
+        "extra-rules" => Some(settings.extra_rules.name().to_string()),
+        "project-instructions" => Some(settings.project_instructions.name().to_string()),
+        _ => None,
+    }
+}
+
+/// A choice the user made that the session's status doesn't show yet.
+struct Held {
+    control: &'static str,
+    value: String,
+    _expires: Task<()>,
+}
+
 /// What the session's details say, read off the UI thread.
 #[derive(Debug, Clone)]
 pub struct Facts {
@@ -38,9 +65,98 @@ pub struct Facts {
     pub skills: Result<SkillsFacts, String>,
 }
 
-/// A handover size as `/handover-at` takes it: "950k".
+/// A handover size as the info shows it and `/handover-at` takes it:
+/// "950k" for whole thousands, else all of it ("950,500"), never rounded.
 pub fn handover_value(tokens: usize) -> String {
-    format!("{}k", tokens / 1000)
+    if tokens.is_multiple_of(1000) {
+        return format!("{}k", tokens / 1000);
+    }
+    let digits = tokens.to_string();
+    let mut grouped = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+/// The smallest handover size a session takes, in tokens.
+pub const MIN_HANDOVER_SIZE: usize = 20_000;
+
+/// The longest a command runs before it moves to the background, in
+/// seconds.
+pub const MAX_BACKGROUND_AFTER: u64 = 3_600;
+
+/// A handover size as typed, read as the session reads `/handover-at`'s:
+/// `200000`, `200,000`, `200_000`, `200k`, `1.2M`, at least
+/// [`MIN_HANDOVER_SIZE`] tokens.
+pub fn parse_handover_size(text: &str) -> Result<usize, String> {
+    let text = text.trim();
+    let invalid = || format!("“{text}” isn’t a number of tokens, such as 200000, 200k or 1.2M.");
+    let digits: String = text.chars().filter(|c| !matches!(c, ',' | '_')).collect();
+    let (digits, scale): (&str, u128) = match digits.strip_suffix(['k', 'K']) {
+        Some(digits) => (digits, 1_000),
+        None => match digits.strip_suffix(['m', 'M']) {
+            Some(digits) => (digits, 1_000_000),
+            None => (digits.as_str(), 1),
+        },
+    };
+    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    let all_digits = |part: &str| part.chars().all(|c| c.is_ascii_digit());
+    if whole.is_empty() || !all_digits(whole) || !all_digits(fraction) || fraction.len() > 9 {
+        return Err(invalid());
+    }
+    let places = 10u128.pow(fraction.len() as u32);
+    let number = format!("{whole}{fraction}")
+        .parse::<u128>()
+        .map_err(|_| invalid())?;
+    let scaled = number.checked_mul(scale).ok_or_else(invalid)?;
+    if scaled % places != 0 {
+        return Err(format!("“{text}” isn’t a whole number of tokens."));
+    }
+    let tokens = usize::try_from(scaled / places).map_err(|_| invalid())?;
+    if tokens < MIN_HANDOVER_SIZE {
+        return Err(format!(
+            "Give at least {}, or an agent’s fresh conversation would start near the size.",
+            handover_value(MIN_HANDOVER_SIZE)
+        ));
+    }
+    Ok(tokens)
+}
+
+/// A time as typed, read as the session reads `/background-after`'s:
+/// `90s`, `10m`, `1h` (at most [`MAX_BACKGROUND_AFTER`] seconds), or `off`
+/// (0).
+pub fn parse_background_after(text: &str) -> Result<u64, String> {
+    let text = text.trim().to_ascii_lowercase();
+    if text == "off" {
+        return Ok(0);
+    }
+    let invalid = || {
+        format!(
+            "Give a time such as 90s, 10m or 1h (at most {}m), or off.",
+            MAX_BACKGROUND_AFTER / 60
+        )
+    };
+    let (number, unit) = text.split_at(text.len().saturating_sub(1));
+    let scale = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        _ => return Err(invalid()),
+    };
+    let seconds = number
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_mul(scale))
+        .ok_or_else(invalid)?;
+    if seconds == 0 || seconds > MAX_BACKGROUND_AFTER {
+        return Err(invalid());
+    }
+    Ok(seconds)
 }
 
 /// After how long a running command moves to the background, as
@@ -54,21 +170,31 @@ pub fn background_value(seconds: u64) -> String {
     }
 }
 
-/// The command a field's new value sends, `None` when it says nothing.
-pub fn field_command(field: Field, value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
+/// The command that sets `field` to what was typed (`text`), `None` when
+/// it says nothing or what is set already (`current`), `Err` with why the
+/// text can't be taken.
+pub fn field_command(field: Field, text: &str, current: u64) -> Result<Option<String>, String> {
+    if text.trim().is_empty() {
+        return Ok(None);
     }
-    Some(match field {
-        Field::HandoverMain => format!("/handover-at main {value}"),
-        Field::HandoverWorkers => format!("/handover-at workers {value}"),
-        Field::BackgroundAfter => format!("/background-after {value}"),
-    })
+    let value = match field {
+        Field::HandoverMain | Field::HandoverWorkers => parse_handover_size(text)? as u64,
+        Field::BackgroundAfter => parse_background_after(text)?,
+    };
+    if value == current {
+        return Ok(None);
+    }
+    Ok(Some(match field {
+        Field::HandoverMain => format!("/handover-at main {}", handover_value(value as usize)),
+        Field::HandoverWorkers => {
+            format!("/handover-at workers {}", handover_value(value as usize))
+        }
+        Field::BackgroundAfter => format!("/background-after {}", background_value(value)),
+    }))
 }
 
 /// The fields typed into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Field {
     HandoverMain,
     HandoverWorkers,
@@ -76,6 +202,16 @@ pub enum Field {
 }
 
 impl Field {
+    /// The setting the field changes, in `reading`: tokens or seconds.
+    fn current(self, reading: &Reading) -> u64 {
+        let settings = &reading.settings;
+        match self {
+            Field::HandoverMain => settings.handover_at as u64,
+            Field::HandoverWorkers => settings.workers_handover_at as u64,
+            Field::BackgroundAfter => settings.background_after,
+        }
+    }
+
     /// The field's value in `reading`.
     fn value(self, reading: &Reading) -> String {
         let settings = &reading.settings;
@@ -123,6 +259,14 @@ pub struct SessionInfo {
     session: Option<Entity<LiveSession>>,
     preview: Option<Preview>,
     facts: Option<Facts>,
+    /// The session and its opening the facts are read for.
+    facts_for: Option<(EntityId, u64)>,
+    /// The info shows: its facts follow the session's openings.
+    open: bool,
+    /// Choices shown until the session's status does.
+    held: Vec<Held>,
+    /// Why what's typed in a field can't be taken.
+    errors: std::collections::HashMap<Field, SharedString>,
     fields: Vec<(Field, Entity<InputState>)>,
     _load: Option<Task<()>>,
     _session: Option<Subscription>,
@@ -154,8 +298,17 @@ impl SessionInfo {
                             let value = input.read(cx).value().to_string();
                             this.apply(field, &value, window, cx);
                         }
+                        // What's typed is checked as it's typed.
+                        InputEvent::Change => {
+                            let value = input.read(cx).value().to_string();
+                            let current = field.current(&this.reading(cx));
+                            this.set_error(field, field_command(field, &value, current).err(), cx);
+                        }
                         // Leaving a field unapplied shows the setting again.
-                        InputEvent::Blur => this.sync_fields(window, cx),
+                        InputEvent::Blur => {
+                            this.set_error(field, None, cx);
+                            this.sync_fields(window, cx)
+                        }
                         _ => {}
                     }
                 })
@@ -165,6 +318,10 @@ impl SessionInfo {
             session: None,
             preview: None,
             facts: None,
+            facts_for: None,
+            open: false,
+            held: Vec::new(),
+            errors: std::collections::HashMap::new(),
             fields,
             _load: None,
             _session: None,
@@ -183,16 +340,45 @@ impl SessionInfo {
             return;
         }
         self.facts = None;
+        self.facts_for = None;
         self._load = None;
         self._session = session.as_ref().map(|session| {
             cx.observe_in(session, window, |this, _, window, cx| {
                 this.sync_fields(window, cx);
+                this.follow_facts(cx);
                 cx.notify();
             })
         });
         self.session = session;
         self.sync_fields(window, cx);
+        self.follow_facts(cx);
         cx.notify();
+    }
+
+    /// The info shows (`true`) or no longer does. Shown, its facts are
+    /// read, and read again when the session opens anew.
+    pub fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.open = open;
+        if open {
+            self.load(cx);
+        }
+    }
+
+    /// While the info shows, reads the facts of an opening of the session
+    /// they aren't read for: the session opened after the info, or opened
+    /// again (after a switch between Chat and Agent).
+    fn follow_facts(&mut self, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
+        let Some(session) = &self.session else {
+            return;
+        };
+        let live = session.read(cx);
+        let opening = (session.entity_id(), live.opening());
+        if live.link().is_some() && self.facts_for != Some(opening) {
+            self.load(cx);
+        }
     }
 
     pub fn session(&self) -> Option<&Entity<LiveSession>> {
@@ -217,14 +403,14 @@ impl SessionInfo {
     /// Reads the session's details again, off the UI thread (as the info
     /// opens).
     pub fn load(&mut self, cx: &mut Context<Self>) {
-        let Some(details) = self
-            .session
-            .as_ref()
-            .and_then(|session| session.read(cx).link())
-            .map(|link| link.details.clone())
-        else {
+        let Some((details, opening)) = self.session.as_ref().and_then(|session| {
+            let live = session.read(cx);
+            let details = live.link()?.details.clone();
+            Some((details, (session.entity_id(), live.opening())))
+        }) else {
             return;
         };
+        self.facts_for = Some(opening);
         let load = cx.background_spawn(async move {
             Facts {
                 session: details.session(),
@@ -306,11 +492,32 @@ impl SessionInfo {
     }
 
     fn apply(&mut self, field: Field, value: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(session), Some(command)) = (self.session.clone(), field_command(field, value))
-        else {
+        let Some(session) = self.session.clone() else {
             return;
         };
-        run(&session, &command, window, cx);
+        match field_command(field, value, field.current(&self.reading(cx))) {
+            Ok(Some(command)) => run(&session, &command, window, cx),
+            Ok(None) => {}
+            Err(why) => self.set_error(field, Some(why), cx),
+        }
+    }
+
+    /// Shows why what's typed in `field` can't be taken, or nothing.
+    fn set_error(&mut self, field: Field, error: Option<String>, cx: &mut Context<Self>) {
+        let error = error.map(SharedString::from);
+        if self.errors.get(&field) != error.as_ref() {
+            match error {
+                Some(error) => self.errors.insert(field, error),
+                None => self.errors.remove(&field),
+            };
+            cx.notify();
+        }
+    }
+
+    /// Why what's typed in `field` can't be taken (tests).
+    #[cfg(test)]
+    pub fn error(&self, field: Field) -> Option<&SharedString> {
+        self.errors.get(&field)
     }
 
     fn send(&self, command: String, window: &mut Window, cx: &mut App) {
@@ -318,25 +525,58 @@ impl SessionInfo {
             run(session, &command, window, cx);
         }
     }
+
+    /// Sends `command`, which sets `control` to `value`, and shows that
+    /// value at once.
+    fn choose(
+        &mut self,
+        control: &'static str,
+        value: String,
+        command: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.held.retain(|held| held.control != control);
+        let expires = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(HOLD).await;
+            this.update(cx, |this, cx| {
+                this.held.retain(|held| held.control != control);
+                cx.notify();
+            })
+            .ok();
+        });
+        self.held.push(Held {
+            control,
+            value,
+            _expires: expires,
+        });
+        self.send(command, window, cx);
+        cx.notify();
+    }
 }
 
-/// A label and its value, in the info's two columns.
-fn row(label: &'static str, value: impl IntoElement, cx: &App) -> Div {
+/// A label and its value, in the info's two columns, or the label above
+/// its value in a narrow window.
+fn row(narrow: bool, label: &'static str, value: impl IntoElement, cx: &App) -> Div {
+    let label = div()
+        .flex_none()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child(label);
+    let value = div().min_w_0().text_sm().child(value);
+    if narrow {
+        return v_flex().gap_0p5().pb_1().child(label).child(value);
+    }
     h_flex()
         .items_start()
         .gap_3()
         .min_h(rems(1.75))
-        .child(
-            div()
-                .w(rems(8.5))
-                .flex_none()
-                .pt(rems(0.25))
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(label),
-        )
-        .child(div().flex_1().min_w_0().text_sm().child(value))
+        .child(label.w(rems(8.5)).pt(rems(0.25)))
+        .child(value.flex_1())
 }
+
+/// Windows narrower than this put each label above its value.
+const NARROW_BELOW: Pixels = px(480.);
 
 /// A group's heading.
 fn heading(text: &'static str, cx: &App) -> Div {
@@ -369,6 +609,10 @@ fn path_value(id: &'static str, path: &Path, cx: &App) -> Div {
 
 impl Render for SessionInfo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // As wide as the window allows, with a margin.
+        let viewport = window.viewport_size();
+        let narrow = viewport.width < NARROW_BELOW;
+        let width = (window.rem_size() * 28.).min(viewport.width - window.rem_size() * 2.);
         let Some(About {
             title,
             mode,
@@ -382,29 +626,59 @@ impl Render for SessionInfo {
             return v_flex()
                 .id("session-info")
                 .test_support()
-                .w(rems(26.))
+                .w(width)
                 .text_sm()
                 .child("No session is open.");
         };
         let agent = mode == Mode::Agent;
         let started = reading.models.started;
         let settings = reading.settings.clone();
+        // Choices the status now shows are held no more.
+        self.held
+            .retain(|held| current(held.control, &settings).as_ref() != Some(&held.value));
+        let held: Vec<(&'static str, String)> = self
+            .held
+            .iter()
+            .map(|held| (held.control, held.value.clone()))
+            .collect();
+        let shown = move |control: &'static str| {
+            held.iter()
+                .find(|(held, _)| *held == control)
+                .map(|(_, value)| value.clone())
+                .or_else(|| current(control, &settings))
+                .unwrap_or_default()
+        };
+        let settings = reading.settings.clone();
         let facts = self.facts.clone();
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let view = cx.entity().downgrade();
-        let send = move |command: String| {
-            let view = view.clone();
+        let choose = move |control: &'static str, value: &str, command: String| {
+            let (view, value) = (view.clone(), value.to_string());
             move |window: &mut Window, cx: &mut App| {
-                view.update(cx, |this, cx| this.send(command.clone(), window, cx))
-                    .ok();
+                view.update(cx, |this, cx| {
+                    this.choose(control, value.clone(), command.clone(), window, cx)
+                })
+                .ok();
             }
         };
+        let danger = theme.danger;
         let input = |field: Field, this: &Self| {
+            let error = this.errors.get(&field).cloned();
             this.fields
                 .iter()
                 .find(|(kind, _)| *kind == field)
                 .map(|(_, input)| Input::new(input).small().w(rems(6.)))
+                .map(|input| {
+                    v_flex()
+                        .gap_0p5()
+                        // Enter applies the field, and the info stays open.
+                        .on_action(|_: &gpui_kit::base::actions::Confirm, _, _| {})
+                        .child(input)
+                        .when_some(error, |this, error| {
+                            this.child(div().text_xs().text_color(danger).child(error))
+                        })
+                })
         };
 
         let main_model = facts
@@ -424,12 +698,17 @@ impl Render for SessionInfo {
             .as_ref()
             .is_some_and(|facts| facts.session.handover.main_compacts);
 
-        let switch = |id: &'static str, on: bool, locked: bool, on_cmd: String, off_cmd: String| {
-            let apply_on = send(on_cmd);
-            let apply_off = send(off_cmd);
+        let switch = |id: &'static str,
+                      label: &'static str,
+                      locked: bool,
+                      on_cmd: String,
+                      off_cmd: String| {
+            let apply_on = choose(id, "on", on_cmd);
+            let apply_off = choose(id, "off", off_cmd);
             Switch::new(id)
                 .small()
-                .checked(on)
+                .accessibility_label(label)
+                .checked(shown(id) == "on")
                 .disabled(locked)
                 .when(locked, |this| this.tooltip(FIXED))
                 .on_click(move |checked, window, cx| {
@@ -442,9 +721,17 @@ impl Render for SessionInfo {
         };
 
         let extra_rules = {
-            let choose =
-                ExtraRules::ALL.map(|rules| send(format!("/extra-rules {}", rules.name())));
-            let current = settings.extra_rules;
+            let choose = ExtraRules::ALL.map(|rules| {
+                choose(
+                    "extra-rules",
+                    rules.name(),
+                    format!("/extra-rules {}", rules.name()),
+                )
+            });
+            let current = ExtraRules::ALL
+                .into_iter()
+                .find(|rules| rules.name() == shown("extra-rules"))
+                .unwrap_or(settings.extra_rules);
             ToggleGroup::new("extra-rules")
                 .segmented()
                 .small()
@@ -466,9 +753,17 @@ impl Render for SessionInfo {
                 })
         };
         let project = {
-            let choose = ProjectFiles::ALL
-                .map(|files| send(format!("/project-instructions {}", files.name())));
-            let current = settings.project_instructions;
+            let choose = ProjectFiles::ALL.map(|files| {
+                choose(
+                    "project-instructions",
+                    files.name(),
+                    format!("/project-instructions {}", files.name()),
+                )
+            });
+            let current = ProjectFiles::ALL
+                .into_iter()
+                .find(|files| files.name() == shown("project-instructions"))
+                .unwrap_or(settings.project_instructions);
             ToggleGroup::new("project-instructions")
                 .segmented()
                 .small()
@@ -495,10 +790,16 @@ impl Render for SessionInfo {
         body =
             body.child(heading("Session", cx))
                 .when_some(workspace.filter(|_| agent), |this, folder| {
-                    this.child(row("Folder", path_value("reveal-folder", &folder, cx), cx))
+                    this.child(row(
+                        narrow,
+                        "Folder",
+                        path_value("reveal-folder", &folder, cx),
+                        cx,
+                    ))
                 })
-                .child(row("Mode", mode.label(), cx))
+                .child(row(narrow, "Mode", mode.label(), cx))
                 .child(row(
+                    narrow,
                     "Model",
                     v_flex().child(main_model).when(started, |this| {
                         this.child(
@@ -510,16 +811,19 @@ impl Render for SessionInfo {
                     cx,
                 ))
                 .when_some(workers_model.filter(|_| agent), |this, model| {
-                    this.child(row("Workers’ model", model, cx))
+                    this.child(row(narrow, "Workers’ model", model, cx))
                 });
         // When the agents hand over.
         body = body
-            .child(heading("Handover", cx))
+            .child(heading(if agent { "Handover" } else { "Context" }, cx))
             .child(row(
+                narrow,
                 if compacts {
                     "Main agent compacts at"
-                } else {
+                } else if agent {
                     "Main agent at"
+                } else {
+                    "Summarizes at"
                 },
                 h_flex()
                     .gap_2()
@@ -536,6 +840,7 @@ impl Render for SessionInfo {
             ))
             .when(agent && reading.models.has_workers, |this| {
                 this.child(row(
+                    narrow,
                     "Workers at",
                     h_flex().children(input(Field::HandoverWorkers, self)),
                     cx,
@@ -545,10 +850,11 @@ impl Render for SessionInfo {
             body = body
                 .child(heading("Settings", cx))
                 .child(row(
+                    narrow,
                     "Outside access",
                     switch(
                         "outside-access",
-                        settings.outside,
+                        "Outside access",
                         false,
                         "/outside on".into(),
                         "/outside off".into(),
@@ -556,15 +862,17 @@ impl Render for SessionInfo {
                     cx,
                 ))
                 .child(row(
+                    narrow,
                     "Background after",
                     h_flex().children(input(Field::BackgroundAfter, self)),
                     cx,
                 ))
                 .child(row(
+                    narrow,
                     "Text replies",
                     switch(
                         "text-replies",
-                        settings.text_replies,
+                        "Text replies",
                         started,
                         "/text-replies on".into(),
                         "/text-replies off".into(),
@@ -572,27 +880,29 @@ impl Render for SessionInfo {
                     cx,
                 ))
                 .child(row(
+                    narrow,
                     "Claude Code compaction",
                     switch(
                         "cc-compact",
-                        settings.cc_compact,
+                        "Claude Code compaction",
                         started,
                         "/cc-compact on".into(),
                         "/cc-compact off".into(),
                     ),
                     cx,
                 ))
-                .child(row("Extra rules", extra_rules, cx))
+                .child(row(narrow, "Extra rules", extra_rules, cx))
                 .when(started, |this| {
                     this.child(
                         div()
-                            .pl(rems(9.25))
+                            .when(!narrow, |this| this.pl(rems(9.25)))
                             .text_xs()
                             .text_color(muted)
                             .child("Text replies, Claude Code compaction and the extra rules are fixed once the conversation started."),
                     )
                 })
                 .child(row(
+                    narrow,
                     "Project instructions",
                     v_flex()
                         .gap_1()
@@ -601,11 +911,21 @@ impl Render for SessionInfo {
                             div()
                                 .text_xs()
                                 .text_color(muted)
-                                .child(format!(
-                                    "{}, from the next conversation.",
-                                    crate::backend::sentence(settings.project_instructions.describe())
-                                        .trim_end_matches('.')
-                                )),
+                                .child({
+                                    let said = crate::backend::sentence(
+                                        settings.project_instructions.describe(),
+                                    );
+                                    // Before the first message, it holds for
+                                    // the conversation coming.
+                                    if started {
+                                        format!(
+                                            "{}, from the next conversation.",
+                                            said.trim_end_matches('.')
+                                        )
+                                    } else {
+                                        said
+                                    }
+                                }),
                         )
                         .when(reading.models.has_workers, |this| {
                             this.child(
@@ -614,7 +934,7 @@ impl Render for SessionInfo {
                                     .text_xs()
                                     .child(switch(
                                         "project-workers",
-                                        settings.worker_project_instructions,
+                                        "Workers get the project’s instructions too",
                                         false,
                                         "/project-instructions workers on".into(),
                                         "/project-instructions workers off".into(),
@@ -635,17 +955,30 @@ impl Render for SessionInfo {
                 ),
                 Some(facts) => body
                     .child(row(
+                        narrow,
                         "MCP servers",
-                        v_flex().children(
-                            mcp_lines(&facts.mcp)
-                                .into_iter()
-                                .map(|line| div().text_sm().child(line)),
-                        ),
+                        v_flex().children(mcp_lines(&facts.mcp).into_iter().enumerate().map(
+                            |(ix, (line, tools))| {
+                                div()
+                                    .id(("mcp-server", ix))
+                                    .text_sm()
+                                    .child(line)
+                                    .when_some(tools, |this, tools| {
+                                        this.tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(
+                                                tools.clone(),
+                                            )
+                                            .build(window, cx)
+                                        })
+                                    })
+                            },
+                        )),
                         cx,
                     ))
-                    .child(row("Skills", skills_line(&facts.skills), cx)),
+                    .child(row(narrow, "Skills", skills_line(&facts.skills), cx)),
             };
             body = body.child(row(
+                narrow,
                 "Indexes",
                 indexes.unwrap_or_else(|| "None".to_string()),
                 cx,
@@ -653,8 +986,9 @@ impl Render for SessionInfo {
         }
         // Where it's kept.
         body = body
-            .child(heading("Kept as", cx))
+            .child(heading("Storage", cx))
             .child(row(
+                narrow,
                 "Session ID",
                 h_flex()
                     .gap_1()
@@ -670,20 +1004,26 @@ impl Render for SessionInfo {
                     .child(
                         Clipboard::new("copy-session-id")
                             .value(id)
-                            .tooltip("Copy the session ID"),
+                            .tooltip("Copy the session ID")
+                            .accessibility_label("Copy the session ID"),
                     ),
                 cx,
             ))
             .when_some(dir, |this, dir| {
-                this.child(row("Data folder", path_value("reveal-data", &dir, cx), cx))
+                this.child(row(
+                    narrow,
+                    "Data folder",
+                    path_value("reveal-data", &dir, cx),
+                    cx,
+                ))
             });
 
         // As tall as the window allows, scrolling past that.
-        let tallest = window.viewport_size().height * 0.8;
+        let tallest = viewport.height * 0.8;
         v_flex()
             .id("session-info")
             .test_support()
-            .w(rems(28.))
+            .w(width)
             .max_h(tallest)
             .overflow_y_scroll()
             .child(
@@ -698,31 +1038,34 @@ impl Render for SessionInfo {
     }
 }
 
-/// Which toggle a click changed: the first whose state differs from
-/// `before`.
+/// Which toggle a click chose: the first checked now that wasn't before. A
+/// click on the one chosen already chooses nothing.
 fn clicked<const N: usize>(after: &[bool], before: [bool; N]) -> Option<usize> {
-    (0..N).find(|ix| after.get(*ix).copied().unwrap_or(false) != before[*ix])
+    (0..N).find(|ix| after.get(*ix).copied().unwrap_or(false) && !before[*ix])
 }
 
-/// The MCP servers, a line each: "files — 4 tools", "web — didn't start:
-/// …".
-pub fn mcp_lines(mcp: &McpFacts) -> Vec<String> {
-    let mut lines: Vec<String> = mcp
+/// The MCP servers, a line each ("files — 4 tools", "web — didn't start:
+/// …"), with the names of the server's tools for its tooltip.
+pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
+    let mut lines: Vec<(String, Option<String>)> = mcp
         .servers
         .iter()
         .map(|server| match &server.tools {
-            Ok(tools) => format!(
-                "{} — {} tool{}",
-                server.name,
-                tools.len(),
-                if tools.len() == 1 { "" } else { "s" }
+            Ok(tools) => (
+                format!(
+                    "{} — {} tool{}",
+                    server.name,
+                    tools.len(),
+                    if tools.len() == 1 { "" } else { "s" }
+                ),
+                (!tools.is_empty()).then(|| tools.join(", ")),
             ),
-            Err(why) => format!("{} — didn’t start: {why}", server.name),
+            Err(why) => (format!("{} — didn’t start: {why}", server.name), None),
         })
         .collect();
-    lines.extend(mcp.notes.iter().cloned());
+    lines.extend(mcp.notes.iter().map(|note| (note.clone(), None)));
     if lines.is_empty() {
-        lines.push("None".to_string());
+        lines.push(("None".to_string(), None));
     }
     lines
 }
@@ -772,21 +1115,34 @@ mod tests {
         assert_eq!(background_value(600), "10m");
         assert_eq!(background_value(3_600), "1h");
         assert_eq!(background_value(90), "90s");
+        // Sizes arko capped to what the model leaves room for show whole.
+        assert_eq!(handover_value(950_500), "950,500");
+        assert_eq!(handover_value(1_234_567), "1,234,567");
+        let command = |field, text: &str, current| field_command(field, text, current);
         assert_eq!(
-            field_command(Field::HandoverMain, " 300k ").as_deref(),
-            Some("/handover-at main 300k")
+            command(Field::HandoverMain, " 300k ", 950_000),
+            Ok(Some("/handover-at main 300k".into()))
         );
         assert_eq!(
-            field_command(Field::HandoverWorkers, "200k").as_deref(),
-            Some("/handover-at workers 200k")
+            command(Field::HandoverWorkers, "1.2M", 200_000),
+            Ok(Some("/handover-at workers 1200k".into()))
         );
         assert_eq!(
-            field_command(Field::BackgroundAfter, "off").as_deref(),
-            Some("/background-after off")
+            command(Field::BackgroundAfter, "off", 600),
+            Ok(Some("/background-after off".into()))
         );
-        assert_eq!(field_command(Field::BackgroundAfter, "  "), None);
+        assert_eq!(command(Field::BackgroundAfter, "  ", 600), Ok(None));
+        // What is set already sends nothing, however it's written.
+        assert_eq!(command(Field::HandoverMain, "950,500", 950_500), Ok(None));
+        assert_eq!(command(Field::BackgroundAfter, "600s", 600), Ok(None));
+        // What the session would refuse says why at once.
+        assert!(command(Field::HandoverMain, "300", 950_000).is_err());
+        assert!(command(Field::HandoverMain, "1.2345k", 950_000).is_err());
+        assert!(command(Field::BackgroundAfter, "10 minutes", 600).is_err());
+        assert!(command(Field::BackgroundAfter, "2h", 600).is_err());
         for command in [
             "/handover-at main 300k",
+            "/handover-at main 950,500",
             "/background-after off",
             "/outside on",
             "/text-replies off",
@@ -802,10 +1158,8 @@ mod tests {
     #[test]
     fn a_click_in_a_group_is_the_toggle_that_changed() {
         assert_eq!(clicked(&[true, true, false], [false, true, false]), Some(0));
-        assert_eq!(
-            clicked(&[false, false, false], [false, true, false]),
-            Some(1)
-        );
+        // The chosen one clicked again: nothing changes.
+        assert_eq!(clicked(&[false, false, false], [false, true, false]), None);
         assert_eq!(clicked(&[false, true, false], [false, true, false]), None);
     }
 
@@ -830,9 +1184,12 @@ mod tests {
         };
         assert_eq!(
             mcp_lines(&mcp),
-            ["files — 2 tools", "web — didn’t start: no such program"]
+            [
+                ("files — 2 tools".into(), Some("read, write".into())),
+                ("web — didn’t start: no such program".into(), None)
+            ]
         );
-        assert_eq!(mcp_lines(&McpFacts::default()), ["None"]);
+        assert_eq!(mcp_lines(&McpFacts::default()), [("None".into(), None)]);
         let skills = SkillsFacts {
             skills: vec![SkillFacts {
                 name: "docs-style".into(),
@@ -909,6 +1266,39 @@ mod view_tests {
         assert!(shows(window, cx, "session-info"));
     }
 
+    /// At the narrowest window, the info stays inside it, each label above
+    /// its value.
+    #[gpui_kit::test]
+    fn the_info_fits_a_narrow_window(cx: &mut TestAppContext) {
+        start(cx);
+        let (window, workspace) = open(cx, 400.);
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        let title_bar = cx.read(|cx| workspace.read(cx).title_bar().clone());
+        cx.update_window(window, |_, window, cx| {
+            title_bar.update(cx, |bar, cx| {
+                bar.set_live_session(Some(session.clone()), window, cx);
+                bar.toggle_info(cx);
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let (bounds, viewport) = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                (
+                    window.try_find("session-info").map(|found| found.bounds()),
+                    window.viewport_size(),
+                )
+            })
+            .unwrap();
+        let bounds = bounds.expect("the info shows");
+        assert!(
+            bounds.origin.x >= gpui_kit::px(0.)
+                && bounds.origin.x + bounds.size.width <= viewport.width,
+            "{bounds:?} in {viewport:?}"
+        );
+    }
+
     /// The command lines the session was sent.
     fn sent(session: &Entity<LiveSession>, cx: &mut TestAppContext) -> Vec<String> {
         cx.read(|cx| {
@@ -922,6 +1312,71 @@ mod view_tests {
                 })
                 .collect()
         })
+    }
+
+    /// A switch shows a click at once, before the session's status says
+    /// so, and for a while after if it never does. A click on the segment
+    /// chosen already sends nothing.
+    #[gpui_kit::test]
+    fn a_click_shows_at_once(cx: &mut TestAppContext) {
+        start(cx);
+        let (window, workspace) = open(cx, 1300.);
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        let reading = Reading {
+            models: Models {
+                has_workers: true,
+                ..Models::default()
+            },
+            ..Reading::default()
+        };
+        session.update(cx, |session, cx| {
+            session.set_status(reading, Activity::default(), cx)
+        });
+        let title_bar = cx.read(|cx| workspace.read(cx).title_bar().clone());
+        cx.update_window(window, |_, window, cx| {
+            title_bar.update(cx, |bar, cx| {
+                bar.set_live_session(Some(session.clone()), window, cx);
+                bar.toggle_info(cx);
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let checked = |cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .try_find("outside-access")
+                    .and_then(|found| found.checked())
+            })
+            .unwrap()
+        };
+        assert_eq!(checked(cx), Some(false));
+        // A screen reader names the switch as its row does.
+        let label = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .try_find("outside-access")
+                    .and_then(|found| found.label().map(str::to_string))
+            })
+            .unwrap();
+        assert_eq!(label.as_deref(), Some("Outside access"));
+        act(cx, window, |window, cx| window.click("outside-access", cx));
+        assert_eq!(checked(cx), Some(true));
+        // Clicked again before the status came: off again.
+        act(cx, window, |window, cx| window.click("outside-access", cx));
+        assert_eq!(checked(cx), Some(false));
+        act(cx, window, |window, cx| window.click("outside-access", cx));
+        // One, as it is.
+        act(cx, window, |window, cx| window.click("one", cx));
+        assert_eq!(
+            sent(&session, cx),
+            ["/outside on", "/outside off", "/outside on"]
+        );
+        // The session never said so: its status shows again.
+        cx.executor().advance_clock(super::HOLD);
+        cx.run_until_parked();
+        assert_eq!(checked(cx), Some(false));
     }
 
     /// Live settings change through the terminal's commands. Those fixed
@@ -979,5 +1434,25 @@ mod view_tests {
             sent(&session, cx),
             ["/outside on", "/handover-at main 300k"]
         );
+        // Enter on the size set already sends nothing. A size the session
+        // would refuse says why under the field, and sends nothing either.
+        for typed in ["950k", "300"] {
+            act(cx, window, |window, cx| {
+                main.update(cx, |input, cx| {
+                    input.set_value(typed, window, cx);
+                    input.focus(window, cx);
+                })
+            });
+            act(cx, window, |window, cx| window.press("enter", cx));
+        }
+        assert_eq!(
+            sent(&session, cx),
+            ["/outside on", "/handover-at main 300k"]
+        );
+        assert!(
+            cx.read(|cx| info.read(cx).error(Field::HandoverMain).is_some()),
+            "no reason under the field"
+        );
+        assert!(shows(window, cx, "session-info"), "Enter closed the info");
     }
 }

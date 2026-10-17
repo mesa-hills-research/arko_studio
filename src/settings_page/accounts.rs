@@ -65,6 +65,8 @@ pub fn account_for(way: &str) -> Option<&'static str> {
 pub struct AccountsPage {
     accounts: Option<Accounts>,
     models: Option<ModelChoices>,
+    /// The models' labels in the model lists, by name.
+    model_labels: Vec<(SharedString, SharedString)>,
     /// The last session's main model: what "Last used" stands for.
     last_model: Option<String>,
     /// Claude Code is being checked again.
@@ -83,6 +85,7 @@ impl AccountsPage {
         let mut this = Self {
             accounts: None,
             models: None,
+            model_labels: Vec::new(),
             last_model: None,
             checking: false,
             home: cx.global::<HomeFolder>().0.clone(),
@@ -126,8 +129,15 @@ impl AccountsPage {
     }
 
     /// The row's controls of `account`, focusable, and marked when the page
-    /// points at it.
-    fn row_field(&self, account: &'static str, controls: AnyElement, cx: &App) -> AnyElement {
+    /// points at it. With the keyboard on the row, Enter or Space does
+    /// `primary`, what its main button does (Add…, Choose file…).
+    fn row_field(
+        &self,
+        account: &'static str,
+        controls: AnyElement,
+        primary: impl Fn(&mut Window, &mut App) + 'static,
+        cx: &App,
+    ) -> AnyElement {
         let focus = self.focus_of(account);
         let marked = self.target == Some(account);
         let theme = cx.theme();
@@ -135,7 +145,20 @@ impl AccountsPage {
         h_flex()
             .id(SharedString::from(format!("account-{account}")))
             .test_support()
-            .when_some(focus, |this, focus| this.track_focus(&focus))
+            .when_some(focus, |this, focus| {
+                this.track_focus(&focus)
+                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                        let keystroke = &event.keystroke;
+                        // On the row itself: a button in it takes its own keys.
+                        if focus.is_focused(window)
+                            && !keystroke.modifiers.modified()
+                            && matches!(keystroke.key.as_str(), "enter" | "space")
+                        {
+                            cx.stop_propagation();
+                            primary(window, cx);
+                        }
+                    })
+            })
             .rounded(radius)
             .p_0p5()
             .when(marked, |this| this.border_1().border_color(ring))
@@ -148,13 +171,19 @@ impl AccountsPage {
         let backend = cx.global::<SharedBackend>().clone();
         let reading = cx.background_spawn(async move {
             let last = last_model(backend.data_root());
-            (backend.accounts(), backend.models(None), last)
+            let models = backend.models(None);
+            let labels = model_labels(&models);
+            (backend.accounts(), models, labels, last)
         });
         self._load = Some(cx.spawn(async move |this, cx| {
-            let (accounts, models, last) = reading.await;
+            let (accounts, models, labels, last) = reading.await;
             this.update(cx, |this, cx| {
+                // A key, a login or Claude Code changed (here, or in the
+                // terminal app): the composers list their models again.
+                crate::backend::accounts_read(&accounts, cx);
                 this.accounts = Some(accounts);
                 this.models = Some(models);
+                this.model_labels = labels;
                 this.last_model = last;
                 this.checking = false;
                 cx.notify();
@@ -200,8 +229,15 @@ impl AccountsPage {
         };
         window.open_dialog(cx, move |dialog, _, _| {
             let form = form.clone();
+            let saving = form.clone();
             dialog
                 .w(px(460.))
+                // Enter saves, as Save does: the dialog closes once the key
+                // is saved, and stays open with why when it isn't.
+                .on_ok(move |_, window, cx| {
+                    saving.update(cx, |form, cx| form.save(window, cx));
+                    false
+                })
                 .title(
                     h_flex()
                         .gap_2()
@@ -471,16 +507,7 @@ impl AccountsPage {
         chosen: Option<&str>,
     ) -> Vec<(SharedString, SharedString)> {
         let mut options = vec![(SharedString::default(), SharedString::from(first))];
-        for group in self.models.iter().flat_map(|models| &models.groups) {
-            let way = group.name.split(',').next().unwrap_or(&group.name).trim();
-            for model in &group.models {
-                let mut label = format!("{} · {way}", arko::models::display_name(&model.name));
-                if group.needs.is_some() {
-                    label.push_str(" (can’t be used yet)");
-                }
-                options.push((model.name.clone().into(), label.into()));
-            }
-        }
+        options.extend(self.model_labels.iter().cloned());
         if let Some(chosen) = chosen
             && !options.iter().any(|(value, _)| value == chosen)
         {
@@ -500,7 +527,7 @@ impl AccountsPage {
             .find(|group| group.models.iter().any(|model| model.name == chosen))?;
         let needs = group.needs.as_ref()?;
         Some(format!(
-            "{} needs {needs}. Sessions ask for it as they start, or add it below.",
+            "{} needs {needs}. Sessions ask for it as they start, or add it above.",
             arko::models::display_name(chosen)
         ))
     }
@@ -524,7 +551,7 @@ impl AccountsPage {
         SettingGroup::new()
             .title("API keys")
             .description(
-                "Arko looks in the environment, then a .env file in the session’s folder or a parent, one beside the program, and Arko’s folder. Keys added here are saved in Arko’s folder, readable only by you.",
+                "Arko looks in the environment, then a .env file in the session’s folder or a parent, one beside the program, and Arko’s folder. Keys added here are saved in Arko’s folder, readable only by you. A key in a project’s .env reaches only that project’s sessions, so it isn’t shown here.",
             )
             .items(rows)
     }
@@ -553,6 +580,10 @@ impl AccountsPage {
             key.provider,
             SettingField::render(move |_, _, cx| {
                 let (add, remove) = (add.clone(), remove.clone());
+                let asking = add.clone();
+                let primary = move |window: &mut Window, cx: &mut App| {
+                    AccountsPage::ask_for_key(&asking, provider, window, cx)
+                };
                 let controls = h_flex()
                     .gap_1()
                     .when(removable, |this| {
@@ -576,7 +607,7 @@ impl AccountsPage {
                             }),
                     )
                     .into_any_element();
-                page.read(cx).row_field(provider, controls, cx)
+                page.read(cx).row_field(provider, controls, primary, cx)
             }),
         )
         .description(description)
@@ -601,12 +632,12 @@ impl AccountsPage {
                 };
                 match &login.state {
                     LoginState::Ready => format!(
-                        "Signed in: {path} ({whose}). OpenAI models run on your ChatGPT plan."
+                        "Signed in with {path} ({whose}). OpenAI models run on your ChatGPT plan."
                     ),
                     LoginState::Missing => format!(
-                        "No login at {path}. Sign in with `codex login`, or choose the auth.json Codex keeps it in."
+                        "No login at {path}. Sign in with “codex login”, or choose the auth.json Codex keeps it in."
                     ),
-                    LoginState::Invalid(why) => format!("{path} ({whose}) can’t be used: {why}."),
+                    LoginState::Invalid(why) => format!("{path} ({whose}) can’t be used ({why})."),
                 }
             }
         };
@@ -622,6 +653,7 @@ impl AccountsPage {
                 "ChatGPT login",
                 SettingField::render(move |_, _, cx| {
                     let choose = choose.clone();
+                    let choosing = choose.clone();
                     let button = Button::new("choose-login")
                         .outline()
                         .small()
@@ -630,7 +662,12 @@ impl AccountsPage {
                             AccountsPage::choose_login(&choose, window, cx)
                         })
                         .into_any_element();
-                    login_page.read(cx).row_field(CHATGPT, button, cx)
+                    login_page.read(cx).row_field(
+                        CHATGPT,
+                        button,
+                        move |window, cx| AccountsPage::choose_login(&choosing, window, cx),
+                        cx,
+                    )
                 }),
             )
             .description(login)
@@ -639,6 +676,7 @@ impl AccountsPage {
                 "Claude Code",
                 SettingField::render(move |_, _, cx| {
                     let check = check.clone();
+                    let checking_again = check.clone();
                     let button = Button::new("check-claude-code")
                         .outline()
                         .small()
@@ -648,13 +686,36 @@ impl AccountsPage {
                             check.update(cx, |page, cx| page.check_again(cx));
                         })
                         .into_any_element();
-                    claude_page.read(cx).row_field(CLAUDE_CODE, button, cx)
+                    claude_page.read(cx).row_field(
+                        CLAUDE_CODE,
+                        button,
+                        move |_, cx| checking_again.update(cx, |page, cx| page.check_again(cx)),
+                        cx,
+                    )
                 }),
             )
             .description(claude)
             .keywords(["cc", "claude plan", "install", "sign in", "anthropic"]),
         ])
     }
+}
+
+/// Each model of `models` as the model lists show it, by its name: "Opus
+/// 5.5 · Anthropic API", "(can't be used yet)" when its group needs
+/// something. Made once per reading, since naming a model takes a while.
+fn model_labels(models: &ModelChoices) -> Vec<(SharedString, SharedString)> {
+    let mut labels = Vec::new();
+    for group in &models.groups {
+        let way = group.name.split(',').next().unwrap_or(&group.name).trim();
+        for model in &group.models {
+            let mut label = format!("{} · {way}", arko::models::display_name(&model.name));
+            if group.needs.is_some() {
+                label.push_str(" (can’t be used yet)");
+            }
+            labels.push((model.name.clone().into(), label.into()));
+        }
+    }
+    labels
 }
 
 /// What a key's row is found by.
@@ -703,9 +764,15 @@ fn effort_options(
 /// and sign in.
 pub fn claude_code_words(status: &ClaudeCodeStatus, home: Option<&std::path::Path>) -> String {
     let Some(path) = &status.path else {
-        return "Not installed. Install it with `npm install -g @anthropic-ai/claude-code` or Anthropic’s installer, sign in with `claude auth login`, then check again. Arko reaches Claude models on your Claude plan through it.".into();
+        return "Not installed. Install it with “npm install -g @anthropic-ai/claude-code” or Anthropic’s installer, sign in with “claude auth login”, then check again. Arko reaches Claude models on your Claude plan through it.".into();
     };
-    let found = match &status.version {
+    // `claude --version` says "2.1.42 (Claude Code)": the number is enough.
+    let version = status
+        .version
+        .as_deref()
+        .map(|version| version.trim().trim_end_matches("(Claude Code)").trim())
+        .filter(|version| !version.is_empty());
+    let found = match version {
         Some(version) => format!("{} ({version})", tilde(path, home)),
         None => tilde(path, home),
     };
@@ -713,7 +780,7 @@ pub fn claude_code_words(status: &ClaudeCodeStatus, home: Option<&std::path::Pat
         Ok(ready) => {
             let how = match (&ready.method, &ready.plan) {
                 (Some(method), Some(plan)) if method == "claude.ai" => {
-                    format!("signed in to your Claude {plan} plan")
+                    format!("signed in to your Claude {} plan", capitalized(plan))
                 }
                 (Some(method), _) => format!("signed in with {method}"),
                 (None, _) => "signed in".to_string(),
@@ -726,12 +793,21 @@ pub fn claude_code_words(status: &ClaudeCodeStatus, home: Option<&std::path::Pat
             text
         }
         Err(Problem::SignedOut(_)) => format!(
-            "{found}, not signed in. Run `claude auth login` in a terminal, then check again."
+            "{found}, not signed in. Run “claude auth login” in a terminal, then check again."
         ),
         Err(Problem::Missing) => {
             format!("{found} doesn’t run. Install it again, then check again.")
         }
     }
+}
+
+/// `word` with a capital first letter: a plan's name ("max" is "Max").
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 fn remove_key(
@@ -768,10 +844,7 @@ pub fn use_login(this: &Entity<AccountsPage>, path: PathBuf, window: &mut Window
             let chosen = choosing.await;
             cx.update(|window, cx| {
                 match chosen {
-                    Ok(()) => window.push_notification(
-                        "Arko uses this ChatGPT login from now on, in new sessions and the terminal app.",
-                        cx,
-                    ),
+                    Ok(said) => window.push_notification(said, cx),
                     Err(why) => window.push_notification(Notification::error(why), cx),
                 }
                 this.update(cx, |page, cx| page.refresh(cx));
@@ -814,6 +887,10 @@ impl KeyForm {
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Saving already (Enter pressed again).
+        if self.busy {
+            return;
+        }
         let value = self.key.read(cx).value().trim().to_string();
         if value.is_empty() {
             self.error = Some("Paste the key first.".into());
@@ -849,20 +926,29 @@ impl KeyForm {
     }
 }
 
+/// What a key saved in Arko's folder does to the key in use, `state`, if
+/// there is one. A key from the environment or another `.env` file comes
+/// before Arko's folder's when Arko starts, so the new one wins only until
+/// the app quits.
+pub fn replacing_words(state: &KeyState, home: Option<&std::path::Path>) -> Option<String> {
+    match (&state.masked, &state.source) {
+        (Some(masked), Some(KeySource::Arko(_))) => {
+            Some(format!("It replaces {masked} in Arko’s folder."))
+        }
+        (Some(masked), Some(source)) => Some(format!(
+            "Arko uses it in place of {masked} until Arko Studio quits. After that, {} {} comes first again, so change it there to replace it for good.",
+            state.variable,
+            source_words(source, home)
+        )),
+        _ => None,
+    }
+}
+
 impl Render for KeyForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let replacing = replacing_words(&self.state, self.page.read(cx).home.as_deref());
         let theme = cx.theme();
         let key = self.state.key;
-        let replacing = match (&self.state.masked, &self.state.source) {
-            (Some(masked), Some(KeySource::Arko(_))) => {
-                Some(format!("It replaces {masked} in Arko’s folder."))
-            }
-            (Some(masked), Some(_)) => Some(format!(
-                "Arko uses it in place of {masked} from now on. The terminal app still reads {} first where it’s set.",
-                self.state.variable
-            )),
-            _ => None,
-        };
         v_flex()
             .id("key-form")
             .test_support()
@@ -922,7 +1008,7 @@ impl Render for KeyForm {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{claude_code_words, effort_options};
+    use super::{claude_code_words, effort_options, replacing_words};
     use crate::backend::account_words::{ClaudeCodeStatus, Problem, Ready};
     use std::path::{Path, PathBuf};
 
@@ -946,7 +1032,7 @@ mod tests {
         };
         assert_eq!(
             claude_code_words(&status(Some(path), Ok(ready)), home),
-            "~/.local/bin/claude (2.1.42 (Claude Code)), signed in to your Claude max plan."
+            "~/.local/bin/claude (2.1.42), signed in to your Claude Max plan."
         );
         let words = claude_code_words(
             &status(Some(path), Err(Problem::SignedOut(path.into()))),
@@ -954,7 +1040,7 @@ mod tests {
         );
         assert!(
             words.ends_with(
-                "not signed in. Run `claude auth login` in a terminal, then check again."
+                "not signed in. Run “claude auth login” in a terminal, then check again."
             ),
             "{words}"
         );
@@ -967,6 +1053,76 @@ mod tests {
         };
         let words = claude_code_words(&status(Some(path), Ok(api)), home);
         assert!(words.contains("may be billed per token"), "{words}");
+    }
+
+    /// A key saved in Arko's folder replaces one saved there for good, and
+    /// one from the environment or another `.env` only until the app quits.
+    #[test]
+    fn a_replaced_key_says_for_how_long() {
+        let home = Path::new("/home/ada");
+        let sample = crate::backend::Accounts::sample(home, Path::new("/home/ada/.local/arko"));
+        let words = |id: &str| replacing_words(sample.key(id).unwrap(), Some(home));
+        assert_eq!(
+            words("anthropic").as_deref(),
+            Some("It replaces sk-ant-…3f9a in Arko’s folder.")
+        );
+        assert_eq!(
+            words("openai").as_deref(),
+            Some(
+                "Arko uses it in place of sk-…b20c until Arko Studio quits. After that, OPENAI_API_KEY from the environment comes first again, so change it there to replace it for good."
+            )
+        );
+        assert!(
+            words("gemini")
+                .unwrap()
+                .contains("GEMINI_API_KEY from /opt/arko-studio/.env comes first again")
+        );
+        assert_eq!(words("voyage"), None);
+    }
+
+    /// Each model is named once per reading, with the way it's reached.
+    #[test]
+    fn models_are_labelled_with_their_way_and_what_they_need() {
+        use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
+        let models = ModelChoices {
+            groups: vec![
+                ModelGroup {
+                    name: "Anthropic API, billed per token".into(),
+                    needs: None,
+                    models: vec![ModelChoice {
+                        name: "claude-opus-5-5".into(),
+                        alias: "opus".into(),
+                    }],
+                },
+                ModelGroup {
+                    name: "OpenAI, with your API key".into(),
+                    needs: Some("an OpenAI key".into()),
+                    models: vec![ModelChoice {
+                        name: "gpt-6.1-sol".into(),
+                        alias: "sol".into(),
+                    }],
+                },
+            ],
+            default: None,
+            note: None,
+        };
+        let labels: Vec<(String, String)> = super::model_labels(&models)
+            .into_iter()
+            .map(|(name, label)| (name.to_string(), label.to_string()))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                (
+                    "claude-opus-5-5".to_string(),
+                    "Opus 5.5 · Anthropic API".to_string()
+                ),
+                (
+                    "gpt-6.1-sol".to_string(),
+                    "GPT-6.1 Sol · OpenAI (can’t be used yet)".to_string()
+                ),
+            ]
+        );
     }
 
     #[test]

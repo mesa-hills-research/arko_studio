@@ -169,6 +169,27 @@ pub fn wait_until(
     }
 }
 
+thread_local! {
+    /// How many times each of the window's views drew, by name.
+    static RENDERS: std::cell::RefCell<std::collections::BTreeMap<&'static str, usize>> =
+        std::cell::RefCell::default();
+}
+
+/// Counts a draw of the view `name` (called from the views' `render`).
+pub fn rendered(name: &'static str) {
+    RENDERS.with(|renders| *renders.borrow_mut().entry(name).or_default() += 1);
+}
+
+/// The draws counted since [`count_renders`], by view.
+pub fn renders() -> std::collections::BTreeMap<&'static str, usize> {
+    RENDERS.with(|renders| renders.borrow().clone())
+}
+
+/// Starts counting draws again from nothing.
+pub fn count_renders() {
+    RENDERS.with(|renders| renders.borrow_mut().clear());
+}
+
 /// A one-pixel PNG.
 pub const PNG: &[u8] = &[
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,

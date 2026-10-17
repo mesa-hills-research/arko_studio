@@ -90,6 +90,8 @@ pub struct Startup {
     backend: Arc<dyn Backend>,
     /// The user's home folder.
     home: Option<PathBuf>,
+    /// Where release builds write their log.
+    logs: Option<PathBuf>,
     /// The user's themes, watched while the app runs.
     themes_folder: Option<ThemesFolder>,
     drafts: BTreeMap<String, String>,
@@ -109,7 +111,7 @@ impl Startup {
     /// thread, which [`init`] waits for.
     pub fn load() -> Self {
         let arko = paths::arko_folder().unwrap_or_else(|| PathBuf::from("arko"));
-        let prefs = Prefs::load(&paths::prefs_file(&arko));
+        let prefs = PrefsStore::load(&paths::prefs_file(&arko));
         let themes = std::thread::Builder::new()
             .name("themes".into())
             .spawn(appearance::parse_bundled)
@@ -117,12 +119,13 @@ impl Startup {
             .unwrap_or_else(|_| Themes::Ready(appearance::parse_bundled()));
         let added_fonts = fonts::added(&paths::fonts_folder(&arko));
         Self {
-            prefs: PrefsStore::new(prefs, Some(paths::prefs_file(&arko))),
+            prefs,
             themes,
             bundled_fonts: fonts::bundled(),
             added_fonts,
             backend: Arc::new(ArkoBackend::new(&arko)),
             home: session_view::home_from_env(),
+            logs: paths::logs_folder(),
             themes_folder: Some(ThemesFolder::Watch(paths::themes_folder(&arko))),
             drafts: drafts::load(&drafts::file(&arko)),
             arko: Some(arko),
@@ -133,8 +136,8 @@ impl Startup {
     /// kept in memory, the bundled themes and no fonts of its own, for
     /// `/home/ada`: for tests, which then read the same on every machine.
     pub fn for_tests(backend: Arc<dyn Backend>) -> Self {
-        // Animations play in real time. With motion off they rest on their
-        // first frame, so a test clicks where the last frame drew a dialog.
+        // Animations play in real time. With motion off they go straight to
+        // their end, so a test clicks where the last frame drew a dialog.
         let mut prefs = Prefs::default();
         prefs.appearance.motion = prefs::Motion::Off;
         Self {
@@ -144,6 +147,7 @@ impl Startup {
             added_fonts: Vec::new(),
             backend,
             home: Some(PathBuf::from("/home/ada")),
+            logs: Some(PathBuf::from("/home/ada/.local/state").join(APP_ID)),
             themes_folder: None,
             drafts: BTreeMap::new(),
             arko: None,
@@ -188,6 +192,7 @@ pub fn init(startup: Startup, cx: &mut App) {
     cx.set_global(SharedBackend(startup.backend));
     backend::follow_prefs(cx);
     cx.set_global(session_view::HomeFolder(startup.home));
+    cx.set_global(paths::LogsFolder(startup.logs));
     live::init(cx);
     writing::init(startup.arko.as_deref(), cx);
     history::init(startup.arko.clone(), cx);

@@ -59,7 +59,7 @@ impl AppTitleBar {
         cx: &mut Context<Self>,
     ) {
         if session.is_none() {
-            self.info_open = false;
+            self.set_info_open(false, cx);
         }
         self.info
             .update(cx, |info, cx| info.set_session(session, window, cx));
@@ -73,10 +73,8 @@ impl AppTitleBar {
     }
 
     fn set_info_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        if open && !self.info_open {
-            self.info.update(cx, |info, cx| info.load(cx));
-        }
         if self.info_open != open {
+            self.info.update(cx, |info, cx| info.set_open(open, cx));
             self.info_open = open;
             cx.notify();
         }
@@ -174,6 +172,8 @@ impl AppTitleBar {
 
 impl Render for AppTitleBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::testing::rendered("AppTitleBar");
         let mac = cfg!(target_os = "macos");
         let title = self.render_title(cx);
         TitleBar::new()

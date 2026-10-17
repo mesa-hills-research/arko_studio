@@ -377,6 +377,8 @@ dependencies = [
  "gpui-kit",
  "gpui-pre-screenshot",
  "ignore",
+ "image",
+ "qrcodegen",
  "serde",
  "serde_json",
  "tempfile",

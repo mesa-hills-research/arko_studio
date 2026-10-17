@@ -2,10 +2,11 @@
 //! the prompt cache keeps the conversation, the status bar counts down to
 //! the moment it lapses ("cache 3:12"), warns in the last minute, then
 //! says "cache expired" with what the next message re-caches. Hidden while
-//! a turn runs (each request refreshes the cache) and where the lifetime
-//! isn't known.
+//! a turn's requests run (each one refreshes the cache) and where the
+//! lifetime isn't known. A question waiting for the user stops the requests,
+//! and the timer shows then.
 
-use arko::remote::CacheStatus;
+use arko::remote::{Activity, CacheStatus};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::*;
@@ -26,11 +27,18 @@ pub enum CacheTimer {
 /// The last minute: the timer warns.
 pub const CACHE_WARNING_MS: i64 = 60_000;
 
+/// Whether the session's requests keep its prompt cache warm now: a turn
+/// runs and doesn't wait for the user's answer to a question.
+pub fn requests_run(activity: &Activity) -> bool {
+    activity.working && activity.question.is_none()
+}
+
 impl CacheTimer {
-    /// The timer for `cache`, hidden (`None`) while a turn runs (each request
-    /// refreshes the cache) and where its lifetime isn't known.
-    pub fn of(cache: &CacheStatus, working: bool, now: i64) -> Option<Self> {
-        if working {
+    /// The timer for `cache`, hidden (`None`) while requests run (each one
+    /// refreshes the cache, see [`requests_run`]) and where its lifetime
+    /// isn't known.
+    pub fn of(cache: &CacheStatus, requests_run: bool, now: i64) -> Option<Self> {
+        if requests_run {
             return None;
         }
         let expires = expires_at(cache)?;
@@ -122,10 +130,39 @@ pub fn refresh_choices(cache: &CacheStatus) -> String {
     }
 }
 
+/// What letting the cache lapse costs: "Letting it expire re-caches ≈
+/// $0.90". On a plan, in tokens.
+pub fn expiry_cost(cache: &CacheStatus) -> Option<String> {
+    match (cache.miss_cost, cache.tokens, cache.on_plan) {
+        (Some(miss), _, _) => Some(format!("Letting it expire re-caches ≈ {}", dollars(miss))),
+        (None, Some(tokens), Some(plan)) => Some(format!(
+            "Letting it expire writes {} tokens again, on {plan}",
+            figures::tokens(tokens)
+        )),
+        (None, Some(tokens), None) => Some(format!(
+            "Letting it expire re-caches about {} tokens",
+            figures::tokens(tokens)
+        )),
+        (None, None, _) => None,
+    }
+}
+
+/// What the reminder says while a question waits: answering keeps the
+/// cache warm, and what letting it lapse costs.
+pub fn answer_choices(cache: &CacheStatus) -> String {
+    let mut text = "Answering before then keeps it warm".to_string();
+    if let Some(expiry) = expiry_cost(cache) {
+        text.push_str(" · ");
+        text.push_str(&expiry);
+    }
+    text
+}
+
 /// The timer, with what it means in its tooltip.
 pub fn cache_timer(timer: CacheTimer, cache: &CacheStatus, now: i64, cx: &App) -> AnyElement {
     let theme = cx.theme();
-    let tooltip = cache_tooltip(timer, cache, now);
+    // Written when it shows, not with every second's draw.
+    let cache = cache.clone();
     h_flex()
         .id("status-cache")
         .test_support()
@@ -138,7 +175,9 @@ pub fn cache_timer(timer: CacheTimer, cache: &CacheStatus, now: i64, cx: &App) -
         })
         .child(Icon::new(gpui_kit::assets::IconName::Timer).xsmall())
         .child(timer.label())
-        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .tooltip(move |window, cx| {
+            Tooltip::new(cache_tooltip(timer, &cache, now)).build(window, cx)
+        })
         .into_any_element()
 }
 
@@ -146,8 +185,11 @@ pub fn cache_timer(timer: CacheTimer, cache: &CacheStatus, now: i64, cx: &App) -
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{CacheTimer, cache_tooltip, recache, refresh_choices};
-    use arko::remote::CacheStatus;
+    use super::{
+        CacheTimer, answer_choices, cache_tooltip, expiry_cost, recache, refresh_choices,
+        requests_run,
+    };
+    use arko::remote::{Activity, CacheStatus, Question};
     use std::time::Duration;
 
     fn cache(lifetime_minutes: u64, refreshed_at: i64) -> CacheStatus {
@@ -188,6 +230,28 @@ mod tests {
         assert_eq!(CacheTimer::of(&unknown, false, 1_000), None);
     }
 
+    /// A question waiting for the user's answer stops the turn's requests:
+    /// the cache counts down then.
+    #[test]
+    fn requests_stop_while_a_question_waits() {
+        let mut activity = Activity {
+            working: true,
+            ..Activity::default()
+        };
+        assert!(requests_run(&activity));
+        activity.question = Some(Question {
+            id: 1,
+            text: "Tabs or spaces?".into(),
+        });
+        assert!(!requests_run(&activity));
+        assert!(!requests_run(&Activity::default()));
+        let cache = cache(5, 0);
+        assert_eq!(
+            answer_choices(&cache),
+            "Answering before then keeps it warm · Letting it expire re-caches ≈ $0.90"
+        );
+    }
+
     #[test]
     fn the_cache_says_what_each_choice_costs() {
         let mut cache = cache(5, 0);
@@ -209,6 +273,10 @@ mod tests {
         assert_eq!(
             refresh_choices(&cache),
             "Refresh reads 180k cached tokens · Letting it expire writes them again, on your Claude plan"
+        );
+        assert_eq!(
+            expiry_cost(&cache).as_deref(),
+            Some("Letting it expire writes 180k tokens again, on your Claude plan")
         );
     }
 }

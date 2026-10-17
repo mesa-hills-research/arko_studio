@@ -1,13 +1,21 @@
-//! Settings typed as text: a short field checked as it's typed, saved when
-//! it reads, else saying why under it while the setting stays as it was.
+//! Settings typed as text: a short field checked and saved once the typing
+//! rests, or on Enter or when it loses focus. Saved when it reads, else
+//! saying why under it while the setting stays as it was.
+
+use std::time::Duration;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::setting::{SettingField, SettingItem};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, v_flex};
+use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::prefs::{self, Prefs};
+
+/// How long a field waits after the last keystroke before it checks and
+/// saves what's typed: "0." on the way to 0.0.0.0 isn't an error yet, and
+/// 9, 90 and 900 aren't saved on the way to 9000.
+pub const TYPING_REST: Duration = Duration::from_millis(600);
 
 /// How a typed setting reads and writes its preference.
 pub struct TextKind<T> {
@@ -27,12 +35,14 @@ pub struct TextSetting<T> {
     /// from elsewhere (a reset) shows in the field.
     seen: Option<T>,
     kind: TextKind<T>,
+    /// Checks what's typed once the typing rests.
+    pending: Option<Task<()>>,
 }
 
 impl<T: Clone + PartialEq + 'static> TextSetting<T> {
     /// A field showing the preference as it is, with `placeholder` for the
-    /// default. Its owner calls [`Self::changed`] on its input's changes
-    /// ([`Self::input`]) and [`Self::follow`] on the preferences'.
+    /// default. Its owner hears its input with [`subscribe`] and calls
+    /// [`Self::follow`] on the preferences' changes.
     pub fn new(kind: TextKind<T>, placeholder: &str, window: &mut Window, cx: &mut App) -> Self {
         let value = (kind.get)(prefs::get(cx));
         let text = value.as_ref().map(kind.show).unwrap_or_default();
@@ -47,6 +57,7 @@ impl<T: Clone + PartialEq + 'static> TextSetting<T> {
             error: None,
             seen: value,
             kind,
+            pending: None,
         }
     }
 
@@ -63,9 +74,39 @@ impl<T: Clone + PartialEq + 'static> TextSetting<T> {
         self.input.read(cx).value()
     }
 
-    /// Reads what's typed: saved when it reads, else kept with why not.
-    pub fn changed(&mut self, cx: &mut App) {
+    /// What's typed changed: it's checked once the typing rests
+    /// ([`TYPING_REST`]). An error shown goes as soon as it reads. `field`
+    /// finds this setting in its page `P`.
+    fn changed<P: 'static>(&mut self, field: fn(&mut P) -> &mut Self, cx: &mut Context<P>) {
         let text = self.input.read(cx).value();
+        if self.error.is_some() && (self.kind.parse)(&text).is_ok() {
+            self.error = None;
+            cx.notify();
+        }
+        self.pending = Some(cx.spawn(async move |page, cx| {
+            cx.background_executor().timer(TYPING_REST).await;
+            page.update(cx, |page, cx| {
+                if field(page).check(cx) {
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Checks what's typed now, the typing over (Enter, the field left,
+    /// Settings closed): saved when it reads, else kept with why not.
+    /// Whether the reason shown changed.
+    pub fn commit(&mut self, cx: &mut App) -> bool {
+        if self.pending.take().is_none() {
+            return false;
+        }
+        self.check(cx)
+    }
+
+    fn check(&mut self, cx: &mut App) -> bool {
+        let text = self.input.read(cx).value();
+        let before = self.error.clone();
         match (self.kind.parse)(&text) {
             Ok(value) => {
                 self.error = None;
@@ -75,6 +116,7 @@ impl<T: Clone + PartialEq + 'static> TextSetting<T> {
             }
             Err(why) => self.error = Some(why.into()),
         }
+        self.error != before
     }
 
     /// Shows the setting as it is now, when it changed elsewhere.
@@ -86,6 +128,7 @@ impl<T: Clone + PartialEq + 'static> TextSetting<T> {
             self.error = None;
             self.input
                 .update(cx, |input, cx| input.set_value(text, window, cx));
+            self.pending = None;
         }
     }
 
@@ -106,7 +149,8 @@ impl<T: Clone + PartialEq + 'static> TextSetting<T> {
                     .test_support()
                     .when(beside, |this| this.items_end())
                     .gap_1()
-                    .child(Input::new(&input).small().w(rems(9.)))
+                    // The size of the other controls in Settings.
+                    .child(Input::new(&input).w(rems(9.)))
                     .when_some(error.clone(), |this, error| {
                         this.child(
                             div()
@@ -127,7 +171,22 @@ impl<T: Clone + PartialEq + 'static> TextSetting<T> {
     }
 }
 
-/// Whether `event` is a change of what's typed.
-pub fn is_change(event: &InputEvent) -> bool {
-    matches!(event, InputEvent::Change)
+/// Has page `P` hear what's typed in its setting `field`: checked and
+/// saved once the typing rests, at once on Enter or when the field loses
+/// focus. The page draws again only when the reason shown under the field
+/// changes, not on each keystroke.
+pub fn subscribe<P: 'static, T: Clone + PartialEq + 'static>(
+    field: fn(&mut P) -> &mut TextSetting<T>,
+    input: &Entity<InputState>,
+    cx: &mut Context<P>,
+) -> Subscription {
+    cx.subscribe(input, move |page, _, event: &InputEvent, cx| match event {
+        InputEvent::Change => field(page).changed(field, cx),
+        InputEvent::PressEnter { .. } | InputEvent::Blur => {
+            if field(page).commit(cx) {
+                cx.notify();
+            }
+        }
+        InputEvent::Focus => {}
+    })
 }

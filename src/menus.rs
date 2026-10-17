@@ -54,6 +54,7 @@ actions!(
         ShareWebPage,
         StopSharingWebPage,
         RefreshCache,
+        OpenWebPageSettings,
     ]
 );
 

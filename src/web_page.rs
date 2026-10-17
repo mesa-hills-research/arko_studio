@@ -18,9 +18,9 @@ use gpui_kit::*;
 
 use crate::live::LiveSession;
 
-/// What the page lets others do, in a sentence.
-pub const WHAT_IT_ALLOWS: &str =
-    "Anyone with one of these links can follow this session and send it messages.";
+/// What a session's web page lets others do, wherever the app offers it
+/// (the status bar's popover, Settings › Web page).
+pub const WHAT_IT_ALLOWS: &str = "Anyone with a session’s link can follow the session and act in it, sending messages and commands, answering questions and stopping turns. Each link holds the session’s key, and New key ends the old links. The page isn’t encrypted, so share it only on networks you trust.";
 
 /// The command that serves the page on `bind` (`/remote`'s argument: an
 /// address, a port or both, empty for the default).
@@ -85,37 +85,102 @@ pub fn shown_url(link: &Link) -> &str {
     link.url.split("/#").next().unwrap_or(&link.url)
 }
 
-/// The link the QR code shows: the first one another device can open, else
-/// the first.
+/// The link the QR code shows: the first one another device can open.
+/// `None` when only this computer can open the page.
 pub fn qr_link(page: &Page) -> Option<&Link> {
-    page.links
-        .iter()
-        .find(|link| !link.loopback)
-        .or_else(|| page.links.first())
+    page.links.iter().find(|link| !link.loopback)
 }
 
-/// The QR codes drawn lately, by the text they hold: a page's links change
-/// only with a new key or address.
+/// Who can open a page other devices reach.
+pub const ON_THIS_NETWORK: &str = "Devices on this network can open the page with these links.";
+
+/// What the panel says the page allows: for a page other devices reach,
+/// who can open it, then what the page lets others do.
+pub fn explanation(page: &Page) -> String {
+    if qr_link(page).is_some() {
+        format!("{ON_THIS_NETWORK} {WHAT_IT_ALLOWS}")
+    } else {
+        WHAT_IT_ALLOWS.to_string()
+    }
+}
+
+/// What the panel says when only this computer can open the page.
+pub const HOW_TO_REACH_IT: &str = "Only this computer can open these links. For a phone or another computer, share the page on your network in Settings › Web page (Tailscale’s too), or reach it through an SSH tunnel.";
+
+/// A QR code's text and the device pixels of its modules.
+type QrKey = (String, u32);
+
+/// The QR codes drawn lately, by the text they hold and the device pixels
+/// of a module: a page's links change only with a new key or address.
 #[derive(Default)]
-struct QrImages(VecDeque<(String, Option<Arc<Image>>)>);
+struct QrImages(VecDeque<(QrKey, Option<Arc<RenderImage>>)>);
 
 impl Global for QrImages {}
 
 const KEPT_QR_IMAGES: usize = 4;
 
-/// `text` as a QR code image (dark on light, whatever the theme, as readers
-/// expect), made once and kept for the next frames.
-pub fn qr_image(text: &str, cx: &mut App) -> Option<Arc<Image>> {
-    let images = cx.default_global::<QrImages>();
-    if let Some((_, image)) = images.0.iter().find(|(kept, _)| kept == text) {
-        return image.clone();
-    }
-    let image = arko::remote::qr_svg(text)
-        .map(|svg| Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes())));
-    images.0.push_front((text.to_string(), image.clone()));
-    images.0.truncate(KEPT_QR_IMAGES);
-    image
+/// The light margin around a QR code, in modules: the standard's.
+const QR_QUIET: i32 = 4;
+
+/// `text` as a QR code's pixels, `module` device pixels a module, dark on
+/// light whatever the theme (as readers expect), with its margin.
+fn qr_pixels(text: &str, module: u32) -> Option<RenderImage> {
+    use qrcodegen::{QrCode, QrCodeEcc};
+
+    let code = QrCode::encode_text(text, QrCodeEcc::Low).ok()?;
+    let modules = (code.size() + 2 * QR_QUIET) as u32;
+    let side = modules * module;
+    let image = image::RgbaImage::from_fn(side, side, |x, y| {
+        let (x, y) = (
+            (x / module) as i32 - QR_QUIET,
+            (y / module) as i32 - QR_QUIET,
+        );
+        let shade = if code.get_module(x, y) { 0 } else { 255 };
+        image::Rgba([shade, shade, shade, 255])
+    });
+    Some(RenderImage::new(vec![image::Frame::new(image)]))
 }
+
+/// How many modules `text`'s QR code is across, its margin included.
+fn qr_modules(text: &str) -> Option<u32> {
+    let code = qrcodegen::QrCode::encode_text(text, qrcodegen::QrCodeEcc::Low).ok()?;
+    Some((code.size() + 2 * QR_QUIET) as u32)
+}
+
+/// `text` as a QR code as large as fits `room` (logical pixels) with each
+/// module whole device pixels, so its edges stay sharp, and its size in
+/// logical pixels. Made once and kept for the next frames. The images let
+/// go leave the window too.
+pub fn qr_image(
+    text: &str,
+    room: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<(Arc<RenderImage>, Pixels)> {
+    let scale = window.scale_factor();
+    let modules = qr_modules(text)?;
+    let module = ((f32::from(room) * scale) as u32 / modules).max(1);
+    let shown = px((modules * module) as f32 / scale);
+    let key = (text.to_string(), module);
+    let images = cx.default_global::<QrImages>();
+    if let Some((_, image)) = images.0.iter().find(|(kept, _)| *kept == key) {
+        return image.clone().map(|image| (image, shown));
+    }
+    let image = qr_pixels(text, module).map(Arc::new);
+    images.0.push_front((key, image.clone()));
+    let gone: Vec<_> = images
+        .0
+        .drain(KEPT_QR_IMAGES.min(images.0.len())..)
+        .filter_map(|(_, image)| image)
+        .collect();
+    for image in gone {
+        window.drop_image(image).ok();
+    }
+    image.map(|image| (image, shown))
+}
+
+/// What a click on a button runs.
+type OnClick = std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 /// The page's links, each with a copy button, the best one as a QR code,
 /// what the page allows, and Stop sharing and New key. Without a session
@@ -124,6 +189,8 @@ pub fn qr_image(text: &str, cx: &mut App) -> Option<Arc<Image>> {
 pub struct WebPagePanel {
     page: Page,
     session: Option<Entity<LiveSession>>,
+    explained: bool,
+    on_settings: Option<OnClick>,
 }
 
 impl WebPagePanel {
@@ -131,7 +198,16 @@ impl WebPagePanel {
         Self {
             page: page.clone(),
             session: None,
+            explained: false,
+            on_settings: None,
         }
+    }
+
+    /// Says what the page lets others do ([`explanation`]), where nothing
+    /// around the panel does.
+    pub fn explained(mut self) -> Self {
+        self.explained = true;
+        self
     }
 
     /// The session whose page it is: its buttons act on it.
@@ -139,15 +215,28 @@ impl WebPagePanel {
         self.session = Some(session.clone());
         self
     }
+
+    /// Offers Settings › Web page, through `open`, when only this computer
+    /// can open the page.
+    pub fn on_settings(
+        mut self,
+        open: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_settings = Some(std::rc::Rc::new(open));
+        self
+    }
 }
 
 impl RenderOnce for WebPagePanel {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let qr = qr_link(&self.page).map(|link| link.url.clone());
-        let qr = qr.and_then(|url| qr_image(&url, cx));
+        let qr = qr_link(&self.page).map(|link| (link.url.clone(), link_label(link)));
+        let room = window.rem_size() * 9.;
+        let qr = qr.and_then(|(url, label)| Some((qr_image(&url, room, window, cx)?, label)));
         let theme = cx.theme();
         let mono = theme.mono_font_family.clone();
-        let _ = window;
+        // As tall as the window allows: the links and the QR code scroll,
+        // the buttons stay.
+        let tallest = window.viewport_size().height * 0.8;
         let session = self.session.clone();
         let act = move |command: fn(&Entity<LiveSession>, &mut App) -> Result<(), String>| {
             let session = session.clone();
@@ -160,27 +249,12 @@ impl RenderOnce for WebPagePanel {
                 }
             }
         };
-        v_flex()
-            .id("web-page-panel")
-            .test_support()
-            .w(rems(20.))
+        let body = v_flex()
+            .id("web-page-body")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
             .gap_3()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_medium()
-                            .child("The web page is shared"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(WHAT_IT_ALLOWS),
-                    ),
-            )
             .child(v_flex().id("web-page-links").gap_1().children(
                 self.page.links.iter().enumerate().map(|(ix, link)| {
                     h_flex()
@@ -204,11 +278,36 @@ impl RenderOnce for WebPagePanel {
                             Clipboard::new(("copy-web-page-link", ix))
                                 .value(link.url.clone())
                                 .tooltip("Copy the link")
-                                .accessibility_label("Copy the link"),
+                                .accessibility_label(format!("Copy the {} link", link_label(link))),
                         )
                 }),
             ))
-            .when_some(qr, |this, qr| {
+            .when(qr.is_none() && !self.page.links.is_empty(), |this| {
+                this.child(
+                    v_flex()
+                        .id("web-page-this-computer")
+                        .test_support()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(HOW_TO_REACH_IT),
+                        )
+                        .when_some(self.on_settings.clone(), |this, open| {
+                            this.child(
+                                h_flex().child(
+                                    Button::new("web-page-settings")
+                                        .outline()
+                                        .small()
+                                        .label("Web Page Settings")
+                                        .on_click(move |event, window, cx| open(event, window, cx)),
+                                ),
+                            )
+                        }),
+                )
+            })
+            .when_some(qr, |this, ((qr, shown), label)| {
                 this.child(
                     v_flex()
                         .items_center()
@@ -218,13 +317,16 @@ impl RenderOnce for WebPagePanel {
                                 .id("web-page-qr")
                                 .test_support()
                                 .size(rems(9.))
-                                .child(img(qr).size_full().rounded(theme.radius)),
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(img(qr).size(shown).rounded(theme.radius)),
                         )
                         .child(
                             div()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child("The first link, for a phone’s camera"),
+                                .child(format!("{label}, for a phone’s camera")),
                         ),
                 )
             })
@@ -235,9 +337,38 @@ impl RenderOnce for WebPagePanel {
                         .text_color(theme.muted_foreground)
                         .child(crate::backend::sentence(&note)),
                 )
-            })
+            });
+        v_flex()
+            .id("web-page-panel")
+            .test_support()
+            .w(rems(20.))
+            .max_h(tallest)
+            .gap_3()
+            .child(
+                v_flex()
+                    .flex_none()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_medium()
+                            .child("The web page is shared"),
+                    )
+                    .when(self.explained, |this| {
+                        this.child(
+                            div()
+                                .id("web-page-allows")
+                                .test_support()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(explanation(&self.page)),
+                        )
+                    }),
+            )
+            .child(body)
             .child(
                 h_flex()
+                    .flex_none()
                     .justify_end()
                     .gap_2()
                     .child(
@@ -270,7 +401,7 @@ mod tests {
         share_command, shown_url,
     };
     use arko::remote::{Link, LinkKind, Page};
-    use gpui_kit::ImageFormat;
+    use gpui_kit::px;
     use std::sync::Arc;
 
     fn link(url: &str, interface: Option<&str>, kind: LinkKind, loopback: bool) -> Link {
@@ -338,20 +469,64 @@ mod tests {
             note: None,
         };
         assert_eq!(qr_link(&page(vec![local.clone(), lan.clone()])), Some(&lan));
-        assert_eq!(qr_link(&page(vec![local.clone()])), Some(&local));
+        // A phone can't open this computer's own address.
+        assert_eq!(qr_link(&page(vec![local.clone()])), None);
         assert_eq!(qr_link(&page(Vec::new())), None);
+        // On the network, the panel says who can open the page and that
+        // it isn't encrypted.
+        let shared = super::explanation(&page(vec![local.clone(), lan.clone()]));
+        assert!(shared.starts_with(super::ON_THIS_NETWORK), "{shared}");
+        assert!(shared.ends_with(super::WHAT_IT_ALLOWS), "{shared}");
+        // Only this computer opens it: what it allows, the same text as
+        // Settings › Web page has.
+        assert_eq!(
+            super::explanation(&page(vec![local])),
+            super::WHAT_IT_ALLOWS
+        );
     }
 
     #[gpui_kit::test]
     fn a_qr_code_is_made_once_per_link(cx: &mut gpui_kit::TestAppContext) {
-        let first = cx.update(|cx| qr_image("http://10.0.0.2:8765/#key=abc", cx).unwrap());
-        let again = cx.update(|cx| qr_image("http://10.0.0.2:8765/#key=abc", cx).unwrap());
+        let window = cx.add_empty_window();
+        let link = "http://10.0.0.2:8765/#key=abc";
+        let made = |cx: &mut gpui_kit::VisualTestContext, text: &str| {
+            cx.update(|window, cx| qr_image(text, px(144.), window, cx).unwrap())
+        };
+        let (first, shown) = made(window, link);
+        let (again, _) = made(window, link);
         assert!(Arc::ptr_eq(&first, &again));
-        assert_eq!(first.format, ImageFormat::Svg);
+        // Whole device pixels a module, as large as fits the room: drawn at
+        // its own size, never stretched.
+        let scale = window.update(|window, _| window.scale_factor());
+        let width = first.size(0).width.0 as u32;
+        assert_eq!(width % super::qr_modules(link).unwrap(), 0);
+        assert_eq!(shown, px(width as f32 / scale));
+        assert!(shown <= px(144.) && shown > px(144. * 0.8), "{shown:?}");
         for n in 0..KEPT_QR_IMAGES {
-            cx.update(|cx| qr_image(&format!("http://10.0.0.2:{n}/"), cx));
+            made(window, &format!("http://10.0.0.2:{n}/"));
         }
-        let later = cx.update(|cx| qr_image("http://10.0.0.2:8765/#key=abc", cx).unwrap());
+        let (later, _) = made(window, link);
         assert!(!Arc::ptr_eq(&first, &later), "only the latest few are kept");
+    }
+
+    /// Each module is a square of whole pixels, dark on light, inside the
+    /// standard's margin.
+    #[test]
+    fn a_qr_codes_modules_are_whole_pixels() {
+        let image = super::qr_pixels("http://192.168.1.12:8765/#key=abc", 4).unwrap();
+        let bytes = image.as_bytes(0).unwrap();
+        let side = image.size(0).width.0 as usize;
+        assert_eq!(side, 37 * 4);
+        let shade = |x: usize, y: usize| bytes[(y * side + x) * 4];
+        // The margin is light, the finder pattern's corner dark, and its
+        // edge is sharp: no grey between.
+        assert_eq!(shade(15, 15), 255);
+        assert_eq!(shade(16, 16), 0);
+        assert_eq!(shade(19, 19), 0);
+        assert!(
+            bytes
+                .chunks(4)
+                .all(|pixel| pixel[0] == 0 || pixel[0] == 255)
+        );
     }
 }

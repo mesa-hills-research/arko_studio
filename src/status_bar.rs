@@ -3,8 +3,9 @@
 //! access, and on the right the cache timer, plan usage, cost and context.
 //! An idle window with nothing unusual has an empty bar.
 //!
-//! The bar is a view of its own: its clock ticks once a second only while
-//! it shows a running time, and only the bar draws again then.
+//! The bar is a view of its own, which the window keeps from frame to frame
+//! (a cached view): its clock ticks once a second only while it shows a
+//! running time, and then the bar draws again, not the panes around it.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -18,17 +19,18 @@ use gpui_kit::component::{
     WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
+    notification::Notification,
     popover::Popover,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::cache_timer::{CacheTimer, cache_timer};
+use crate::cache_timer::{CacheTimer, cache_timer, requests_run};
 use crate::context_ring::{ContextDetails, ContextSize, context_button};
 use crate::figures::{self, Turn};
 use crate::layout::WidthClass;
-use crate::live::LiveSession;
+use crate::live::{LiveSession, Phase};
 use crate::menus;
 use crate::session_view::{HomeFolder, shown_folder};
 use crate::web_page::WebPagePanel;
@@ -47,6 +49,14 @@ enum Source {
 /// The time the bar reads, in Unix milliseconds.
 pub type Clock = Rc<dyn Fn() -> i64>;
 
+/// The bar's height: the window lays it out at this height without drawing
+/// it again.
+pub const STATUS_BAR_HEIGHT: Rems = rems(1.75);
+
+/// How long Share Web Page waits for the page, in seconds, once the session
+/// is open.
+pub const PAGE_WAIT_SECONDS: u32 = 10;
+
 /// Digits of equal width, so a running time keeps its width as it counts.
 pub fn tabular_figures() -> FontFeatures {
     FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
@@ -63,6 +73,8 @@ pub struct StatusBar {
     web_page_open: bool,
     /// It opens as soon as the page is served (Share Web Page).
     web_page_asked: bool,
+    /// Gives up on the page asked for when it doesn't come.
+    _web_page_wait: Option<Task<()>>,
     _session: Option<Subscription>,
     _tick: Option<Task<()>>,
     _cost: Option<Task<()>>,
@@ -77,6 +89,7 @@ impl StatusBar {
             cost: None,
             web_page_open: false,
             web_page_asked: false,
+            _web_page_wait: None,
             _session: None,
             _tick: None,
             _cost: None,
@@ -122,6 +135,7 @@ impl StatusBar {
         self._cost = None;
         self.web_page_open = false;
         self.web_page_asked = false;
+        self._web_page_wait = None;
         self._session = session
             .as_ref()
             .map(|session| cx.observe(session, |_, _, cx| cx.notify()));
@@ -146,17 +160,62 @@ impl StatusBar {
         }
     }
 
+    /// The bar shows a chat's figures.
+    fn is_chat(&self, cx: &App) -> bool {
+        self.session()
+            .is_some_and(|session| session.read(cx).mode() == crate::backend::Mode::Chat)
+    }
+
     /// Shows the web page's links and QR code: at once when the page is
-    /// served, else as soon as it is.
-    pub fn show_web_page(&mut self, cx: &mut Context<Self>) {
+    /// served, else as soon as it is. A page that doesn't come within
+    /// [`PAGE_WAIT_SECONDS`] of the session's opening is given up on, with
+    /// a notification: the popover won't open by itself later.
+    pub fn show_web_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let served = self
             .status(cx)
             .is_some_and(|(reading, _)| reading.page.is_some());
         if served {
             self.web_page_open = true;
-        } else {
-            self.web_page_asked = true;
+            cx.notify();
+            return;
         }
+        self.web_page_asked = true;
+        self._web_page_wait = Some(cx.spawn_in(window, async move |this, cx| {
+            let mut waited = 0;
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let done = this.update_in(cx, |this, window, cx| {
+                    let phase = this
+                        .session()
+                        .map(|session| session.read(cx).phase().clone());
+                    match phase {
+                        // Shown (or the bar shows another session).
+                        _ if !this.web_page_asked => return true,
+                        // Commands wait for a session that opens.
+                        Some(Phase::Opening) => return false,
+                        Some(Phase::Open) => waited += 1,
+                        _ => {
+                            this.web_page_asked = false;
+                            return true;
+                        }
+                    }
+                    if waited < PAGE_WAIT_SECONDS {
+                        return false;
+                    }
+                    this.web_page_asked = false;
+                    window.push_notification(
+                        Notification::warning(
+                            "The web page didn’t start. The transcript says why.",
+                        ),
+                        cx,
+                    );
+                    true
+                });
+                if done.unwrap_or(true) {
+                    break;
+                }
+            }
+        }));
         cx.notify();
     }
 
@@ -253,7 +312,7 @@ pub fn next_change(reading: &Reading, activity: &Activity, now: i64) -> Option<i
         Some(Turn::Working { since: Some(since) }) => Some(1000 - (now - since).rem_euclid(1000)),
         _ => None,
     };
-    let cache = match CacheTimer::of(&reading.cache, activity.working, now) {
+    let cache = match CacheTimer::of(&reading.cache, requests_run(activity), now) {
         Some(CacheTimer::Counting { left }) => Some(match left % 1000 {
             0 => 1000,
             part => part,
@@ -416,8 +475,17 @@ impl StatusBar {
                     .when(narrow, |this| this.tooltip("The web page is shared"))
                     .accessibility_label("Web page shared"),
             )
-            .content(move |_, _, _| {
-                let panel = WebPagePanel::new(&page);
+            .content(move |_, _, cx| {
+                let panel = WebPagePanel::new(&page)
+                    .explained()
+                    .on_settings(cx.listener(|state, _, window, cx| {
+                        // Once the focus is back in the window: sent from
+                        // inside the popover, the action would go with it.
+                        state.dismiss(window, cx);
+                        window.defer(cx, |window, cx| {
+                            window.dispatch_action(Box::new(menus::OpenWebPageSettings), cx)
+                        });
+                    }));
                 match &session {
                     Some(session) => panel.session(session),
                     None => panel,
@@ -462,14 +530,7 @@ impl StatusBar {
                         .label(label)
                         .tooltip(figures::cost_tooltip(reading)),
                 )
-                .content(move |_, _, cx| {
-                    let bar = this.read(cx);
-                    let reading = bar
-                        .status(cx)
-                        .map(|(reading, _)| reading)
-                        .unwrap_or_default();
-                    CostDetails::new(bar.cost.clone(), &reading)
-                })
+                .content(move |_, _, cx| CostDetails::new(this.read(cx).cost.clone()))
                 .into_any_element(),
         )
     }
@@ -524,7 +585,7 @@ impl StatusBar {
         };
         let now = (self.clock)();
         let wide = self.width != WidthClass::Narrow;
-        let cache = CacheTimer::of(&reading.cache, activity.working, now);
+        let cache = CacheTimer::of(&reading.cache, requests_run(&activity), now);
         Shown {
             turn: Turn::of(&activity)
                 .filter(|_| wide)
@@ -544,6 +605,7 @@ impl StatusBar {
                 .map(|(_, window)| figures::plan_label(window)),
             cost: figures::cost_label(&reading),
             context: ContextSize::of(&reading)
+                .map(|context| context.in_chat(self.is_chat(cx)))
                 .map(|context| (context.label(), context.near_handover())),
         }
     }
@@ -551,7 +613,12 @@ impl StatusBar {
 
 impl Render for StatusBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut bar = KitStatusBar::new().h_7().flex_none();
+        #[cfg(test)]
+        crate::testing::rendered("StatusBar");
+        let mut bar = KitStatusBar::new()
+            .w_full()
+            .h(STATUS_BAR_HEIGHT)
+            .flex_none();
         let Some((reading, activity)) = self.status(cx) else {
             self.schedule_tick(None, cx);
             return bar;
@@ -579,8 +646,8 @@ impl Render for StatusBar {
             }
             None => self.web_page_open = false,
         }
-        if let Some(timer) =
-            CacheTimer::of(&reading.cache, activity.working, now).filter(|_| shown.cache.is_some())
+        if let Some(timer) = CacheTimer::of(&reading.cache, requests_run(&activity), now)
+            .filter(|_| shown.cache.is_some())
         {
             bar = bar.right(cache_timer(timer, &reading.cache, now, cx));
         }
@@ -592,7 +659,9 @@ impl Render for StatusBar {
         if let Some(cost) = self.render_cost(&reading, cx) {
             bar = bar.right(cost);
         }
-        if let Some(context) = ContextSize::of(&reading) {
+        if let Some(context) =
+            ContextSize::of(&reading).map(|context| context.in_chat(self.is_chat(cx)))
+        {
             bar = bar.right(self.render_context(context, cx));
         }
         bar
@@ -605,16 +674,12 @@ impl Render for StatusBar {
 #[derive(IntoElement)]
 pub struct CostDetails {
     report: Option<CostReport>,
-    reading: Arc<Reading>,
 }
 
 impl CostDetails {
     /// `report` as `/cost` says it, `None` while it is read.
-    pub fn new(report: Option<CostReport>, reading: &Arc<Reading>) -> Self {
-        Self {
-            report,
-            reading: reading.clone(),
-        }
+    pub fn new(report: Option<CostReport>) -> Self {
+        Self { report }
     }
 }
 
@@ -720,7 +785,6 @@ impl RenderOnce for CostDetails {
                 v_flex().gap_2().children(lines).into_any_element()
             }
         };
-        let _ = &self.reading;
         v_flex()
             .id("cost-details")
             .test_support()

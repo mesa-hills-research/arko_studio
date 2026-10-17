@@ -14,16 +14,29 @@ use gpui_kit::{
 use super::SettingsPage;
 use crate::Startup;
 use crate::backend::account_words::LoginState;
-use crate::backend::{Backend as _, FakeBackend, Mode};
+use crate::backend::{Backend as _, FakeBackend, Mode, ModelChoice, ModelChoices, ModelGroup};
 use crate::prefs;
 use crate::tests::{act, open};
 use crate::workspace::{self, Workspace};
 
 /// The app on the sample sessions, with `settings`. Dialogs open and
 /// close without fading, so a click lands on the dialog that's there.
-fn start_with(cx: &mut TestAppContext, mut settings: prefs::Prefs) -> Arc<FakeBackend> {
+fn start_with(cx: &mut TestAppContext, settings: prefs::Prefs) -> Arc<FakeBackend> {
+    start_on(
+        cx,
+        FakeBackend::sample("/arko", SystemTime::now()),
+        settings,
+    )
+}
+
+/// The app on `backend`, with `settings`, as [`start_with`].
+fn start_on(
+    cx: &mut TestAppContext,
+    backend: FakeBackend,
+    mut settings: prefs::Prefs,
+) -> Arc<FakeBackend> {
     settings.appearance.motion = prefs::Motion::Off;
-    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let backend = Arc::new(backend);
     cx.update(|cx| crate::init(Startup::for_tests(backend.clone()).with_prefs(settings), cx));
     backend
 }
@@ -67,7 +80,7 @@ fn a_new_session_starts_as_settings_say(cx: &mut TestAppContext) {
     cx.read(|cx| {
         let view = workspace.read(cx).session_view().read(cx);
         assert_eq!(view.draft().mode, Mode::Chat);
-        assert_eq!(view.draft_model().as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(view.draft_model(cx).as_deref(), Some("claude-sonnet-5-5"));
     });
     assert_eq!(backend.defaults().mode, Mode::Chat);
     cx.update(|cx| prefs::update(cx, |prefs| prefs.new_sessions.handover_at = Some(400_000)));
@@ -83,6 +96,93 @@ fn a_new_session_starts_as_settings_say(cx: &mut TestAppContext) {
     let (_, second) = open(cx, 1300.);
     let mode = cx.read(|cx| second.read(cx).session_view().read(cx).draft().mode);
     assert_eq!(mode, Mode::Agent);
+}
+
+/// The default model and effort, changed in Settings while a window is
+/// open: its new session's chip names them, and the session starts on
+/// them.
+#[gpui_kit::test]
+fn the_chip_follows_the_defaults_set_in_settings(cx: &mut TestAppContext) {
+    start_with(cx, prefs::Prefs::default());
+    let (window, workspace) = open(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let chip = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).chip_label(cx));
+    assert_eq!(chip(cx), "Agent · Opus 5.5");
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.new_sessions.model = Some("claude-sonnet-5-5".into());
+            prefs.new_sessions.effort = Some("high".into());
+        })
+    });
+    act(cx, window, |_, _| {});
+    assert_eq!(chip(cx), "Agent · Sonnet 5.5 · high");
+    act(cx, window, |window, cx| window.input("Hello", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    let started = cx.read(|cx| view.read(cx).session(cx).map(|session| session.model));
+    assert_eq!(
+        started.map(|model| arko::models::display_name(&model)),
+        Some("Sonnet 5.5".to_string())
+    );
+}
+
+/// "Needs an OpenRouter key" in the composer's model list goes once the
+/// key is added in Settings: the composer lists its models again.
+#[gpui_kit::test]
+fn a_key_added_in_settings_makes_its_models_usable(cx: &mut TestAppContext) {
+    let group = |name: &str, needs: Option<&str>, models: &[(&str, &str)]| ModelGroup {
+        name: name.into(),
+        needs: needs.map(str::to_string),
+        models: models
+            .iter()
+            .map(|(name, alias)| ModelChoice {
+                name: (*name).into(),
+                alias: (*alias).into(),
+            })
+            .collect(),
+    };
+    let backend = FakeBackend::sample("/arko", SystemTime::now())
+        .with_models(ModelChoices {
+            groups: vec![
+                group(
+                    "Anthropic API, billed per token",
+                    None,
+                    &[("claude-opus-5-5", "opus")],
+                ),
+                group(
+                    "OpenRouter, billed per token",
+                    Some("an OpenRouter key"),
+                    &[("openrouter:moonshotai/kimi-k3", "kimi")],
+                ),
+            ],
+            default: Some("claude-opus-5-5".into()),
+            note: None,
+        })
+        .with_groups_following_keys();
+    start_on(cx, backend, prefs::Prefs::default());
+    let (window, _, _) = settings_window(cx, 2, 1400.);
+    act(cx, window, |window, cx| window.press("escape", cx));
+    // Whether the composer's model list says the OpenRouter models need
+    // their key.
+    let needs_key = |cx: &mut TestAppContext| {
+        act(cx, window, |window, cx| window.click("mode-model", cx));
+        let mut shown = false;
+        act(cx, window, |window, cx| {
+            shown = window.try_find(("model-needs", 1usize)).is_some();
+            window.press("escape", cx);
+        });
+        shown
+    };
+    assert!(needs_key(cx));
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::OpenAccounts), cx)
+    });
+    act(cx, window, |window, cx| window.click("key-openrouter", cx));
+    act(cx, window, |window, cx| {
+        window.input("sk-or-v1-0123456789abcdef", cx)
+    });
+    act(cx, window, |window, cx| window.click("key-save", cx));
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert!(!needs_key(cx));
 }
 
 /// A key is added in a masked field, replaced, and removed after a
@@ -141,6 +241,34 @@ fn api_keys_are_added_and_removed_through_the_backend(cx: &mut TestAppContext) {
     });
 }
 
+/// Enter in the key's field saves the key, as Save does. With nothing
+/// pasted, the dialog stays open and says so.
+#[gpui_kit::test]
+fn enter_in_the_key_field_saves_the_key(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, _) = settings_window(cx, 2, 1400.);
+    act(cx, window, |window, cx| window.click("key-openrouter", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        assert!(window.try_find("key-error").is_some());
+    });
+    act(cx, window, |window, cx| {
+        window.input("sk-or-v1-0123456789abcdef", cx)
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(
+        backend.added_keys(),
+        [(
+            "openrouter".to_string(),
+            "sk-or-v1-0123456789abcdef".to_string()
+        )]
+    );
+    act(cx, window, |window, cx| {
+        assert!(!window.has_active_dialog(cx));
+    });
+}
+
 /// Check again reads Claude Code again, and a chosen auth.json becomes the
 /// ChatGPT login.
 #[gpui_kit::test]
@@ -164,9 +292,15 @@ fn logins_are_checked_and_chosen(cx: &mut TestAppContext) {
     assert_eq!(state, LoginState::Ready);
 }
 
-/// Sizes and times are saved as soon as they read as arko reads them.
-/// Until then the field says why, and the setting stays. A reset empties
-/// the field.
+/// Lets the typing rest: what's typed in Settings is checked and saved.
+fn rest(cx: &mut TestAppContext) {
+    cx.executor().advance_clock(super::fields::TYPING_REST);
+    cx.run_until_parked();
+}
+
+/// Sizes and times are saved once they read as arko reads them and the
+/// typing rests. Until then the field says why, and the setting stays. A
+/// reset empties the field.
 #[gpui_kit::test]
 fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
@@ -174,6 +308,9 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     let page = cx.read(|cx| settings.read(cx).sessions().clone());
     act(cx, window, |window, cx| window.click("handover-at", cx));
     act(cx, window, |window, cx| window.input("5k", cx));
+    // Not while typing: it may go on to 50k.
+    assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
+    rest(cx);
     let errors = cx.read(|cx| page.read(cx).errors());
     assert!(errors[0].is_some());
     assert_eq!(cx.read(|cx| prefs::get(cx).new_sessions.handover_at), None);
@@ -182,20 +319,26 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     });
     act(cx, window, |window, cx| window.press("secondary-a", cx));
     act(cx, window, |window, cx| window.input("500k", cx));
+    // The reason goes as soon as what's typed reads, the saving waits.
+    assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
+    assert_eq!(cx.read(|cx| prefs::get(cx).new_sessions.handover_at), None);
+    rest(cx);
     assert_eq!(
         cx.read(|cx| prefs::get(cx).new_sessions.handover_at),
         Some(500_000)
     );
     assert_eq!(backend.defaults().handover_at, Some(500_000));
-    assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
 
     act(cx, window, |window, cx| {
         window.click("background-after", cx)
     });
     act(cx, window, |window, cx| window.input("2h", cx));
+    // Enter checks it at once.
+    act(cx, window, |window, cx| window.press("enter", cx));
     assert!(cx.read(|cx| page.read(cx).errors())[2].is_some());
     act(cx, window, |window, cx| window.press("secondary-a", cx));
     act(cx, window, |window, cx| window.input("off", cx));
+    rest(cx);
     assert_eq!(
         cx.read(|cx| prefs::get(cx).new_sessions.background_after),
         Some(0)
@@ -207,7 +350,24 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| window.input("Answer briefly.", cx));
     assert_eq!(
         cx.read(|cx| prefs::get(cx).new_sessions.chat_instructions.clone()),
+        ""
+    );
+    // Another setting changing meanwhile leaves what's typed alone.
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.render_markdown = false));
+    rest(cx);
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.chat_instructions.clone()),
         "Answer briefly."
+    );
+    // Leaving the field saves at once: the window's next frame tells the
+    // field, while the window is active.
+    act(cx, window, |window, _| window.activate_window());
+    act(cx, window, |window, cx| window.input(" Always.", cx));
+    act(cx, window, |window, cx| window.click("handover-at", cx));
+    act(cx, window, |_, _| {});
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.chat_instructions.clone()),
+        "Answer briefly. Always."
     );
 
     // Reset, as the page's reset does it: the fields follow.
@@ -221,6 +381,39 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     let typed = cx.read(|cx| page.read(cx).typed(cx));
     assert_eq!(typed[0].as_ref(), "");
     assert_eq!(typed[2].as_ref(), "off");
+}
+
+/// The chat instructions type as Settings › Input says, as it changes
+/// with Settings open.
+#[gpui_kit::test]
+fn the_chat_instructions_follow_the_input_settings(cx: &mut TestAppContext) {
+    start_with(cx, prefs::Prefs::default());
+    let (_, _, settings) = settings_window(cx, 3, 900.);
+    let page = cx.read(|cx| settings.read(cx).sessions().clone());
+    let typing = |cx: &mut TestAppContext| cx.read(|cx| page.read(cx).instructions_input(cx));
+    assert_eq!(
+        typing(cx),
+        (
+            true,
+            crate::composer::text_keymap(prefs::Keymap::Standard),
+            true
+        )
+    );
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.input.smooth_typing = false;
+            prefs.input.keymap = prefs::Keymap::Vim;
+            prefs.input.spell_check = false;
+        })
+    });
+    assert_eq!(
+        typing(cx),
+        (
+            false,
+            crate::composer::text_keymap(prefs::Keymap::Vim),
+            false
+        )
+    );
 }
 
 /// Opening Settings reads nothing on the UI thread: the installed fonts
@@ -292,6 +485,12 @@ fn a_model_that_needs_a_key_opens_its_row(cx: &mut TestAppContext) {
         assert!(focus.is_focused(window));
         assert!(window.try_find("account-openai").is_some());
     });
+    // Enter on the row does what its button does: the key's dialog.
+    act(cx, window, |window, cx| window.press("enter", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        assert!(window.try_find("key-form").is_some());
+    });
     assert_eq!(
         super::accounts::account_for("Claude Code, on your Claude plan"),
         Some("claude-code")
@@ -317,27 +516,61 @@ fn the_web_page_address_and_port_are_checked_and_used(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| {
         window.click("web-page-address", cx)
     });
+    // On the way to 0.0.0.0, "0." is no error yet.
+    act(cx, window, |window, cx| window.input("0.", cx));
+    assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
+    act(cx, window, |window, cx| window.press("secondary-a", cx));
     act(cx, window, |window, cx| window.input("my-laptop", cx));
+    rest(cx);
     assert!(cx.read(|cx| page.read(cx).errors())[0].is_some());
     act(cx, window, |window, cx| window.press("secondary-a", cx));
-    act(cx, window, |window, cx| window.input("0.0.0.0", cx));
+    act(cx, window, |window, cx| window.input("127.0.0.1", cx));
     assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
     act(cx, window, |window, cx| window.click("web-page-port", cx));
     act(cx, window, |window, cx| window.input("70000", cx));
+    rest(cx);
     assert!(cx.read(|cx| page.read(cx).errors())[1].is_some());
     act(cx, window, |window, cx| window.press("secondary-a", cx));
-    act(cx, window, |window, cx| window.input("9000", cx));
+    // 9, 90 and 900 aren't saved on the way to 9000.
+    for key in ["9", "0", "0", "0"] {
+        act(cx, window, |window, cx| window.input(key, cx));
+        assert_eq!(cx.read(|cx| prefs::get(cx).web_page.port), None);
+    }
+    rest(cx);
     cx.read(|cx| {
         let web = &prefs::get(cx).web_page;
-        assert_eq!(web.address, "0.0.0.0");
+        assert_eq!(web.address.as_deref(), Some("127.0.0.1"));
         assert_eq!(web.port, Some(9000));
-        assert_eq!(web.bind_argument(), "0.0.0.0:9000");
+        assert_eq!(web.bind_argument(), "127.0.0.1:9000");
     });
     assert_eq!(backend.defaults().web_page, None, "not shared by default");
     cx.update(|cx| prefs::update(cx, |prefs| prefs.web_page.share_by_default = true));
     let bind = backend.defaults().web_page.unwrap();
-    assert_eq!(bind.ip.to_string(), "0.0.0.0");
+    assert_eq!(bind.ip.to_string(), "127.0.0.1");
     assert_eq!(bind.port, Some(9000));
+}
+
+/// An open session's changes that don't start or stop its web page (a
+/// reply streaming in) leave Settings as it is drawn.
+#[gpui_kit::test]
+fn a_sessions_updates_leave_settings_as_drawn(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, 5, 900.);
+    let entry = backend.sessions().unwrap().remove(0);
+    let session = cx.update(|cx| crate::live::LiveSession::resume(&entry, cx));
+    let builds = |cx: &mut TestAppContext| cx.read(|cx| settings.read(cx).builds);
+    let frame = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    };
+    frame(cx);
+    let before = builds(cx);
+    for _ in 0..5 {
+        cx.update(|cx| session.update(cx, |_, cx| cx.notify()));
+        frame(cx);
+    }
+    assert_eq!(builds(cx), before);
 }
 
 /// A project's remembered answer about its MCP servers can be forgotten,
@@ -363,11 +596,18 @@ fn a_projects_mcp_answer_is_forgotten(cx: &mut TestAppContext) {
 }
 
 /// MCP config files added under Advanced reach every session's options,
-/// and Remove takes one out.
+/// and Remove takes one out. Extensions lists what's there as it changes.
 #[gpui_kit::test]
 fn mcp_config_files_are_added_and_removed(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
     let (window, _, settings) = settings_window(cx, 7, 2400.);
+    let extensions = cx.read(|cx| settings.read(cx).extensions().clone());
+    let listed = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let found = extensions.read(cx).extensions().unwrap();
+            found.files.iter().filter(|file| !file.arko).count()
+        })
+    };
     let file = std::path::PathBuf::from("/home/ada/mcp/work.json");
     cx.update(|cx| {
         settings.update(cx, |settings, cx| {
@@ -379,11 +619,55 @@ fn mcp_config_files_are_added_and_removed(cx: &mut TestAppContext) {
         std::slice::from_ref(&file),
         "once"
     );
+    act(cx, window, |_, _| {});
+    assert_eq!(listed(cx), 1);
     act(cx, window, |window, cx| {
         window.click(("remove-mcp-config", 0usize), cx)
     });
     assert!(backend.defaults().mcp_config.is_empty());
     assert!(cx.read(|cx| prefs::get(cx).advanced.mcp_config.is_empty()));
+    assert_eq!(listed(cx), 0);
+}
+
+/// Add… under Advanced takes MCP config files only: another file is
+/// refused with why, and the others are added.
+#[gpui_kit::test]
+fn only_mcp_config_files_are_added(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, 7, 2400.);
+    let temp = tempfile::tempdir().unwrap();
+    let good = temp.path().join("servers.json");
+    let notes = temp.path().join("notes.txt");
+    std::fs::write(
+        &good,
+        r#"{"mcpServers": {"files": {"command": "mcp-files"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(&notes, "Buy pears.").unwrap();
+    act(cx, window, |window, cx| {
+        settings.update(cx, |settings, cx| {
+            settings.add_checked_mcp_configs(vec![notes.clone(), good.clone()], window, cx)
+        })
+    });
+    assert_eq!(backend.defaults().mcp_config, [good]);
+    act(cx, window, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1, "says why not");
+    });
+}
+
+/// The MCP config files are removed one by one, with Remove. The
+/// Advanced page's reset leaves the list, which would take a file dialog
+/// per file to make again.
+#[gpui_kit::test]
+fn advanced_resets_keep_the_mcp_config_files(cx: &mut TestAppContext) {
+    let mut settings = prefs::Prefs::default();
+    settings.advanced.mcp_config = vec![std::path::PathBuf::from("/home/ada/mcp/work.json")];
+    start_with(cx, settings);
+    let (window, _, _) = settings_window(cx, 7, 900.);
+    act(cx, window, |window, _| {
+        assert!(window.try_find(("remove-mcp-config", 0usize)).is_some());
+        assert!(window.try_find("reset").is_none(), "nothing else to reset");
+    });
 }
 
 /// Moving or resizing the window changes its placement in the preferences

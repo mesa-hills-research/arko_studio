@@ -174,7 +174,7 @@ impl CredentialsForm {
                 .background_spawn(async move { backend.set_chatgpt_login(&path) })
                 .await;
             this.update_in(cx, |this, window, cx| match chosen {
-                Ok(()) => this.answer(PromptAnswer::Again, window, cx),
+                Ok(_) => this.answer(PromptAnswer::Again, window, cx),
                 Err(why) => {
                     this.error = Some(why.into());
                     cx.notify();

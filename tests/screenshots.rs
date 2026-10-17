@@ -1097,10 +1097,12 @@ impl gpui_kit::Render for StatusPopovers {
             .child(card(
                 ContextDetails::new(&self.reading, status::NOW).into_any_element(),
             ))
+            .child(card(CostDetails::new(Some(cost)).into_any_element()))
             .child(card(
-                CostDetails::new(Some(cost), &self.reading).into_any_element(),
+                WebPagePanel::new(&status::page())
+                    .explained()
+                    .into_any_element(),
             ))
-            .child(card(WebPagePanel::new(&status::page()).into_any_element()))
     }
 }
 
@@ -1118,7 +1120,7 @@ fn status_popovers(mode: ThemeMode) -> Screenshot {
     app.update(|cx| arko_studio::init(startup, cx));
     let reading = Arc::new(status::busy());
     let window = app
-        .open_window_with(size(px(1100.), px(520.)), 1., |options, cx| {
+        .open_window_with(size(px(1100.), px(640.)), 1., |options, cx| {
             gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| StatusPopovers { reading }))
                 .map(|(window, _)| window)
         })
