@@ -491,7 +491,7 @@ fn the_web_page_address_and_port_are_checked_and_used(cx: &mut TestAppContext) {
     rest(cx);
     assert!(cx.read(|cx| page.read(cx).errors())[0].is_some());
     act(cx, window, |window, cx| window.press("secondary-a", cx));
-    act(cx, window, |window, cx| window.input("0.0.0.0", cx));
+    act(cx, window, |window, cx| window.input("127.0.0.1", cx));
     assert_eq!(cx.read(|cx| page.read(cx).errors())[0], None);
     act(cx, window, |window, cx| window.click("web-page-port", cx));
     act(cx, window, |window, cx| window.input("70000", cx));
@@ -506,14 +506,14 @@ fn the_web_page_address_and_port_are_checked_and_used(cx: &mut TestAppContext) {
     rest(cx);
     cx.read(|cx| {
         let web = &prefs::get(cx).web_page;
-        assert_eq!(web.address, "0.0.0.0");
+        assert_eq!(web.address.as_deref(), Some("127.0.0.1"));
         assert_eq!(web.port, Some(9000));
-        assert_eq!(web.bind_argument(), "0.0.0.0:9000");
+        assert_eq!(web.bind_argument(), "127.0.0.1:9000");
     });
     assert_eq!(backend.defaults().web_page, None, "not shared by default");
     cx.update(|cx| prefs::update(cx, |prefs| prefs.web_page.share_by_default = true));
     let bind = backend.defaults().web_page.unwrap();
-    assert_eq!(bind.ip.to_string(), "0.0.0.0");
+    assert_eq!(bind.ip.to_string(), "127.0.0.1");
     assert_eq!(bind.port, Some(9000));
 }
 

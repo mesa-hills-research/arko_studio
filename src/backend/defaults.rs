@@ -200,15 +200,10 @@ pub fn takes_cache_1h(name: &str) -> bool {
 /// Where the web page is served, from the preferences: `None` when the
 /// address isn't an IP address.
 pub fn web_page_bind(page: &prefs::WebPagePrefs) -> Option<arko::remote::Bind> {
-    let address = page.address.trim();
+    let address = page.address();
     let address = address.trim_start_matches('[').trim_end_matches(']');
-    let ip = if address.is_empty() {
-        prefs::DEFAULT_WEB_PAGE_ADDRESS.parse().ok()?
-    } else {
-        address.parse::<IpAddr>().ok()?
-    };
     Some(arko::remote::Bind {
-        ip,
+        ip: address.parse::<IpAddr>().ok()?,
         port: page.port,
     })
 }
@@ -316,7 +311,7 @@ mod tests {
         prefs.new_sessions.outside_access = true;
         prefs.advanced.mcp_config = vec![PathBuf::from("/home/ada/mcp.json")];
         prefs.web_page.share_by_default = true;
-        prefs.web_page.address = "0.0.0.0".into();
+        prefs.web_page.address = Some("0.0.0.0".into());
         prefs.web_page.port = Some(9000);
         let mut options = new_options();
         SessionDefaults::from_prefs(&prefs).apply(&mut options, None, || None);
@@ -368,9 +363,14 @@ mod tests {
         let mut prefs = Prefs::default();
         assert_eq!(SessionDefaults::from_prefs(&prefs).web_page, None);
         prefs.web_page.share_by_default = true;
+        // Every network this computer is on, by default.
         let bind = SessionDefaults::from_prefs(&prefs).web_page.unwrap();
-        assert_eq!(bind, arko::remote::Bind::default());
-        prefs.web_page.address = "[::1]".into();
+        assert_eq!(bind.ip.to_string(), "0.0.0.0");
+        assert_eq!(bind.port, None);
+        prefs.web_page.address = Some("127.0.0.1".into());
+        let bind = SessionDefaults::from_prefs(&prefs).web_page.unwrap();
+        assert_eq!(bind, arko::remote::Bind::default(), "arko's own");
+        prefs.web_page.address = Some("[::1]".into());
         assert_eq!(
             SessionDefaults::from_prefs(&prefs)
                 .web_page
@@ -379,7 +379,7 @@ mod tests {
                 .to_string(),
             "::1"
         );
-        prefs.web_page.address = "my-laptop".into();
+        prefs.web_page.address = Some("my-laptop".into());
         assert_eq!(SessionDefaults::from_prefs(&prefs).web_page, None);
     }
 

@@ -10,7 +10,7 @@ use gpui_kit::*;
 
 use super::fields::{self, TextKind, TextSetting};
 use crate::live::{LiveSession, LiveSessions};
-use crate::prefs::{self, DEFAULT_WEB_PAGE_ADDRESS};
+use crate::prefs::{self, DEFAULT_WEB_PAGE_ADDRESS, THIS_COMPUTER_ONLY};
 use crate::web_page::WebPagePanel;
 
 /// What the page lets others do, in a paragraph.
@@ -51,14 +51,10 @@ impl WebPageSettings {
         let address = TextSetting::new(
             TextKind {
                 get: |prefs| {
-                    let address = prefs.web_page.address.trim();
-                    (!address.is_empty() && address != DEFAULT_WEB_PAGE_ADDRESS)
-                        .then(|| address.to_string())
+                    let address = prefs.web_page.address();
+                    (address != DEFAULT_WEB_PAGE_ADDRESS).then(|| address.to_string())
                 },
-                set: |prefs, address| {
-                    prefs.web_page.address =
-                        address.unwrap_or_else(|| DEFAULT_WEB_PAGE_ADDRESS.to_string())
-                },
+                set: |prefs, address| prefs.web_page.address = address,
                 parse: parse_address,
                 show: |address| address.clone(),
             },
@@ -185,9 +181,9 @@ impl WebPageSettings {
                     .keywords(["remote", "share", "phone", "browser"]),
                     self.address
                         .item("Address", "web-page-address")
-                        .description(
-                            "The IP address to serve on: 127.0.0.1 reaches this computer only, 0.0.0.0 every network it’s on (a VPN or Tailscale too).",
-                        )
+                        .description(format!(
+                            "Empty: every network this computer is on ({DEFAULT_WEB_PAGE_ADDRESS}), so a phone or another computer on the same network, a VPN or Tailscale too, can open a session’s page from its link. {THIS_COMPUTER_ONLY} keeps it to this computer.",
+                        ))
                         .keywords(["bind", "ip", "network", "remote"]),
                     self.port
                         .item("Port", "web-page-port")
@@ -202,8 +198,8 @@ impl WebPageSettings {
     }
 }
 
-/// An IP address as the page is served on: empty for the default (this
-/// computer only).
+/// An IP address as the page is served on: empty, or the default's, for
+/// the default (every network this computer is on).
 pub fn parse_address(text: &str) -> Result<Option<String>, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -213,7 +209,7 @@ pub fn parse_address(text: &str) -> Result<Option<String>, String> {
         .trim_start_matches('[')
         .trim_end_matches(']')
         .parse()
-        .map_err(|_| "Give an IP address, such as 127.0.0.1 or 0.0.0.0.".to_string())?;
+        .map_err(|_| "Give an IP address, such as 0.0.0.0 or 127.0.0.1.".to_string())?;
     let ip = ip.to_string();
     Ok((ip != DEFAULT_WEB_PAGE_ADDRESS).then_some(ip))
 }
@@ -238,8 +234,8 @@ mod tests {
     #[test]
     fn addresses_are_ip_addresses() {
         assert_eq!(parse_address(""), Ok(None));
-        assert_eq!(parse_address("127.0.0.1"), Ok(None));
-        assert_eq!(parse_address(" 0.0.0.0 "), Ok(Some("0.0.0.0".into())));
+        assert_eq!(parse_address(" 0.0.0.0 "), Ok(None), "the default");
+        assert_eq!(parse_address("127.0.0.1"), Ok(Some("127.0.0.1".into())));
         assert_eq!(parse_address("[::1]"), Ok(Some("::1".into())));
         assert!(parse_address("my-laptop").is_err());
         assert!(parse_address("0.0.0.0:9000").is_err());

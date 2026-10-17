@@ -57,49 +57,74 @@ impl Default for Prefs {
     }
 }
 
-/// The address the web page is served on when nothing else is chosen:
-/// this computer only.
-pub const DEFAULT_WEB_PAGE_ADDRESS: &str = "127.0.0.1";
+/// The address the web page is served on when none is chosen: every
+/// network this computer is on, so a phone or another computer on the same
+/// network can open it.
+pub const DEFAULT_WEB_PAGE_ADDRESS: &str = "0.0.0.0";
+
+/// The address that keeps the web page to this computer.
+pub const THIS_COMPUTER_ONLY: &str = "127.0.0.1";
 
 /// Where sessions serve their web page, and whether they do from the start.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WebPagePrefs {
     /// Every session serves its web page as it opens.
     pub share_by_default: bool,
-    /// The IP address to serve on: `127.0.0.1` reaches this computer only,
-    /// `0.0.0.0` every network it's on.
-    pub address: String,
+    /// The IP address to serve on, `None` for every network this computer
+    /// is on ([`DEFAULT_WEB_PAGE_ADDRESS`]). [`THIS_COMPUTER_ONLY`] reaches
+    /// this computer only. Kept as `ip`: earlier versions kept the address
+    /// as `address`, with this computer only as the default (see
+    /// [`migrate`]).
+    #[serde(rename = "ip", skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     /// `None`: arko's port (8765), or any free one when that's taken.
     pub port: Option<u16>,
 }
 
-impl Default for WebPagePrefs {
-    fn default() -> Self {
-        Self {
-            share_by_default: false,
-            address: DEFAULT_WEB_PAGE_ADDRESS.into(),
-            port: None,
+impl WebPagePrefs {
+    /// The address to serve on: the one chosen, else the default.
+    pub fn address(&self) -> &str {
+        self.address
+            .as_deref()
+            .map(str::trim)
+            .filter(|address| !address.is_empty())
+            .unwrap_or(DEFAULT_WEB_PAGE_ADDRESS)
+    }
+
+    /// The argument `/remote` takes to serve there, the address always
+    /// given (arko's own default is this computer only): `0.0.0.0`,
+    /// `0.0.0.0:9000`, `127.0.0.1` or `[::]:9000`.
+    pub fn bind_argument(&self) -> String {
+        let address = self.address().trim_start_matches('[').trim_end_matches(']');
+        match self.port {
+            None => address.to_string(),
+            Some(port) if address.contains(':') => format!("[{address}]:{port}"),
+            Some(port) => format!("{address}:{port}"),
         }
     }
 }
 
-impl WebPagePrefs {
-    /// The argument `/remote` takes to serve there: empty for the defaults,
-    /// else `0.0.0.0`, `9000`, `0.0.0.0:9000` or `[::]:9000`.
-    pub fn bind_argument(&self) -> String {
-        let address = self.address.trim();
-        let address = (!address.is_empty() && address != DEFAULT_WEB_PAGE_ADDRESS)
-            .then_some(address.trim_start_matches('[').trim_end_matches(']'));
-        match (address, self.port) {
-            (None, None) => String::new(),
-            (None, Some(port)) => port.to_string(),
-            (Some(address), None) => address.to_string(),
-            (Some(address), Some(port)) if address.contains(':') => {
-                format!("[{address}]:{port}")
-            }
-            (Some(address), Some(port)) => format!("{address}:{port}"),
-        }
+/// Brings a preferences file of an earlier version up to this one's, in
+/// place: the web page's `address`, where this computer only was the
+/// default and saved as such (it couldn't be chosen apart from the
+/// default), becomes `ip` when it names another address, and the default
+/// otherwise.
+fn migrate(file: &mut Value) {
+    let Some(page) = file.get_mut("web_page").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(old) = page.remove("address") else {
+        return;
+    };
+    let chosen = old
+        .as_str()
+        .map(str::trim)
+        .filter(|address| !address.is_empty() && *address != THIS_COMPUTER_ONLY);
+    if let Some(address) = chosen
+        && !page.contains_key("ip")
+    {
+        page.insert("ip".into(), Value::String(address.to_string()));
     }
 }
 
@@ -728,7 +753,8 @@ impl PrefsStore {
             }
         };
         match serde_json::from_str::<Value>(&text) {
-            Ok(file) if file.is_object() => {
+            Ok(mut file) if file.is_object() => {
+                migrate(&mut file);
                 let (prefs, unread) = read_fields(&file);
                 for (keys, _) in &unread.values {
                     tracing::warn!("{}: left {} as it is", path.display(), keys.join("."));
@@ -988,21 +1014,83 @@ mod tests {
     fn the_web_page_address_becomes_the_remote_argument() {
         let page = |address: &str, port: Option<u16>| WebPagePrefs {
             share_by_default: false,
-            address: address.into(),
+            address: Some(address.into()),
             port,
         };
-        assert_eq!(WebPagePrefs::default().bind_argument(), "");
-        assert_eq!(page("", None).bind_argument(), "");
-        assert_eq!(page("127.0.0.1", Some(9000)).bind_argument(), "9000");
+        // The default is every network, which arko's own default isn't:
+        // the address is always given.
+        assert_eq!(WebPagePrefs::default().bind_argument(), "0.0.0.0");
+        assert_eq!(page("", None).bind_argument(), "0.0.0.0");
+        assert_eq!(page("127.0.0.1", None).bind_argument(), "127.0.0.1");
+        assert_eq!(
+            page("127.0.0.1", Some(9000)).bind_argument(),
+            "127.0.0.1:9000"
+        );
         assert_eq!(page(" 0.0.0.0 ", None).bind_argument(), "0.0.0.0");
         assert_eq!(page("0.0.0.0", Some(9000)).bind_argument(), "0.0.0.0:9000");
         assert_eq!(page("::", Some(9000)).bind_argument(), "[::]:9000");
         assert_eq!(page("[::1]", None).bind_argument(), "::1");
         // Each reads back as the same address and port.
-        for (address, port) in [("0.0.0.0", Some(9000)), ("::", Some(9000)), ("::1", None)] {
+        for (address, port) in [
+            ("0.0.0.0", Some(9000)),
+            ("127.0.0.1", None),
+            ("::", Some(9000)),
+            ("::1", None),
+        ] {
             let bind = arko::remote::parse_bind(&page(address, port).bind_argument()).unwrap();
             assert_eq!(bind.ip, address.parse::<std::net::IpAddr>().unwrap());
             assert_eq!(bind.port, port);
+        }
+    }
+
+    /// Earlier versions saved this computer only as the web page's
+    /// address whether or not it was chosen: it becomes the default (every
+    /// network), and another address stays. One chosen since stays.
+    #[test]
+    fn an_earlier_web_page_address_moves_to_the_new_default() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("studio.json");
+        let read = |text: &str| {
+            std::fs::write(&path, text).unwrap();
+            Prefs::load(&path).web_page
+        };
+        let page = read(
+            r#"{"web_page": {"share_by_default": true, "address": "127.0.0.1", "port": 9000}}"#,
+        );
+        assert_eq!(page.address, None);
+        assert_eq!(page.address(), "0.0.0.0");
+        assert!(page.share_by_default);
+        assert_eq!(page.port, Some(9000));
+        assert_eq!(
+            read(r#"{"web_page": {"address": "192.168.1.5"}}"#)
+                .address
+                .as_deref(),
+            Some("192.168.1.5")
+        );
+        assert_eq!(read(r#"{"web_page": {"address": ""}}"#).address, None);
+        // This computer only, chosen in this version, is kept as chosen.
+        assert_eq!(
+            read(r#"{"web_page": {"ip": "127.0.0.1"}}"#)
+                .address
+                .as_deref(),
+            Some("127.0.0.1")
+        );
+    }
+
+    /// The default address isn't written, a chosen one is, and either
+    /// reads back as it was.
+    #[test]
+    fn web_page_addresses_round_trip() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("studio.json");
+        for address in [None, Some("127.0.0.1"), Some("0.0.0.0")] {
+            let mut prefs = Prefs::default();
+            prefs.web_page.address = address.map(str::to_string);
+            let text = serde_json::to_string_pretty(&prefs).unwrap();
+            assert_eq!(text.contains("\"ip\""), address.is_some(), "{text}");
+            assert!(!text.contains("\"address\""), "{text}");
+            write_atomically(&path, &text).unwrap();
+            assert_eq!(Prefs::load(&path).web_page.address.as_deref(), address);
         }
     }
 

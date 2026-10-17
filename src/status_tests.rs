@@ -419,7 +419,7 @@ fn sharing_the_web_page_serves_it_and_shows_its_links(cx: &mut TestAppContext) {
     let (window, workspace, session) = window_with_session(cx);
     cx.update(|cx| {
         crate::prefs::update(cx, |prefs| {
-            prefs.web_page.address = "0.0.0.0".into();
+            prefs.web_page.address = Some("0.0.0.0".into());
             prefs.web_page.port = Some(9000);
         })
     });
