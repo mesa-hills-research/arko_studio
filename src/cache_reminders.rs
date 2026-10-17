@@ -414,6 +414,19 @@ impl Render for Countdown {
     }
 }
 
+/// Keeps `session`'s cache warm now (Session › Refresh Cache), from
+/// `window`, saying how it went as the reminder's Refresh does.
+pub fn refresh(session: &Entity<LiveSession>, window: &mut Window, cx: &mut App) {
+    let reminders = cx
+        .try_global::<Reminders>()
+        .and_then(|reminders| reminders.0.get(&session.entity_id()).cloned())
+        .unwrap_or_else(|| watch(session, cx));
+    let key = session.read(cx).key();
+    // (This window is busy with the command: its reminder goes through it.)
+    window.remove_notification1::<CacheReminder>(ElementId::Integer(key), cx);
+    reminders.update(cx, |reminders, cx| reminders.refresh(cx));
+}
+
 /// The last reminder: what the prompt cache's lapse is about, a live
 /// countdown with what each choice costs, and Refresh, which runs
 /// `refresh` (the reminder goes first). It stays until it is closed or the

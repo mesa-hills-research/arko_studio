@@ -581,6 +581,57 @@ impl Workspace {
         settings.update(cx, |settings, cx| settings.show_page(ACCOUNTS_PAGE, cx));
     }
 
+    /// Serves the shown session's web page where Settings › Web page says,
+    /// and shows its links and QR code once it's up.
+    fn share_web_page(
+        &mut self,
+        _: &menus::ShareWebPage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        if session.read(cx).reading().page.is_none() {
+            let bind = prefs::get(cx).web_page.bind_argument();
+            if let Err(why) = crate::web_page::share(&session, &bind, cx) {
+                window.push_notification(why, cx);
+                return;
+            }
+        }
+        self.status_bar.update(cx, |bar, cx| bar.show_web_page(cx));
+    }
+
+    /// Stops serving the shown session's web page.
+    fn stop_sharing_web_page(
+        &mut self,
+        _: &menus::StopSharingWebPage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        if session.read(cx).reading().page.is_none() {
+            window.push_notification("The web page isn’t shared.", cx);
+            return;
+        }
+        if let Err(why) = crate::web_page::stop(&session, cx) {
+            window.push_notification(why, cx);
+        }
+    }
+
+    /// Shows `session` here (tests).
+    #[cfg(test)]
+    pub fn show_session(
+        &mut self,
+        session: Entity<LiveSession>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show(Some(session), window, cx);
+    }
+
     /// Closes the session shown here, asking first about what runs.
     fn close_shown_session(
         &mut self,
@@ -991,6 +1042,13 @@ impl Render for Workspace {
                     if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
                         window.push_notification(why, cx);
                     }
+                }
+            }))
+            .on_action(cx.listener(Self::share_web_page))
+            .on_action(cx.listener(Self::stop_sharing_web_page))
+            .on_action(cx.listener(|this, _: &menus::RefreshCache, window, cx| {
+                if let Some(session) = this.session.clone() {
+                    crate::cache_reminders::refresh(&session, window, cx);
                 }
             }))
             .on_action(cx.listener(Self::close_shown_session))

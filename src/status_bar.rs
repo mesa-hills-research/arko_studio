@@ -59,6 +59,10 @@ pub struct StatusBar {
     clock: Clock,
     /// What `/cost` says, read when the cost's popover opens.
     cost: Option<CostReport>,
+    /// The web page's popover shows.
+    web_page_open: bool,
+    /// It opens as soon as the page is served (Share Web Page).
+    web_page_asked: bool,
     _session: Option<Subscription>,
     _tick: Option<Task<()>>,
     _cost: Option<Task<()>>,
@@ -71,6 +75,8 @@ impl StatusBar {
             width: WidthClass::Wide,
             clock: Rc::new(figures::now_ms),
             cost: None,
+            web_page_open: false,
+            web_page_asked: false,
             _session: None,
             _tick: None,
             _cost: None,
@@ -114,6 +120,8 @@ impl StatusBar {
         }
         self.cost = None;
         self._cost = None;
+        self.web_page_open = false;
+        self.web_page_asked = false;
         self._session = session
             .as_ref()
             .map(|session| cx.observe(session, |_, _, cx| cx.notify()));
@@ -136,6 +144,25 @@ impl StatusBar {
             Source::Session(session) => Some(session),
             _ => None,
         }
+    }
+
+    /// Shows the web page's links and QR code: at once when the page is
+    /// served, else as soon as it is.
+    pub fn show_web_page(&mut self, cx: &mut Context<Self>) {
+        let served = self
+            .status(cx)
+            .is_some_and(|(reading, _)| reading.page.is_some());
+        if served {
+            self.web_page_open = true;
+        } else {
+            self.web_page_asked = true;
+        }
+        cx.notify();
+    }
+
+    /// Whether the web page's popover shows.
+    pub fn is_web_page_open(&self) -> bool {
+        self.web_page_open
     }
 
     /// Whether its clock ticks: a running time shows.
@@ -365,11 +392,21 @@ impl StatusBar {
             .into_any_element()
     }
 
-    fn render_web_page(&self, page: &Page, narrow: bool) -> AnyElement {
+    fn render_web_page(&self, page: &Page, narrow: bool, cx: &mut Context<Self>) -> AnyElement {
         let session = self.session().cloned();
         let page = page.clone();
+        let view = cx.entity().downgrade();
         Popover::new("web-page-popover")
             .anchor(Anchor::BottomLeft)
+            .open(self.web_page_open)
+            .on_open_change(move |open, _, cx| {
+                let open = *open;
+                view.update(cx, |this, cx| {
+                    this.web_page_open = open;
+                    cx.notify();
+                })
+                .ok();
+            })
             .trigger(
                 Button::new("status-web-page")
                     .ghost()
@@ -532,8 +569,15 @@ impl Render for StatusBar {
         if shown.outside {
             bar = bar.left(self.render_outside(narrow, cx));
         }
-        if let Some(page) = &reading.page {
-            bar = bar.left(self.render_web_page(page, narrow));
+        match &reading.page {
+            Some(page) => {
+                // Shared at the user's asking: its links show at once.
+                if std::mem::take(&mut self.web_page_asked) {
+                    self.web_page_open = true;
+                }
+                bar = bar.left(self.render_web_page(page, narrow, cx));
+            }
+            None => self.web_page_open = false,
         }
         if let Some(timer) =
             CacheTimer::of(&reading.cache, activity.working, now).filter(|_| shown.cache.is_some())

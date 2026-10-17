@@ -389,3 +389,78 @@ fn the_cache_timer_counts_down_while_idle_and_warns_in_its_last_minute(cx: &mut 
     bar.show(cx, reading, working(NOW));
     assert_eq!(bar.shown(cx).cache, None);
 }
+
+/// A window showing a session that hasn't opened (what it's sent waits in
+/// its queue).
+fn window_with_session(
+    cx: &mut TestAppContext,
+) -> (
+    AnyWindowHandle,
+    Entity<crate::workspace::Workspace>,
+    Entity<LiveSession>,
+) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+    cx.update_window(window, |_, window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(session.clone(), window, cx)
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    (window, workspace, session)
+}
+
+/// Share Web Page serves the page where Settings say and shows its links
+/// once it's up. Stop Sharing Web Page stops it.
+#[gpui_kit::test]
+fn sharing_the_web_page_serves_it_and_shows_its_links(cx: &mut TestAppContext) {
+    let (window, workspace, session) = window_with_session(cx);
+    cx.update(|cx| {
+        crate::prefs::update(cx, |prefs| {
+            prefs.web_page.address = "0.0.0.0".into();
+            prefs.web_page.port = Some(9000);
+        })
+    });
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ShareWebPage), cx)
+    });
+    assert_eq!(sent(&session, cx), ["/remote 0.0.0.0:9000"]);
+    // The page is up: its links show.
+    session.update(cx, |session, cx| {
+        session.set_status(busy(), Activity::default(), cx)
+    });
+    cx.run_until_parked();
+    let bar = cx.read(|cx| workspace.read(cx).status_bar().clone());
+    act(cx, window, |_, _| {});
+    assert!(cx.read(|cx| bar.read(cx).is_web_page_open()));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("web-page-panel").is_some())
+    });
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::StopSharingWebPage), cx)
+    });
+    assert_eq!(sent(&session, cx), ["/remote 0.0.0.0:9000", "/remote off"]);
+}
+
+/// Refresh Cache asks the session to keep its cache warm, and says why it
+/// couldn't.
+#[gpui_kit::test]
+fn refresh_cache_asks_the_session(cx: &mut TestAppContext) {
+    let (window, _, _) = window_with_session(cx);
+    let before = cx
+        .update_window(window, |_, window, cx| {
+            gpui_kit::component::WindowExt::notifications(window, cx).len()
+        })
+        .unwrap();
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::RefreshCache), cx)
+    });
+    let after = cx
+        .update_window(window, |_, window, cx| {
+            gpui_kit::component::WindowExt::notifications(window, cx).len()
+        })
+        .unwrap();
+    assert_eq!(after, before + 1, "it says why the cache wasn't refreshed");
+}
