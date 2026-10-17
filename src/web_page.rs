@@ -114,27 +114,76 @@ pub fn explanation(page: &Page) -> String {
 /// What the panel says when only this computer can open the page.
 pub const THIS_COMPUTER_ONLY: &str = "Only this computer can open these links. For a phone or another computer, share the page on your network in Settings › Web page (Tailscale’s too), or reach it through an SSH tunnel.";
 
-/// The QR codes drawn lately, by the text they hold: a page's links change
-/// only with a new key or address.
+/// A QR code's text and the device pixels of its modules.
+type QrKey = (String, u32);
+
+/// The QR codes drawn lately, by the text they hold and the device pixels
+/// of a module: a page's links change only with a new key or address.
 #[derive(Default)]
-struct QrImages(VecDeque<(String, Option<Arc<Image>>)>);
+struct QrImages(VecDeque<(QrKey, Option<Arc<RenderImage>>)>);
 
 impl Global for QrImages {}
 
 const KEPT_QR_IMAGES: usize = 4;
 
-/// `text` as a QR code image (dark on light, whatever the theme, as readers
-/// expect), made once and kept for the next frames.
-pub fn qr_image(text: &str, cx: &mut App) -> Option<Arc<Image>> {
+/// The light margin around a QR code, in modules: the standard's.
+const QR_QUIET: i32 = 4;
+
+/// `text` as a QR code's pixels, `module` device pixels a module, dark on
+/// light whatever the theme (as readers expect), with its margin.
+fn qr_pixels(text: &str, module: u32) -> Option<RenderImage> {
+    use qrcodegen::{QrCode, QrCodeEcc};
+
+    let code = QrCode::encode_text(text, QrCodeEcc::Low).ok()?;
+    let modules = (code.size() + 2 * QR_QUIET) as u32;
+    let side = modules * module;
+    let image = image::RgbaImage::from_fn(side, side, |x, y| {
+        let (x, y) = (
+            (x / module) as i32 - QR_QUIET,
+            (y / module) as i32 - QR_QUIET,
+        );
+        let shade = if code.get_module(x, y) { 0 } else { 255 };
+        image::Rgba([shade, shade, shade, 255])
+    });
+    Some(RenderImage::new(vec![image::Frame::new(image)]))
+}
+
+/// How many modules `text`'s QR code is across, its margin included.
+fn qr_modules(text: &str) -> Option<u32> {
+    let code = qrcodegen::QrCode::encode_text(text, qrcodegen::QrCodeEcc::Low).ok()?;
+    Some((code.size() + 2 * QR_QUIET) as u32)
+}
+
+/// `text` as a QR code as large as fits `room` (logical pixels) with each
+/// module whole device pixels, so its edges stay sharp, and its size in
+/// logical pixels. Made once and kept for the next frames. The images let
+/// go leave the window too.
+pub fn qr_image(
+    text: &str,
+    room: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<(Arc<RenderImage>, Pixels)> {
+    let scale = window.scale_factor();
+    let modules = qr_modules(text)?;
+    let module = ((f32::from(room) * scale) as u32 / modules).max(1);
+    let shown = px((modules * module) as f32 / scale);
+    let key = (text.to_string(), module);
     let images = cx.default_global::<QrImages>();
-    if let Some((_, image)) = images.0.iter().find(|(kept, _)| kept == text) {
-        return image.clone();
+    if let Some((_, image)) = images.0.iter().find(|(kept, _)| *kept == key) {
+        return image.clone().map(|image| (image, shown));
     }
-    let image = arko::remote::qr_svg(text)
-        .map(|svg| Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes())));
-    images.0.push_front((text.to_string(), image.clone()));
-    images.0.truncate(KEPT_QR_IMAGES);
-    image
+    let image = qr_pixels(text, module).map(Arc::new);
+    images.0.push_front((key, image.clone()));
+    let gone: Vec<_> = images
+        .0
+        .drain(KEPT_QR_IMAGES.min(images.0.len())..)
+        .filter_map(|(_, image)| image)
+        .collect();
+    for image in gone {
+        window.drop_image(image).ok();
+    }
+    image.map(|image| (image, shown))
 }
 
 /// What a click on a button runs.
@@ -188,7 +237,8 @@ impl WebPagePanel {
 impl RenderOnce for WebPagePanel {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let qr = qr_link(&self.page).map(|link| (link.url.clone(), link_label(link)));
-        let qr = qr.and_then(|(url, label)| Some((qr_image(&url, cx)?, label)));
+        let room = window.rem_size() * 9.;
+        let qr = qr.and_then(|(url, label)| Some((qr_image(&url, room, window, cx)?, label)));
         let theme = cx.theme();
         let mono = theme.mono_font_family.clone();
         // As tall as the window allows: the links and the QR code scroll,
@@ -264,7 +314,7 @@ impl RenderOnce for WebPagePanel {
                         }),
                 )
             })
-            .when_some(qr, |this, (qr, label)| {
+            .when_some(qr, |this, ((qr, shown), label)| {
                 this.child(
                     v_flex()
                         .items_center()
@@ -274,7 +324,10 @@ impl RenderOnce for WebPagePanel {
                                 .id("web-page-qr")
                                 .test_support()
                                 .size(rems(9.))
-                                .child(img(qr).size_full().rounded(theme.radius)),
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(img(qr).size(shown).rounded(theme.radius)),
                         )
                         .child(
                             div()
@@ -355,7 +408,7 @@ mod tests {
         share_command, shown_url,
     };
     use arko::remote::{Link, LinkKind, Page};
-    use gpui_kit::ImageFormat;
+    use gpui_kit::px;
     use std::sync::Arc;
 
     fn link(url: &str, interface: Option<&str>, kind: LinkKind, loopback: bool) -> Link {
@@ -438,14 +491,46 @@ mod tests {
 
     #[gpui_kit::test]
     fn a_qr_code_is_made_once_per_link(cx: &mut gpui_kit::TestAppContext) {
-        let first = cx.update(|cx| qr_image("http://10.0.0.2:8765/#key=abc", cx).unwrap());
-        let again = cx.update(|cx| qr_image("http://10.0.0.2:8765/#key=abc", cx).unwrap());
+        let window = cx.add_empty_window();
+        let link = "http://10.0.0.2:8765/#key=abc";
+        let made = |cx: &mut gpui_kit::VisualTestContext, text: &str| {
+            cx.update(|window, cx| qr_image(text, px(144.), window, cx).unwrap())
+        };
+        let (first, shown) = made(window, link);
+        let (again, _) = made(window, link);
         assert!(Arc::ptr_eq(&first, &again));
-        assert_eq!(first.format, ImageFormat::Svg);
+        // Whole device pixels a module, as large as fits the room: drawn at
+        // its own size, never stretched.
+        let scale = window.update(|window, _| window.scale_factor());
+        let width = first.size(0).width.0 as u32;
+        assert_eq!(width % super::qr_modules(link).unwrap(), 0);
+        assert_eq!(shown, px(width as f32 / scale));
+        assert!(shown <= px(144.) && shown > px(144. * 0.8), "{shown:?}");
         for n in 0..KEPT_QR_IMAGES {
-            cx.update(|cx| qr_image(&format!("http://10.0.0.2:{n}/"), cx));
+            made(window, &format!("http://10.0.0.2:{n}/"));
         }
-        let later = cx.update(|cx| qr_image("http://10.0.0.2:8765/#key=abc", cx).unwrap());
+        let (later, _) = made(window, link);
         assert!(!Arc::ptr_eq(&first, &later), "only the latest few are kept");
+    }
+
+    /// Each module is a square of whole pixels, dark on light, inside the
+    /// standard's margin.
+    #[test]
+    fn a_qr_codes_modules_are_whole_pixels() {
+        let image = super::qr_pixels("http://192.168.1.12:8765/#key=abc", 4).unwrap();
+        let bytes = image.as_bytes(0).unwrap();
+        let side = image.size(0).width.0 as usize;
+        assert_eq!(side, 37 * 4);
+        let shade = |x: usize, y: usize| bytes[(y * side + x) * 4];
+        // The margin is light, the finder pattern's corner dark, and its
+        // edge is sharp: no grey between.
+        assert_eq!(shade(15, 15), 255);
+        assert_eq!(shade(16, 16), 0);
+        assert_eq!(shade(19, 19), 0);
+        assert!(
+            bytes
+                .chunks(4)
+                .all(|pixel| pixel[0] == 0 || pixel[0] == 255)
+        );
     }
 }
