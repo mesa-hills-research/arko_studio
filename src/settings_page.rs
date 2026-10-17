@@ -448,7 +448,6 @@ impl SettingsPage {
             .collect();
         SettingPage::new(PAGES[0])
             .icon(IconName::Palette)
-            .default_open(true)
             .groups([
                 SettingGroup::new().title("Theme").items([
                     SettingItem::new(
@@ -531,7 +530,7 @@ impl SettingsPage {
                         )
                         .keywords(["ligatures", "font", "monospace"]),
                     ),
-                SettingGroup::new().title("Size").items([
+                SettingGroup::new().title("Font files").item(
                     SettingItem::new(
                         "Add font file…",
                         SettingField::render(move |_, _, _| {
@@ -546,6 +545,8 @@ impl SettingsPage {
                         }),
                     )
                     .description("Copies a .ttf or .otf file into Arko’s folder and lists it under both fonts."),
+                ),
+                SettingGroup::new().title("Zoom").item(
                     SettingItem::new(
                         "Zoom",
                         SettingField::dropdown(
@@ -559,8 +560,8 @@ impl SettingsPage {
                         )
                         .default_value(zoom_label(1.0)),
                     )
-                    .description(zoom_description()),
-                ]),
+                    .description("Scales the whole window, as View › Zoom In and Zoom Out do."),
+                ),
                 SettingGroup::new().title("Transcript").items([
                     switch(
                         "Render Markdown",
@@ -709,17 +710,6 @@ fn parse_zoom(label: &str) -> Option<f32> {
         .iter()
         .copied()
         .find(|step| ((step * 100.).round() - percent).abs() < 0.5)
-}
-
-fn zoom_description() -> String {
-    let modifier = if cfg!(target_os = "macos") {
-        "⌘"
-    } else {
-        "Ctrl+"
-    };
-    format!(
-        "Scales the whole window. {modifier}= and {modifier}- step it, {modifier}0 goes back to 100%."
-    )
 }
 
 fn send_key_options() -> &'static [(SendKey, &'static str)] {
