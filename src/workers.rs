@@ -15,10 +15,6 @@ use arko::remote::{WorkerState, WorkerSummary};
 /// "Finished" group at the bottom of the list.
 pub const ENDED_SHOWS_FOR_MS: i64 = 5 * 60 * 1000;
 
-/// Compact lists of workers (a popover, a summary) show this many rows, and
-/// a "… N more" row for the rest.
-pub const COMPACT_ROWS: usize = 5;
-
 /// Each worker's runs, as the app saw them.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct WorkerTimes {
@@ -144,12 +140,6 @@ pub fn state_label(state: WorkerState) -> &'static str {
     }
 }
 
-/// The rows a compact list shows of `items`, and how many more there are.
-pub fn compact<T>(items: &[T]) -> (&[T], usize) {
-    let shown = items.len().min(COMPACT_ROWS);
-    (&items[..shown], items.len() - shown)
-}
-
 /// What a worker did last, in a line: its report's first line once it
 /// finished, else its latest call or why it stopped.
 pub fn last_line(worker: &WorkerSummary) -> Option<String> {
@@ -262,13 +252,6 @@ mod tests {
         assert_eq!(tokens_label(1_020_000), "1.02M");
         assert_eq!(tokens_label(1_000_000), "1M");
         assert_eq!(tokens_label(1_500_000), "1.5M");
-    }
-
-    #[test]
-    fn compact_lists_show_five_and_count_the_rest() {
-        let items: Vec<u32> = (0..8).collect();
-        assert_eq!(compact(&items), (&items[..5], 3));
-        assert_eq!(compact(&items[..4]), (&items[..4], 0));
     }
 
     #[test]
