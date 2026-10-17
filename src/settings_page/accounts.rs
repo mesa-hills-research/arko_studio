@@ -646,6 +646,10 @@ impl AccountsPage {
             Some(accounts) => claude_code_words(&accounts.claude_code, home),
         };
         let (choose, check) = (this.clone(), this.clone());
+        let clear = this.clone();
+        let chosen = self.accounts.as_ref().is_some_and(|accounts| {
+            accounts.chatgpt.source != LoginSource::Default
+        });
         let (login_page, claude_page) = (this.clone(), this.clone());
         let checking = self.checking || self.accounts.is_none();
         SettingGroup::new().title("Logins").items([
@@ -654,13 +658,29 @@ impl AccountsPage {
                 SettingField::render(move |_, _, cx| {
                     let choose = choose.clone();
                     let choosing = choose.clone();
-                    let button = Button::new("choose-login")
-                        .outline()
-                        .small()
-                        .label("Choose file…")
-                        .on_click(move |_, window, cx| {
-                            AccountsPage::choose_login(&choose, window, cx)
+                    let clear = clear.clone();
+                    let button = h_flex()
+                        .gap_1()
+                        .when(chosen, |this| {
+                            this.child(
+                                Button::new("clear-login")
+                                    .ghost()
+                                    .small()
+                                    .label("Use Codex’s own login")
+                                    .on_click(move |_, window, cx| {
+                                        clear_login(&clear, window, cx)
+                                    }),
+                            )
                         })
+                        .child(
+                            Button::new("choose-login")
+                                .outline()
+                                .small()
+                                .label("Choose file…")
+                                .on_click(move |_, window, cx| {
+                                    AccountsPage::choose_login(&choose, window, cx)
+                                }),
+                        )
                         .into_any_element();
                     login_page.read(cx).row_field(
                         CHATGPT,
@@ -844,6 +864,26 @@ pub fn use_login(this: &Entity<AccountsPage>, path: PathBuf, window: &mut Window
             let chosen = choosing.await;
             cx.update(|window, cx| {
                 match chosen {
+                    Ok(said) => window.push_notification(said, cx),
+                    Err(why) => window.push_notification(Notification::error(why), cx),
+                }
+                this.update(cx, |page, cx| page.refresh(cx));
+            })
+            .ok();
+        })
+        .detach();
+}
+
+/// Goes back to the login Codex keeps, then reads the account row again.
+fn clear_login(this: &Entity<AccountsPage>, window: &mut Window, cx: &mut App) {
+    let backend = cx.global::<SharedBackend>().clone();
+    let clearing = cx.background_spawn(async move { backend.clear_chatgpt_login() });
+    let this = this.clone();
+    window
+        .spawn(cx, async move |cx| {
+            let cleared = clearing.await;
+            cx.update(|window, cx| {
+                match cleared {
                     Ok(said) => window.push_notification(said, cx),
                     Err(why) => window.push_notification(Notification::error(why), cx),
                 }

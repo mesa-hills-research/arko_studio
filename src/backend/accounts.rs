@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 pub use arko::accounts::{
     ChatGptLogin, ClaudeCodeStatus, KeySource, KeyState, LoginSource, LoginState, Problem, Ready,
+    key_states_in,
 };
 
 /// The variable that turns Anthropic's 1-hour prompt cache on for the
@@ -32,7 +33,7 @@ impl Accounts {
         let keys = key_states_in(root);
         Self {
             keys,
-            chatgpt: arko::accounts::chatgpt_login(None),
+            chatgpt: arko::accounts::chatgpt_login_in(root),
             claude_code: arko::accounts::claude_code(),
             cache_1h: arko::Env::for_folder_in(None, true, Some(root))
                 .var(CACHE_1H_VARIABLE)
@@ -94,15 +95,6 @@ impl Accounts {
             cache_1h: None,
         }
     }
-}
-
-/// The API keys as arko finds them for Arko's folder `root`, reading the
-/// `.env` files as they are now: arko in the terminal, or the user, may
-/// have changed them since the app started. What sessions read before one
-/// is open (the ChatGPT login too) then comes from these files.
-pub fn key_states_in(root: &Path) -> Vec<KeyState> {
-    arko::accounts::use_env(arko::Env::for_folder_in(None, true, Some(root)));
-    arko::accounts::key_states()
 }
 
 /// The key arko takes for `provider`, as `/keys add` names it.
@@ -190,6 +182,15 @@ pub fn login_chosen_words(first: Option<&str>) -> String {
         Some(source) => format!(
             "Arko uses this ChatGPT login until Arko Studio quits. After that, {CODEX_AUTH_VARIABLE} {source} comes first again, so change it there to replace it for good."
         ),
+    }
+}
+
+/// What removing a chosen login did, including a setting that still wins.
+pub fn login_cleared_words(login: &ChatGptLogin) -> String {
+    if login.source == LoginSource::Default {
+        "Arko uses Codex’s own login for new sessions. Sign in with “codex login” if needed.".into()
+    } else {
+        "The chosen login was removed. ARKO_CODEX_AUTH is still set elsewhere, so remove it there to use Codex’s own login.".into()
     }
 }
 

@@ -332,6 +332,9 @@ pub trait Backend: Send + Sync + 'static {
     /// for how long, `Err` why not.
     fn set_chatgpt_login(&self, path: &Path) -> Result<String, String>;
 
+    /// Removes the chosen login so Codex's own can be used again.
+    fn clear_chatgpt_login(&self) -> Result<String, String>;
+
     /// Starts the sessions started from now on with `defaults`, the
     /// preferences as they are now. It doesn't block.
     fn set_defaults(&self, defaults: SessionDefaults);
@@ -592,6 +595,11 @@ impl Backend for ArkoBackend {
         let first = accounts::login_set_first();
         arko::accounts::set_chatgpt_login(&self.root, path)?;
         Ok(accounts::login_chosen_words(first.as_deref()))
+    }
+
+    fn clear_chatgpt_login(&self) -> Result<String, String> {
+        let login = arko::accounts::clear_chatgpt_login(&self.root)?;
+        Ok(accounts::login_cleared_words(&login))
     }
 
     fn set_defaults(&self, defaults: SessionDefaults) {
@@ -964,6 +972,15 @@ impl Backend for FakeBackend {
         }
         self.with_state(|state| state.accounts.chatgpt = accounts::chosen_login(path.into()));
         Ok(accounts::login_chosen_words(None))
+    }
+
+    fn clear_chatgpt_login(&self) -> Result<String, String> {
+        self.with_state(|state| {
+            state.accounts.chatgpt.source = account_words::LoginSource::Default;
+            state.accounts.chatgpt.path = None;
+            state.accounts.chatgpt.state = account_words::LoginState::Missing;
+            Ok(accounts::login_cleared_words(&state.accounts.chatgpt))
+        })
     }
 
     fn set_defaults(&self, defaults: SessionDefaults) {
