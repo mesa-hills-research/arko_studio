@@ -1222,6 +1222,18 @@ impl Render for Workspace {
                         .update(cx, |view, cx| view.open_find(window, cx));
                 }
             }))
+            .on_action(cx.listener(|this, _: &menus::FindNext, window, cx| {
+                if this.settings.is_none() {
+                    this.session_view
+                        .update(cx, |view, cx| view.find_again(true, window, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &menus::FindPrevious, window, cx| {
+                if this.settings.is_none() {
+                    this.session_view
+                        .update(cx, |view, cx| view.find_again(false, window, cx));
+                }
+            }))
             .on_action(cx.listener(|_, _: &menus::KeyboardShortcuts, window, cx| {
                 shortcuts::open(window, cx)
             }))

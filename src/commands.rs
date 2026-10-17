@@ -137,6 +137,18 @@ pub fn commands() -> Vec<Command> {
             .not_in_palette(),
         Command::new(General, "New Window", NewWindow).keys(&["secondary-shift-n"]),
         Command::new(General, "Find…", Find).keys(&["secondary-f"]),
+        // Also where Ctrl+F belongs to the composer's Emacs or Vim keymap:
+        // F3 opens Find when it isn't open.
+        Command::new(General, "Find Next", FindNext).keys(if mac {
+            &["cmd-g", "f3"]
+        } else {
+            &["f3"]
+        }),
+        Command::new(General, "Find Previous", FindPrevious).keys(if mac {
+            &["cmd-shift-g", "shift-f3"]
+        } else {
+            &["shift-f3"]
+        }),
         Command::new(General, "Close Window", CloseWindow).keys(if mac { &["cmd-w"] } else { &[] }),
         Command::new(General, "Minimize", Minimize).keys(if mac { &["cmd-m"] } else { &[] }),
         Command::new(General, if mac { "Zoom" } else { "Maximize" }, Zoom),

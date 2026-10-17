@@ -143,6 +143,18 @@ impl Render for ShortcutsView {
                                     .text_color(theme.muted_foreground)
                                     .child(group.title()),
                             )
+                            // Ctrl+F is a keymap's own there.
+                            .when(group == Group::General && !cfg!(target_os = "macos"), |this| {
+                                this.child(
+                                    div()
+                                        .pb_1()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(
+                                            "With the Emacs or Vim keymap, Ctrl+F moves the caret in the composer. F3 opens Find from anywhere.",
+                                        ),
+                                )
+                            })
                             .children(rows.into_iter().map(|(index, shortcut)| {
                                 h_flex()
                                     .id(("shortcut", index))

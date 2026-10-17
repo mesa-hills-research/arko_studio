@@ -25,6 +25,8 @@ actions!(
         NewSession,
         ExportMarkdown,
         Find,
+        FindNext,
+        FindPrevious,
         ToggleSidebar,
         ToggleWorkersPanel,
         FocusSessionFilter,

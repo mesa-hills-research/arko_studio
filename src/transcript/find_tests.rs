@@ -328,6 +328,16 @@ fn mod_f_opens_the_find_bar_and_esc_gives_the_keyboard_back(cx: &mut TestAppCont
         let composer = view.read(cx).composer().read(cx);
         assert!(composer.is_focused(window, cx), "the keyboard is back");
     });
+    // F3 opens the find bar too (Ctrl+F belongs to the Emacs and Vim
+    // keymaps), and moves on once it is open, Shift+F3 back.
+    act(cx, window, |window, cx| window.press("f3", cx));
+    act(cx, window, |window, cx| window.input("pears", cx));
+    assert_eq!(status(cx).and_then(|status| status.current), Some(1));
+    act(cx, window, |window, cx| window.press("f3", cx));
+    assert_eq!(status(cx).and_then(|status| status.current), Some(0));
+    act(cx, window, |window, cx| window.press("shift-f3", cx));
+    assert_eq!(status(cx).and_then(|status| status.current), Some(1));
+    act(cx, window, |window, cx| window.press("escape", cx));
     act(cx, window, |window, cx| {
         let sessions = crate::live::LiveSessions::all(cx);
         crate::quit::close(sessions, false, window, cx);

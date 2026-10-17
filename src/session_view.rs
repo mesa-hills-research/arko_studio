@@ -928,6 +928,16 @@ impl SessionView {
         self.find.as_ref().map(|find| find.status)
     }
 
+    /// The next match (`forward`) or the previous one, from anywhere in
+    /// the window (F3, Shift+F3). Find opens when it isn't open.
+    pub fn find_again(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find.is_some() {
+            self.find_next(forward, cx);
+        } else {
+            self.open_find(window, cx);
+        }
+    }
+
     /// The next match down the transcript (`forward`), or the previous.
     pub fn find_next(&mut self, forward: bool, cx: &mut Context<Self>) {
         let Some(transcript) = self.transcript(cx).cloned() else {
