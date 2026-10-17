@@ -333,7 +333,8 @@ fn the_web_pages_popover_shows_its_links_and_stops_sharing(cx: &mut TestAppConte
     act(cx, bar.window, |window, cx| {
         window.click("web-page-stop", cx)
     });
-    assert_eq!(sent(&bar.session, cx), ["/remote new-key", "/remote off"]);
+    let requests = bar.session.update(cx, |session, _| session.take_requests());
+    assert!(matches!(requests.as_slice(), [arko::Request::NewWebPageKey { .. }, arko::Request::StopWebPage { .. }]));
 }
 
 /// In a short window, the web page's popover fits: its links and QR code
@@ -375,7 +376,8 @@ fn the_web_pages_popover_fits_a_short_window(cx: &mut TestAppContext) {
     act(cx, bar.window, |window, cx| {
         window.click("web-page-stop", cx)
     });
-    assert_eq!(sent(&bar.session, cx), ["/remote off"]);
+    let requests = bar.session.update(cx, |session, _| session.take_requests());
+    assert!(matches!(requests.as_slice(), [arko::Request::StopWebPage { .. }]));
 }
 
 /// A page only this computer can open has no QR code: the popover says how
@@ -619,8 +621,15 @@ fn sharing_the_web_page_serves_it_and_shows_its_links(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| {
         window.dispatch_action(Box::new(crate::menus::ShareWebPage), cx)
     });
-    assert_eq!(sent(&session, cx), ["/remote 0.0.0.0:9000"]);
-    // The page is up: its links show.
+    let request = session.update(cx, |session, _| session.take_requests()).pop().unwrap();
+    let arko::Request::ShareWebPage { bind, reply } = request else {
+        panic!("expected a share request");
+    };
+    assert_eq!(bind.as_deref(), Some("0.0.0.0:9000"));
+    let bar = cx.read(|cx| workspace.read(cx).status_bar().clone());
+    assert!(!cx.read(|cx| bar.read(cx).is_web_page_open()));
+    reply.send(Ok(busy().page.unwrap())).unwrap();
+    // The page is up and the request succeeded, so its links show.
     session.update(cx, |session, cx| {
         session.set_status(busy(), Activity::default(), cx)
     });
@@ -634,7 +643,31 @@ fn sharing_the_web_page_serves_it_and_shows_its_links(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| {
         window.dispatch_action(Box::new(crate::menus::StopSharingWebPage), cx)
     });
-    assert_eq!(sent(&session, cx), ["/remote 0.0.0.0:9000", "/remote off"]);
+    let requests = session.update(cx, |session, _| session.take_requests());
+    assert!(matches!(requests.as_slice(), [arko::Request::StopWebPage { .. }]));
+}
+
+#[gpui_kit::test]
+fn page_requests_report_errors_without_waiting_for_a_timeout(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+
+    let (window, workspace, session) = window_with_session(cx);
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ShareWebPage), cx)
+    });
+    let request = session.update(cx, |session, _| session.take_requests()).pop().unwrap();
+    let arko::Request::ShareWebPage { bind, reply } = request else {
+        panic!("expected a share request");
+    };
+    assert_eq!(bind, None);
+    reply.send(Err("The port is in use.".into())).unwrap();
+    cx.run_until_parked();
+    act(cx, window, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1);
+    });
+    session.update(cx, |session, cx| session.set_status(busy(), Activity::default(), cx));
+    act(cx, window, |_, _| {});
+    assert!(!cx.read(|cx| workspace.read(cx).status_bar().read(cx).is_web_page_open()));
 }
 
 /// In a new session, before its first message, Share Web Page, Stop

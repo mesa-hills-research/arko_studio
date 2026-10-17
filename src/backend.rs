@@ -464,6 +464,7 @@ fn prepare(
         root: Some(root.to_path_buf()),
         app: "arko-studio",
         app_name: "Arko Studio",
+        shows_page_links: true,
         ..arko::Options::default()
     };
     match start {
@@ -1052,6 +1053,7 @@ mod tests {
         }));
         assert_eq!(options.app, "arko-studio");
         assert_eq!(options.app_name, "Arko Studio");
+        assert!(options.shows_page_links);
     }
 
     #[test]

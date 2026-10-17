@@ -302,6 +302,8 @@ pub struct LiveSession {
     shown: usize,
     /// Input sent before it opened, sent once it does.
     queued: Vec<arko::Input>,
+    /// Requests made while the session opens, answered once it opens.
+    queued_requests: std::cell::RefCell<Vec<arko::Request>>,
     prompt: Option<Prompt>,
     quit_ask: Option<arko::QuitAsk>,
     /// What the user agreed to stop to close it.
@@ -353,6 +355,7 @@ impl LiveSession {
             unseen: false,
             shown: 0,
             queued: Vec::new(),
+            queued_requests: Default::default(),
             prompt: None,
             quit_ask: None,
             quit_agreed: None,
@@ -485,6 +488,7 @@ impl LiveSession {
         self.prompt = None;
         let cancelled = message == CANCELLED;
         self.phase = Phase::Failed(message.clone());
+        self.queued_requests.get_mut().clear();
         cx.emit(LiveEvent::Failed((!cancelled).then_some(message)));
         LiveSessions::remove(cx.entity_id(), self.id.as_ref(), cx);
         cx.notify();
@@ -513,6 +517,9 @@ impl LiveSession {
         // Closed before it opened, only the quit is queued.
         for queued in self.queued.drain(..) {
             let _ = input.send(queued);
+        }
+        for request in self.queued_requests.get_mut().drain(..) {
+            let _ = requests.send(request);
         }
         self.link = Some(Link {
             info: session,
@@ -826,6 +833,12 @@ impl LiveSession {
         );
     }
 
+    /// Takes the requests waiting for the engine (tests).
+    #[cfg(test)]
+    pub fn take_requests(&mut self) -> Vec<arko::Request> {
+        std::mem::take(self.queued_requests.get_mut())
+    }
+
     /// The input kept until it opens (tests).
     #[cfg(test)]
     pub fn queued(&self) -> &[arko::Input] {
@@ -847,6 +860,7 @@ impl LiveSession {
 
     fn ended(&mut self, cx: &mut Context<Self>) {
         self.phase = Phase::Ended;
+        self.queued_requests.get_mut().clear();
         self._feed.clear();
         self.activity = Activity::default();
         self.quit_ask = None;
@@ -999,17 +1013,20 @@ impl LiveSession {
 
     /// Asks the engine `request`, made with its reply's sender. The task
     /// gives the answer, or why there is none.
-    fn request<T: Send + 'static>(
+    pub(crate) fn request<T: Send + 'static>(
         &self,
         request: impl FnOnce(oneshot::Sender<Result<T, String>>) -> arko::Request,
         cx: &App,
     ) -> Task<Result<T, String>> {
-        let Some(link) = &self.link else {
-            return Task::ready(Err("The session isn’t open.".to_string()));
-        };
         let (reply, answer) = oneshot::channel();
-        if link.requests.send(request(reply)).is_err() {
-            return Task::ready(Err("The session has closed.".to_string()));
+        if let Some(link) = &self.link {
+            if link.requests.send(request(reply)).is_err() {
+                return Task::ready(Err("The session has closed.".to_string()));
+            }
+        } else if self.phase == Phase::Opening {
+            self.queued_requests.borrow_mut().push(request(reply));
+        } else {
+            return Task::ready(Err("The session isn’t open.".to_string()));
         }
         cx.background_spawn(async move {
             answer

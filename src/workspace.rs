@@ -712,8 +712,8 @@ impl Workspace {
         let Some(session) = self.running_session(NO_SESSION_TO_SHARE, window, cx) else {
             return;
         };
+        let page = prefs::get(cx).web_page.clone();
         if session.read(cx).reading().page.is_none() {
-            let page = prefs::get(cx).web_page.clone();
             if page.ip().is_none() {
                 window.push_notification(
                     Notification::warning(format!(
@@ -723,13 +723,10 @@ impl Workspace {
                     cx,
                 );
             }
-            if let Err(why) = crate::web_page::share(&session, &page.bind_argument(), cx) {
-                window.push_notification(why, cx);
-                return;
-            }
         }
+        let bind = (page.address.is_some() || page.port.is_some()).then(|| page.bind_argument());
         self.status_bar
-            .update(cx, |bar, cx| bar.show_web_page(window, cx));
+            .update(cx, |bar, cx| bar.share_web_page(bind, window, cx));
     }
 
     /// Stops serving the shown session's web page.
@@ -746,9 +743,7 @@ impl Workspace {
             window.push_notification("The web page isn’t shared.", cx);
             return;
         }
-        if let Err(why) = crate::web_page::stop(&session, cx) {
-            window.push_notification(why, cx);
-        }
+        crate::web_page::stop(&session, window, cx);
     }
 
     /// The session shown here, or `None` with `why_not` in a notification:

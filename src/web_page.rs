@@ -1,7 +1,6 @@
-//! A session's web page: arko serves it (the terminal's `/remote`) so that a
-//! phone or another computer can follow the session and take part in it.
-//! This module turns it on and off with arko's own commands, and shows its
-//! links, the best of them as a QR code.
+//! Arko serves a session's web page so a phone or another computer can
+//! follow the session and take part in it. This module asks the engine to
+//! share it and shows its links, the best of them as a QR code.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -22,45 +21,52 @@ use crate::live::LiveSession;
 /// (the status bar's popover, Settings › Web page).
 pub const WHAT_IT_ALLOWS: &str = "Anyone with a session’s link can follow the session and act in it, sending messages and commands, answering questions and stopping turns. Each link holds the session’s key, and New key ends the old links. The page isn’t encrypted, so share it only on networks you trust.";
 
-/// The command that serves the page on `bind` (`/remote`'s argument: an
-/// address, a port or both, empty for the default).
-pub fn share_command(bind: &str) -> String {
-    let bind = bind.trim();
-    if bind.is_empty() {
-        "/remote on".to_string()
-    } else {
-        format!("/remote {bind}")
-    }
+/// Serves the page on an explicit address, or the network by default.
+pub fn share(
+    session: &Entity<LiveSession>,
+    bind: Option<String>,
+    cx: &App,
+) -> Task<Result<Page, String>> {
+    session
+        .read(cx)
+        .request(|reply| arko::Request::ShareWebPage { bind, reply }, cx)
 }
 
-/// The command that stops serving the page.
-pub const STOP_COMMAND: &str = "/remote off";
-
-/// The command that gives the session a new key. The page goes on with it,
-/// and the old links stop working.
-pub const NEW_KEY_COMMAND: &str = "/remote new-key";
-
-/// Serves the session's page on `bind` (see [`share_command`]).
-pub fn share(session: &Entity<LiveSession>, bind: &str, cx: &mut App) -> Result<(), String> {
-    send(session, share_command(bind), cx)
-}
-
-/// Stops serving the session's page: its links stop working.
-pub fn stop(session: &Entity<LiveSession>, cx: &mut App) -> Result<(), String> {
-    send(session, STOP_COMMAND.to_string(), cx)
+/// Stops serving the session's page, ending its links.
+pub fn stop(session: &Entity<LiveSession>, window: &mut Window, cx: &mut App) {
+    let answer = session
+        .read(cx)
+        .request(|reply| arko::Request::StopWebPage { reply }, cx);
+    notify_error(answer, window, cx);
 }
 
 /// Gives the session a new key, which ends the page's open sessions.
-pub fn new_key(session: &Entity<LiveSession>, cx: &mut App) -> Result<(), String> {
-    send(session, NEW_KEY_COMMAND.to_string(), cx)
+pub fn new_key(session: &Entity<LiveSession>, window: &mut Window, cx: &mut App) {
+    let answer = session
+        .read(cx)
+        .request(|reply| arko::Request::NewWebPageKey { reply }, cx);
+    notify_error(answer, window, cx);
 }
 
-fn send(session: &Entity<LiveSession>, command: String, cx: &mut App) -> Result<(), String> {
-    let input = arko::Input::Message(arko::Message {
-        text: command,
-        images: Vec::new(),
-    });
-    session.update(cx, |session, cx| session.send(input, cx))
+fn notify_error<T: Send + 'static>(
+    answer: Task<Result<T, String>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window
+        .spawn(cx, async move |cx| {
+            if let Err(why) = answer.await {
+                cx.update(|window, cx| {
+                    use gpui_kit::component::WindowExt as _;
+                    window.push_notification(
+                        gpui_kit::component::notification::Notification::error(why),
+                        cx,
+                    );
+                })
+                .ok();
+            }
+        })
+        .detach();
 }
 
 /// The network a link is on, and its interface: "Local network · wlan0",
@@ -238,14 +244,11 @@ impl RenderOnce for WebPagePanel {
         // the buttons stay.
         let tallest = window.viewport_size().height * 0.8;
         let session = self.session.clone();
-        let act = move |command: fn(&Entity<LiveSession>, &mut App) -> Result<(), String>| {
+        let act = move |command: fn(&Entity<LiveSession>, &mut Window, &mut App)| {
             let session = session.clone();
             move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                if let Some(session) = &session
-                    && let Err(why) = command(session, cx)
-                {
-                    use gpui_kit::component::WindowExt as _;
-                    window.push_notification(why, cx);
+                if let Some(session) = &session {
+                    command(session, window, cx);
                 }
             }
         };
@@ -376,7 +379,7 @@ impl RenderOnce for WebPagePanel {
                             .ghost()
                             .small()
                             .label("New key")
-                            .tooltip("A new key: these links stop working")
+                            .tooltip("A new key ends these links")
                             .disabled(self.session.is_none())
                             .on_click(act(new_key)),
                     )
@@ -396,10 +399,7 @@ impl RenderOnce for WebPagePanel {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{
-        KEPT_QR_IMAGES, NEW_KEY_COMMAND, STOP_COMMAND, link_label, qr_image, qr_link,
-        share_command, shown_url,
-    };
+    use super::{KEPT_QR_IMAGES, link_label, qr_image, qr_link, shown_url};
     use arko::remote::{Link, LinkKind, Page};
     use gpui_kit::px;
     use std::sync::Arc;
@@ -410,21 +410,6 @@ mod tests {
             interface: interface.map(Into::into),
             kind,
             loopback,
-        }
-    }
-
-    #[test]
-    fn sharing_sends_the_terminals_commands() {
-        assert_eq!(share_command(""), "/remote on");
-        assert_eq!(share_command(" 0.0.0.0:9000 "), "/remote 0.0.0.0:9000");
-        assert_eq!(STOP_COMMAND, "/remote off");
-        assert_eq!(NEW_KEY_COMMAND, "/remote new-key");
-        for command in [
-            share_command("9000"),
-            STOP_COMMAND.into(),
-            NEW_KEY_COMMAND.into(),
-        ] {
-            assert!(arko::commands::find(&command).is_some(), "{command}");
         }
     }
 
