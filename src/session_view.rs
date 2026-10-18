@@ -1989,25 +1989,39 @@ impl SessionView {
                         })
                         .children(models.into_iter().enumerate().map(|(ix, model)| {
                             let checked = current.as_deref() == Some(model.name.as_str());
+                            // What to know before choosing it, under its name.
+                            let note = arko::models::note(&model.name).map(|note| {
+                                div()
+                                    .id(SharedString::from(format!("model-note-{group_ix}-{ix}")))
+                                    .test_support()
+                                    .px_2()
+                                    .pb_1()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(note)
+                            });
                             let name = model.name.clone();
                             let view = view.clone();
                             let popover = popover.clone();
-                            Button::new(SharedString::from(format!("model-{group_ix}-{ix}")))
-                                .ghost()
-                                .small()
-                                .w_full()
-                                .justify_start()
-                                .disabled(!usable || (started && !workers_only))
-                                .when(checked, |this| this.icon(IconName::Check))
-                                .label(arko::models::display_name(&model.name))
-                                .on_click(move |_, window, cx| {
-                                    let name = name.clone();
-                                    view.update(cx, |view, cx| {
-                                        view.choose_model(name, workers_only, window, cx)
-                                    })
-                                    .ok();
-                                    popover.update(cx, |popover, cx| popover.dismiss(window, cx));
-                                })
+                            let button =
+                                Button::new(SharedString::from(format!("model-{group_ix}-{ix}")))
+                                    .ghost()
+                                    .small()
+                                    .w_full()
+                                    .justify_start()
+                                    .disabled(!usable || (started && !workers_only))
+                                    .when(checked, |this| this.icon(IconName::Check))
+                                    .label(arko::models::display_name(&model.name))
+                                    .on_click(move |_, window, cx| {
+                                        let name = name.clone();
+                                        view.update(cx, |view, cx| {
+                                            view.choose_model(name, workers_only, window, cx)
+                                        })
+                                        .ok();
+                                        popover
+                                            .update(cx, |popover, cx| popover.dismiss(window, cx));
+                                    });
+                            v_flex().child(button).children(note)
                         }))
                         .into_any_element(),
                 )

@@ -360,6 +360,39 @@ fn the_placeholder_and_send_button_follow_the_state(cx: &mut TestAppContext) {
     });
 }
 
+/// Claude Mythos 5.1 says under its name in the model list that it needs
+/// access first, and the models without a note have none.
+#[gpui_kit::test]
+fn the_model_list_says_what_access_mythos_needs(cx: &mut TestAppContext) {
+    use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
+    let models = [
+        ("cc:claude-opus-5-5", "cc:opus"),
+        ("cc:claude-mythos-5-1", "cc:mythos"),
+    ];
+    let backend = FakeBackend::sample("/arko", SystemTime::now()).with_models(ModelChoices {
+        groups: vec![ModelGroup {
+            name: "Claude Code, on your Claude plan".into(),
+            needs: None,
+            models: models
+                .iter()
+                .map(|(name, alias)| ModelChoice {
+                    name: (*name).into(),
+                    alias: (*alias).into(),
+                })
+                .collect(),
+        }],
+        default: Some("cc:claude-opus-5-5".into()),
+        note: None,
+    });
+    cx.update(|cx| crate::init(Startup::for_tests(Arc::new(backend)), cx));
+    let (window, _) = open(cx, 1300.);
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("model-note-0-1").is_some());
+        assert!(window.try_find("model-note-0-0").is_none());
+    });
+}
+
 #[gpui_kit::test]
 fn the_mode_chip_lists_the_models_and_picks_one(cx: &mut TestAppContext) {
     let (_, window, workspace) = start(cx);
