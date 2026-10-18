@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 # GPUI Kit from Mesa Hills Research's fork. It pins the matching gpui-pre release
 # and re-exports it, so GPUI is `gpui_kit::*` and needs no entry of its own.
-gpui-kit = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "86d563f748d1c90062632d4555f300daaa235a3f", features = ["fonts", "tree-sitter-languages", "writing"] }
+gpui-kit = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "eb902b7a2aad7a5cd184e4597c68e008b2dab5cb", features = ["fonts", "tree-sitter-languages", "writing"] }
 # Arko's engine, as a library: no terminal crates, the web page's server kept.
 arko = { package = "arko-tui", version = "0.1.0", default-features = false, features = ["remote"] }
 anyhow = "1.0"
@@ -43,7 +43,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 # The same GPUI Kit with GPUI's test harness, for tests that click and type
 # into real windows on a fake clock.
-gpui-kit = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "86d563f748d1c90062632d4555f300daaa235a3f", features = ["test-support"] }
+gpui-kit = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "eb902b7a2aad7a5cd184e4597c68e008b2dab5cb", features = ["test-support"] }
 arko = { package = "arko-tui", version = "0.1.0", default-features = false, features = ["remote", "testing"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # The feed's events as arko gets them from the framework, for tests that
@@ -55,7 +55,7 @@ uuid = "1"
 # The golden-screenshot harness, from the gpui fork at the rev of the [patch.crates-io] below.
 # Its goldens are drawn by Mesa's software Vulkan driver, on Linux.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-gpui-screenshot = { package = "gpui-pre-screenshot", git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
+gpui-screenshot = { package = "gpui-pre-screenshot", git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
 
 [build-dependencies]
 winresource = "0.1"
@@ -64,28 +64,28 @@ winresource = "0.1"
 # only the app's own patches, so the kit's patch doesn't reach the app. Move the rev with
 # the kit's.
 [patch.crates-io]
-gpui-pre                   = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-apple             = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-collections       = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-derive-refineable = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-http-client       = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-linux             = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-macos             = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-macros            = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-perf              = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-platform          = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-refineable        = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-scheduler         = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-shared-string     = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-sum-tree          = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-util              = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-util-macros       = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-web               = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-wgpu              = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-windows           = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-zlog              = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-ztracing          = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
-gpui-pre-ztracing-macro    = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
+gpui-pre                   = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-apple             = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-collections       = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-derive-refineable = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-http-client       = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-linux             = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-macos             = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-macros            = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-perf              = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-platform          = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-refineable        = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-scheduler         = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-shared-string     = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-sum-tree          = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-util              = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-util-macros       = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-web               = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-wgpu              = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-windows           = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-zlog              = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-ztracing          = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+gpui-pre-ztracing-macro    = { git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
 
 # Mesquite from crates.io for GPUI Kit too, the releases Arko's index uses, so the app
 # builds and links one copy of each grammar. The kit pins the same code by git.

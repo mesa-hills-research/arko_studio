@@ -24,7 +24,7 @@ use crate::Startup;
 use crate::backend::FakeBackend;
 use crate::prefs::{self, TranscriptView as View};
 
-fn start(cx: &mut TestAppContext) {
+pub(super) fn start(cx: &mut TestAppContext) {
     let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
     cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
 }
@@ -40,7 +40,7 @@ fn options(width: f32, height: f32) -> WindowOptions {
 }
 
 /// A transcript of `feed` in a window of its own, drawn once.
-fn open(
+pub(super) fn open(
     cx: &mut TestAppContext,
     feed: &Feed,
     filter: AgentFilter,
@@ -61,7 +61,7 @@ fn open(
 /// Lets the feed's updates through and draws until nothing changes: the
 /// inbox wakes the view, the documents parse in the background and their
 /// blocks become rows.
-fn settle(cx: &mut TestAppContext, window: AnyWindowHandle) {
+pub(super) fn settle(cx: &mut TestAppContext, window: AnyWindowHandle) {
     for _ in 0..4 {
         cx.run_until_parked();
         cx.update_window(window, |_, window, cx| window.render_frame(cx))
@@ -70,7 +70,7 @@ fn settle(cx: &mut TestAppContext, window: AnyWindowHandle) {
     cx.run_until_parked();
 }
 
-fn keys(view: &Entity<TranscriptView>, cx: &mut TestAppContext) -> Vec<RowKey> {
+pub(super) fn keys(view: &Entity<TranscriptView>, cx: &mut TestAppContext) -> Vec<RowKey> {
     cx.read(|cx| view.read(cx).rows.iter().map(|row| row.key).collect())
 }
 
@@ -99,7 +99,7 @@ fn think(feed: &Feed, text: &str) {
     );
 }
 
-fn call(feed: &Feed, agent: &str, tool: &str, parameters: &[(&str, Value)]) -> Uuid {
+pub(super) fn call(feed: &Feed, agent: &str, tool: &str, parameters: &[(&str, Value)]) -> Uuid {
     let id = Uuid::new_v4();
     let label = (agent != "main").then_some(agent);
     feed.event(
@@ -119,7 +119,7 @@ fn call(feed: &Feed, agent: &str, tool: &str, parameters: &[(&str, Value)]) -> U
     id
 }
 
-fn result(feed: &Feed, agent: &str, id: Uuid, tool: &str, output: &str) {
+pub(super) fn result(feed: &Feed, agent: &str, id: Uuid, tool: &str, output: &str) {
     let label = (agent != "main").then_some(agent);
     feed.event(
         &event(
@@ -139,7 +139,7 @@ fn block(id: u64, block: usize) -> impl Fn(&RowKey) -> bool {
 }
 
 /// The ids of the feed's items, in order.
-fn item_ids(feed: &Feed) -> Vec<(u64, Kind)> {
+pub(super) fn item_ids(feed: &Feed) -> Vec<(u64, Kind)> {
     feed.subscribe()
         .0
         .items
@@ -413,7 +413,11 @@ fn user_row(feed: &Feed, turn: usize) -> RowKey {
 }
 
 /// Draws until every entry is ready to show.
-fn load_all(cx: &mut TestAppContext, window: AnyWindowHandle, view: &Entity<TranscriptView>) {
+pub(super) fn load_all(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    view: &Entity<TranscriptView>,
+) {
     for _ in 0..40 {
         settle(cx, window);
         if cx.read(|cx| view.read(cx).loaded_from.is_none()) {

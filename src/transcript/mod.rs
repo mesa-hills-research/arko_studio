@@ -20,6 +20,8 @@ mod model;
 mod nav;
 mod row;
 #[cfg(test)]
+mod scrollbar_tests;
+#[cfg(test)]
 mod tests;
 mod tool;
 
