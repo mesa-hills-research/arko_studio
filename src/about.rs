@@ -50,70 +50,69 @@ pub fn credits(fonts_bundled: bool) -> Vec<Credit> {
 }
 
 /// Opens the About dialog over `window`.
+///
+/// It is 480 px wide, or narrower in a smaller window. A credit's name then
+/// wraps beside its license, and the dialog's body scrolls when the window is
+/// too short for it.
 pub fn open(window: &mut Window, cx: &mut App) {
     let fonts_bundled = !cx.global::<crate::fonts::Fonts>().bundled().is_empty();
-    window.open_dialog(cx, move |dialog, _, _| {
-        dialog.w(px(400.)).content(move |content, _, cx| {
-            let muted = cx.theme().muted_foreground;
-            content.child(
-                v_flex()
-                    .id("about")
-                    .test_support()
-                    .gap_4()
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child(div().text_lg().font_semibold().child(crate::APP_NAME))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(muted)
-                                    .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .child(format!(
-                                "{}. Licensed under the MIT License or the Apache License 2.0, at your option.",
-                                crate::COPYRIGHT
-                            )),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_medium()
-                                    .text_color(muted)
-                                    .child("Includes"),
-                            )
-                            .children(credits(fonts_bundled).into_iter().map(|credit| {
-                                h_flex()
-                                    .id(credit.id)
-                                    .test_support()
-                                    .gap_3()
-                                    .justify_between()
-                                    .text_sm()
-                                    .child(credit.name)
-                                    .child(
-                                        Button::new(SharedString::from(format!("{}-link", credit.id)))
-                                            .link()
-                                            .small()
-                                            .label(credit.license)
-                                            .on_click(move |_, _, cx| cx.open_url(credit.url)),
-                                    )
-                            })),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_4()
-                            .child(link("source-link", "Source code", SOURCE_URL))
-                            .child(link("arko-link", "Arko", ARKO_URL)),
-                    ),
-            )
-        })
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let muted = cx.theme().muted_foreground;
+        dialog.w(px(480.)).child(
+            v_flex()
+                .id("about")
+                .test_support()
+                .gap_4()
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(div().text_lg().font_semibold().child(crate::APP_NAME))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(muted)
+                                .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+                        ),
+                )
+                .child(div().text_sm().child(format!(
+                    "{}. Licensed under the MIT License or the Apache License 2.0, at your option.",
+                    crate::COPYRIGHT
+                )))
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_medium()
+                                .text_color(muted)
+                                .child("Includes"),
+                        )
+                        .children(credits(fonts_bundled).into_iter().map(|credit| {
+                            h_flex()
+                                .id(credit.id)
+                                .test_support()
+                                .gap_3()
+                                .justify_between()
+                                .text_sm()
+                                .child(div().flex_1().min_w_0().child(credit.name))
+                                .child(
+                                    Button::new(SharedString::from(format!("{}-link", credit.id)))
+                                        .link()
+                                        .small()
+                                        .flex_shrink_0()
+                                        .label(credit.license)
+                                        .on_click(move |_, _, cx| cx.open_url(credit.url)),
+                                )
+                        })),
+                )
+                .child(
+                    h_flex()
+                        .gap_4()
+                        .child(link("source-link", "Source code", SOURCE_URL))
+                        .child(link("arko-link", "Arko", ARKO_URL)),
+                ),
+        )
     });
 }
 

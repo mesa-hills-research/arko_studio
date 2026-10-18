@@ -1138,6 +1138,97 @@ fn edit_dialog_dark() {
     goldens().assert("edit-dialog-dark", &edit_dialog_window(ThemeMode::Dark));
 }
 
+/// About Arko Studio over a window `width` × `height` logical pixels, with
+/// the built-in fonts, so all three credits show. `scroll` turns the mouse
+/// wheel that many pixels down over the dialog.
+fn about_window(mode: ThemeMode, width: f32, height: f32, scroll: f32) -> Screenshot {
+    use gpui_kit::{InputEvent as _, ScrollDelta, ScrollWheelEvent, point};
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(width), px(height)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, _)| window)
+        })
+        .unwrap();
+    app.update_window(window, |_, window, cx| arko_studio::about::open(window, cx))
+        .unwrap();
+    if scroll > 0. {
+        // A frame first, so the wheel finds the dialog's body.
+        app.capture(window).unwrap();
+        app.update_window(window, |_, window, cx| {
+            window.dispatch_event(
+                ScrollWheelEvent {
+                    position: point(px(width / 2.), px(height / 2.)),
+                    delta: ScrollDelta::Pixels(point(px(0.), px(-scroll))),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .unwrap();
+        app.run_until_parked();
+    }
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn about_light() {
+    goldens().assert(
+        "about-light",
+        &about_window(ThemeMode::Light, 900., 560., 0.),
+    );
+}
+
+#[test]
+fn about_dark() {
+    goldens().assert("about-dark", &about_window(ThemeMode::Dark, 900., 560., 0.));
+}
+
+/// At the window's smallest size the dialog narrows with it, and the
+/// credits wrap inside its padding.
+#[test]
+fn about_narrow_light() {
+    goldens().assert(
+        "about-narrow-light",
+        &about_window(ThemeMode::Light, 400., 300., 0.),
+    );
+}
+
+#[test]
+fn about_narrow_dark() {
+    goldens().assert(
+        "about-narrow-dark",
+        &about_window(ThemeMode::Dark, 400., 300., 0.),
+    );
+}
+
+/// The dialog's body scrolls to the rest of the credits and the links when
+/// the window is too short for it.
+#[test]
+fn about_narrow_scrolled_light() {
+    goldens().assert(
+        "about-narrow-scrolled-light",
+        &about_window(ThemeMode::Light, 400., 300., 400.),
+    );
+}
+
+#[test]
+fn about_narrow_scrolled_dark() {
+    goldens().assert(
+        "about-narrow-scrolled-dark",
+        &about_window(ThemeMode::Dark, 400., 300., 400.),
+    );
+}
+
 /// The status bar's figures, at a fixed moment.
 mod status {
     use std::time::Duration;
