@@ -20,7 +20,7 @@ path = "src/main.rs"
 # and re-exports it, so GPUI is `gpui_kit::*` and needs no entry of its own.
 gpui-kit = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "86d563f748d1c90062632d4555f300daaa235a3f", features = ["fonts", "tree-sitter-languages", "writing"] }
 # Arko's engine, as a library: no terminal crates, the web page's server kept.
-arko = { path = "../arko", default-features = false, features = ["remote"] }
+arko = { package = "arko-tui", version = "0.1.0", default-features = false, features = ["remote"] }
 anyhow = "1.0"
 # arko's Prompter trait is an async trait.
 async-trait = "0.1"
@@ -44,12 +44,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # The same GPUI Kit with GPUI's test harness, for tests that click and type
 # into real windows on a fake clock.
 gpui-kit = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "86d563f748d1c90062632d4555f300daaa235a3f", features = ["test-support"] }
-arko = { path = "../arko", default-features = false, features = ["remote", "testing"] }
+arko = { package = "arko-tui", version = "0.1.0", default-features = false, features = ["remote", "testing"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # The feed's events as arko gets them from the framework, for tests that
 # drive a feed the way a session does.
-arko_agents = { path = "../arko_framework/arko_agents" }
-arko_workflows = { path = "../arko_framework/arko_workflows" }
+arko_agents = "0.1.0"
+arko_workflows = "0.1.0"
 uuid = "1"
 
 # The golden-screenshot harness, from the gpui fork at the rev of the [patch.crates-io] below.
@@ -86,6 +86,65 @@ gpui-pre-windows           = { git = "https://github.com/mesa-hills-research/gpu
 gpui-pre-zlog              = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
 gpui-pre-ztracing          = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
 gpui-pre-ztracing-macro    = { git = "https://github.com/mesa-hills-research/gpui", rev = "f98b12a625c8a24e372622e7f6100023a65085ca" }
+
+# Mesquite from crates.io for GPUI Kit too, the releases Arko's index uses, so the app
+# builds and links one copy of each grammar. The kit pins the same code by git.
+[patch."https://github.com/mesa-hills-research/mesquite"]
+mesquite                   = "0.25.10"
+mesquite_astro             = "0.1.0"
+mesquite_bash              = "0.1.0"
+mesquite_c                 = "0.1.0"
+mesquite_cmake             = "0.1.0"
+mesquite_cpp               = "0.1.0"
+mesquite_c_sharp           = "0.1.0"
+mesquite_css               = "0.1.0"
+mesquite_dart              = "0.1.0"
+mesquite_diff              = "0.1.0"
+mesquite_dtd               = "0.1.0"
+mesquite_elixir            = "0.1.0"
+mesquite_elm               = "0.1.0"
+mesquite_embedded_template = "0.1.0"
+mesquite_erlang            = "0.1.0"
+mesquite_fsharp            = "0.1.0"
+mesquite_glsl              = "0.1.0"
+mesquite_go                = "0.1.0"
+mesquite_graphql           = "0.1.0"
+mesquite_haskell           = "0.1.0"
+mesquite_hcl               = "0.1.0"
+mesquite_html              = "0.1.0"
+mesquite_java              = "0.1.0"
+mesquite_javascript        = "0.1.0"
+mesquite_jsdoc             = "0.1.0"
+mesquite_json              = "0.1.0"
+mesquite_julia             = "0.1.0"
+mesquite_kotlin            = "0.1.0"
+mesquite_language          = "0.1.0"
+mesquite_lua               = "0.1.0"
+mesquite_make              = "0.1.0"
+mesquite_markdown          = "0.1.0"
+mesquite_markdown_inline   = "0.1.0"
+mesquite_objc              = "0.1.0"
+mesquite_ocaml             = "0.1.0"
+mesquite_ocaml_interface   = "0.1.0"
+mesquite_perl              = "0.1.0"
+mesquite_php               = "0.1.0"
+mesquite_php_only          = "0.1.0"
+mesquite_powershell        = "0.1.0"
+mesquite_proto             = "0.1.0"
+mesquite_python            = "0.1.0"
+mesquite_r                 = "0.1.0"
+mesquite_ruby              = "0.1.0"
+mesquite_rust              = "0.1.0"
+mesquite_scala             = "0.1.0"
+mesquite_sql               = "0.1.0"
+mesquite_svelte            = "0.1.0"
+mesquite_swift             = "0.1.0"
+mesquite_toml              = "0.1.0"
+mesquite_tsx               = "0.1.0"
+mesquite_typescript        = "0.1.0"
+mesquite_xml               = "0.1.0"
+mesquite_yaml              = "0.1.0"
+mesquite_zig               = "0.1.0"
 
 [profile.release]
 codegen-units = 1

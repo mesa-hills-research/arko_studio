@@ -30,13 +30,10 @@ sudo apt install build-essential pkg-config cmake libfontconfig-dev libwayland-d
   libxkbcommon-x11-dev libx11-xcb-dev libvulkan1 mesa-vulkan-drivers
 ```
 
-Clone all three repositories into the same parent directory. Arko Studio depends on `../arko`,
-and Arko depends on crates in `../arko_framework`. Cargo fetches the pinned GPUI Kit and GPUI
-commits from GitHub.
+Clone the repository and build it. Cargo fetches Arko and its framework from crates.io, and the
+pinned GPUI Kit and GPUI commits from GitHub.
 
 ```sh
-git clone https://github.com/mesa-hills-research/arko_framework.git
-git clone https://github.com/mesa-hills-research/arko.git
 git clone https://github.com/mesa-hills-research/arko_studio.git
 cd arko_studio
 cargo build --release --locked

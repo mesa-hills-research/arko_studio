@@ -1,7 +1,7 @@
 # Contributing to Arko Studio
 
-Follow the [build instructions](README.md#build-and-install) to clone Arko and arko_framework
-beside this repository and install the platform dependencies.
+Follow the [build instructions](README.md#build-and-install) to install the platform dependencies
+and build the app.
 
 ## Tests
 
@@ -48,6 +48,26 @@ gpui-kit = { path = "../gpui_kit/crates/kit" }
 The kit checkout must use the same GPUI commit as the app. When updating the published kit
 revision, change both `gpui-kit` entries in `Cargo.toml`, the GPUI patches and the screenshot
 harness revision to match the kit, then regenerate `Cargo.lock` without the local override.
+
+## Building against local Arko and framework checkouts
+
+`Cargo.toml` takes Arko (the `arko-tui` package) and its framework crates from crates.io. To work
+on them together with the app, clone [Arko](https://github.com/mesa-hills-research/arko) and
+[arko_framework](https://github.com/mesa-hills-research/arko_framework) beside this repository
+and add this override to the ignored `.cargo/config.toml`.
+
+```toml
+[patch.crates-io]
+arko-tui = { path = "../arko" }
+arko_ai = { path = "../arko_framework/arko_ai" }
+arko_agents = { path = "../arko_framework/arko_agents" }
+arko_workflows = { path = "../arko_framework/arko_workflows" }
+arko_index = { path = "../arko_framework/arko_index" }
+```
+
+Override all five, so the app and Arko use the same framework crates. The checkouts' versions
+must match the ones `Cargo.toml` asks for. Cargo records the override in `Cargo.lock`, so
+regenerate it without the override before committing.
 
 ## Source layout
 
