@@ -1946,10 +1946,26 @@ fn a_users_message_is_a_bubble_at_the_right_of_the_column(cx: &mut TestAppContex
     // The window's width, and the long message's widest: half the column,
     // a comfortable line, the whole column.
     type Widest = fn(f32, f32) -> f32;
-    let widths: [(f32, Widest); 3] = [
+    // The short message on one line, inside the bubble's padding.
+    let words = cx
+        .update_window(window, |_, window, _| {
+            let style = window.text_style();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let text = "Now fuzz it.";
+            let line =
+                window
+                    .text_system()
+                    .layout_line(text, size, &[style.to_run(text.len())], None);
+            f32::from(line.width) + 1.5 * rem
+        })
+        .unwrap();
+    // Wide, then narrower, then wide again: the bubbles take their widths
+    // back as the column widens.
+    let widths: [(f32, Widest); 4] = [
         (800., |column, _| column / 2.),
         (480., |_, rem| 17.5 * rem),
         (300., |column, _| column),
+        (800., |column, _| column / 2.),
     ];
     for (width, widest) in widths {
         cx.simulate_window_resize(window, size(px(width), px(600.)));
@@ -1968,6 +1984,10 @@ fn a_users_message_is_a_bubble_at_the_right_of_the_column(cx: &mut TestAppContex
                 "{width}: {long_bubble:?}"
             );
             assert!(short_bubble.size.width < long_bubble.size.width, "{width}");
+            assert!(
+                (short_bubble.size.width - px(words)).abs() < px(1.),
+                "{width}: {short_bubble:?}, {words}"
+            );
             // Its actions sit under it, at its right edge.
             for (message, bubble) in [(short, short_bubble), (long, long_bubble)] {
                 let copy = window.find(("copy-user", message)).bounds();

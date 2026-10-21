@@ -936,28 +936,9 @@ impl TranscriptView {
                                     )
                                 })
                                 .children(self.thumbnails(item, view, cx))
-                                .child(
-                                    div()
-                                        // The words on one line, with no height,
-                                        // make the bubble as wide as they are.
-                                        // Text that wraps answers a later
-                                        // question about its width with the
-                                        // width it last wrapped at.
-                                        .child(
-                                            div()
-                                                .h_0()
-                                                .overflow_hidden()
-                                                .whitespace_nowrap()
-                                                .child(text.clone()),
-                                        )
-                                        .child(self.marked(
-                                            ("user-text", id),
-                                            id,
-                                            Place::Text,
-                                            text,
-                                            cx,
-                                        )),
-                                ),
+                                // As wide as its words on one line, up to the
+                                // bubble's widest, where it wraps.
+                                .child(self.marked(("user-text", id), id, Place::Text, text, cx)),
                         ),
                     )
                     .child(actions),
