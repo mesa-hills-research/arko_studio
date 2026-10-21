@@ -673,9 +673,6 @@ fn capitalized(text: &str) -> String {
 /// The muted words on the first line of a user's message.
 fn user_tags(item: &Item) -> Vec<String> {
     let mut tags = Vec::new();
-    if !item.is_main() {
-        tags.push(format!("To {}", item.agent));
-    }
     match item.delivery {
         Some(Delivery::Note) => {
             tags.push("Note".into());

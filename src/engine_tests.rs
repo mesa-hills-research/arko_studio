@@ -1075,3 +1075,170 @@ fn a_session_opens_without_the_mcp_config_files_it_cant_read(cx: &mut TestAppCon
     }
     app.close_all(cx);
 }
+
+/// While two workers run, the user writes to r1 from the workers panel
+/// (its Message, then the composer). The message reaches r1 only, as the
+/// user's: r2 never sees it, and the main agent gets only the copy its
+/// news brings. It shows in r1's own transcript, and in no view of the
+/// main transcript, nor in r2's.
+#[gpui_kit::test]
+fn a_message_to_a_worker_reaches_it_and_shows_in_its_transcript_only(cx: &mut TestAppContext) {
+    use crate::prefs::TranscriptView as View;
+
+    const RUN: &str = "You are agent run";
+    let (go, gone) = tokio::sync::watch::channel(false);
+    let mock = Mock::start(move |_, body| {
+        // Each worker waits for the user's message, takes a step, and
+        // reports.
+        for (run, step, report) in [("r1", "w", "Indented."), ("r2", "v", "Tested.")] {
+            if body.contains(&format!("{RUN} {run}")) {
+                if body.contains(&format!("call_{step}1")) {
+                    let done = arko::testing::complete(&format!("{step}2"), report);
+                    return Box::pin(async move { done });
+                }
+                let mut gone = gone.clone();
+                let call = arko::testing::tool_call(
+                    &format!("{step}1"),
+                    "shell",
+                    serde_json::json!({ "command": "echo hi" }),
+                );
+                return Box::pin(async move {
+                    gone.wait_for(|go| *go).await.unwrap();
+                    call
+                });
+            }
+        }
+        let start = |id: &str, task: &str| {
+            let call = arko::testing::tool_call(
+                id,
+                "start_agent",
+                serde_json::json!({ "agent": "worker", "task": task }),
+            );
+            Box::pin(async move { call }) as Answer
+        };
+        if body.contains("Indented.") || body.contains("Tested.") {
+            reply(&format!("m4_{}", body.matches("Noted.").count()), "Noted.")
+        } else if body.contains("call_m2") {
+            reply("m3", "Started them.")
+        } else if body.contains("call_m1") {
+            start("m2", "Test it.")
+        } else {
+            start("m1", "Indent it.")
+        }
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Indent and test.");
+    app.wait_for_text(cx, "Started them.");
+    act(cx, app.window, |window, cx| {
+        window.dispatch_action(Box::new(menus::ToggleWorkersPanel), cx)
+    });
+    let bodies = |run: &str| -> Vec<String> {
+        let head = format!("{RUN} {run}");
+        let bodies = mock.bodies.lock().unwrap();
+        bodies
+            .iter()
+            .filter(|b| b.contains(&head))
+            .cloned()
+            .collect()
+    };
+    wait_until(cx, "the workers to run", |_| {
+        !bodies("r1").is_empty() && !bodies("r2").is_empty()
+    });
+
+    // r1's Message in the panel: the composer writes to r1.
+    let panel = cx.read(|cx| app.workspace.read(cx).workers_panel().clone());
+    let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
+    act(cx, app.window, |window, cx| {
+        panel.update(cx, |panel, cx| panel.show_worker("r1".into(), window, cx))
+    });
+    act(cx, app.window, |window, cx| {
+        window.click("worker-message", cx)
+    });
+    assert_eq!(
+        cx.read(|cx| view.read(cx).target().cloned()).as_deref(),
+        Some("r1")
+    );
+    app.send(cx, "Use tabs.");
+    let session = app.shown(cx).unwrap();
+    let items = |cx: &mut TestAppContext| {
+        cx.read(|cx| session.read(cx).feed().unwrap().subscribe().0.items)
+    };
+    wait_until(cx, "the message in the feed", |cx| {
+        items(cx).iter().any(|item| item.text == "Use tabs.")
+    });
+    go.send(true).unwrap();
+    // (Closing asks first while the status says workers run.)
+    wait_until(cx, "the lead to hear both reports", |cx| {
+        let lead = mock.bodies.lock().unwrap().iter().any(|body| {
+            !body.contains(RUN) && body.contains("Indented.") && body.contains("Tested.")
+        });
+        lead && cx.read(|cx| {
+            let session = session.read(cx);
+            !session.is_working() && session.running_work().workers.is_empty()
+        })
+    });
+
+    // Only r1's conversation has it, as the user's.
+    let read = bodies("r1").pop().unwrap();
+    assert!(
+        read.contains("The user sent you a message directly:\\n  Use tabs."),
+        "{read}"
+    );
+    for body in bodies("r2") {
+        assert!(!body.contains("Use tabs."), "{body}");
+    }
+    // The main agent's has it once, in the copy its news brings.
+    let lead = mock
+        .bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .rfind(|body| !body.contains(RUN))
+        .unwrap()
+        .clone();
+    assert_eq!(lead.matches("Use tabs.").count(), 1, "{lead}");
+    let at = lead.find("Use tabs.").unwrap();
+    let copy = "The user sent r1 a message directly (a copy for you):";
+    let heading = lead[..at].rfind(copy).expect(&lead);
+    assert!(at - heading - copy.len() <= "\\n\\n".len(), "{lead}");
+    // The feed has it as r1's.
+    let sent: Vec<_> = items(cx)
+        .into_iter()
+        .filter(|item| item.text.contains("Use tabs."))
+        .map(|item| (item.agent, item.kind))
+        .collect();
+    assert_eq!(sent, [("r1".to_string(), arko::remote::Kind::User)]);
+
+    // It shows in r1's transcript, in no view of the main one, and not in r2's.
+    let shown = |cx: &mut TestAppContext, worker: Option<&str>| {
+        if let Some(worker) = worker {
+            act(cx, app.window, |window, cx| {
+                panel.update(cx, |panel, cx| panel.show_worker(worker.into(), window, cx))
+            });
+        }
+        cx.update_window(app.window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.read(|cx| {
+            let transcript = match worker {
+                Some(_) => panel.read(cx).transcript().unwrap().clone(),
+                None => view.read(cx).transcript(cx).unwrap().clone(),
+            };
+            transcript.read(cx).shown_user_messages()
+        })
+    };
+    for each in [View::Full, View::Quiet, View::Messages] {
+        cx.update(|cx| crate::prefs::update(cx, |prefs| prefs.view = each));
+        assert_eq!(shown(cx, None), ["Indent and test."], "{each:?}");
+        assert_eq!(shown(cx, Some("r1")), ["Use tabs."], "{each:?}");
+        assert!(shown(cx, Some("r2")).is_empty(), "{each:?}");
+    }
+    let exported = cx.read(|cx| {
+        view.read(cx)
+            .transcript(cx)
+            .unwrap()
+            .read(cx)
+            .export_items()
+    });
+    assert!(!exported.iter().any(|item| item.text.contains("Use tabs.")));
+    app.close_all(cx);
+}
