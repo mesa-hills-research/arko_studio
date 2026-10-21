@@ -86,6 +86,8 @@ pub fn state_label(state: WorkerState) -> &'static str {
         WorkerState::Finished => "Finished",
         WorkerState::Failed => "Failed",
         WorkerState::Stopped => "Stopped",
+        // A state a later arko adds.
+        _ => "Ended",
     }
 }
 

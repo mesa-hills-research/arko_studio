@@ -613,7 +613,8 @@ fn user_tags(item: &Item) -> Vec<String> {
         Some(Delivery::Answer) => tags.push("Answer".into()),
         Some(Delivery::Queued) => tags.push("Queued".into()),
         Some(Delivery::Command) => tags.push("Command".into()),
-        Some(Delivery::Turn | Delivery::Refresh) | None => {}
+        // A turn, a refresh, and a delivery a later arko adds.
+        _ => {}
     }
     if item.source == Some(Source::Web) {
         tags.push("From the web page".into());
@@ -1766,7 +1767,8 @@ impl TranscriptView {
                 .child("Failed")
                 .into_any_element(),
             Some(WorkerState::Stopped) => "Stopped".into_any_element(),
-            None => div().into_any_element(),
+            // No summary yet, or a state a later arko adds.
+            _ => div().into_any_element(),
         };
         let open: SharedString = worker_id.clone().into();
         let view = view.downgrade();

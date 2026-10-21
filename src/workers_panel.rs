@@ -974,7 +974,8 @@ fn state_mark(state: WorkerState, cx: &App) -> impl IntoElement {
             .into_any_element(),
         WorkerState::Finished => dot(theme.success).into_any_element(),
         WorkerState::Failed => dot(theme.danger).into_any_element(),
-        WorkerState::Stopped => dot(theme.muted_foreground).into_any_element(),
+        // Stopped, and a state a later arko adds.
+        _ => dot(theme.muted_foreground).into_any_element(),
     };
     let label = workers::state_label(state);
     div()

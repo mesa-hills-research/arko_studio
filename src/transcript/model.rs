@@ -179,11 +179,11 @@ impl Model {
     }
 
     pub fn apply(&mut self, update: Update, changes: &mut Changes) {
-        // Streamed text, workers and activity leave the replies where they
+        // Streamed text, workers, jobs and activity leave the replies where they
         // are. The rest may move the latest.
         if !matches!(
             update,
-            Update::Append { .. } | Update::Worker(_) | Update::Activity
+            Update::Append { .. } | Update::Worker(_) | Update::Job(_) | Update::Activity
         ) {
             self.last_reply.set(None);
         }
@@ -262,6 +262,10 @@ impl Model {
                     changes.removed.push(id);
                 }
             }
+            // A job's end reaches its call's row as a change of the call.
+            Update::Job(_) => {}
+            // An update a later arko adds.
+            _ => {}
         }
     }
 
@@ -614,7 +618,8 @@ pub(crate) fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
             | Kind::WorkerLine => Show::Item,
             Kind::Notice if warning => Show::Item,
             Kind::Call => Show::Count,
-            Kind::Result | Kind::Notice | Kind::Turn | Kind::Thinking => Show::Hidden,
+            // And a kind a later arko adds.
+            _ => Show::Hidden,
         },
     }
 }
@@ -843,7 +848,9 @@ impl Rows<'_> {
             Kind::Output => self.push(RowKey::Output(id), Class::Prose),
             Kind::Turn => self.push(RowKey::Turn(id), Class::Footer),
             Kind::WorkerLine => self.push(RowKey::Worker(id), Class::Activity),
-            Kind::Result => {}
+            // A result shows in its call's row. A kind a later arko adds
+            // has no rows.
+            _ => {}
         }
     }
 }

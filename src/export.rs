@@ -164,7 +164,9 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
                 out.push_str(&format!("\n---\n\n*{}*\n", one_line(&item.text)));
                 speaker = None;
             }
-            Kind::Result => {}
+            // A result shows under its call. A kind a later arko adds isn't
+            // exported.
+            _ => {}
         }
     }
     out
