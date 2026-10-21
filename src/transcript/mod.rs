@@ -552,8 +552,8 @@ impl TranscriptView {
     }
 
     /// The conversation as an export takes it: the main agent's items in
-    /// order and what the user wrote to its workers, without the messages
-    /// that only kept the prompt cache warm and their answers.
+    /// order, without the messages that only kept the prompt cache warm and
+    /// their answers.
     pub fn export_items(&self) -> Vec<arko::remote::Item> {
         let entries = self.model.entries();
         let refreshed: Vec<Option<u64>> = entries
@@ -564,11 +564,21 @@ impl TranscriptView {
         entries
             .iter()
             .map(|entry| &entry.item)
-            .filter(|item| item.is_main() || item.kind == Kind::User)
-            .filter(|item| {
-                !(item.is_main() && item.turn.is_some() && refreshed.contains(&item.turn))
-            })
+            .filter(|item| item.is_main())
+            .filter(|item| !(item.turn.is_some() && refreshed.contains(&item.turn)))
             .cloned()
+            .collect()
+    }
+
+    /// The texts of the user's messages the view shows, in order.
+    #[cfg(test)]
+    pub fn shown_user_messages(&self) -> Vec<String> {
+        self.rows
+            .iter()
+            .filter_map(|row| match row.key {
+                RowKey::User(id) => self.model.entry(id).map(|entry| entry.item.text.clone()),
+                _ => None,
+            })
             .collect()
     }
 

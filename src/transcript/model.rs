@@ -29,16 +29,13 @@ pub enum AgentFilter {
 
 impl AgentFilter {
     /// Whether the transcript keeps `item` at all (a view may still hide
-    /// it). The main transcript keeps what the user wrote to a worker, the
-    /// workers' calls and what went wrong for them, as the terminal does.
+    /// it). The main transcript keeps the workers' calls and what went wrong
+    /// for them, as the terminal does. What the user wrote to a worker is
+    /// that worker's own.
     fn keeps(&self, item: &Item) -> bool {
         match self {
             AgentFilter::Main => {
-                item.is_main()
-                    || matches!(
-                        item.kind,
-                        Kind::User | Kind::Call | Kind::Result | Kind::Notice
-                    )
+                item.is_main() || matches!(item.kind, Kind::Call | Kind::Result | Kind::Notice)
             }
             AgentFilter::Worker(id) => item.agent == id.as_ref() && item.kind != Kind::WorkerLine,
         }
@@ -632,11 +629,10 @@ pub(crate) fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
     }
     let warning = item.level.is_some_and(|level| level != Level::Info);
     if !item.is_main() {
-        // A worker's calls and what went wrong for it show in Full, and what
-        // the user wrote to it in every view. Its text and report are its
-        // own transcript's.
+        // A worker's calls and what went wrong for it show in Full. Its
+        // text, its report and what the user wrote to it are its own
+        // transcript's.
         return match (view, item.kind) {
-            (_, Kind::User) => Show::Item,
             (View::Full, Kind::Call) => Show::Item,
             (View::Full, Kind::Notice) if warning => Show::Item,
             _ => Show::Hidden,
@@ -1342,12 +1338,15 @@ mod tests {
         assert!(kept <= KEPT_OUTPUTS, "{kept}");
     }
 
+    /// The main transcript keeps the workers' calls and what went wrong for
+    /// them. What the user wrote to a worker is the worker's transcript's
+    /// alone, as are its text and report.
     #[test]
-    fn the_main_transcript_keeps_what_the_user_and_the_workers_calls_need() {
+    fn the_main_transcript_keeps_what_the_workers_calls_need() {
         let mut to_worker = item(5, Kind::User, "r1", "use plan B");
         to_worker.source = Some(Source::App);
         to_worker.delivery = Some(Delivery::Turn);
-        let model = model(vec![
+        let items = vec![
             item(1, Kind::User, "main", "go"),
             item(2, Kind::WorkerLine, "main", "Fix the parser"),
             item(3, Kind::Text, "r1", "worker text"),
@@ -1356,32 +1355,42 @@ mod tests {
             item(6, Kind::Notice, "r1", "retrying").level(Level::Warn),
             item(7, Kind::Notice, "r1", "handed over").level(Level::Info),
             item(8, Kind::Turn, "main", "12 s · $0.034"),
-        ]);
-        assert_eq!(ids(&model), [1, 2, 4, 5, 6, 7, 8]);
+            item(9, Kind::Text, "r2", "other worker text"),
+        ];
+        let main = model(items.clone());
+        assert_eq!(ids(&main), [1, 2, 4, 6, 7, 8]);
         assert_eq!(
-            keys(&model, View::Full),
+            keys(&main, View::Full),
             [
                 RowKey::User(1),
                 RowKey::Worker(2),
                 RowKey::Call(4),
-                RowKey::User(5),
                 RowKey::Notice(6),
                 RowKey::Turn(8)
             ]
         );
         assert_eq!(
-            keys(&model, View::Quiet),
-            [
-                RowKey::User(1),
-                RowKey::Worker(2),
-                RowKey::User(5),
-                RowKey::Turn(8)
-            ]
+            keys(&main, View::Quiet),
+            [RowKey::User(1), RowKey::Worker(2), RowKey::Turn(8)]
         );
         assert_eq!(
-            keys(&model, View::Messages),
-            [RowKey::User(1), RowKey::Worker(2), RowKey::User(5)]
+            keys(&main, View::Messages),
+            [RowKey::User(1), RowKey::Worker(2)]
         );
+        // r1's own transcript has the message, r2's doesn't.
+        let worker = |id: &str| {
+            let mut worker = Model::new(AgentFilter::Worker(id.to_string().into()));
+            let snapshot = Snapshot {
+                items: items.clone(),
+                ..Snapshot::default()
+            };
+            worker.load(snapshot, &mut Changes::default());
+            worker
+        };
+        for view in [View::Full, View::Quiet, View::Messages] {
+            assert!(keys(&worker("r1"), view).contains(&RowKey::User(5)));
+            assert!(!keys(&worker("r2"), view).contains(&RowKey::User(5)));
+        }
     }
 
     #[test]
