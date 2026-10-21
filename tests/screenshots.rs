@@ -441,6 +441,28 @@ parse of the whole text.";
         feed
     }
 
+    /// A turn whose agent waits on the model after a call's result.
+    pub fn working_after_a_call() -> Feed {
+        let feed = Feed::new("main");
+        feed.user(
+            "Make the parser streaming, and add a test that feeds it a byte at a time.",
+            Source::App,
+            Delivery::Turn,
+        );
+        feed.turn_started();
+        let read = call(
+            &feed,
+            "read_file",
+            &[
+                ("path", "src/parse.rs".into()),
+                ("start_line", 1.into()),
+                ("end_line", 120.into()),
+            ],
+        );
+        result(&feed, read, "read_file", "1 | pub struct Parser {\n2 | }\n");
+        feed
+    }
+
     /// A finished turn with each kind of row, and a second one running with
     /// an image a tool returned.
     pub fn representative() -> Feed {
@@ -580,6 +602,45 @@ fn transcript_pending_note_dark() {
         "transcript-pending-note-dark",
         &pending_note_window(ThemeMode::Dark),
     );
+}
+
+/// "Working…" below a call's result, while the agent waits on the model.
+fn working_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let feed = feed::working_after_a_call();
+    let window = app
+        .open_window_with(size(px(900.), px(220.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| TranscriptView::new(&feed, AgentFilter::Main, window, cx))
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn transcript_working_light() {
+    goldens().assert(
+        "transcript-working-light",
+        &working_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn transcript_working_dark() {
+    goldens().assert("transcript-working-dark", &working_window(ThemeMode::Dark));
 }
 
 /// The representative transcript alone in a window `width` wide, its

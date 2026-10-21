@@ -261,8 +261,10 @@ fn matches_ignore_case_and_index_the_text_as_it_is() {
         found[0].clone()
     };
     assert_eq!(one("aaa", "aa"), 0..2, "one after another");
-    assert_eq!(one("Straße and STRASSE", "straße"), 0..7);
-    // Characters whose lowercase is longer still map back whole.
+    // Case folds in full, and accents match however they're written.
+    assert_eq!(find_all("Straße and STRASSE", "straße"), [0..7, 12..19]);
+    assert_eq!(one("Cafe\u{301} au lait", "CAFÉ"), 0..6);
+    // Characters whose folding is longer still map back whole.
     let text = "İstanbul";
     let found = find_all(text, "i̇s");
     assert_eq!(found.len(), 1);
@@ -386,6 +388,26 @@ fn open_feed(
     opened
 }
 
+/// The find ignores case in full and how accents are written, in the
+/// user's text and in a reply's Markdown, and marks the text as it is.
+#[gpui_kit::test]
+fn the_find_ignores_case_and_how_accents_are_written(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    feed.user("Is the Straße café open?", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.reply("The STRASSE cafe\u{301} opens at **seven**.");
+    feed.turn_ended("2 s", None);
+    let (window, view) = open_feed(cx, &feed, View::Full, 600.);
+    assert_eq!(find(cx, window, &view, "strasse").total, 2);
+    assert_eq!(find(cx, window, &view, "Café").total, 2);
+    assert_eq!(find(cx, window, &view, "STRASSE CAFE\u{301}").total, 2);
+    // The latest is the current match. The message's is marked as written.
+    let message = entry(cx, &view, "Is the Straße");
+    let marked = cx.read(|cx| view.read(cx).match_ranges(message, Place::Text));
+    assert_eq!(marked, [(7..20, false)]);
+    assert_eq!(find(cx, window, &view, "cafe ").total, 0);
+}
+
 #[gpui_kit::test]
 fn the_next_match_keeps_its_quiet_group_open(cx: &mut TestAppContext) {
     let feed = Feed::new("main");
@@ -460,7 +482,7 @@ fn changing_scope_rejects_an_older_background_search(cx: &mut TestAppContext) {
         view.refresh_rows(cx);
         view.find_changed_all(cx);
         // Even a completion already queued on the UI thread is stale.
-        view.lowered(generation, Vec::new(), cx);
+        view.folded(generation, Vec::new(), cx);
     });
     settle(cx, window);
     let status = cx.read(|cx| view.read(cx).find_status());
@@ -642,7 +664,7 @@ fn a_view_change_finds_again_in_what_the_rows_show(cx: &mut TestAppContext) {
     assert_eq!(next(cx, window, &view, true).current, None);
 }
 
-/// A long transcript's first search lowercases its texts off the UI
+/// A long transcript's first search folds its texts off the UI
 /// thread: the bar says it searches, and the count comes once they're
 /// ready.
 #[gpui_kit::test]

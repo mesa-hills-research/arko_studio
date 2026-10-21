@@ -301,6 +301,62 @@ fn the_agents_question_is_answered_from_the_composer(cx: &mut TestAppContext) {
     app.close_all(cx);
 }
 
+/// The question's words can be selected and copied with the keyboard. Esc
+/// then gives the keyboard back to the composer, the question still asked,
+/// and the answer goes as usual.
+#[gpui_kit::test]
+fn the_agents_question_can_be_selected_and_copied(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, body| {
+        if body.contains("Two spaces.") {
+            answer("Indented with two spaces.", Duration::ZERO)
+        } else {
+            let call = arko::testing::tool_call(
+                "q1",
+                "ask_user",
+                serde_json::json!({ "questions": "Tabs or spaces?" }),
+            );
+            Box::pin(async move { call })
+        }
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Indent the file.");
+    wait_until(cx, "the question card", |cx| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("question-text").is_some()
+        })
+        .unwrap()
+    });
+    act(cx, app.window, |window, cx| {
+        let text = window.find("question-text").bounds();
+        let middle = text.size.height / 2.;
+        window.drag(
+            text.origin + gpui_kit::point(gpui_kit::px(1.), middle),
+            text.origin + gpui_kit::point(text.size.width - gpui_kit::px(1.), middle),
+            cx,
+        );
+        window.press("secondary-c", cx);
+    });
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert_eq!(copied, "Tabs or spaces?");
+    act(cx, app.window, |window, cx| window.press("escape", cx));
+    use gpui_kit::Focusable as _;
+    let composer = cx.read(|cx| {
+        let view = app.workspace.read(cx).session_view().clone();
+        view.read(cx).composer().read(cx).textarea().clone()
+    });
+    act(cx, app.window, |window, cx| {
+        assert!(composer.read(cx).focus_handle(cx).is_focused(window));
+        assert!(window.try_find("question-card").is_some(), "still asked");
+    });
+    app.send(cx, "Two spaces.");
+    app.wait_for_text(cx, "Indented with two spaces.");
+    app.close_all(cx);
+}
+
 #[gpui_kit::test]
 fn a_long_question_scrolls_inside_its_card(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, _| {

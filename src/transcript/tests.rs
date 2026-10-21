@@ -2,7 +2,9 @@
 //! feeds it (the workflow's events, and what Arko says of the turns), and
 //! the view drawn in a test window.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -940,6 +942,147 @@ fn one_indicator_turns_at_a_time(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| view.read(cx).animated), Some(thinking));
 }
 
+/// The "Working…" row of `view`, if it shows.
+fn working_row(view: &Entity<TranscriptView>, cx: &mut TestAppContext) -> Option<RowKey> {
+    keys(view, cx)
+        .into_iter()
+        .find(|key| matches!(key, RowKey::Working(_)))
+}
+
+/// Gives `view` a clock that tests move by hand, from now.
+fn hand_clock(view: &Entity<TranscriptView>, cx: &mut TestAppContext) -> Rc<Cell<i64>> {
+    let now = Rc::new(Cell::new(chrono::Utc::now().timestamp_millis()));
+    let clock = now.clone();
+    view.update(cx, |view, cx| view.set_clock(move || clock.get(), cx));
+    now
+}
+
+/// "Working…" shows while the agent waits on the model with nothing else
+/// showing it's busy: before the turn's first output, after a call's
+/// result, and once its text stops coming. It goes as soon as output
+/// comes. It's the one indicator that turns, a dozen times a second.
+#[gpui_kit::test]
+fn working_shows_while_the_agent_waits_on_the_model(cx: &mut TestAppContext) {
+    start(cx);
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| prefs.appearance.motion = prefs::Motion::On);
+        cx.set_reduce_motion(false);
+    });
+    let feed = Feed::new("main");
+    feed.user("Build it.", Source::App, Delivery::Turn);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let now = hand_clock(&view, cx);
+    let message = ids_of(&feed, Kind::User)[0];
+    assert_eq!(working_row(&view, cx), None);
+
+    // The turn starts: the last row.
+    feed.turn_started();
+    settle(cx, window);
+    assert_eq!(keys(&view, cx).last(), Some(&RowKey::Working(message)));
+    let row = super::row::element_id(RowKey::Working(message));
+    cx.update_window(window, |_, window, _| {
+        assert_eq!(window.find(row.clone()).label(), Some("Working"));
+    })
+    .unwrap();
+
+    // Thinking says it's busy, and so does a call that runs.
+    think(&feed, "Where to start");
+    settle(cx, window);
+    assert_eq!(working_row(&view, cx), None);
+    let build = call(&feed, "main", "shell", &[("command", "cargo build".into())]);
+    settle(cx, window);
+    assert_eq!(working_row(&view, cx), None);
+
+    // After the call's result, it waits again, with a worker running too.
+    result(&feed, "main", build, "shell", "Finished");
+    feed.worker("r1", "Write the fuzz target", WorkerChange::Started);
+    settle(cx, window);
+    let after_call = *ids_of(&feed, Kind::Call).last().unwrap();
+    assert_eq!(keys(&view, cx).last(), Some(&RowKey::Working(after_call)));
+    let draws = draws_in_a_second(cx, &view);
+    assert!((10..=16).contains(&draws), "{draws} draws");
+    assert_eq!(cx.read(|cx| view.read(cx).animated), None);
+
+    // Text says it's busy while it comes. Two seconds without more, it
+    // waits again.
+    say(&feed, "main", "It builds. Now the tests.");
+    settle(cx, window);
+    assert_eq!(working_row(&view, cx), None);
+    now.set(now.get() + 1000);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    assert_eq!(working_row(&view, cx), None);
+    now.set(now.get() + 1000);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    let text = *ids_of(&feed, Kind::Text).last().unwrap();
+    assert_eq!(working_row(&view, cx), Some(RowKey::Working(text)));
+
+    // A note waits below it, and a question for the user ends it.
+    let note = feed.note("Use release mode.", Source::App, 1, Vec::new());
+    settle(cx, window);
+    assert!(
+        keys(&view, cx).ends_with(&[RowKey::Working(text), RowKey::User(note)]),
+        "{:?}",
+        keys(&view, cx)
+    );
+    let question = feed.question("Release or debug?");
+    settle(cx, window);
+    assert_eq!(working_row(&view, cx), None);
+    feed.answered(question, "Release.", Source::App);
+    settle(cx, window);
+    let answer = *ids_of(&feed, Kind::User).last().unwrap();
+    assert!(
+        keys(&view, cx).ends_with(&[
+            RowKey::User(answer),
+            RowKey::Working(answer),
+            RowKey::User(note)
+        ]),
+        "{:?}",
+        keys(&view, cx)
+    );
+
+    // The turn ends.
+    feed.reply("It builds. Now the tests.");
+    feed.turn_ended("9 s", None);
+    settle(cx, window);
+    assert_eq!(working_row(&view, cx), None);
+}
+
+/// A worker's own view says "Working…" while the worker runs and waits on
+/// the model, and not while it waits for a place.
+#[gpui_kit::test]
+fn a_workers_view_says_working_while_it_waits_on_the_model(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Fuzz it.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.worker("r1", "Write the fuzz target", WorkerChange::Queued);
+    let (window, view) = open(cx, &feed, AgentFilter::Worker("r1".into()), 600.);
+    assert_eq!(keys(&view, cx), []);
+
+    feed.worker("r1", "Write the fuzz target", WorkerChange::Started);
+    settle(cx, window);
+    assert_eq!(keys(&view, cx), [RowKey::Working(0)]);
+    let read = call(&feed, "r1", "read_file", &[("path", "fuzz.rs".into())]);
+    settle(cx, window);
+    assert_eq!(working_row(&view, cx), None);
+    result(&feed, "r1", read, "read_file", "1 | fn fuzz() {}\n");
+    settle(cx, window);
+    let after = *ids_of(&feed, Kind::Call).last().unwrap();
+    assert_eq!(keys(&view, cx).last(), Some(&RowKey::Working(after)));
+
+    feed.worker(
+        "r1",
+        "Write the fuzz target",
+        WorkerChange::Finished { report: "Done." },
+    );
+    settle(cx, window);
+    assert_eq!(working_row(&view, cx), None);
+}
+
 #[gpui_kit::test]
 fn the_new_count_counts_what_the_view_shows(cx: &mut TestAppContext) {
     start(cx);
@@ -1531,13 +1674,14 @@ fn worker_cards_open_the_worker_and_its_own_transcript(cx: &mut TestAppContext) 
         [TranscriptEvent::OpenWorker("r1".into())]
     );
     // The worker's own transcript: its text, its call, what the user wrote
-    // to it, without the card.
+    // to it, without the card. It waits on the model now.
     let (_, worker) = open(cx, &feed, AgentFilter::Worker("r1".into()), 720.);
     let rows = keys(&worker, cx);
     assert!(matches!(rows[0], RowKey::Block { .. }));
     assert!(matches!(rows[1], RowKey::Call(_)));
     assert!(matches!(rows[2], RowKey::User(_)));
-    assert_eq!(rows.len(), 3);
+    assert!(matches!(rows[3], RowKey::Working(_)));
+    assert_eq!(rows.len(), 4);
 }
 
 #[gpui_kit::test]
@@ -2089,4 +2233,110 @@ fn a_note_waits_below_the_streaming_reply_until_the_agent_reads_it(cx: &mut Test
         );
     })
     .unwrap();
+}
+
+/// In every view, each of the user's messages in `feed` shows once, and
+/// the notes the agent hasn't read are the last rows, in the order sent.
+fn notes_show_in_every_view(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    view: &Entity<TranscriptView>,
+    feed: &Feed,
+) {
+    let users: Vec<_> = feed
+        .subscribe()
+        .0
+        .items
+        .into_iter()
+        .filter(|item| item.kind == Kind::User)
+        .collect();
+    let waiting: Vec<RowKey> = users
+        .iter()
+        .filter(|item| item.pending)
+        .map(|item| RowKey::User(item.id))
+        .collect();
+    for shown in [View::Full, View::Quiet, View::Messages] {
+        cx.update(|cx| prefs::update(cx, |prefs| prefs.view = shown));
+        settle(cx, window);
+        let rows = keys(view, cx);
+        assert!(
+            rows.ends_with(&waiting),
+            "{shown:?}: {waiting:?} in {rows:?}"
+        );
+        for user in &users {
+            let count = rows
+                .iter()
+                .filter(|row| **row == RowKey::User(user.id))
+                .count();
+            assert_eq!(count, 1, "{shown:?}: {:?} in {rows:?}", user.text);
+        }
+    }
+}
+
+/// A note the agent hasn't read shows at the end of every view, however it
+/// came: while a call runs, right after another note, as the agent takes an
+/// earlier one, and as the turn ends. Taken with the next message, each
+/// shows once, where the agent read it.
+#[gpui_kit::test]
+fn every_note_not_read_yet_shows_in_every_view(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Rename the parser.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    say(&feed, "main", "Looking around.");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let pending = |feed: &Feed| {
+        feed.subscribe()
+            .0
+            .items
+            .iter()
+            .filter(|item| item.pending)
+            .map(|item| item.text.clone())
+            .collect::<Vec<_>>()
+    };
+    let path = |file: &str| [("path", Value::from(file))];
+
+    // While a call runs.
+    let first = call(&feed, "main", "read_file", &path("a.rs"));
+    feed.note("Keep the old name.", Source::App, 1, Vec::new());
+    notes_show_in_every_view(cx, window, &view, &feed);
+
+    // Right after it, with the run of calls going on around both.
+    result(&feed, "main", first, "read_file", "1 | fn a() {}\n");
+    let second = call(&feed, "main", "read_file", &path("b.rs"));
+    feed.note("And the tests.", Source::App, 2, Vec::new());
+    result(&feed, "main", second, "read_file", "1 | fn b() {}\n");
+    let third = call(&feed, "main", "read_file", &path("c.rs"));
+    assert_eq!(pending(&feed), ["Keep the old name.", "And the tests."]);
+    notes_show_in_every_view(cx, window, &view, &feed);
+
+    // As the agent takes the first, in the same frame.
+    feed.event(
+        &event(
+            "main",
+            AgentEvent::ContextInjected {
+                ids: vec!["note:1".into()],
+                bytes: 100,
+            },
+        ),
+        None,
+    );
+    feed.note("Not the docs.", Source::App, 3, Vec::new());
+    result(&feed, "main", third, "read_file", "1 | fn c() {}\n");
+    call(&feed, "main", "read_file", &path("d.rs"));
+    assert_eq!(pending(&feed), ["And the tests.", "Not the docs."]);
+    notes_show_in_every_view(cx, window, &view, &feed);
+
+    // As the turn ends.
+    feed.note("Thanks.", Source::App, 4, Vec::new());
+    feed.reply("Renamed it.");
+    feed.turn_ended("9 s", None);
+    assert_eq!(pending(&feed).len(), 3);
+    notes_show_in_every_view(cx, window, &view, &feed);
+
+    // The next message takes them.
+    feed.notes_sent(&pending(&feed));
+    feed.turn_started();
+    assert!(pending(&feed).is_empty());
+    notes_show_in_every_view(cx, window, &view, &feed);
 }

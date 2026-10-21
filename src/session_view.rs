@@ -95,6 +95,18 @@ struct FindBar {
 /// The key context of the find bar.
 pub const FIND_CONTEXT: &str = "FindBar";
 
+/// The key context of the agent's question above the composer.
+pub const QUESTION_CONTEXT: &str = "Question";
+
+gpui_kit::actions!(
+    question,
+    [
+        /// From the question's text (a selection to copy) back to the
+        /// composer, which answers it.
+        LeaveQuestion,
+    ]
+);
+
 /// A message of the user's being edited in the composer.
 struct Editing {
     /// The message, by its item.
@@ -2514,6 +2526,10 @@ impl SessionView {
             v_flex()
                 .id("question-card")
                 .test_support()
+                .key_context(QUESTION_CONTEXT)
+                .on_action(cx.listener(|this, _: &LeaveQuestion, window, cx| {
+                    this.focus_composer(window, cx)
+                }))
                 .mb_2()
                 .p_3()
                 .gap_2()

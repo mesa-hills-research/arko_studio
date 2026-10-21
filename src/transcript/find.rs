@@ -4,11 +4,12 @@
 //! details, a group of calls, a long code block), and closes it again when
 //! the find moves on.
 //!
-//! The find keeps each entry's matches apart, and each entry's texts
-//! lowercased for as long as it goes on. A change of the transcript
-//! searches only the entries it changed, as it comes, and words that grow
-//! search only the entries that matched the shorter ones. The texts of a
-//! long transcript are lowercased off the UI thread the first time.
+//! The find ignores case and how accents are written ([`super::fold`]). It
+//! keeps each entry's matches apart, and each entry's texts folded for as
+//! long as it goes on. A change of the transcript searches only the entries
+//! it changed, as it comes, and words that grow search only the entries
+//! that matched the shorter ones. The texts of a long transcript are folded
+//! off the UI thread the first time.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
@@ -18,13 +19,14 @@ use gpui_kit::base::text::{RangeHighlight, RenderedText};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
 
+use super::fold::{Folded, fold};
 use super::model::{self, Entry, RowKey, Show};
 use super::{CODE_LINES, TranscriptEvent, TranscriptView, row};
 use crate::prefs::TranscriptView as View;
 
-/// The bytes of text above which the first search of a find lowercases
+/// The bytes of text above which the first search of a find folds
 /// the transcript's texts off the UI thread.
-const LOWERCASE_IN_BACKGROUND: usize = 256 * 1024;
+const FOLD_IN_BACKGROUND: usize = 256 * 1024;
 
 /// Where in an entry a match is, in the order the entry shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -70,64 +72,6 @@ pub struct FindStatus {
     pub in_full_output: bool,
 }
 
-/// A text lowercased to find words in, and how to map its bytes back.
-pub(crate) struct Lowered {
-    lower: String,
-    /// For each byte of `lower`, the bytes of the character of the text it
-    /// comes from: only when lowercasing moved them (a rare character whose
-    /// lowercase is longer or shorter).
-    origin: Option<Vec<(usize, usize)>>,
-}
-
-impl Lowered {
-    pub fn new(text: &str) -> Self {
-        if text.is_ascii() {
-            return Self {
-                lower: text.to_ascii_lowercase(),
-                origin: None,
-            };
-        }
-        let mut lower = String::with_capacity(text.len());
-        let mut origin = Vec::new();
-        let mut moved = false;
-        for (at, character) in text.char_indices() {
-            let start = lower.len();
-            let mut count = 0;
-            for lowered in character.to_lowercase() {
-                lower.push(lowered);
-                count += 1;
-            }
-            let end = at + character.len_utf8();
-            moved |= start != at || lower.len() != end || count != 1;
-            origin.extend(std::iter::repeat_n((at, end), lower.len() - start));
-        }
-        Self {
-            lower,
-            origin: moved.then_some(origin),
-        }
-    }
-
-    /// Every place the lowercase `needle` is, as byte ranges of the text,
-    /// one after another.
-    pub fn find(&self, needle: &str) -> Vec<Range<usize>> {
-        let mut found = Vec::new();
-        if needle.is_empty() {
-            return found;
-        }
-        let mut from = 0;
-        while let Some(position) = self.lower[from..].find(needle) {
-            let start = from + position;
-            let end = start + needle.len();
-            found.push(match &self.origin {
-                None => start..end,
-                Some(origin) => origin[start].0..origin[end - 1].1,
-            });
-            from = end;
-        }
-        found
-    }
-}
-
 /// An entry's texts, as gathered on the UI thread. A Markdown entry's
 /// rendered blocks are read out of its rendered text later, off the UI
 /// thread for a long transcript's first search.
@@ -149,34 +93,29 @@ impl Gathered {
         }
     }
 
-    fn lowered(self) -> Vec<(Place, Lowered)> {
+    fn folded(self) -> Vec<(Place, Folded)> {
         match self {
             Self::Texts(texts) => texts
                 .into_iter()
-                .map(|(place, text)| (place, Lowered::new(&text)))
+                .map(|(place, text)| (place, Folded::new(&text)))
                 .collect(),
             Self::Rendered { text, blocks } => blocks
                 .into_iter()
                 .filter_map(|(block, source)| {
                     let range = text.range_for_source(source)?;
                     let block_text = text.as_str().get(range)?;
-                    Some((Place::Block(block), Lowered::new(block_text)))
+                    Some((Place::Block(block), Folded::new(block_text)))
                 })
                 .collect(),
         }
     }
 }
 
-/// `words` lowercased, as the texts are.
-fn lowercase(words: &str) -> String {
-    words.chars().flat_map(char::to_lowercase).collect()
-}
-
-/// Every place `needle` is in `haystack`, ignoring case, as byte ranges of
-/// `haystack`, one after another.
+/// Every place `needle` is in `haystack`, ignoring case and how accents
+/// are written, as byte ranges of `haystack`, one after another.
 #[cfg(test)]
 pub(crate) fn find_all(haystack: &str, needle: &str) -> Vec<Range<usize>> {
-    Lowered::new(haystack).find(&lowercase(needle))
+    Folded::new(haystack).find(&fold(needle))
 }
 
 /// The bytes at the start of a call's text that its details show as they
@@ -275,14 +214,14 @@ pub(crate) struct Find {
     pub query: String,
     /// Identifies the scope snapshot sent to the background task.
     generation: u64,
-    /// The words lowercased.
+    /// The words folded.
     needle: String,
     /// The entries with matches, in the transcript's order (their ids).
     found: BTreeMap<u64, Found>,
     total: usize,
-    /// Each entry's texts, lowercased: kept while the find goes on, and
+    /// Each entry's texts, folded: kept while the find goes on, and
     /// made again when the entry changes.
-    texts: HashMap<u64, Vec<(Place, Lowered)>>,
+    texts: HashMap<u64, Vec<(Place, Folded)>>,
     current: Option<Key>,
     /// The Markdown blocks whose views show highlights now.
     pub highlighted: HashSet<(u64, usize)>,
@@ -298,10 +237,10 @@ pub(crate) struct Find {
     pending: Option<(u64, usize)>,
     /// What landing opened, closed again as the find moves on.
     opened: Vec<Opened>,
-    /// Lowercases the texts off the UI thread (a long transcript's first
+    /// Folds the texts off the UI thread (a long transcript's first
     /// search).
-    lowering: Option<Task<()>>,
-    /// Entries that changed while their texts were lowercased off the UI
+    folding: Option<Task<()>>,
+    /// Entries that changed while their texts were folded off the UI
     /// thread: theirs are made again.
     changed_meanwhile: HashSet<u64>,
 }
@@ -465,12 +404,12 @@ impl TranscriptView {
             self.clear_find(cx);
             return FindStatus::default();
         }
-        let needle = lowercase(query);
+        let needle = fold(query);
         let mut find = self.find.take().unwrap_or_default();
         let anchor = find.current_at();
         // Longer words match only where the shorter ones did.
         let narrowing = !find.needle.is_empty()
-            && find.lowering.is_none()
+            && find.folding.is_none()
             && needle.contains(find.needle.as_str());
         find.query = query.to_string();
         find.needle = needle;
@@ -481,10 +420,10 @@ impl TranscriptView {
             for entry in candidates {
                 find.search_kept(entry);
             }
-        } else if find.lowering.is_none() && !self.lower_in_background(&mut find, cx) {
+        } else if find.folding.is_none() && !self.fold_in_background(&mut find, cx) {
             self.search_all(&mut find, cx);
         }
-        if find.lowering.is_none() {
+        if find.folding.is_none() {
             find.current = anchor
                 .and_then(|anchor| find.first_from(anchor))
                 .or_else(|| find.last());
@@ -500,7 +439,7 @@ impl TranscriptView {
         let Some(find) = self.find.as_mut() else {
             return FindStatus::default();
         };
-        if find.lowering.is_some() {
+        if find.folding.is_some() {
             return self.find_status();
         }
         let total = find.total;
@@ -530,7 +469,7 @@ impl TranscriptView {
         FindStatus {
             current: find.current.and_then(|key| find.index_of(key)),
             total: find.total,
-            searching: find.lowering.is_some(),
+            searching: find.folding.is_some(),
             in_full_output: self.current_in_full_output(),
         }
     }
@@ -574,7 +513,7 @@ impl TranscriptView {
         let mut searched = false;
         for id in changed.into_iter().collect::<HashSet<_>>() {
             find.texts.remove(&id);
-            if find.lowering.is_some() {
+            if find.folding.is_some() {
                 find.changed_meanwhile.insert(id);
                 continue;
             }
@@ -603,8 +542,8 @@ impl TranscriptView {
         let anchor = find.current_at();
         find.texts.clear();
         find.generation += 1;
-        find.lowering = None;
-        if !self.lower_in_background(&mut find, cx) {
+        find.folding = None;
+        if !self.fold_in_background(&mut find, cx) {
             self.search_all(&mut find, cx);
         }
         find.settle_current(anchor);
@@ -645,7 +584,7 @@ impl TranscriptView {
             self.model
                 .entry(id)
                 .filter(|entry| self.finds_in(entry))
-                .map(|entry| self.gather(entry, cx).lowered())
+                .map(|entry| self.gather(entry, cx).folded())
                 .unwrap_or_default()
         });
         find.search_kept(id);
@@ -661,10 +600,10 @@ impl TranscriptView {
         model::show(filter, view, &entry.item) == Show::Item && !model::is_refresh(&entry.item)
     }
 
-    /// Starts lowercasing the texts of the entries not searched yet off the
+    /// Starts folding the texts of the entries not searched yet off the
     /// UI thread, when there are many: the find searches once they're
     /// ready. Returns whether it started.
-    fn lower_in_background(&self, find: &mut Find, cx: &mut Context<Self>) -> bool {
+    fn fold_in_background(&self, find: &mut Find, cx: &mut Context<Self>) -> bool {
         let mut texts: Vec<(u64, Gathered)> = Vec::new();
         let mut bytes = 0;
         for entry in self.model.entries() {
@@ -676,35 +615,35 @@ impl TranscriptView {
             bytes += gathered.size();
             texts.push((id, gathered));
         }
-        if bytes < LOWERCASE_IN_BACKGROUND {
+        if bytes < FOLD_IN_BACKGROUND {
             for (id, gathered) in texts {
-                find.texts.insert(id, gathered.lowered());
+                find.texts.insert(id, gathered.folded());
             }
             return false;
         }
         find.found.clear();
         find.total = 0;
         find.changed_meanwhile.clear();
-        let lowering = cx.background_spawn(async move {
+        let folding = cx.background_spawn(async move {
             texts
                 .into_iter()
-                .map(|(id, gathered)| (id, gathered.lowered()))
+                .map(|(id, gathered)| (id, gathered.folded()))
                 .collect::<Vec<_>>()
         });
         let generation = find.generation;
-        find.lowering = Some(cx.spawn(async move |this, cx| {
-            let lowered = lowering.await;
-            this.update(cx, |this, cx| this.lowered(generation, lowered, cx))
+        find.folding = Some(cx.spawn(async move |this, cx| {
+            let folded = folding.await;
+            this.update(cx, |this, cx| this.folded(generation, folded, cx))
                 .ok();
         }));
         true
     }
 
-    /// The texts lowercased off the UI thread are ready: the find searches.
-    fn lowered(
+    /// The texts folded off the UI thread are ready: the find searches.
+    fn folded(
         &mut self,
         generation: u64,
-        lowered: Vec<(u64, Vec<(Place, Lowered)>)>,
+        folded: Vec<(u64, Vec<(Place, Folded)>)>,
         cx: &mut Context<Self>,
     ) {
         if self
@@ -717,9 +656,9 @@ impl TranscriptView {
         let Some(mut find) = self.find.take() else {
             return;
         };
-        find.lowering = None;
+        find.folding = None;
         let changed = std::mem::take(&mut find.changed_meanwhile);
-        for (id, texts) in lowered {
+        for (id, texts) in folded {
             if !changed.contains(&id) && self.model.entry(id).is_some() {
                 find.texts.insert(id, texts);
             }
@@ -1226,7 +1165,7 @@ impl TranscriptView {
         let needle = find.needle.clone();
         view.update(cx, |view, cx| {
             let text = view.rendered_text();
-            let ranges = Lowered::new(text.as_str()).find(&needle);
+            let ranges = Folded::new(text.as_str()).find(&needle);
             let highlights = ranges.iter().enumerate().map(|(ordinal, range)| {
                 let color = if Some(ordinal) == current {
                     strong

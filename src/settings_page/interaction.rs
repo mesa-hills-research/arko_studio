@@ -465,6 +465,30 @@ fn opening_settings_leaves_the_reading_to_the_background(cx: &mut TestAppContext
     assert!(cx.read(|cx| settings.read(cx).font_pickers().is_some()));
 }
 
+/// A moment after the app starts, the fonts Settings lists are read in the
+/// background, so the first opening of Settings shows its font pickers at
+/// once, as the later ones do.
+#[gpui_kit::test]
+fn the_fonts_settings_lists_are_read_a_moment_after_the_start(cx: &mut TestAppContext) {
+    start_with(cx, prefs::Prefs::default());
+    let (window, workspace) = open(cx, 1300.);
+    cx.update(crate::fonts::warm_up);
+    cx.run_until_parked();
+    assert!(
+        cx.read(crate::fonts::picker_catalog).is_none(),
+        "not while the app starts"
+    );
+    cx.executor().advance_clock(crate::fonts::WARM_UP_AFTER);
+    cx.run_until_parked();
+    assert!(cx.read(crate::fonts::picker_catalog).is_some());
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_action(Box::new(crate::menus::OpenSettings), cx)
+    })
+    .unwrap();
+    let settings = cx.read(|cx| workspace.read(cx).settings().unwrap().clone());
+    assert!(cx.read(|cx| settings.read(cx).font_pickers().is_some()));
+}
+
 /// Monospace only narrows the code font's list, and starts on. The
 /// interface font has no use for it and doesn't offer it.
 #[gpui_kit::test]
