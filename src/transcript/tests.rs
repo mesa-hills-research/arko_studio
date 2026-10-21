@@ -691,7 +691,7 @@ fn a_replys_actions_stay_while_the_pointer_moves_onto_them_and_work(cx: &mut Tes
     let copied = cx.read_from_clipboard().and_then(|item| item.text());
     assert_eq!(
         copied.as_deref(),
-        Some("First paragraph.\nSecond paragraph.")
+        Some("First paragraph.\n\nSecond paragraph.")
     );
     cx.update_window(window, |_, window, cx| {
         window.click(("copy-markdown", reply), cx)

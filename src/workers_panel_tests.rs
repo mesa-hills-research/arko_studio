@@ -343,6 +343,14 @@ fn the_composer_writes_to_the_worker_the_panel_shows(cx: &mut TestAppContext) {
         !mock.was_sent("Check the tests too."),
         "not to the main agent"
     );
+    // The engine may still be finishing that command when it says so.
+    wait_until(cx, "the session to be idle", |cx| {
+        cx.read(|cx| {
+            view.read(cx)
+                .live_session()
+                .is_some_and(|session| !session.read(cx).is_working())
+        })
+    });
     // Esc in the composer writes to the main agent again.
     act(cx, window, |window, cx| window.press("escape", cx));
     assert_eq!(cx.read(|cx| view.read(cx).target().cloned()), None);
