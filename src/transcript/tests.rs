@@ -933,11 +933,11 @@ fn one_indicator_turns_at_a_time(cx: &mut TestAppContext) {
     // second, and the elapsed times tick once.
     let draws = draws_in_a_second(cx, &view);
     assert!((10..=16).contains(&draws), "{draws} draws");
-    // Then thinking streams: its shimmer is the one that moves.
+    // Then thinking streams: its shimmer is the one that moves, as often.
     think(&feed, "hmm");
     settle(cx, window);
     let draws = draws_in_a_second(cx, &view);
-    assert!((25..=34).contains(&draws), "{draws} draws");
+    assert!((10..=16).contains(&draws), "{draws} draws");
     let thinking = item_ids(&feed).last().unwrap().0;
     assert_eq!(cx.read(|cx| view.read(cx).animated), Some(thinking));
 }

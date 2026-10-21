@@ -30,7 +30,8 @@ use super::model::{Gap, RowKey};
 use super::tool::{self, Tool};
 use super::{AgentFilter, CODE_LINES, TranscriptEvent, TranscriptView, selectable};
 
-/// How often the running indicator turns, in frames a second.
+/// How often the running indicator turns, and "Thinking…" shimmers, in
+/// frames a second.
 const SPINNER_FPS: f32 = 12.;
 
 /// The reading column's widest.
@@ -1193,6 +1194,7 @@ impl TranscriptView {
         let label: AnyElement = if streaming && self.animated == Some(id) && !cx.reduce_motion() {
             ShimmerText::new("Thinking…")
                 .id(("thinking-shimmer", id))
+                .max_fps(SPINNER_FPS)
                 .into_any_element()
         } else if streaming {
             "Thinking…".into_any_element()
