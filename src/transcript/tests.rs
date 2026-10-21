@@ -1939,6 +1939,170 @@ fn a_selection_across_a_long_messages_rows_survives_scrolling(cx: &mut TestAppCo
     assert_eq!(covered_on_screen(cx), [0, 1, 2, 3]);
 }
 
+/// A right-click at `position`, as the pointer makes one.
+fn right_click_at(cx: &mut TestAppContext, window: AnyWindowHandle, position: Point<Pixels>) {
+    use gpui_kit::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
+
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// The labels of the drawn menu that shows, by item, or none.
+fn menu_labels(cx: &mut TestAppContext, window: AnyWindowHandle) -> Option<Vec<String>> {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find("popup-menu")?;
+        Some(
+            (0..12usize)
+                .map(|ix| {
+                    window
+                        .within("popup-menu")
+                        .try_find(ix)
+                        .and_then(|item| item.label().map(str::to_string))
+                        .unwrap_or_default()
+                })
+                .collect(),
+        )
+    })
+    .unwrap()
+}
+
+/// Presses the item `label` of the drawn menu that shows.
+fn press_menu_item(cx: &mut TestAppContext, window: AnyWindowHandle, label: &str) {
+    let labels = menu_labels(cx, window).expect("a menu shows");
+    let ix = labels
+        .iter()
+        .position(|item| item == label)
+        .unwrap_or_else(|| panic!("{label} in {labels:?}"));
+    cx.update_window(window, |_, window, cx| {
+        window.within("popup-menu").click(ix, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn clipboard_text(cx: &mut TestAppContext) -> String {
+    cx.read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default()
+}
+
+/// A right-click on selected text of the conversation opens the menu of
+/// selected text, whose Copy copies the whole selection, across the rows of
+/// a long message, also once its first rows have left the list.
+#[gpui_kit::test]
+fn copy_in_the_menu_of_selected_text_copies_the_whole_selection(cx: &mut TestAppContext) {
+    use gpui_kit::ClipboardItem;
+    use gpui_kit::base::TextSelection;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Explain the parser", Source::App, Delivery::Turn);
+    let paragraphs: Vec<String> = (1..=40)
+        .map(|n| format!("Paragraph {n} says what the parser does with a chunk."))
+        .collect();
+    feed.reply(&paragraphs.join("\n\n"));
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    load_all(cx, window, &view);
+    let reply = ids_of(&feed, Kind::Reply)[0];
+    let key = |block| RowKey::Block {
+        id: reply,
+        generation: 0,
+        block,
+        source: false,
+    };
+    let first = keys(&view, cx)
+        .iter()
+        .position(|row| *row == key(0))
+        .unwrap();
+    scroll_to_row(cx, &view, first);
+    settle(cx, window);
+    // Where the words of block `block` are: one line at the bottom of its
+    // row, in the reading column.
+    let words = |cx: &mut TestAppContext, block: usize, x: f32| {
+        cx.update_window(window, |_, window, _| {
+            let row = window.find(super::row::element_id(key(block))).bounds();
+            let column = row.size.width.min(px(736.));
+            let text = row.left() + (row.size.width - column) / 2. + px(16.);
+            gpui_kit::point(text + px(x), row.bottom() - px(6.))
+        })
+        .unwrap()
+    };
+    // From the start of the first paragraph into the sixth.
+    let (from, to) = (words(cx, 0, 1.), words(cx, 5, 120.));
+    cx.update_window(window, |_, window, cx| window.drag(from, to, cx))
+        .unwrap();
+    settle(cx, window);
+    let whole = cx
+        .update_window(window, |_, window, cx| {
+            TextSelection::selected_text(window, cx)
+        })
+        .unwrap();
+    assert!(whole.starts_with(&paragraphs[0]), "{whole:?}");
+    assert!(whole.contains(&paragraphs[4]), "{whole:?}");
+    assert!(!whole.contains(&paragraphs[5]), "{whole:?}");
+
+    // On a row in the middle of it.
+    cx.write_to_clipboard(ClipboardItem::new_string("Nothing yet".into()));
+    let middle = words(cx, 2, 40.);
+    right_click_at(cx, window, middle);
+    let labels = menu_labels(cx, window).expect("the menu opened");
+    assert!(labels.contains(&"Copy".to_string()), "{labels:?}");
+    assert!(labels.contains(&"Select All".to_string()), "{labels:?}");
+    press_menu_item(cx, window, "Copy");
+    assert_eq!(clipboard_text(cx), whole.trim());
+    assert!(menu_labels(cx, window).is_none(), "the menu closed");
+
+    // Once the first rows have left the list, on a row still in sight.
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.list.scroll_to(first + 3, px(0.));
+            cx.notify();
+        })
+    });
+    settle(cx, window);
+    cx.update_window(window, |_, window, _| {
+        assert!(window.try_find(super::row::element_id(key(0))).is_none());
+    })
+    .unwrap();
+    cx.write_to_clipboard(ClipboardItem::new_string("Nothing yet".into()));
+    let still_shown = words(cx, 4, 40.);
+    right_click_at(cx, window, still_shown);
+    press_menu_item(cx, window, "Copy");
+    assert_eq!(clipboard_text(cx), whole.trim());
+}
+
 /// A window with a sibling of the transcript, as the composer is.
 struct Column {
     sibling: Entity<Sibling>,
