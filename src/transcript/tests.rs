@@ -2103,6 +2103,150 @@ fn copy_in_the_menu_of_selected_text_copies_the_whole_selection(cx: &mut TestApp
     assert_eq!(clipboard_text(cx), whole.trim());
 }
 
+/// A selection from the user's message, across the reply and the next
+/// message, into a second reply holds while the messages it starts in
+/// scroll out of the list and back. Its ends stay where they were, the
+/// parts out of sight are copied with the rest, and they show as selected
+/// again when they come back.
+#[gpui_kit::test]
+fn a_selection_across_messages_survives_scrolling(cx: &mut TestAppContext) {
+    use gpui_kit::ClipboardItem;
+    use gpui_kit::base::TextSelection;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Explain the parser, please.", Source::App, Delivery::Turn);
+    let first: Vec<String> = (1..=3)
+        .map(|n| format!("The first answer, paragraph {n}."))
+        .collect();
+    feed.reply(&first.join("\n\n"));
+    feed.user("And the lexer?", Source::App, Delivery::Turn);
+    let second: Vec<String> = (1..=40)
+        .map(|n| format!("The second answer, paragraph {n}, says what the lexer does."))
+        .collect();
+    feed.reply(&second.join("\n\n"));
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    load_all(cx, window, &view);
+    let users = ids_of(&feed, Kind::User);
+    let replies = ids_of(&feed, Kind::Reply);
+    let (question, answer) = (users[0], replies[0]);
+    let key = |id, block| RowKey::Block {
+        id,
+        generation: 0,
+        block,
+        source: false,
+    };
+    let top = keys(&view, cx)
+        .iter()
+        .position(|row| *row == RowKey::User(question))
+        .unwrap();
+    scroll_to_row(cx, &view, top);
+    settle(cx, window);
+    // From the start of the question into the third paragraph of the
+    // second answer.
+    let (from, to) = cx
+        .update_window(window, |_, window, _| {
+            let bubble = window.find(("user-message", question)).bounds();
+            let end = window
+                .find(super::row::element_id(key(replies[1], 2)))
+                .bounds();
+            let column = end.size.width.min(px(736.));
+            let text = end.left() + (end.size.width - column) / 2. + px(16.);
+            (
+                gpui_kit::point(bubble.left() + px(13.), bubble.center().y),
+                gpui_kit::point(text + px(120.), end.bottom() - px(6.)),
+            )
+        })
+        .unwrap();
+    cx.update_window(window, |_, window, cx| window.drag(from, to, cx))
+        .unwrap();
+    settle(cx, window);
+    let selected = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            TextSelection::selected_text(window, cx)
+        })
+        .unwrap()
+    };
+    let whole = selected(cx);
+    assert!(
+        whole.starts_with("Explain the parser, please."),
+        "{whole:?}"
+    );
+    for part in first
+        .iter()
+        .chain([&"And the lexer?".to_string(), &second[0], &second[1]])
+    {
+        assert!(whole.contains(part.as_str()), "{part:?} in {whole:?}");
+    }
+    // Into the third paragraph, not to its end.
+    assert!(
+        whole.contains(&format!("{}\n\nThe second", second[1])),
+        "{whole:?}"
+    );
+    assert!(!whole.contains(&second[2]), "{whole:?}");
+    // What the first answer's rows show selected, and whether the question
+    // does.
+    let painted = |cx: &mut TestAppContext| -> (bool, Vec<String>) {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            let question = view.ui[&question].runs[&super::find::Place::Text]
+                .handle
+                .snapshot(cx)
+                .is_some();
+            let doc = view.ui[&answer].doc.as_ref().unwrap();
+            let rows = (0..3)
+                .map(|block| {
+                    doc.blocks[block]
+                        .view
+                        .as_ref()
+                        .map(|view| view.read(cx).selected_text().trim().to_string())
+                        .unwrap_or_default()
+                })
+                .collect();
+            (question, rows)
+        })
+    };
+    let shown = painted(cx);
+    assert_eq!(shown, (true, first.clone()));
+    let wheel = |cx: &mut TestAppContext, dy: f32| {
+        cx.update_window(window, |_, window, cx| {
+            window.scroll(
+                "transcript",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(dy))),
+                cx,
+            )
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    };
+    for step in 0..12 {
+        wheel(cx, -120.);
+        assert_eq!(selected(cx), whole, "away, step {step}");
+    }
+    // The question and the first answer are out of the list.
+    cx.update_window(window, |_, window, _| {
+        assert!(window.try_find(("user-message", question)).is_none());
+        assert!(
+            window
+                .try_find(super::row::element_id(key(answer, 2)))
+                .is_none()
+        );
+    })
+    .unwrap();
+    cx.write_to_clipboard(ClipboardItem::new_string("Nothing yet".into()));
+    cx.update_window(window, |_, window, cx| window.press("secondary-c", cx))
+        .unwrap();
+    assert_eq!(clipboard_text(cx).trim(), whole.trim());
+    for step in 0..12 {
+        wheel(cx, 120.);
+        assert_eq!(selected(cx), whole, "back, step {step}");
+    }
+    assert_eq!(cx.read(|cx| view.read(cx).list.top().item_ix), top);
+    assert_eq!(painted(cx), shown);
+}
+
 /// A window with a sibling of the transcript, as the composer is.
 struct Column {
     sibling: Entity<Sibling>,

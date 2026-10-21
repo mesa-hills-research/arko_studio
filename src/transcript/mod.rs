@@ -33,7 +33,7 @@ mod tool;
 #[path = "find_theme_tests.rs"]
 mod find_theme_tests;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
@@ -42,7 +42,7 @@ use std::time::Duration;
 
 use arko::remote::{CallStatus, Feed, Kind};
 use gpui_kit::base::image_cache::LruImageCache;
-use gpui_kit::base::{SelectableText, TextSelection};
+use gpui_kit::base::{SelectableText, TextSelection, TextSelectionHandle};
 use gpui_kit::component::diff_view::DiffViewState;
 use gpui_kit::component::image_viewer::ImageViewerItem;
 use gpui_kit::component::input;
@@ -255,6 +255,20 @@ struct EntryUi {
     labeled: bool,
     /// How many images its item shows.
     images: usize,
+    /// The plain runs of its text in the window's selection, by where they
+    /// are in the entry, made when their rows are drawn.
+    runs: HashMap<find::Place, Run>,
+}
+
+/// A run of an entry's plain text, with the handle that keeps it in the
+/// window's selection while its row isn't drawn.
+struct Run {
+    handle: TextSelectionHandle,
+    /// The frame its row was last drawn in.
+    drawn: usize,
+    /// The text it was drawn with, which a selection that covers it copies
+    /// while it isn't drawn.
+    text: SharedString,
 }
 
 /// Whether the rows of `item`'s text are small, and whether its first
@@ -379,6 +393,19 @@ pub struct TranscriptView {
     renders: usize,
     /// Block views made since the last look for views to let go.
     views_made: usize,
+    /// Handles of plain runs made since the last look for handles to let
+    /// go.
+    runs_made: usize,
+    /// The document all of its text is in for the window's selection (its
+    /// entity's ID), so that a selection across messages holds while they
+    /// scroll out of sight and back.
+    document: u64,
+    /// The index of the row being drawn, which places its text in
+    /// [`Self::document`].
+    drawing_row: Cell<usize>,
+    /// The texts of the plain runs of the row being drawn, by entry and
+    /// part, for their handles.
+    drawn_runs: RefCell<Vec<(u64, find::Place, SharedString)>>,
     /// The sizes the rows' heights are estimated with, for the theme and
     /// fonts of the last frame.
     metrics: Option<height::Metrics>,
@@ -458,6 +485,10 @@ impl TranscriptView {
             cursor: None,
             renders: 0,
             views_made: 0,
+            runs_made: 0,
+            document: cx.entity_id().as_u64(),
+            drawing_row: Cell::new(0),
+            drawn_runs: RefCell::default(),
             metrics: None,
             grown: Vec::new(),
             estimates: true,
@@ -977,6 +1008,93 @@ impl TranscriptView {
         Some(view)
     }
 
+    /// Makes the handles of the plain runs the row `key` draws, the first
+    /// time it is drawn, and notes that they are drawn this frame.
+    fn run_handles(&mut self, key: RowKey, cx: &mut Context<Self>) {
+        use find::Place;
+        let mut places = [None, None];
+        match key {
+            RowKey::User(_) | RowKey::Notice(_) | RowKey::Output(_) => {
+                places[0] = Some(Place::Text);
+            }
+            RowKey::Block {
+                block,
+                source: true,
+                ..
+            } => places[0] = Some(Place::Source(block)),
+            // A call's details, while they show.
+            RowKey::Call(_) if self.row_expanded(key) == Some(true) => {
+                places = [Some(Place::Parameters), Some(Place::Output)];
+            }
+            _ => return,
+        }
+        let frame = self.renders;
+        let Some(ui) = self.ui.get_mut(&key.entry()) else {
+            return;
+        };
+        for place in places.into_iter().flatten() {
+            let run = ui.runs.entry(place).or_insert_with(|| {
+                self.runs_made += 1;
+                Run {
+                    handle: TextSelectionHandle::new("", cx),
+                    drawn: frame,
+                    text: SharedString::default(),
+                }
+            });
+            run.drawn = frame;
+        }
+    }
+
+    /// Gives the handles of the plain runs a row drew the texts they drew,
+    /// which a selection that covers a run copies while it isn't drawn.
+    fn keep_run_texts(&mut self, texts: Vec<(u64, find::Place, SharedString)>, cx: &mut App) {
+        for (entry, place, text) in texts {
+            let Some(run) = self
+                .ui
+                .get_mut(&entry)
+                .and_then(|ui| ui.runs.get_mut(&place))
+            else {
+                continue;
+            };
+            if run.text != text {
+                run.handle.set_fallback_copy_text(text.as_ref(), cx);
+                run.text = text;
+            }
+        }
+    }
+
+    /// The handle of the run `place` of the entry `id`, once its row has
+    /// been drawn.
+    fn run_handle(&self, id: u64, place: find::Place) -> Option<TextSelectionHandle> {
+        let run = self.ui.get(&id)?.runs.get(&place)?;
+        Some(run.handle.clone())
+    }
+
+    /// Lets go of the handles of the plain runs drawn longest ago, past
+    /// [`BLOCK_VIEWS`], and of the texts they hold, unless the selection
+    /// covers them. A row drawn again gets new ones.
+    fn release_runs(&mut self, cx: &App) {
+        self.runs_made = 0;
+        let mut frames: Vec<usize> = self
+            .ui
+            .values()
+            .flat_map(|ui| ui.runs.values())
+            .map(|run| run.drawn)
+            .collect();
+        if frames.len() <= BLOCK_VIEWS {
+            return;
+        }
+        frames.sort_unstable();
+        let kept_from = frames[frames.len() - BLOCK_VIEWS].min(self.renders.saturating_sub(1));
+        for ui in self.ui.values_mut() {
+            ui.runs.retain(|_, run| {
+                run.drawn >= kept_from
+                    || run.handle.snapshot(cx).is_some()
+                    || run.handle.has_local_selection(cx)
+            });
+        }
+    }
+
     /// Lets go of the views of the blocks drawn longest ago, past
     /// [`BLOCK_VIEWS`], and of the layouts they hold. A row drawn again
     /// gets a new view, made from its document's parse.
@@ -1492,6 +1610,9 @@ impl Render for TranscriptView {
         if self.views_made >= RELEASE_EVERY {
             self.release_block_views();
         }
+        if self.runs_made >= RELEASE_EVERY {
+            self.release_runs(cx);
+        }
         if !self.list.is_scrolled_up() {
             self.new_while_away = 0;
         }
@@ -1569,9 +1690,44 @@ impl Render for TranscriptView {
     }
 }
 
-/// Plain text that takes part in the window's selection, in a row.
-fn selectable(id: impl Into<ElementId>, text: impl Into<SharedString>) -> SelectableText {
-    SelectableText::new(id, text)
+impl TranscriptView {
+    /// The plain text of the part `place` of the entry `entry`, in a row,
+    /// in the window's selection with the rest of the transcript's text. It
+    /// stays in a selection while its row isn't drawn.
+    fn selectable(
+        &self,
+        id: impl Into<ElementId>,
+        entry: u64,
+        place: find::Place,
+        text: impl Into<SharedString>,
+    ) -> SelectableText {
+        let text = text.into();
+        let run = match self.run_handle(entry, place) {
+            Some(handle) => {
+                self.drawn_runs
+                    .borrow_mut()
+                    .push((entry, place, text.clone()));
+                SelectableText::with_handle(id, handle, text)
+            }
+            None => SelectableText::new(id, text),
+        };
+        run.document_position(self.document, self.selection_position(place))
+    }
+
+    /// Where the part `place` of the row being drawn is in the transcript's
+    /// document for the window's selection. Positions rise in reading order,
+    /// by row, then by part of a call's details. They come from the rows'
+    /// indexes, which stay small, since the kit places an end of the
+    /// selection that isn't drawn as many pixels past the drawn text.
+    fn selection_position(&self, place: find::Place) -> u64 {
+        use find::Place;
+        let part = match place {
+            Place::Parameters => 1,
+            Place::Output => 2,
+            _ => 0,
+        };
+        self.drawing_row.get() as u64 * 4 + part
+    }
 }
 
 /// "screenshot.png · 240 KB": an image's label and size.

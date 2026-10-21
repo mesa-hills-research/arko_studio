@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use arko::remote::{CallStatus, Delivery, Item, Kind, Level, Source, WorkerState};
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::base::Easing;
 use gpui_kit::base::image_cache::LruImageCache;
 use gpui_kit::base::text::{TextView, TextViewMotion, TextViewStyle};
+use gpui_kit::base::{Easing, SelectableText};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Theme, WindowExt as _,
     button::{Button, ButtonVariants as _},
@@ -28,7 +28,7 @@ use crate::fonts::CodeFont as _;
 use super::height::Metrics;
 use super::model::{Gap, RowKey};
 use super::tool::{self, Tool};
-use super::{AgentFilter, CODE_LINES, TranscriptEvent, TranscriptView, selectable};
+use super::{AgentFilter, CODE_LINES, TranscriptEvent, TranscriptView};
 
 /// How often the running indicator turns, and "Thinking…" shimmers, in
 /// frames a second.
@@ -197,15 +197,23 @@ pub(super) fn render(
     let Some(view) = view.upgrade() else {
         return div().into_any_element();
     };
-    // A block's row gets its view the first time it is drawn.
-    if let Some(RowKey::Block { id, block, .. }) = view.read(cx).rows.get(ix).map(|row| row.key) {
-        view.update(cx, |this, cx| this.block_view(id, block, cx));
+    // A block's row gets its view the first time it is drawn, and a row of
+    // plain text the handles that keep it in a selection.
+    match view.read(cx).rows.get(ix).map(|row| row.key) {
+        Some(key @ RowKey::Block { id, block, .. }) => view.update(cx, |this, cx| {
+            this.block_view(id, block, cx);
+            this.run_handles(key, cx);
+        }),
+        Some(key) => view.update(cx, |this, cx| this.run_handles(key, cx)),
+        None => {}
     }
     let this = view.read(cx);
     let Some(row) = this.rows.get(ix).copied() else {
         return div().into_any_element();
     };
+    this.drawing_row.set(ix);
     let content = this.row(row.key, &view, cx);
+    let run_texts = this.drawn_runs.take();
     // The pointer over any row of an entry with hover actions shows them,
     // the gap above a row included, so crossing from one row to the next
     // or onto the actions keeps them.
@@ -242,7 +250,7 @@ pub(super) fn render(
     let expanded = this.row_expanded(row.key);
     // The reading column: centred and at most ~46 rem wide, with the side
     // padding inside it, so narrow windows read edge to edge.
-    div()
+    let element = div()
         .id(element_id(row.key))
         .test_support()
         .role(Role::ListItem)
@@ -269,7 +277,11 @@ pub(super) fn render(
                 .child(content)
                 .children(ring),
         )
-        .into_any_element()
+        .into_any_element();
+    if !run_texts.is_empty() {
+        view.update(cx, |this, cx| this.keep_run_texts(run_texts, cx));
+    }
+    element
 }
 
 /// The space above a row, in rem.
@@ -1022,6 +1034,7 @@ impl TranscriptView {
                     text_style(cx)
                 })
                 .selectable(true)
+                .document_position(self.document, self.selection_position(Place::Block(block)))
                 .image_source(local_images_only)
                 .motion(stream_motion(self.settings.stream_fade && !thinking))
                 .code_block_actions(|code, _, cx| {
@@ -1937,9 +1950,8 @@ impl Render for OutputViewer {
                                         )])
                                         .into_any_element()
                                 }
-                                _ => {
-                                    selectable(("output-line", ix as u64), line).into_any_element()
-                                }
+                                _ => SelectableText::new(("output-line", ix as u64), line)
+                                    .into_any_element(),
                             };
                             div().px_2().child(text).into_any_element()
                         })
