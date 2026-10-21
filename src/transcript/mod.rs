@@ -14,6 +14,7 @@
 //! (a keystroke in the composer) doesn't draw it again.
 
 mod find;
+mod fold;
 mod inbox;
 mod list;
 mod model;

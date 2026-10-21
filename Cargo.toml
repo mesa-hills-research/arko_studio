@@ -24,6 +24,8 @@ arko = { package = "arko-tui", version = "0.1.0", default-features = false, feat
 anyhow = "1.0"
 # arko's Prompter trait is an async trait.
 async-trait = "0.1"
+# Find folds case in full (Unicode's case folding table).
+caseless = "0.2.2"
 chrono = "0.4"
 # Lists an agent's folder for @-mentions as git sees it (.gitignore and the like).
 ignore = "0.4"
@@ -39,6 +41,8 @@ tempfile = "3"
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Find matches accents however they're written (NFC).
+unicode-normalization = "0.1.25"
 
 [dev-dependencies]
 # The same GPUI Kit with GPUI's test harness, for tests that click and type
