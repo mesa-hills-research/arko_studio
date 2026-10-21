@@ -129,6 +129,10 @@ pub enum TranscriptEvent {
     FindStatus(FindStatus),
     /// Esc on the rows: the keyboard goes back to the composer.
     Leave,
+    /// Move the running call `item` to the background.
+    MoveToBackground(u64),
+    /// Stop the background job, by its ID.
+    StopJob(SharedString),
 }
 
 /// The transcript's copy of the preferences it follows.
@@ -351,6 +355,9 @@ pub struct TranscriptView {
     list: list::RowList,
     focus_handle: FocusHandle,
     settings: Settings,
+    /// The calls running that can move to the background, by item, as the
+    /// session's status says.
+    movable: HashSet<u64>,
     /// The entry whose hover actions show.
     hovered: Option<u64>,
     /// The rows under the pointer, of entries with hover actions.
@@ -366,8 +373,11 @@ pub struct TranscriptView {
     /// counts open the Full view at their calls).
     scroll_to: Option<RowKey>,
     clock: Clock,
-    /// Draws again every second while a call or a worker runs.
+    /// Draws again every second while a call or a worker runs, and as the
+    /// minutes of a background job's time turn.
     ticker: Option<Task<()>>,
+    /// How long the ticker waits between draws.
+    tick_every: Duration,
     /// The entry whose running indicator turns this frame: the latest
     /// thing that runs, unless "Working…" shows (it turns then).
     animated: Option<u64>,
@@ -465,6 +475,7 @@ impl TranscriptView {
             // A Tab stop, so the keyboard reaches the transcript to scroll it.
             focus_handle: cx.focus_handle().tab_stop(true),
             settings,
+            movable: HashSet::new(),
             hovered: None,
             hovered_rows: HashSet::new(),
             hover_grace: None,
@@ -473,6 +484,7 @@ impl TranscriptView {
             scroll_to: None,
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
+            tick_every: Duration::ZERO,
             animated: None,
             working: None,
             shows_working: false,
@@ -625,6 +637,18 @@ impl TranscriptView {
         if current.unwrap_or(default) != open {
             self.toggle(item, default, cx);
         }
+    }
+
+    /// The running calls that can move to the background, by item, as the
+    /// session's status says: their rows offer Move to background.
+    pub fn set_movable(&mut self, movable: &[u64], cx: &mut Context<Self>) {
+        if movable.len() == self.movable.len()
+            && movable.iter().all(|item| self.movable.contains(item))
+        {
+            return;
+        }
+        self.movable = movable.iter().copied().collect();
+        cx.notify();
     }
 
     /// Shows the images the items show (the user's attachments, what tools
@@ -1271,31 +1295,38 @@ impl TranscriptView {
         None
     }
 
-    /// Draws every second while something shows a running time.
+    /// Draws again as the running times the rows show change.
     fn tick_while_running(&mut self, cx: &mut Context<Self>) {
-        if !self.is_running() {
+        let Some(every) = self.next_tick() else {
             self.ticker = None;
             return;
-        }
-        if self.ticker.is_some() {
+        };
+        // A ticker that draws as often already goes on.
+        if self.ticker.is_some() && every >= self.tick_every {
             return;
         }
+        self.tick_every = every;
         self.ticker = Some(cx.spawn(async move |this, cx| {
+            let mut every = every;
             loop {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
-                let running = this
+                cx.background_executor().timer(every).await;
+                let next = this
                     .update(cx, |this, cx| {
-                        let running = this.is_running();
-                        if running {
-                            cx.notify();
-                        } else {
-                            this.ticker = None;
+                        let next = this.next_tick();
+                        match next {
+                            Some(next) => {
+                                this.tick_every = next;
+                                cx.notify();
+                            }
+                            None => this.ticker = None,
                         }
-                        running
+                        next
                     })
-                    .unwrap_or(false);
-                if !running {
-                    break;
+                    .ok()
+                    .flatten();
+                match next {
+                    Some(next) => every = next,
+                    None => break,
                 }
             }
         }));
@@ -1321,16 +1352,42 @@ impl TranscriptView {
         })
     }
 
-    fn is_running(&self) -> bool {
-        self.model
-            .entries()
+    /// How long until the rows' times change: a second while a call or a
+    /// worker runs, else until the minute of a background job's time turns,
+    /// or `None` when nothing runs.
+    fn next_tick(&self) -> Option<Duration> {
+        let second = Duration::from_secs(1);
+        let workers = self
+            .model
+            .workers()
             .iter()
-            .any(|entry| entry.item.status == Some(CallStatus::Running))
-            || self
-                .model
-                .workers()
-                .iter()
-                .any(|worker| worker.state.is_active())
+            .any(|worker| worker.state.is_active());
+        if workers {
+            return Some(second);
+        }
+        let now = (self.clock)();
+        let mut next: Option<Duration> = None;
+        for entry in self.model.entries() {
+            let item = &entry.item;
+            if item.status == Some(CallStatus::Running) {
+                return Some(second);
+            }
+            // A call whose row says how long its background job has run:
+            // in seconds for its first minute, then in minutes.
+            let Some(job) = item.job.as_deref().and_then(|job| self.model.job(job)) else {
+                continue;
+            };
+            if !job.state.is_running() {
+                continue;
+            }
+            let ran = (now - job.started_at).max(0);
+            if ran < 60_000 {
+                return Some(second);
+            }
+            let turn = Duration::from_millis((60_000 - ran % 60_000) as u64 + 50);
+            next = Some(next.map_or(turn, |next| next.min(turn)));
+        }
+        next
     }
 
     // ----- what the reader does -----

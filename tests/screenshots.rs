@@ -441,6 +441,63 @@ parse of the whole text.";
         feed
     }
 
+    /// Calls that moved to the background: one whose job runs, three whose
+    /// jobs ended (finished, stopped, failed), and a command that still
+    /// runs, which can move. `now` is the time the rows are read at. Gives
+    /// the running command's item too.
+    pub fn background_jobs(now: i64) -> (Feed, u64) {
+        use arko::remote::{JobKind, JobStart, JobState, MAIN_AGENT};
+
+        let feed = Feed::new("main");
+        feed.user(
+            "Index the workspace, then build it.",
+            Source::App,
+            Delivery::Turn,
+        );
+        feed.turn_started();
+        let moved = |tool: &str, parameters: &[(&str, Value)], started: i64| {
+            let job = Uuid::new_v4();
+            let id = call(&feed, tool, parameters);
+            result(
+                &feed,
+                id,
+                tool,
+                &format!(
+                    "in the background as job {job}, 95.3 s\nThe user moved this call to the background."
+                ),
+            );
+            feed.job_started(
+                JobStart::new(job, MAIN_AGENT, JobKind::Call, tool)
+                    .made_by(id)
+                    .started(started),
+            );
+            job
+        };
+        let minutes = |n: i64| now - n * 60_000 - 5_000;
+        let finished = moved("index_create", &[("path", "docs".into())], minutes(4));
+        feed.job_ended(finished, JobState::Finished, None);
+        let stopped = moved(
+            "mcp__github__search_code",
+            &[("q", "parser".into())],
+            minutes(2),
+        );
+        feed.job_ended(stopped, JobState::Stopped, None);
+        let failed = moved("mcp__slow__lookup", &[("word", "mesa".into())], minutes(1));
+        feed.job_ended(
+            failed,
+            JobState::Failed,
+            Some("the server went away".into()),
+        );
+        moved("index_create", &[("path", ".".into())], minutes(3));
+        call(
+            &feed,
+            "shell",
+            &[("command", "cargo build --release".into())],
+        );
+        let running = feed.subscribe().0.items.last().unwrap().id;
+        (feed, running)
+    }
+
     /// A turn whose agent waits on the model after a call's result.
     pub fn working_after_a_call() -> Feed {
         let feed = Feed::new("main");
@@ -601,6 +658,57 @@ fn transcript_pending_note_dark() {
     goldens().assert(
         "transcript-pending-note-dark",
         &pending_note_window(ThemeMode::Dark),
+    );
+}
+
+/// Calls in the background: how their jobs ended, one that runs with Stop,
+/// and a command that runs with Move to background.
+fn background_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let now = chrono::Utc::now().timestamp_millis();
+    let (feed, running) = feed::background_jobs(now);
+    // The command started 12 s ago.
+    let shown_at = now + 12_000;
+    let window = app
+        .open_window_with(size(px(900.), px(260.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
+                    view.set_clock(move || shown_at, cx);
+                    view.set_movable(&[running], cx);
+                    view
+                })
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn transcript_background_light() {
+    goldens().assert(
+        "transcript-background-light",
+        &background_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn transcript_background_dark() {
+    goldens().assert(
+        "transcript-background-dark",
+        &background_window(ThemeMode::Dark),
     );
 }
 
@@ -1135,6 +1243,7 @@ fn workers_window(mode: ThemeMode) -> Screenshot {
         ],
         feed: None,
         images: None,
+        movable: Vec::new(),
         key: None,
     };
     let window = app

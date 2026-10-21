@@ -11,7 +11,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use arko::remote::{
-    Activity, CallStatus, Delivery, Item, Kind, Level, Snapshot, Update, WorkerState, WorkerSummary,
+    Activity, CallStatus, Delivery, Item, JobSummary, Kind, Level, Snapshot, Update, WorkerState,
+    WorkerSummary,
 };
 use gpui_kit::SharedString;
 
@@ -50,6 +51,10 @@ impl AgentFilter {
 /// updates).
 pub(crate) const KEPT_OUTPUTS: usize = 8 * 1024 * 1024;
 
+/// The background jobs that ended a transcript keeps besides those running,
+/// as many as the feed keeps.
+const ENDED_JOBS: usize = 100;
+
 /// The bytes of `item` that count in [`KEPT_OUTPUTS`].
 fn kept_size(item: &Item) -> usize {
     [&item.parameters, &item.output, &item.whole]
@@ -78,6 +83,8 @@ pub(crate) struct Changes {
     pub changed: Vec<u64>,
     pub removed: Vec<u64>,
     pub workers: bool,
+    /// A background job started, changed or ended.
+    pub jobs: bool,
     pub activity: bool,
 }
 
@@ -90,6 +97,7 @@ impl Changes {
             || !self.changed.is_empty()
             || !self.removed.is_empty()
             || self.workers
+            || self.jobs
             || self.activity
     }
 }
@@ -99,6 +107,9 @@ pub(crate) struct Model {
     filter: AgentFilter,
     entries: Vec<Entry>,
     workers: Vec<WorkerSummary>,
+    /// The session's background jobs, running or ended lately, in the order
+    /// they came.
+    jobs: Vec<JobSummary>,
     activity: Activity,
     /// The latest conversation marker: items before it are another
     /// conversation's.
@@ -117,6 +128,7 @@ impl Model {
             filter,
             entries: Vec::new(),
             workers: Vec::new(),
+            jobs: Vec::new(),
             activity: Activity::default(),
             cut: None,
             last_reply: Cell::new(None),
@@ -139,6 +151,11 @@ impl Model {
 
     pub fn worker(&self, id: &str) -> Option<&WorkerSummary> {
         self.workers.iter().find(|worker| worker.id == id)
+    }
+
+    /// The background job `id`, while the feed keeps it.
+    pub fn job(&self, id: &str) -> Option<&JobSummary> {
+        self.jobs.iter().find(|job| job.id == id)
     }
 
     /// Where the entry `id` is, or would go.
@@ -164,6 +181,7 @@ impl Model {
             self.keep_outputs_within_budget();
         }
         self.workers = snapshot.workers;
+        self.jobs = snapshot.jobs;
         self.activity = snapshot.activity;
         *changes = Changes {
             reset: true,
@@ -262,11 +280,33 @@ impl Model {
                     changes.removed.push(id);
                 }
             }
-            // A job's end reaches its call's row as a change of the call.
-            Update::Job(_) => {}
+            Update::Job(summary) => {
+                match self.jobs.iter_mut().find(|job| job.id == summary.id) {
+                    Some(job) => *job = summary,
+                    None => self.jobs.push(summary),
+                }
+                self.forget_old_jobs();
+                changes.jobs = true;
+            }
             // An update a later arko adds.
             _ => {}
         }
+    }
+
+    /// Forgets the jobs that came first of those that ended, past
+    /// [`ENDED_JOBS`]. Their calls' rows say how they ended without them.
+    fn forget_old_jobs(&mut self) {
+        let ended = self
+            .jobs
+            .iter()
+            .filter(|job| !job.state.is_running())
+            .count();
+        let mut extra = ended.saturating_sub(ENDED_JOBS);
+        self.jobs.retain(|job| {
+            let forget = extra > 0 && !job.state.is_running();
+            extra -= usize::from(forget);
+            !forget
+        });
     }
 
     /// Adds `item`, and returns whether it brought bytes that count in
@@ -1072,6 +1112,47 @@ mod tests {
 
     fn ids(model: &Model) -> Vec<u64> {
         model.entries().iter().map(|entry| entry.item.id).collect()
+    }
+
+    /// The model keeps the session's background jobs, from the snapshot and
+    /// as their summaries come, and forgets those that ended first once
+    /// more than [`ENDED_JOBS`] ended. Those running stay.
+    #[test]
+    fn background_jobs_come_with_the_snapshot_and_their_updates() {
+        use arko::remote::{Feed, JobKind, JobStart, JobState, MAIN_AGENT};
+
+        let feed = Feed::new("main");
+        let start = |kind| {
+            let id = uuid::Uuid::new_v4();
+            feed.job_started(JobStart::new(id, MAIN_AGENT, kind, "npm run dev"));
+            id
+        };
+        let first = start(JobKind::Command);
+        let (snapshot, mut updates) = feed.subscribe();
+        let mut model = Model::new(AgentFilter::Main);
+        model.load(snapshot, &mut Changes::default());
+        let state = |model: &Model, id: uuid::Uuid| model.job(&id.to_string()).map(|job| job.state);
+        assert_eq!(state(&model, first), Some(JobState::Running));
+
+        feed.job_ended(first, JobState::Stopped, None);
+        let running = start(JobKind::Call);
+        let ended: Vec<uuid::Uuid> = (0..ENDED_JOBS + 2)
+            .map(|_| {
+                let id = start(JobKind::Command);
+                feed.job_ended(id, JobState::Finished, Some("exit 0".into()));
+                id
+            })
+            .collect();
+        let mut changes = Changes::default();
+        while let Ok(update) = updates.try_recv() {
+            model.apply(update, &mut changes);
+        }
+        assert!(changes.jobs && changes.any());
+        assert_eq!(state(&model, first), None, "forgotten");
+        assert_eq!(state(&model, ended[0]), None, "forgotten");
+        assert_eq!(state(&model, ended[2]), Some(JobState::Finished));
+        assert_eq!(state(&model, running), Some(JobState::Running));
+        assert_eq!(model.jobs.len(), ENDED_JOBS + 1);
     }
 
     /// Every text has one block, and nothing is expanded or in source.

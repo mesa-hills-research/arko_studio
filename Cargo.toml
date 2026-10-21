@@ -43,6 +43,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Find matches accents however they're written (NFC).
 unicode-normalization = "0.1.25"
+# The IDs of the background jobs the app asks the engine to stop.
+uuid = "1"
 
 [dev-dependencies]
 # The same GPUI Kit with GPUI's test harness, for tests that click and type
@@ -54,7 +56,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # drive a feed the way a session does.
 arko_agents = "0.1.0"
 arko_workflows = "0.1.0"
-uuid = "1"
 
 # The golden-screenshot harness, from the gpui fork at the rev of the [patch.crates-io] below.
 # Its goldens are drawn by Mesa's software Vulkan driver, on Linux.

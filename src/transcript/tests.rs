@@ -2261,6 +2261,222 @@ fn a_selection_across_messages_survives_scrolling(cx: &mut TestAppContext) {
     assert_eq!(painted(cx), shown);
 }
 
+/// The events `view` sends, as they come.
+fn events_of(
+    view: &Entity<TranscriptView>,
+    cx: &mut TestAppContext,
+) -> (
+    Rc<std::cell::RefCell<Vec<TranscriptEvent>>>,
+    gpui_kit::Subscription,
+) {
+    let events = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let subscription = cx.update({
+        let events = events.clone();
+        |cx| {
+            cx.subscribe(view, move |_, event: &TranscriptEvent, _| {
+                events.borrow_mut().push(event.clone());
+            })
+        }
+    });
+    (events, subscription)
+}
+
+/// Whether the element `id` is drawn.
+fn drawn(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<ElementId>) -> bool {
+    let id = id.into();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).is_some()
+    })
+    .unwrap()
+}
+
+/// A running call that can move to the background offers Move to
+/// background, as long as the session's status lists it, and asks for the
+/// move when pressed.
+#[gpui_kit::test]
+fn a_running_call_that_can_move_offers_move_to_background(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Look it up", Source::App, Delivery::Turn);
+    call(
+        &feed,
+        "main",
+        "mcp__slow__lookup",
+        &[("word", "mesa".into())],
+    );
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let item = ids_of(&feed, Kind::Call)[0];
+    assert!(!drawn(cx, window, ("move-call", item)), "not movable yet");
+    let (events, _subscription) = events_of(&view, cx);
+    view.update(cx, |view, cx| view.set_movable(&[item], cx));
+    settle(cx, window);
+    assert!(drawn(cx, window, ("move-call", item)));
+    cx.update_window(window, |_, window, cx| {
+        window.click(("move-call", item), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(*events.borrow(), [TranscriptEvent::MoveToBackground(item)]);
+    // It moved, or ended: the status no longer lists it.
+    view.update(cx, |view, cx| view.set_movable(&[], cx));
+    settle(cx, window);
+    assert!(!drawn(cx, window, ("move-call", item)));
+}
+
+/// The result a call that moved to the background gives the agent.
+fn moved(job: Uuid) -> String {
+    format!(
+        "in the background as job {job}, 95.3 s\nThe user moved this call to the background. It goes on running, and its result reaches you as a note when it ends."
+    )
+}
+
+/// A call that moved to the background says so. While its job runs, its
+/// row says for how long and offers Stop, and once the job ends it says how
+/// it ended, as Arko words it, without Stop.
+#[gpui_kit::test]
+fn a_call_in_the_background_follows_its_job(cx: &mut TestAppContext) {
+    use super::row::JobLine;
+    use arko::remote::{JobKind, JobStart, JobState, MAIN_AGENT};
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Index it", Source::App, Delivery::Turn);
+    let calls: Vec<(Uuid, Uuid)> = (0..3)
+        .map(|_| {
+            let job = Uuid::new_v4();
+            let call = call(&feed, "main", "index_create", &[("path", ".".into())]);
+            result(&feed, "main", call, "index_create", &moved(job));
+            (call, job)
+        })
+        .collect();
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let now = hand_clock(&view, cx);
+    let items = ids_of(&feed, Kind::Call);
+    let line = |cx: &mut TestAppContext, ix: usize| {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            view.job_line(&view.model.entry(items[ix]).unwrap().item)
+        })
+    };
+    // Moved, and its job not known yet.
+    assert_eq!(line(cx, 0), Some(JobLine::Moved));
+    assert!(!drawn(cx, window, ("stop-job", items[0])));
+
+    // Its job runs, for 3 minutes so far.
+    for (call, job) in &calls {
+        let started = now.get() - 3 * 60_000 - 5_000;
+        feed.job_started(
+            JobStart::new(*job, MAIN_AGENT, JobKind::Call, "index_create")
+                .made_by(*call)
+                .started(started),
+        );
+    }
+    settle(cx, window);
+    let (_, job) = calls[0];
+    assert_eq!(
+        line(cx, 0),
+        Some(JobLine::Running {
+            job: job.to_string().into(),
+            since: now.get() - 3 * 60_000 - 5_000,
+        })
+    );
+    assert_eq!(super::row::job_time(3 * 60_000 + 5_000), "3 min");
+    // Its time goes on, a minute at a time: the next draw is as the fourth
+    // minute starts.
+    assert!(cx.read(|cx| view.read(cx).ticker.is_some()));
+    assert_eq!(
+        cx.read(|cx| view.read(cx).tick_every),
+        std::time::Duration::from_millis(55_050)
+    );
+    let (events, _subscription) = events_of(&view, cx);
+    cx.update_window(window, |_, window, cx| {
+        window.click(("stop-job", items[0]), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        *events.borrow(),
+        [TranscriptEvent::StopJob(job.to_string().into())]
+    );
+
+    // The jobs end: one finished, one stopped, one failed.
+    feed.job_ended(calls[0].1, JobState::Finished, None);
+    feed.job_ended(calls[1].1, JobState::Stopped, None);
+    feed.job_ended(calls[2].1, JobState::Failed, Some("exit 1".into()));
+    settle(cx, window);
+    let Some(JobLine::Ended {
+        text,
+        failed: false,
+    }) = line(cx, 0)
+    else {
+        panic!("{:?}", line(cx, 0));
+    };
+    assert!(
+        text.starts_with("Finished in the background · 3 min"),
+        "{text}"
+    );
+    assert_eq!(
+        line(cx, 1),
+        Some(JobLine::Ended {
+            text: "Stopped".into(),
+            failed: false,
+        })
+    );
+    assert_eq!(
+        line(cx, 2),
+        Some(JobLine::Ended {
+            text: "Failed in the background".into(),
+            failed: true,
+        })
+    );
+    for item in &items {
+        assert!(!drawn(cx, window, ("stop-job", *item)));
+    }
+}
+
+/// A call that started a command in the background (`terminal_start`)
+/// offers to stop it while it runs, and goes back to its usual line once it
+/// ended.
+#[gpui_kit::test]
+fn a_command_started_in_the_background_can_be_stopped(cx: &mut TestAppContext) {
+    use super::row::JobLine;
+    use arko::remote::{JobKind, JobStart, JobState, MAIN_AGENT};
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Serve it", Source::App, Delivery::Turn);
+    let job = Uuid::new_v4();
+    let call = call(
+        &feed,
+        "main",
+        "terminal_start",
+        &[("command", "npm run dev".into())],
+    );
+    result(
+        &feed,
+        "main",
+        call,
+        "terminal_start",
+        &format!("Started job {job}."),
+    );
+    feed.job_started(JobStart::new(job, MAIN_AGENT, JobKind::Command, "npm run dev").made_by(call));
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let item = ids_of(&feed, Kind::Call)[0];
+    let line = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            view.job_line(&view.model.entry(item).unwrap().item)
+        })
+    };
+    assert!(matches!(line(cx), Some(JobLine::Running { .. })));
+    assert!(drawn(cx, window, ("stop-job", item)));
+    feed.job_ended(job, JobState::Failed, Some("exit 1".into()));
+    settle(cx, window);
+    assert_eq!(line(cx), None);
+    assert!(!drawn(cx, window, ("stop-job", item)));
+}
+
 /// A window with a sibling of the transcript, as the composer is.
 struct Column {
     sibling: Entity<Sibling>,

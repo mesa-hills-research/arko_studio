@@ -609,6 +609,67 @@ pub(crate) fn duration(ms: i64) -> String {
     }
 }
 
+/// How long a background job has run, in a few words, as Arko says it:
+/// `40 s`, `4 min`, `2 h 5 min`.
+pub(super) fn job_time(ms: i64) -> String {
+    let seconds = ms.max(0) / 1000;
+    match seconds {
+        0..60 => format!("{seconds} s"),
+        60..3600 => format!("{} min", seconds / 60),
+        _ if seconds % 3600 < 60 => format!("{} h", seconds / 3600),
+        _ => format!("{} h {} min", seconds / 3600, seconds % 3600 / 60),
+    }
+}
+
+/// What a call's row says of the background job the call made: the call
+/// moved there, or it started a command there (`terminal_start`).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum JobLine {
+    /// The job runs, since `since` (Unix milliseconds). The row offers to
+    /// stop it.
+    Running { job: SharedString, since: i64 },
+    /// The call moved to the background, and how its job does isn't known.
+    Moved,
+    /// The job of a call that moved there ended, as the call's outcome says
+    /// ("Finished in the background · 4 min", "Stopped").
+    Ended { text: String, failed: bool },
+}
+
+impl TranscriptView {
+    pub(super) fn job_line(&self, item: &Item) -> Option<JobLine> {
+        let job = item.job.as_deref()?;
+        if let Some(summary) = self.model.job(job).filter(|job| job.state.is_running()) {
+            return Some(JobLine::Running {
+                job: job.to_string().into(),
+                since: summary.started_at,
+            });
+        }
+        // Arko's words for a moved call: "in the background · job 4d2c1a9b"
+        // until its job ends, then how it ended.
+        let outcome = item.outcome.as_deref()?;
+        if outcome.starts_with("in the background") {
+            return Some(JobLine::Moved);
+        }
+        let ended = outcome.starts_with("finished in the background")
+            || outcome.starts_with("failed in the background")
+            || outcome == "stopped"
+            || outcome == "interrupted";
+        ended.then(|| JobLine::Ended {
+            text: capitalized(outcome),
+            failed: item.status == Some(CallStatus::Failed) && outcome != "stopped",
+        })
+    }
+}
+
+/// `text` with its first letter in capitals.
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// The muted words on the first line of a user's message.
 fn user_tags(item: &Item) -> Vec<String> {
     let mut tags = Vec::new();
@@ -1256,8 +1317,39 @@ impl TranscriptView {
         let open = self.ui.get(&id).and_then(|ui| ui.expanded).unwrap_or(false);
         let line = item.text.lines().next().unwrap_or_default().to_string();
         let tool = Tool::of(item);
-        let trailing: Option<AnyElement> = match item.status {
-            Some(CallStatus::Running) => Some(
+        let job = self.job_line(item);
+        let muted = |text: String| {
+            div()
+                .flex_none()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(text)
+                .into_any_element()
+        };
+        let trailing: Option<AnyElement> = match (&job, item.status) {
+            (Some(JobLine::Running { since, .. }), _) => Some(muted(format!(
+                "In the background · {}",
+                job_time((self.clock)() - since)
+            ))),
+            (Some(JobLine::Moved), _) => Some(muted("In the background".into())),
+            (
+                Some(JobLine::Ended {
+                    text,
+                    failed: false,
+                }),
+                _,
+            ) => Some(muted(text.clone())),
+            (Some(JobLine::Ended { text, failed: true }), _) => Some(
+                h_flex()
+                    .flex_none()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(theme.danger)
+                    .child(Icon::new(Lucide::CircleX).xsmall())
+                    .child(text.clone())
+                    .into_any_element(),
+            ),
+            (None, Some(CallStatus::Running)) => Some(
                 h_flex()
                     .flex_none()
                     .gap_1()
@@ -1267,7 +1359,7 @@ impl TranscriptView {
                     .child(duration((self.clock)() - item.at))
                     .into_any_element(),
             ),
-            Some(CallStatus::Failed) => Some(
+            (None, Some(CallStatus::Failed)) => Some(
                 h_flex()
                     .flex_none()
                     .min_w_0()
@@ -1286,6 +1378,50 @@ impl TranscriptView {
                     })
                     .into_any_element(),
             ),
+            _ => None,
+        };
+        // What the row offers to do with the call while it runs, or with
+        // its job while that runs.
+        let action = match &job {
+            Some(JobLine::Running { job, .. }) => {
+                let (view, job) = (view.downgrade(), job.clone());
+                Some(
+                    Button::new(("stop-job", id))
+                        .ghost()
+                        .xsmall()
+                        .label("Stop")
+                        .on_click(move |_, _, cx| {
+                            view.update(cx, |_, cx| cx.emit(TranscriptEvent::StopJob(job.clone())))
+                                .ok();
+                        })
+                        .into_any_element(),
+                )
+            }
+            None if item.status == Some(CallStatus::Running) && self.movable.contains(&id) => {
+                let view = view.downgrade();
+                let button = Button::new(("move-call", id))
+                    .ghost()
+                    .xsmall()
+                    .label("Move to background");
+                // Ctrl+B moves the main agent's call.
+                let button = if item.is_main() {
+                    button.tooltip_with_action(
+                        "Move to background",
+                        &crate::menus::MoveToBackground,
+                        None,
+                    )
+                } else {
+                    button
+                };
+                Some(
+                    button
+                        .on_click(move |_, _, cx| {
+                            view.update(cx, |_, cx| cx.emit(TranscriptEvent::MoveToBackground(id)))
+                                .ok();
+                        })
+                        .into_any_element(),
+                )
+            }
             _ => None,
         };
         let header_view = view.downgrade();
@@ -1327,7 +1463,16 @@ impl TranscriptView {
         };
         v_flex()
             .w_full()
-            .child(div().id(("call-row", id)).test_support().child(header))
+            .child(
+                h_flex()
+                    .id(("call-row", id))
+                    .test_support()
+                    .w_full()
+                    .min_w_0()
+                    .gap_1()
+                    .child(div().flex_1().min_w_0().child(header))
+                    .children(action.map(|action| div().flex_none().child(action))),
+            )
             .children(
                 self.thumbnails(item, view, cx)
                     .map(|thumbnails| div().pl_6().pt_1().child(thumbnails)),

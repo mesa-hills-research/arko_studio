@@ -75,6 +75,7 @@ fn source(feed: &Feed, key: gpui_kit::EntityId) -> PanelSource {
         agents: Vec::new(),
         feed: Some(feed.clone()),
         images: None,
+        movable: Vec::new(),
         key: Some((key, 0)),
     }
 }

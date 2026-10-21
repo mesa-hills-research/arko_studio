@@ -731,6 +731,65 @@ fn a_turn_that_ends_after_its_window_closed_marks_the_session_unseen(cx: &mut Te
     });
 }
 
+/// A long command moves to the background from its row, and the agent
+/// goes on. The row then follows the command's job, and Stop on it stops
+/// the job.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_running_command_moves_to_the_background_from_its_row(cx: &mut TestAppContext) {
+    let mock = Mock::start(|index, _| {
+        if index == 0 {
+            let call = arko::testing::tool_call(
+                "m1",
+                "shell",
+                serde_json::json!({ "command": "sleep 60" }),
+            );
+            Box::pin(async move { call })
+        } else {
+            answer("It goes on in the background.", Duration::ZERO)
+        }
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Build it.");
+    let session = app.shown(cx).unwrap();
+    wait_until(cx, "the command to be movable", |cx| {
+        cx.read(|cx| !session.read(cx).reading().movable.is_empty())
+    });
+    let item = cx.read(|cx| session.read(cx).reading().movable[0]);
+    let drawn = |cx: &mut TestAppContext, id: (&'static str, u64)| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    wait_until(cx, "Move to background", |cx| {
+        drawn(cx, ("move-call", item))
+    });
+    act(cx, app.window, |window, cx| {
+        window.click(("move-call", item), cx)
+    });
+    app.wait_for_text(cx, "It goes on in the background.");
+    assert!(mock.was_sent("in the background as job "));
+    // Its row offers to stop the job while it runs.
+    wait_until(cx, "Stop", |cx| drawn(cx, ("stop-job", item)));
+    act(cx, app.window, |window, cx| {
+        window.click(("stop-job", item), cx)
+    });
+    let outcome = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let feed = session.read(cx).feed().cloned().unwrap();
+            let call = feed.subscribe().0.items.into_iter().find(|i| i.id == item);
+            call.and_then(|call| call.outcome)
+        })
+    };
+    wait_until(cx, "the job to stop", |cx| {
+        outcome(cx).as_deref() == Some("stopped")
+    });
+    wait_until(cx, "Stop to go", |cx| !drawn(cx, ("stop-job", item)));
+    app.close_all(cx);
+}
+
 /// A session running a background job, listed in the sidebar.
 fn a_session_with_a_job(cx: &mut TestAppContext) -> (Mock, App, Entity<LiveSession>, SessionId) {
     let mock = Mock::start(|index, _| {

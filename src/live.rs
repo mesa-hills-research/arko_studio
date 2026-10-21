@@ -1056,6 +1056,36 @@ impl LiveSession {
         })
     }
 
+    /// Moves the running call `item`, one that [`Reading::movable`] lists, to
+    /// the background. The agent goes on, and the call's result reaches it
+    /// when its job ends. Why it can't move is told as
+    /// [`LiveEvent::Refused`].
+    pub fn move_call(&self, item: u64, cx: &mut Context<Self>) {
+        let answer = self.request(|reply| arko::Request::MoveCall { item, reply }, cx);
+        Self::refuse_on_error(answer, cx);
+    }
+
+    /// Stops the background job `job` (as its summary names it) for the
+    /// user. Why it can't stop is told as [`LiveEvent::Refused`].
+    pub fn stop_job(&self, job: &str, cx: &mut Context<Self>) {
+        let Ok(job) = job.parse::<uuid::Uuid>() else {
+            return;
+        };
+        let answer = self.request(|reply| arko::Request::StopJob { job, reply }, cx);
+        Self::refuse_on_error(answer, cx);
+    }
+
+    /// Tells why `answer` failed, if it does, as [`LiveEvent::Refused`].
+    fn refuse_on_error(answer: Task<Result<(), String>>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            if let Err(why) = answer.await {
+                this.update(cx, |_, cx| cx.emit(LiveEvent::Refused(why)))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
     /// Cuts the conversation back to just before the user's message `item`
     /// and sends `message` in its place (between turns, no worker running).
     pub fn edit(&self, item: u64, message: arko::Message, cx: &App) -> Task<Result<(), String>> {
