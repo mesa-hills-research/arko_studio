@@ -962,3 +962,31 @@ fn branch_from_here_accepts_a_closed_session(cx: &mut TestAppContext) {
         heard.borrow()
     );
 }
+
+/// A right-click in the composer opens the menu the kit draws in the
+/// theme, which every platform shows the same, with the field's items.
+#[gpui_kit::test]
+fn the_composer_menu_is_the_drawn_one(cx: &mut TestAppContext) {
+    use gpui_kit::component::input::ContextMenuStyle;
+
+    let (_, window, _) = start(cx);
+    assert_eq!(
+        cx.read(ContextMenuStyle::app_default),
+        Some(ContextMenuStyle::Drawn)
+    );
+    act(cx, window, |window, cx| window.input("Some words", cx));
+    act(cx, window, |window, cx| {
+        window.right_click("composer-field", cx)
+    });
+    act(cx, window, |window, _| {
+        assert!(
+            window.try_find("popup-menu").is_some(),
+            "the drawn menu opened"
+        );
+        let labels: Vec<String> = (0..12usize)
+            .filter_map(|ix| window.within("popup-menu").try_find(ix))
+            .filter_map(|item| item.label().map(str::to_string))
+            .collect();
+        assert!(labels.iter().any(|label| label == "Paste"), "{labels:?}");
+    });
+}
