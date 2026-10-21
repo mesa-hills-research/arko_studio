@@ -2090,3 +2090,109 @@ fn a_note_waits_below_the_streaming_reply_until_the_agent_reads_it(cx: &mut Test
     })
     .unwrap();
 }
+
+/// In every view, each of the user's messages in `feed` shows once, and
+/// the notes the agent hasn't read are the last rows, in the order sent.
+fn notes_show_in_every_view(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    view: &Entity<TranscriptView>,
+    feed: &Feed,
+) {
+    let users: Vec<_> = feed
+        .subscribe()
+        .0
+        .items
+        .into_iter()
+        .filter(|item| item.kind == Kind::User)
+        .collect();
+    let waiting: Vec<RowKey> = users
+        .iter()
+        .filter(|item| item.pending)
+        .map(|item| RowKey::User(item.id))
+        .collect();
+    for shown in [View::Full, View::Quiet, View::Messages] {
+        cx.update(|cx| prefs::update(cx, |prefs| prefs.view = shown));
+        settle(cx, window);
+        let rows = keys(view, cx);
+        assert!(
+            rows.ends_with(&waiting),
+            "{shown:?}: {waiting:?} in {rows:?}"
+        );
+        for user in &users {
+            let count = rows
+                .iter()
+                .filter(|row| **row == RowKey::User(user.id))
+                .count();
+            assert_eq!(count, 1, "{shown:?}: {:?} in {rows:?}", user.text);
+        }
+    }
+}
+
+/// A note the agent hasn't read shows at the end of every view, however it
+/// came: while a call runs, right after another note, as the agent takes an
+/// earlier one, and as the turn ends. Taken with the next message, each
+/// shows once, where the agent read it.
+#[gpui_kit::test]
+fn every_note_not_read_yet_shows_in_every_view(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Rename the parser.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    say(&feed, "main", "Looking around.");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let pending = |feed: &Feed| {
+        feed.subscribe()
+            .0
+            .items
+            .iter()
+            .filter(|item| item.pending)
+            .map(|item| item.text.clone())
+            .collect::<Vec<_>>()
+    };
+    let path = |file: &str| [("path", Value::from(file))];
+
+    // While a call runs.
+    let first = call(&feed, "main", "read_file", &path("a.rs"));
+    feed.note("Keep the old name.", Source::App, 1, Vec::new());
+    notes_show_in_every_view(cx, window, &view, &feed);
+
+    // Right after it, with the run of calls going on around both.
+    result(&feed, "main", first, "read_file", "1 | fn a() {}\n");
+    let second = call(&feed, "main", "read_file", &path("b.rs"));
+    feed.note("And the tests.", Source::App, 2, Vec::new());
+    result(&feed, "main", second, "read_file", "1 | fn b() {}\n");
+    let third = call(&feed, "main", "read_file", &path("c.rs"));
+    assert_eq!(pending(&feed), ["Keep the old name.", "And the tests."]);
+    notes_show_in_every_view(cx, window, &view, &feed);
+
+    // As the agent takes the first, in the same frame.
+    feed.event(
+        &event(
+            "main",
+            AgentEvent::ContextInjected {
+                ids: vec!["note:1".into()],
+                bytes: 100,
+            },
+        ),
+        None,
+    );
+    feed.note("Not the docs.", Source::App, 3, Vec::new());
+    result(&feed, "main", third, "read_file", "1 | fn c() {}\n");
+    call(&feed, "main", "read_file", &path("d.rs"));
+    assert_eq!(pending(&feed), ["And the tests.", "Not the docs."]);
+    notes_show_in_every_view(cx, window, &view, &feed);
+
+    // As the turn ends.
+    feed.note("Thanks.", Source::App, 4, Vec::new());
+    feed.reply("Renamed it.");
+    feed.turn_ended("9 s", None);
+    assert_eq!(pending(&feed).len(), 3);
+    notes_show_in_every_view(cx, window, &view, &feed);
+
+    // The next message takes them.
+    feed.notes_sent(&pending(&feed));
+    feed.turn_started();
+    assert!(pending(&feed).is_empty());
+    notes_show_in_every_view(cx, window, &view, &feed);
+}

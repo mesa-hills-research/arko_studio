@@ -846,10 +846,14 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
     // Notes the agent hasn't read wait at the end, below what it goes on
     // with, until they come again where it read them.
     let mut waiting = Vec::new();
+    let waits = |at: usize| {
+        let item = &entries[at].item;
+        item.pending && show(filter, view, item) != Show::Hidden
+    };
     while ix < entries.len() {
         let entry = &entries[ix];
         if entry.item.pending {
-            if show(filter, view, &entry.item) != Show::Hidden {
+            if waits(ix) {
                 waiting.push(ix);
             }
             ix += 1;
@@ -868,6 +872,8 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
                 });
                 let first = members.first().map_or(ix, |first| *first);
                 rows.push(RowKey::Count(entries[first].item.id), Class::Activity);
+                // The notes the run went past wait below with the others.
+                waiting.extend((ix..next).filter(|at| waits(*at)));
                 ix = next.max(ix + 1);
             }
             Show::Item if view == View::Quiet && in_run(&entry.item) => {
@@ -892,6 +898,7 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
                         rows.entry(&entries[member], view, worker_view);
                     }
                 }
+                waiting.extend((ix..next).filter(|at| waits(*at)));
                 ix = next.max(ix + 1);
             }
             Show::Item => {
@@ -1351,6 +1358,54 @@ mod tests {
                 RowKey::Group(4),
                 RowKey::User(9),
                 block(10)
+            ]
+        );
+    }
+
+    /// Notes that came during a run of calls, after its first call, wait at
+    /// the end in every view rather than going with the run.
+    #[test]
+    fn notes_that_came_during_a_run_of_calls_wait_at_the_end() {
+        let note = |id: u64, text: &str| {
+            let mut note = item(id, Kind::User, "main", text);
+            note.delivery = Some(Delivery::Note);
+            note.pending = true;
+            note
+        };
+        let model = model(vec![
+            item(1, Kind::User, "main", "go"),
+            item(2, Kind::Call, "main", "read a.rs"),
+            note(3, "Keep the old name."),
+            item(4, Kind::Call, "main", "read b.rs"),
+            note(5, "And the tests."),
+        ]);
+        assert_eq!(
+            keys(&model, View::Full),
+            [
+                RowKey::User(1),
+                RowKey::Call(2),
+                RowKey::Call(4),
+                RowKey::User(3),
+                RowKey::User(5),
+            ]
+        );
+        assert_eq!(
+            keys(&model, View::Quiet),
+            [
+                RowKey::User(1),
+                RowKey::Call(2),
+                RowKey::Call(4),
+                RowKey::User(3),
+                RowKey::User(5),
+            ]
+        );
+        assert_eq!(
+            keys(&model, View::Messages),
+            [
+                RowKey::User(1),
+                RowKey::Count(2),
+                RowKey::User(3),
+                RowKey::User(5),
             ]
         );
     }
