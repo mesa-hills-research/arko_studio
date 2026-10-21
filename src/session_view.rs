@@ -613,6 +613,10 @@ impl SessionView {
                 }
             }
         };
+        // Its running calls that can move to the background offer to.
+        let movable = session.read(cx).reading().movable.clone();
+        kept.view
+            .update(cx, |view, cx| view.set_movable(&movable, cx));
         self.transcripts.push(kept);
         if self.transcripts.len() > KEPT_TRANSCRIPTS {
             self.transcripts.remove(0);
@@ -827,6 +831,16 @@ impl SessionView {
             TranscriptEvent::Regenerate => self.regenerate(window, cx),
             TranscriptEvent::Branch(item) => self.branch_from(Some(*item), window, cx),
             TranscriptEvent::Leave => self.focus_composer(window, cx),
+            TranscriptEvent::MoveToBackground(item) => {
+                if let Some(session) = &self.session {
+                    session.update(cx, |session, cx| session.move_call(*item, cx));
+                }
+            }
+            TranscriptEvent::StopJob(job) => {
+                if let Some(session) = &self.session {
+                    session.update(cx, |session, cx| session.stop_job(job, cx));
+                }
+            }
             TranscriptEvent::FindStatus(status) => {
                 if let Some(find) = &mut self.find {
                     find.status = *status;
@@ -1789,7 +1803,8 @@ impl SessionView {
         }
     }
 
-    /// Moves the shell command the main agent runs to the background
+    /// Moves the main agent's running call to the background, a long one
+    /// that can move, such as a shell command or an MCP tool's call
     /// (Ctrl+B).
     pub fn move_to_background(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = &self.session else {
@@ -1802,7 +1817,7 @@ impl SessionView {
             .iter()
             .any(|agent| agent == arko::remote::MAIN_AGENT);
         if !running {
-            window.push_notification("No command is running in the foreground.", cx);
+            window.push_notification("Nothing is running that can move to the background.", cx);
             return;
         }
         let input = arko::Input::Background(arko::remote::MAIN_AGENT.to_string());

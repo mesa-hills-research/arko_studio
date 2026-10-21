@@ -1229,7 +1229,7 @@ impl TranscriptView {
     ) -> AnyElement {
         let text = text.into();
         let highlights = self.highlights(entry, place, &text, cx);
-        let selectable = super::selectable(id, text);
+        let selectable = self.selectable(id, entry, place, text);
         if highlights.is_empty() {
             return selectable.into_any_element();
         }

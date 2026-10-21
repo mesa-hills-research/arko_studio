@@ -33,7 +33,7 @@ mod tool;
 #[path = "find_theme_tests.rs"]
 mod find_theme_tests;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
@@ -42,7 +42,7 @@ use std::time::Duration;
 
 use arko::remote::{CallStatus, Feed, Kind};
 use gpui_kit::base::image_cache::LruImageCache;
-use gpui_kit::base::{SelectableText, TextSelection};
+use gpui_kit::base::{SelectableText, TextSelection, TextSelectionHandle};
 use gpui_kit::component::diff_view::DiffViewState;
 use gpui_kit::component::image_viewer::ImageViewerItem;
 use gpui_kit::component::input;
@@ -129,6 +129,10 @@ pub enum TranscriptEvent {
     FindStatus(FindStatus),
     /// Esc on the rows: the keyboard goes back to the composer.
     Leave,
+    /// Move the running call `item` to the background.
+    MoveToBackground(u64),
+    /// Stop the background job, by its ID.
+    StopJob(SharedString),
 }
 
 /// The transcript's copy of the preferences it follows.
@@ -255,6 +259,20 @@ struct EntryUi {
     labeled: bool,
     /// How many images its item shows.
     images: usize,
+    /// The plain runs of its text in the window's selection, by where they
+    /// are in the entry, made when their rows are drawn.
+    runs: HashMap<find::Place, Run>,
+}
+
+/// A run of an entry's plain text, with the handle that keeps it in the
+/// window's selection while its row isn't drawn.
+struct Run {
+    handle: TextSelectionHandle,
+    /// The frame its row was last drawn in.
+    drawn: usize,
+    /// The text it was drawn with, which a selection that covers it copies
+    /// while it isn't drawn.
+    text: SharedString,
 }
 
 /// Whether the rows of `item`'s text are small, and whether its first
@@ -337,6 +355,9 @@ pub struct TranscriptView {
     list: list::RowList,
     focus_handle: FocusHandle,
     settings: Settings,
+    /// The calls running that can move to the background, by item, as the
+    /// session's status says.
+    movable: HashSet<u64>,
     /// The entry whose hover actions show.
     hovered: Option<u64>,
     /// The rows under the pointer, of entries with hover actions.
@@ -352,8 +373,11 @@ pub struct TranscriptView {
     /// counts open the Full view at their calls).
     scroll_to: Option<RowKey>,
     clock: Clock,
-    /// Draws again every second while a call or a worker runs.
+    /// Draws again every second while a call or a worker runs, and as the
+    /// minutes of a background job's time turn.
     ticker: Option<Task<()>>,
+    /// How long the ticker waits between draws.
+    tick_every: Duration,
     /// The entry whose running indicator turns this frame: the latest
     /// thing that runs, unless "Working…" shows (it turns then).
     animated: Option<u64>,
@@ -379,6 +403,19 @@ pub struct TranscriptView {
     renders: usize,
     /// Block views made since the last look for views to let go.
     views_made: usize,
+    /// Handles of plain runs made since the last look for handles to let
+    /// go.
+    runs_made: usize,
+    /// The document all of its text is in for the window's selection (its
+    /// entity's ID), so that a selection across messages holds while they
+    /// scroll out of sight and back.
+    document: u64,
+    /// The index of the row being drawn, which places its text in
+    /// [`Self::document`].
+    drawing_row: Cell<usize>,
+    /// The texts of the plain runs of the row being drawn, by entry and
+    /// part, for their handles.
+    drawn_runs: RefCell<Vec<(u64, find::Place, SharedString)>>,
     /// The sizes the rows' heights are estimated with, for the theme and
     /// fonts of the last frame.
     metrics: Option<height::Metrics>,
@@ -438,6 +475,7 @@ impl TranscriptView {
             // A Tab stop, so the keyboard reaches the transcript to scroll it.
             focus_handle: cx.focus_handle().tab_stop(true),
             settings,
+            movable: HashSet::new(),
             hovered: None,
             hovered_rows: HashSet::new(),
             hover_grace: None,
@@ -446,6 +484,7 @@ impl TranscriptView {
             scroll_to: None,
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
+            tick_every: Duration::ZERO,
             animated: None,
             working: None,
             shows_working: false,
@@ -458,6 +497,10 @@ impl TranscriptView {
             cursor: None,
             renders: 0,
             views_made: 0,
+            runs_made: 0,
+            document: cx.entity_id().as_u64(),
+            drawing_row: Cell::new(0),
+            drawn_runs: RefCell::default(),
             metrics: None,
             grown: Vec::new(),
             estimates: true,
@@ -594,6 +637,18 @@ impl TranscriptView {
         if current.unwrap_or(default) != open {
             self.toggle(item, default, cx);
         }
+    }
+
+    /// The running calls that can move to the background, by item, as the
+    /// session's status says: their rows offer Move to background.
+    pub fn set_movable(&mut self, movable: &[u64], cx: &mut Context<Self>) {
+        if movable.len() == self.movable.len()
+            && movable.iter().all(|item| self.movable.contains(item))
+        {
+            return;
+        }
+        self.movable = movable.iter().copied().collect();
+        cx.notify();
     }
 
     /// Shows the images the items show (the user's attachments, what tools
@@ -977,6 +1032,93 @@ impl TranscriptView {
         Some(view)
     }
 
+    /// Makes the handles of the plain runs the row `key` draws, the first
+    /// time it is drawn, and notes that they are drawn this frame.
+    fn run_handles(&mut self, key: RowKey, cx: &mut Context<Self>) {
+        use find::Place;
+        let mut places = [None, None];
+        match key {
+            RowKey::User(_) | RowKey::Notice(_) | RowKey::Output(_) => {
+                places[0] = Some(Place::Text);
+            }
+            RowKey::Block {
+                block,
+                source: true,
+                ..
+            } => places[0] = Some(Place::Source(block)),
+            // A call's details, while they show.
+            RowKey::Call(_) if self.row_expanded(key) == Some(true) => {
+                places = [Some(Place::Parameters), Some(Place::Output)];
+            }
+            _ => return,
+        }
+        let frame = self.renders;
+        let Some(ui) = self.ui.get_mut(&key.entry()) else {
+            return;
+        };
+        for place in places.into_iter().flatten() {
+            let run = ui.runs.entry(place).or_insert_with(|| {
+                self.runs_made += 1;
+                Run {
+                    handle: TextSelectionHandle::new("", cx),
+                    drawn: frame,
+                    text: SharedString::default(),
+                }
+            });
+            run.drawn = frame;
+        }
+    }
+
+    /// Gives the handles of the plain runs a row drew the texts they drew,
+    /// which a selection that covers a run copies while it isn't drawn.
+    fn keep_run_texts(&mut self, texts: Vec<(u64, find::Place, SharedString)>, cx: &mut App) {
+        for (entry, place, text) in texts {
+            let Some(run) = self
+                .ui
+                .get_mut(&entry)
+                .and_then(|ui| ui.runs.get_mut(&place))
+            else {
+                continue;
+            };
+            if run.text != text {
+                run.handle.set_fallback_copy_text(text.as_ref(), cx);
+                run.text = text;
+            }
+        }
+    }
+
+    /// The handle of the run `place` of the entry `id`, once its row has
+    /// been drawn.
+    fn run_handle(&self, id: u64, place: find::Place) -> Option<TextSelectionHandle> {
+        let run = self.ui.get(&id)?.runs.get(&place)?;
+        Some(run.handle.clone())
+    }
+
+    /// Lets go of the handles of the plain runs drawn longest ago, past
+    /// [`BLOCK_VIEWS`], and of the texts they hold, unless the selection
+    /// covers them. A row drawn again gets new ones.
+    fn release_runs(&mut self, cx: &App) {
+        self.runs_made = 0;
+        let mut frames: Vec<usize> = self
+            .ui
+            .values()
+            .flat_map(|ui| ui.runs.values())
+            .map(|run| run.drawn)
+            .collect();
+        if frames.len() <= BLOCK_VIEWS {
+            return;
+        }
+        frames.sort_unstable();
+        let kept_from = frames[frames.len() - BLOCK_VIEWS].min(self.renders.saturating_sub(1));
+        for ui in self.ui.values_mut() {
+            ui.runs.retain(|_, run| {
+                run.drawn >= kept_from
+                    || run.handle.snapshot(cx).is_some()
+                    || run.handle.has_local_selection(cx)
+            });
+        }
+    }
+
     /// Lets go of the views of the blocks drawn longest ago, past
     /// [`BLOCK_VIEWS`], and of the layouts they hold. A row drawn again
     /// gets a new view, made from its document's parse.
@@ -1153,31 +1295,38 @@ impl TranscriptView {
         None
     }
 
-    /// Draws every second while something shows a running time.
+    /// Draws again as the running times the rows show change.
     fn tick_while_running(&mut self, cx: &mut Context<Self>) {
-        if !self.is_running() {
+        let Some(every) = self.next_tick() else {
             self.ticker = None;
             return;
-        }
-        if self.ticker.is_some() {
+        };
+        // A ticker that draws as often already goes on.
+        if self.ticker.is_some() && every >= self.tick_every {
             return;
         }
+        self.tick_every = every;
         self.ticker = Some(cx.spawn(async move |this, cx| {
+            let mut every = every;
             loop {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
-                let running = this
+                cx.background_executor().timer(every).await;
+                let next = this
                     .update(cx, |this, cx| {
-                        let running = this.is_running();
-                        if running {
-                            cx.notify();
-                        } else {
-                            this.ticker = None;
+                        let next = this.next_tick();
+                        match next {
+                            Some(next) => {
+                                this.tick_every = next;
+                                cx.notify();
+                            }
+                            None => this.ticker = None,
                         }
-                        running
+                        next
                     })
-                    .unwrap_or(false);
-                if !running {
-                    break;
+                    .ok()
+                    .flatten();
+                match next {
+                    Some(next) => every = next,
+                    None => break,
                 }
             }
         }));
@@ -1203,16 +1352,42 @@ impl TranscriptView {
         })
     }
 
-    fn is_running(&self) -> bool {
-        self.model
-            .entries()
+    /// How long until the rows' times change: a second while a call or a
+    /// worker runs, else until the minute of a background job's time turns,
+    /// or `None` when nothing runs.
+    fn next_tick(&self) -> Option<Duration> {
+        let second = Duration::from_secs(1);
+        let workers = self
+            .model
+            .workers()
             .iter()
-            .any(|entry| entry.item.status == Some(CallStatus::Running))
-            || self
-                .model
-                .workers()
-                .iter()
-                .any(|worker| worker.state.is_active())
+            .any(|worker| worker.state.is_active());
+        if workers {
+            return Some(second);
+        }
+        let now = (self.clock)();
+        let mut next: Option<Duration> = None;
+        for entry in self.model.entries() {
+            let item = &entry.item;
+            if item.status == Some(CallStatus::Running) {
+                return Some(second);
+            }
+            // A call whose row says how long its background job has run:
+            // in seconds for its first minute, then in minutes.
+            let Some(job) = item.job.as_deref().and_then(|job| self.model.job(job)) else {
+                continue;
+            };
+            if !job.state.is_running() {
+                continue;
+            }
+            let ran = (now - job.started_at).max(0);
+            if ran < 60_000 {
+                return Some(second);
+            }
+            let turn = Duration::from_millis((60_000 - ran % 60_000) as u64 + 50);
+            next = Some(next.map_or(turn, |next| next.min(turn)));
+        }
+        next
     }
 
     // ----- what the reader does -----
@@ -1492,6 +1667,9 @@ impl Render for TranscriptView {
         if self.views_made >= RELEASE_EVERY {
             self.release_block_views();
         }
+        if self.runs_made >= RELEASE_EVERY {
+            self.release_runs(cx);
+        }
         if !self.list.is_scrolled_up() {
             self.new_while_away = 0;
         }
@@ -1569,9 +1747,44 @@ impl Render for TranscriptView {
     }
 }
 
-/// Plain text that takes part in the window's selection, in a row.
-fn selectable(id: impl Into<ElementId>, text: impl Into<SharedString>) -> SelectableText {
-    SelectableText::new(id, text)
+impl TranscriptView {
+    /// The plain text of the part `place` of the entry `entry`, in a row,
+    /// in the window's selection with the rest of the transcript's text. It
+    /// stays in a selection while its row isn't drawn.
+    fn selectable(
+        &self,
+        id: impl Into<ElementId>,
+        entry: u64,
+        place: find::Place,
+        text: impl Into<SharedString>,
+    ) -> SelectableText {
+        let text = text.into();
+        let run = match self.run_handle(entry, place) {
+            Some(handle) => {
+                self.drawn_runs
+                    .borrow_mut()
+                    .push((entry, place, text.clone()));
+                SelectableText::with_handle(id, handle, text)
+            }
+            None => SelectableText::new(id, text),
+        };
+        run.document_position(self.document, self.selection_position(place))
+    }
+
+    /// Where the part `place` of the row being drawn is in the transcript's
+    /// document for the window's selection. Positions rise in reading order,
+    /// by row, then by part of a call's details. They come from the rows'
+    /// indexes, which stay small, since the kit places an end of the
+    /// selection that isn't drawn as many pixels past the drawn text.
+    fn selection_position(&self, place: find::Place) -> u64 {
+        use find::Place;
+        let part = match place {
+            Place::Parameters => 1,
+            Place::Output => 2,
+            _ => 0,
+        };
+        self.drawing_row.get() as u64 * 4 + part
+    }
 }
 
 /// "screenshot.png · 240 KB": an image's label and size.

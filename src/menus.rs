@@ -252,7 +252,7 @@ fn session_menu() -> Menu {
         MenuItem::action("Export as Markdown…", ExportMarkdown),
         MenuItem::separator(),
         MenuItem::action("Stop", StopTurn),
-        MenuItem::action("Move Command to Background", MoveToBackground),
+        MenuItem::action("Move to Background", MoveToBackground),
         MenuItem::action("Hand Over Now", HandOverNow),
         MenuItem::action("Refresh Cache", RefreshCache),
         MenuItem::separator(),

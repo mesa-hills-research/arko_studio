@@ -1805,7 +1805,7 @@ fn a_selection_across_rows_copies_with_the_keyboard(cx: &mut TestAppContext) {
 /// scroll out of the list and back, a turn of the wheel at a time. In every
 /// frame, each row it covers on screen shows its part, and the selection is
 /// the same at the end. Copy takes all of it, its paragraphs a blank line
-/// apart.
+/// apart, also while the row the drag started in is out of the list.
 #[gpui_kit::test]
 fn a_selection_across_a_long_messages_rows_survives_scrolling(cx: &mut TestAppContext) {
     use gpui_kit::base::TextSelection;
@@ -1930,6 +1930,20 @@ fn a_selection_across_a_long_messages_rows_survives_scrolling(cx: &mut TestAppCo
         assert!(window.try_find(super::row::element_id(key(0))).is_none());
     })
     .unwrap();
+    // The keyboard's Copy still takes all of it, though the row the drag
+    // started in, which holds the focus, isn't drawn.
+    let focused = cx
+        .update_window(window, |_, window, cx| {
+            let doc = view.read(cx).ui[&reply].doc.as_ref().unwrap();
+            let row = doc.blocks[0].view.as_ref().unwrap();
+            row.read(cx).focus_handle().is_focused(window)
+        })
+        .unwrap();
+    assert!(focused, "the first row holds the focus");
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("Nothing yet".into()));
+    cx.update_window(window, |_, window, cx| window.press("secondary-c", cx))
+        .unwrap();
+    assert_eq!(clipboard_text(cx), whole.trim());
     for step in 0..15 {
         wheel(cx, 120.);
         check(cx, &format!("back, step {step}"));
@@ -1937,6 +1951,530 @@ fn a_selection_across_a_long_messages_rows_survives_scrolling(cx: &mut TestAppCo
     assert_eq!(cx.read(|cx| view.read(cx).list.top().item_ix), first);
     assert_eq!(painted(cx), shown);
     assert_eq!(covered_on_screen(cx), [0, 1, 2, 3]);
+}
+
+/// A right-click at `position`, as the pointer makes one.
+fn right_click_at(cx: &mut TestAppContext, window: AnyWindowHandle, position: Point<Pixels>) {
+    use gpui_kit::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
+
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// The labels of the drawn menu that shows, by item, or none.
+fn menu_labels(cx: &mut TestAppContext, window: AnyWindowHandle) -> Option<Vec<String>> {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find("popup-menu")?;
+        Some(
+            (0..12usize)
+                .map(|ix| {
+                    window
+                        .within("popup-menu")
+                        .try_find(ix)
+                        .and_then(|item| item.label().map(str::to_string))
+                        .unwrap_or_default()
+                })
+                .collect(),
+        )
+    })
+    .unwrap()
+}
+
+/// Presses the item `label` of the drawn menu that shows.
+fn press_menu_item(cx: &mut TestAppContext, window: AnyWindowHandle, label: &str) {
+    let labels = menu_labels(cx, window).expect("a menu shows");
+    let ix = labels
+        .iter()
+        .position(|item| item == label)
+        .unwrap_or_else(|| panic!("{label} in {labels:?}"));
+    cx.update_window(window, |_, window, cx| {
+        window.within("popup-menu").click(ix, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn clipboard_text(cx: &mut TestAppContext) -> String {
+    cx.read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default()
+}
+
+/// A right-click on selected text of the conversation opens the menu of
+/// selected text, whose Copy copies the whole selection, across the rows of
+/// a long message, also once its first rows have left the list.
+#[gpui_kit::test]
+fn copy_in_the_menu_of_selected_text_copies_the_whole_selection(cx: &mut TestAppContext) {
+    use gpui_kit::ClipboardItem;
+    use gpui_kit::base::TextSelection;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Explain the parser", Source::App, Delivery::Turn);
+    let paragraphs: Vec<String> = (1..=40)
+        .map(|n| format!("Paragraph {n} says what the parser does with a chunk."))
+        .collect();
+    feed.reply(&paragraphs.join("\n\n"));
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    load_all(cx, window, &view);
+    let reply = ids_of(&feed, Kind::Reply)[0];
+    let key = |block| RowKey::Block {
+        id: reply,
+        generation: 0,
+        block,
+        source: false,
+    };
+    let first = keys(&view, cx)
+        .iter()
+        .position(|row| *row == key(0))
+        .unwrap();
+    scroll_to_row(cx, &view, first);
+    settle(cx, window);
+    // Where the words of block `block` are: one line at the bottom of its
+    // row, in the reading column.
+    let words = |cx: &mut TestAppContext, block: usize, x: f32| {
+        cx.update_window(window, |_, window, _| {
+            let row = window.find(super::row::element_id(key(block))).bounds();
+            let column = row.size.width.min(px(736.));
+            let text = row.left() + (row.size.width - column) / 2. + px(16.);
+            gpui_kit::point(text + px(x), row.bottom() - px(6.))
+        })
+        .unwrap()
+    };
+    // From the start of the first paragraph into the sixth.
+    let (from, to) = (words(cx, 0, 1.), words(cx, 5, 120.));
+    cx.update_window(window, |_, window, cx| window.drag(from, to, cx))
+        .unwrap();
+    settle(cx, window);
+    let whole = cx
+        .update_window(window, |_, window, cx| {
+            TextSelection::selected_text(window, cx)
+        })
+        .unwrap();
+    assert!(whole.starts_with(&paragraphs[0]), "{whole:?}");
+    assert!(whole.contains(&paragraphs[4]), "{whole:?}");
+    assert!(!whole.contains(&paragraphs[5]), "{whole:?}");
+
+    // On a row in the middle of it.
+    cx.write_to_clipboard(ClipboardItem::new_string("Nothing yet".into()));
+    let middle = words(cx, 2, 40.);
+    right_click_at(cx, window, middle);
+    let labels = menu_labels(cx, window).expect("the menu opened");
+    assert!(labels.contains(&"Copy".to_string()), "{labels:?}");
+    assert!(labels.contains(&"Select All".to_string()), "{labels:?}");
+    press_menu_item(cx, window, "Copy");
+    assert_eq!(clipboard_text(cx), whole.trim());
+    assert!(menu_labels(cx, window).is_none(), "the menu closed");
+
+    // Once the first rows have left the list, on a row still in sight.
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.list.scroll_to(first + 3, px(0.));
+            cx.notify();
+        })
+    });
+    settle(cx, window);
+    cx.update_window(window, |_, window, _| {
+        assert!(window.try_find(super::row::element_id(key(0))).is_none());
+    })
+    .unwrap();
+    cx.write_to_clipboard(ClipboardItem::new_string("Nothing yet".into()));
+    let still_shown = words(cx, 4, 40.);
+    right_click_at(cx, window, still_shown);
+    press_menu_item(cx, window, "Copy");
+    assert_eq!(clipboard_text(cx), whole.trim());
+}
+
+/// A selection from the user's message, across the reply and the next
+/// message, into a second reply holds while the messages it starts in
+/// scroll out of the list and back. Its ends stay where they were, the
+/// parts out of sight are copied with the rest, and they show as selected
+/// again when they come back.
+#[gpui_kit::test]
+fn a_selection_across_messages_survives_scrolling(cx: &mut TestAppContext) {
+    use gpui_kit::ClipboardItem;
+    use gpui_kit::base::TextSelection;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Explain the parser, please.", Source::App, Delivery::Turn);
+    let first: Vec<String> = (1..=3)
+        .map(|n| format!("The first answer, paragraph {n}."))
+        .collect();
+    feed.reply(&first.join("\n\n"));
+    feed.user("And the lexer?", Source::App, Delivery::Turn);
+    let second: Vec<String> = (1..=40)
+        .map(|n| format!("The second answer, paragraph {n}, says what the lexer does."))
+        .collect();
+    feed.reply(&second.join("\n\n"));
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    load_all(cx, window, &view);
+    let users = ids_of(&feed, Kind::User);
+    let replies = ids_of(&feed, Kind::Reply);
+    let (question, answer) = (users[0], replies[0]);
+    let key = |id, block| RowKey::Block {
+        id,
+        generation: 0,
+        block,
+        source: false,
+    };
+    let top = keys(&view, cx)
+        .iter()
+        .position(|row| *row == RowKey::User(question))
+        .unwrap();
+    scroll_to_row(cx, &view, top);
+    settle(cx, window);
+    // From the start of the question into the third paragraph of the
+    // second answer.
+    let (from, to) = cx
+        .update_window(window, |_, window, _| {
+            let bubble = window.find(("user-message", question)).bounds();
+            let end = window
+                .find(super::row::element_id(key(replies[1], 2)))
+                .bounds();
+            let column = end.size.width.min(px(736.));
+            let text = end.left() + (end.size.width - column) / 2. + px(16.);
+            (
+                gpui_kit::point(bubble.left() + px(13.), bubble.center().y),
+                gpui_kit::point(text + px(120.), end.bottom() - px(6.)),
+            )
+        })
+        .unwrap();
+    cx.update_window(window, |_, window, cx| window.drag(from, to, cx))
+        .unwrap();
+    settle(cx, window);
+    let selected = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            TextSelection::selected_text(window, cx)
+        })
+        .unwrap()
+    };
+    let whole = selected(cx);
+    assert!(
+        whole.starts_with("Explain the parser, please."),
+        "{whole:?}"
+    );
+    for part in first
+        .iter()
+        .chain([&"And the lexer?".to_string(), &second[0], &second[1]])
+    {
+        assert!(whole.contains(part.as_str()), "{part:?} in {whole:?}");
+    }
+    // Into the third paragraph, not to its end.
+    assert!(
+        whole.contains(&format!("{}\n\nThe second", second[1])),
+        "{whole:?}"
+    );
+    assert!(!whole.contains(&second[2]), "{whole:?}");
+    // What the first answer's rows show selected, and whether the question
+    // does.
+    let painted = |cx: &mut TestAppContext| -> (bool, Vec<String>) {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            let question = view.ui[&question].runs[&super::find::Place::Text]
+                .handle
+                .snapshot(cx)
+                .is_some();
+            let doc = view.ui[&answer].doc.as_ref().unwrap();
+            let rows = (0..3)
+                .map(|block| {
+                    doc.blocks[block]
+                        .view
+                        .as_ref()
+                        .map(|view| view.read(cx).selected_text().trim().to_string())
+                        .unwrap_or_default()
+                })
+                .collect();
+            (question, rows)
+        })
+    };
+    let shown = painted(cx);
+    assert_eq!(shown, (true, first.clone()));
+    let wheel = |cx: &mut TestAppContext, dy: f32| {
+        cx.update_window(window, |_, window, cx| {
+            window.scroll(
+                "transcript",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(dy))),
+                cx,
+            )
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    };
+    for step in 0..12 {
+        wheel(cx, -120.);
+        assert_eq!(selected(cx), whole, "away, step {step}");
+    }
+    // The question and the first answer are out of the list.
+    cx.update_window(window, |_, window, _| {
+        assert!(window.try_find(("user-message", question)).is_none());
+        assert!(
+            window
+                .try_find(super::row::element_id(key(answer, 2)))
+                .is_none()
+        );
+    })
+    .unwrap();
+    cx.write_to_clipboard(ClipboardItem::new_string("Nothing yet".into()));
+    cx.update_window(window, |_, window, cx| window.press("secondary-c", cx))
+        .unwrap();
+    assert_eq!(clipboard_text(cx).trim(), whole.trim());
+    for step in 0..12 {
+        wheel(cx, 120.);
+        assert_eq!(selected(cx), whole, "back, step {step}");
+    }
+    assert_eq!(cx.read(|cx| view.read(cx).list.top().item_ix), top);
+    assert_eq!(painted(cx), shown);
+}
+
+/// The events `view` sends, as they come.
+fn events_of(
+    view: &Entity<TranscriptView>,
+    cx: &mut TestAppContext,
+) -> (
+    Rc<std::cell::RefCell<Vec<TranscriptEvent>>>,
+    gpui_kit::Subscription,
+) {
+    let events = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let subscription = cx.update({
+        let events = events.clone();
+        |cx| {
+            cx.subscribe(view, move |_, event: &TranscriptEvent, _| {
+                events.borrow_mut().push(event.clone());
+            })
+        }
+    });
+    (events, subscription)
+}
+
+/// Whether the element `id` is drawn.
+fn drawn(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<ElementId>) -> bool {
+    let id = id.into();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).is_some()
+    })
+    .unwrap()
+}
+
+/// A running call that can move to the background offers Move to
+/// background, as long as the session's status lists it, and asks for the
+/// move when pressed.
+#[gpui_kit::test]
+fn a_running_call_that_can_move_offers_move_to_background(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Look it up", Source::App, Delivery::Turn);
+    call(
+        &feed,
+        "main",
+        "mcp__slow__lookup",
+        &[("word", "mesa".into())],
+    );
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let item = ids_of(&feed, Kind::Call)[0];
+    assert!(!drawn(cx, window, ("move-call", item)), "not movable yet");
+    let (events, _subscription) = events_of(&view, cx);
+    view.update(cx, |view, cx| view.set_movable(&[item], cx));
+    settle(cx, window);
+    assert!(drawn(cx, window, ("move-call", item)));
+    cx.update_window(window, |_, window, cx| {
+        window.click(("move-call", item), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(*events.borrow(), [TranscriptEvent::MoveToBackground(item)]);
+    // It moved, or ended: the status no longer lists it.
+    view.update(cx, |view, cx| view.set_movable(&[], cx));
+    settle(cx, window);
+    assert!(!drawn(cx, window, ("move-call", item)));
+}
+
+/// The result a call that moved to the background gives the agent.
+fn moved(job: Uuid) -> String {
+    format!(
+        "in the background as job {job}, 95.3 s\nThe user moved this call to the background. It goes on running, and its result reaches you as a note when it ends."
+    )
+}
+
+/// A call that moved to the background says so. While its job runs, its
+/// row says for how long and offers Stop, and once the job ends it says how
+/// it ended, as Arko words it, without Stop.
+#[gpui_kit::test]
+fn a_call_in_the_background_follows_its_job(cx: &mut TestAppContext) {
+    use super::row::JobLine;
+    use arko::remote::{JobKind, JobStart, JobState, MAIN_AGENT};
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Index it", Source::App, Delivery::Turn);
+    let calls: Vec<(Uuid, Uuid)> = (0..3)
+        .map(|_| {
+            let job = Uuid::new_v4();
+            let call = call(&feed, "main", "index_create", &[("path", ".".into())]);
+            result(&feed, "main", call, "index_create", &moved(job));
+            (call, job)
+        })
+        .collect();
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let now = hand_clock(&view, cx);
+    let items = ids_of(&feed, Kind::Call);
+    let line = |cx: &mut TestAppContext, ix: usize| {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            view.job_line(&view.model.entry(items[ix]).unwrap().item)
+        })
+    };
+    // Moved, and its job not known yet.
+    assert_eq!(line(cx, 0), Some(JobLine::Moved));
+    assert!(!drawn(cx, window, ("stop-job", items[0])));
+
+    // Its job runs, for 3 minutes so far.
+    for (call, job) in &calls {
+        let started = now.get() - 3 * 60_000 - 5_000;
+        feed.job_started(
+            JobStart::new(*job, MAIN_AGENT, JobKind::Call, "index_create")
+                .made_by(*call)
+                .started(started),
+        );
+    }
+    settle(cx, window);
+    let (_, job) = calls[0];
+    assert_eq!(
+        line(cx, 0),
+        Some(JobLine::Running {
+            job: job.to_string().into(),
+            since: now.get() - 3 * 60_000 - 5_000,
+        })
+    );
+    assert_eq!(super::row::job_time(3 * 60_000 + 5_000), "3 min");
+    // Its time goes on, a minute at a time: the next draw is as the fourth
+    // minute starts.
+    assert!(cx.read(|cx| view.read(cx).ticker.is_some()));
+    assert_eq!(
+        cx.read(|cx| view.read(cx).tick_every),
+        std::time::Duration::from_millis(55_050)
+    );
+    let (events, _subscription) = events_of(&view, cx);
+    cx.update_window(window, |_, window, cx| {
+        window.click(("stop-job", items[0]), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        *events.borrow(),
+        [TranscriptEvent::StopJob(job.to_string().into())]
+    );
+
+    // The jobs end: one finished, one stopped, one failed.
+    feed.job_ended(calls[0].1, JobState::Finished, None);
+    feed.job_ended(calls[1].1, JobState::Stopped, None);
+    feed.job_ended(calls[2].1, JobState::Failed, Some("exit 1".into()));
+    settle(cx, window);
+    let Some(JobLine::Ended {
+        text,
+        failed: false,
+    }) = line(cx, 0)
+    else {
+        panic!("{:?}", line(cx, 0));
+    };
+    assert!(
+        text.starts_with("Finished in the background · 3 min"),
+        "{text}"
+    );
+    assert_eq!(
+        line(cx, 1),
+        Some(JobLine::Ended {
+            text: "Stopped".into(),
+            failed: false,
+        })
+    );
+    assert_eq!(
+        line(cx, 2),
+        Some(JobLine::Ended {
+            text: "Failed in the background".into(),
+            failed: true,
+        })
+    );
+    for item in &items {
+        assert!(!drawn(cx, window, ("stop-job", *item)));
+    }
+}
+
+/// A call that started a command in the background (`terminal_start`)
+/// offers to stop it while it runs, and goes back to its usual line once it
+/// ended.
+#[gpui_kit::test]
+fn a_command_started_in_the_background_can_be_stopped(cx: &mut TestAppContext) {
+    use super::row::JobLine;
+    use arko::remote::{JobKind, JobStart, JobState, MAIN_AGENT};
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Serve it", Source::App, Delivery::Turn);
+    let job = Uuid::new_v4();
+    let call = call(
+        &feed,
+        "main",
+        "terminal_start",
+        &[("command", "npm run dev".into())],
+    );
+    result(
+        &feed,
+        "main",
+        call,
+        "terminal_start",
+        &format!("Started job {job}."),
+    );
+    feed.job_started(JobStart::new(job, MAIN_AGENT, JobKind::Command, "npm run dev").made_by(call));
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let item = ids_of(&feed, Kind::Call)[0];
+    let line = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            view.job_line(&view.model.entry(item).unwrap().item)
+        })
+    };
+    assert!(matches!(line(cx), Some(JobLine::Running { .. })));
+    assert!(drawn(cx, window, ("stop-job", item)));
+    feed.job_ended(job, JobState::Failed, Some("exit 1".into()));
+    settle(cx, window);
+    assert_eq!(line(cx), None);
+    assert!(!drawn(cx, window, ("stop-job", item)));
 }
 
 /// A window with a sibling of the transcript, as the composer is.

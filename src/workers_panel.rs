@@ -30,7 +30,7 @@ use gpui_kit::*;
 
 use crate::live::LiveSession;
 use crate::menus;
-use crate::transcript::{AgentFilter, TranscriptView};
+use crate::transcript::{AgentFilter, TranscriptEvent, TranscriptView};
 use crate::workers::{self, Section};
 
 /// The key contexts of the list and of a worker's view.
@@ -78,6 +78,8 @@ pub struct PanelSource {
     pub agents: Vec<AgentStatus>,
     pub feed: Option<Feed>,
     pub images: Option<arko::images::Images>,
+    /// The running calls that can move to the background, by item.
+    pub movable: Vec<u64>,
     /// Changes when the session (or its opening) changes: the transcripts
     /// kept are another feed's then.
     pub key: Option<(EntityId, u64)>,
@@ -90,6 +92,7 @@ impl PanelSource {
             agents: session.reading().agents.clone(),
             feed: session.feed().cloned(),
             images: session.link().map(|link| link.images.clone()),
+            movable: session.reading().movable.clone(),
             key: Some((id, session.opening())),
         }
     }
@@ -106,6 +109,7 @@ pub enum PanelRow {
 struct Shown {
     id: SharedString,
     view: Entity<TranscriptView>,
+    _events: Subscription,
 }
 
 /// Returns the time, in Unix milliseconds.
@@ -232,6 +236,13 @@ impl WorkersPanel {
         let same = source.workers == self.source.workers
             && source.agents == self.source.agents
             && source.key == self.source.key;
+        if source.movable != self.source.movable {
+            for shown in &self.transcripts {
+                shown
+                    .view
+                    .update(cx, |view, cx| view.set_movable(&source.movable, cx));
+            }
+        }
         self.source = source;
         if !same {
             self.sync_rows(cx);
@@ -325,9 +336,13 @@ impl WorkersPanel {
                 }
                 view
             });
+            let movable = self.source.movable.clone();
+            view.update(cx, |view, cx| view.set_movable(&movable, cx));
+            let events = cx.subscribe(&view, Self::on_transcript_event);
             self.transcripts.push(Shown {
                 id: id.clone(),
                 view,
+                _events: events,
             });
             if self.transcripts.len() > KEPT_TRANSCRIPTS {
                 self.transcripts.remove(0);
@@ -337,6 +352,28 @@ impl WorkersPanel {
         self.seen.insert(id.to_string());
         self.open = Some(id);
         cx.notify();
+    }
+
+    /// Moves a worker's call to the background, or stops its job, as its
+    /// transcript's row asks.
+    fn on_transcript_event(
+        &mut self,
+        _: Entity<TranscriptView>,
+        event: &TranscriptEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        match event {
+            TranscriptEvent::MoveToBackground(item) => {
+                session.update(cx, |session, cx| session.move_call(*item, cx));
+            }
+            TranscriptEvent::StopJob(job) => {
+                session.update(cx, |session, cx| session.stop_job(job, cx));
+            }
+            _ => {}
+        }
     }
 
     /// The transcript of the worker shown.
@@ -974,7 +1011,8 @@ fn state_mark(state: WorkerState, cx: &App) -> impl IntoElement {
             .into_any_element(),
         WorkerState::Finished => dot(theme.success).into_any_element(),
         WorkerState::Failed => dot(theme.danger).into_any_element(),
-        WorkerState::Stopped => dot(theme.muted_foreground).into_any_element(),
+        // Stopped, and a state a later arko adds.
+        _ => dot(theme.muted_foreground).into_any_element(),
     };
     let label = workers::state_label(state);
     div()

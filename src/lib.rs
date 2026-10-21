@@ -67,6 +67,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use gpui_kit::component::ThemeConfig;
+use gpui_kit::component::input::ContextMenuStyle;
 use gpui_kit::{App, QuitMode};
 
 use crate::appearance::ThemesFolder;
@@ -185,6 +186,9 @@ impl Startup {
 /// Sets the app up, before its first window.
 pub fn init(startup: Startup, cx: &mut App) {
     gpui_kit::init(cx);
+    // Every text field's right-click menu is the one the kit draws in the
+    // theme, the same on every platform, as the app's other menus are.
+    ContextMenuStyle::set_app_default(ContextMenuStyle::Drawn, cx);
     composer::init(cx);
     cx.set_app_identity(APP_ID, APP_NAME);
     // Windows and Linux quit with the last window. macOS keeps the app

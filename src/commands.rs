@@ -235,7 +235,7 @@ pub fn commands() -> Vec<Command> {
         Command::new(Composer, "Expand Composer", ExpandComposer).keys(&["secondary-shift-e"]),
         Command::new(Composer, "Stop", StopTurn).keys(&["secondary-."]),
         // Esc stops a turn from the composer too (it handles that key itself).
-        Command::new(Composer, "Move Command to Background", MoveToBackground).keys(&["ctrl-b"]),
+        Command::new(Composer, "Move to Background", MoveToBackground).keys(&["ctrl-b"]),
         Command::new(Transcript, "Full Transcript", ViewFull),
         Command::new(Transcript, "Quiet Transcript", ViewQuiet),
         Command::new(Transcript, "Messages Only", ViewMessages),
