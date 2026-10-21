@@ -388,6 +388,118 @@ fn streaming_a_200_kb_code_block() {
     stream_a_long_code_block(true);
 }
 
+/// A transcript as wide as the test sets, as a window's edge dragged makes
+/// it.
+struct Resizable {
+    width: f32,
+    transcript: Entity<TranscriptView>,
+}
+
+impl Render for Resizable {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .h_full()
+            .w(px(self.width))
+            .child(TranscriptView::cached(&self.transcript))
+    }
+}
+
+/// The frames of a wheel step up and of a width that shrinks by a pixel,
+/// in a 3,000-item transcript whose rows not drawn yet count at estimated
+/// heights (`estimates`) or at the heights the list last knew.
+fn steps_and_resizes(estimates: bool) {
+    let mut app = app();
+    let feed = long_feed(500);
+    let mut sized = None;
+    let window = app
+        .open_window_with(size(px(1000.), px(900.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                let transcript = cx.new(|cx| {
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
+                    view.set_height_estimates(estimates, cx);
+                    view
+                });
+                let made = cx.new(|_| Resizable {
+                    width: 1000.,
+                    transcript,
+                });
+                sized = Some(made.clone());
+                made
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    let sized = sized.unwrap();
+    let transcript = app.update(|cx| sized.read(cx).transcript.clone());
+    loop {
+        let before = app.update(|cx| transcript.read(cx).row_count());
+        app.run_until_parked();
+        frame(&mut app, window);
+        if app.update(|cx| transcript.read(cx).row_count()) == before {
+            break;
+        }
+    }
+    let name = if estimates {
+        "with estimates"
+    } else {
+        "without estimates"
+    };
+    let drawn = |app: &mut ScreenshotApp| app.update(|cx| transcript.read(cx).render_count());
+    let before = drawn(&mut app);
+    // Timed from the event, since the headless platform may draw the frame
+    // it asks for before the test does.
+    let mut steps = Vec::new();
+    for _ in 0..600 {
+        let start = Instant::now();
+        app.update_window(window, |_, window, cx| {
+            window.dispatch_event(
+                ScrollWheelEvent {
+                    position: point(px(500.), px(450.)),
+                    delta: ScrollDelta::Pixels(point(px(0.), px(120.))),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .unwrap();
+        app.run_until_parked();
+        frame(&mut app, window);
+        steps.push(start.elapsed());
+    }
+    report(&format!("{name}: a wheel step up"), &steps);
+    let following = app.update(|cx| transcript.read(cx).is_following(cx));
+    println!(
+        "  the transcript drew {} times, and follows the latest row: {following}",
+        drawn(&mut app) - before
+    );
+    let before = drawn(&mut app);
+    let mut resizes = Vec::new();
+    for width in (800..1000).rev() {
+        let start = Instant::now();
+        app.update(|cx| {
+            sized.update(cx, |sized, cx| {
+                sized.width = width as f32;
+                cx.notify();
+            })
+        });
+        frame(&mut app, window);
+        resizes.push(start.elapsed());
+    }
+    report(&format!("{name}: the width a pixel narrower"), &resizes);
+    println!("  the transcript drew {} times", drawn(&mut app) - before);
+}
+
+#[test]
+#[ignore = "a measurement: run it in release"]
+fn a_wheel_step_and_a_resize_with_estimated_heights() {
+    // Twice each, in turns, for the noise of a shared machine.
+    for _ in 0..2 {
+        steps_and_resizes(false);
+        steps_and_resizes(true);
+    }
+}
+
 /// A window with a sibling of the transcript, as the composer is.
 struct Column {
     sibling: Entity<Sibling>,

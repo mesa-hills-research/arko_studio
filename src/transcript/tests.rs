@@ -86,7 +86,7 @@ fn event(agent: &str, event: AgentEvent) -> WorkflowEvent {
     }
 }
 
-fn say(feed: &Feed, agent: &str, text: &str) {
+pub(super) fn say(feed: &Feed, agent: &str, text: &str) {
     let label = (agent != "main").then_some(agent);
     feed.event(
         &event(agent, AgentEvent::AssistantResponseChunk(text.into())),
@@ -94,7 +94,7 @@ fn say(feed: &Feed, agent: &str, text: &str) {
     );
 }
 
-fn think(feed: &Feed, text: &str) {
+pub(super) fn think(feed: &Feed, text: &str) {
     feed.event(
         &event("main", AgentEvent::ReasoningChunk(text.into())),
         None,

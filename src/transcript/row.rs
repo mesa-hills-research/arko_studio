@@ -25,6 +25,7 @@ use gpui_kit::*;
 use super::find::Place;
 use crate::fonts::CodeFont as _;
 
+use super::height::Metrics;
 use super::model::{Gap, RowKey};
 use super::tool::{self, Tool};
 use super::{AgentFilter, CODE_LINES, TranscriptEvent, TranscriptView, selectable};
@@ -218,13 +219,7 @@ pub(super) fn render(
     };
     let hover_view = view.downgrade();
     let key = row.key;
-    let gap = match row.gap {
-        Gap::None => 0.,
-        Gap::Tight => 0.25,
-        Gap::Small => 0.5,
-        Gap::Section => 1.,
-        Gap::Turn => 1.75,
-    };
+    let gap = gap_rems(row.gap);
     // The row the keyboard is on shows a ring, laid over it so nothing
     // moves, while the keyboard is in use.
     let cursor = this.is_cursor(row.key, window, cx);
@@ -274,6 +269,268 @@ pub(super) fn render(
                 .children(ring),
         )
         .into_any_element()
+}
+
+/// The space above a row, in rem.
+fn gap_rems(gap: Gap) -> f32 {
+    match gap {
+        Gap::None => 0.,
+        Gap::Tight => 0.25,
+        Gap::Small => 0.5,
+        Gap::Section => 1.,
+        Gap::Turn => 1.75,
+    }
+}
+
+/// What the row at `ix` of `view`'s list will measure at `width`, the
+/// space above it included, before the list draws it ([`super::height`]).
+/// It depends only on the row and the width, so that the list can scale a
+/// height it measured at another width by it.
+pub(super) fn estimate(
+    view: &Entity<TranscriptView>,
+    ix: usize,
+    width: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> Pixels {
+    let this = view.read(cx);
+    let Some(row) = this.rows.get(ix).copied() else {
+        return px(0.);
+    };
+    let measured;
+    let metrics = match &this.metrics {
+        Some(metrics) => metrics,
+        None => {
+            measured = Metrics::current(None, window, cx);
+            &measured
+        }
+    };
+    px(this.row_height(row, f32::from(width), metrics, cx))
+}
+
+/// The height of `count` thumbnails wrapped in `width`, in pixels.
+fn thumbnails_height(count: usize, width: f32, rem: f32) -> f32 {
+    let (tile, height, gap) = (THUMBNAIL.0 * rem, THUMBNAIL.1 * rem, 0.5 * rem);
+    let per_row = (((width + gap) / (tile + gap)).floor() as usize).max(1);
+    let rows = count.div_ceil(per_row).max(1);
+    rows as f32 * height + (rows - 1) as f32 * gap
+}
+
+impl TranscriptView {
+    /// The height `row` will have at the list's `width`, in pixels, as its
+    /// layout below draws it.
+    pub(super) fn row_height(
+        &self,
+        row: super::model::Row,
+        width: f32,
+        m: &Metrics,
+        cx: &App,
+    ) -> f32 {
+        let rem = m.rem;
+        // The reading column, inside its side padding.
+        let column = width.min(COLUMN * rem) - 2. * rem;
+        let body = match row.key {
+            RowKey::Separator(_) | RowKey::Refresh(_) | RowKey::Turn(_) => m.line_xs,
+            // Extra-small buttons and toggles.
+            RowKey::Working(_)
+            | RowKey::Actions(_)
+            | RowKey::Thinking(_)
+            | RowKey::Group(_)
+            | RowKey::Count(_) => 1.25 * rem,
+            // A small button.
+            RowKey::Worker(_) => 1.5 * rem,
+            RowKey::User(id) => self.user_height(id, column, m),
+            RowKey::Call(id) => self.call_height(id, column, m, cx),
+            RowKey::Notice(id) => self.notice_height(id, column, m),
+            RowKey::Output(id) => {
+                let lines = self.ui.get(&id).map_or(&[][..], |ui| &ui.lines);
+                // Inside its border and left padding.
+                m.mono.text_lines(lines, column - 0.75 * rem - 2.) * m.line_mono
+            }
+            RowKey::Block {
+                id, block, source, ..
+            } => self.block_height(id, block, source, column, m),
+        };
+        gap_rems(row.gap) * rem + body
+    }
+
+    fn user_height(&self, id: u64, column: f32, m: &Metrics) -> f32 {
+        let rem = m.rem;
+        let Some(item) = self.item(id) else {
+            return 0.;
+        };
+        // The bubble is at most half the column, or a comfortable line when
+        // that's more, and at most the column.
+        let bubble = column.min((column * 0.5).max(USER_BUBBLE_WIDTH * rem));
+        let border = if item.pending { 2. } else { 0. };
+        let inside = bubble - 1.5 * rem - border;
+        let lines = self.ui.get(&id).map_or(&[][..], |ui| &ui.lines);
+        let mut content = m.body.text_lines(lines, inside) * m.line;
+        if !user_tags(item).is_empty() {
+            content += m.line_xs + 0.25 * rem;
+        }
+        if !item.images.is_empty() {
+            content += thumbnails_height(item.images.len(), inside, rem) + 0.25 * rem;
+        }
+        // The bubble's padding, then the actions under it.
+        content + rem + border + 0.25 * rem + 1.25 * rem
+    }
+
+    fn call_height(&self, id: u64, column: f32, m: &Metrics, cx: &App) -> f32 {
+        let rem = m.rem;
+        let Some(ui) = self.ui.get(&id) else {
+            return 0.;
+        };
+        let mut height = 1.25 * rem;
+        // The thumbnails and the details are indented past the icon.
+        let inside = column - 1.5 * rem;
+        if ui.images > 0 {
+            height += 0.25 * rem + thumbnails_height(ui.images, inside, rem);
+        }
+        if ui.expanded == Some(true)
+            && let Some(entry) = self.model.entry(id)
+        {
+            height += self.details_height(entry, inside, m, cx);
+        }
+        height
+    }
+
+    /// The height of a call's details, as [`Self::call_details`] lays them
+    /// out in `width`.
+    fn details_height(
+        &self,
+        entry: &super::model::Entry,
+        width: f32,
+        m: &Metrics,
+        cx: &App,
+    ) -> f32 {
+        let rem = m.rem;
+        let item = &entry.item;
+        // The first lines of a text in the code font, and "Show all".
+        let lines = |text: &str| {
+            let (shown, total) = preview(text);
+            let lines = super::height::hard_lines(&shown);
+            let mut height = 0.75 * rem + m.mono.text_lines(&lines, width - rem) * m.line_mono;
+            if total > OUTPUT_LINES {
+                height += 0.25 * rem + 1.25 * rem;
+            }
+            height
+        };
+        let caption = m.line_xs;
+        let mut parts = Vec::new();
+        let diff = self.ui.get(&item.id).and_then(|ui| ui.diff.clone());
+        let has_diff = diff.is_some();
+        if let Some(diff) = &diff {
+            let rows = diff.read(cx).row_count().clamp(1, DIFF_ROWS);
+            parts.push(f32::from(DiffView::row_height(cx)) * rows as f32);
+        } else if let Some(parameters) = shown_parameters(item) {
+            parts.push(caption);
+            parts.push(lines(&parameters));
+        }
+        match (&entry.result, item.output.as_deref()) {
+            (Some(_), _) => {
+                parts.push(caption);
+                if let Some(body) = shown_output(entry) {
+                    parts.push(lines(&body));
+                }
+            }
+            (None, Some(_)) if has_diff && item.status == Some(CallStatus::Ok) => {}
+            (None, Some(output)) if !output.trim().is_empty() => {
+                parts.push(caption);
+                parts.push(lines(output));
+            }
+            (None, _) => {
+                if item.outcome.is_some() {
+                    parts.push(caption);
+                }
+            }
+        }
+        // Their top padding, and the gaps between them.
+        0.25 * rem + parts.iter().sum::<f32>() + 0.375 * rem * parts.len().saturating_sub(1) as f32
+    }
+
+    fn notice_height(&self, id: u64, column: f32, m: &Metrics) -> f32 {
+        let rem = m.rem;
+        let Some(item) = self.item(id) else {
+            return 0.;
+        };
+        // Inside its padding, past its icon.
+        let mut width = column - rem - 0.75 * rem - 0.375 * rem;
+        if !item.is_main() {
+            let agent = item.agent.chars().count() as f32;
+            width -= agent * m.mono.advance_at(0.75 * rem) + 0.375 * rem;
+        }
+        if self.offers_regenerate(RowKey::Notice(id)) {
+            width -= REGENERATE_ROOM * rem;
+        }
+        let lines = self.ui.get(&id).map_or(&[][..], |ui| &ui.lines);
+        m.body_at(0.875).text_lines(lines, width) * m.line_sm
+    }
+
+    fn block_height(&self, id: u64, block: usize, source: bool, column: f32, m: &Metrics) -> f32 {
+        use super::height::BlockFacts;
+        let rem = m.rem;
+        let Some(ui) = self.ui.get(&id) else {
+            return 0.;
+        };
+        let Some(row) = ui.doc.as_ref().and_then(|doc| doc.blocks.get(block)) else {
+            return 0.;
+        };
+        // A thinking's text is small.
+        let (body, line) = if ui.small {
+            (m.body_at(0.875), m.line_sm)
+        } else {
+            (m.body, m.line)
+        };
+        // "Question" or "From …" over the first block.
+        let label = if block == 0 && ui.labeled {
+            m.line_xs + 0.25 * rem
+        } else {
+            0.
+        };
+        let text = if source {
+            if ui.source {
+                m.mono.text_lines(&row.lines, column) * m.line_mono
+            } else {
+                body.text_lines(&row.lines, column) * line
+            }
+        } else {
+            match &row.facts {
+                BlockFacts::Prose(chars) => body.lines(*chars, column) * line,
+                BlockFacts::Quote(chars) => body.lines(*chars, column - 2. * rem - 3.) * line,
+                BlockFacts::Heading { level, chars } => {
+                    let (font, line) = m.headings[(*level).clamp(1, 6) as usize - 1];
+                    font.lines(*chars, column) * line + 0.3 * rem
+                }
+                BlockFacts::List(items) => items
+                    .iter()
+                    .map(|(depth, chars)| {
+                        let indent = rem * (1. + *depth as f32);
+                        body.lines(*chars, column - indent) * line
+                    })
+                    .sum(),
+                BlockFacts::Code(lines) => {
+                    let shown = if ui.uncapped.contains(&block) {
+                        lines.len()
+                    } else {
+                        lines.len().min(CODE_LINES)
+                    };
+                    // Inside its padding, long lines wrapped.
+                    1.5 * rem + m.mono.text_lines(&lines[..shown], column - 1.5 * rem) * m.line_mono
+                }
+                BlockFacts::Table(rows) => *rows as f32 * (line + 0.5 * rem + 1.) + 1. + rem,
+                BlockFacts::Rule => 2.,
+                BlockFacts::Other => line,
+            }
+        };
+        // "Show all N lines" under code over the cap.
+        let toggle = if !source && row.code_lines > CODE_LINES {
+            0.25 * rem + 1.25 * rem
+        } else {
+            0.
+        };
+        label + text + toggle
+    }
 }
 
 /// One number for a block's row: its entry, its document's generation, its
