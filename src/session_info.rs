@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use arko::details::{IndexFacts, IndexKind, IndexWatch, McpFacts, SessionFacts, SkillsFacts};
+use arko::details::{IndexFacts, IndexWatch, McpFacts, SessionFacts, SkillsFacts};
 use arko::remote::Reading;
 use arko::{ExtraRules, ProjectFiles};
 use gpui_kit::component::clipboard::Clipboard;
@@ -63,9 +63,8 @@ pub struct Facts {
     pub session: SessionFacts,
     pub mcp: McpFacts,
     pub skills: Result<SkillsFacts, String>,
-    /// The workspace's search indexes as the info shows them
-    /// ("arko (code, monitored), docs (docs)"), or `None` without any.
-    pub indexes: Option<String>,
+    /// The workspace's search indexes.
+    pub indexes: Vec<IndexFacts>,
 }
 
 /// A handover size as the info shows it and `/handover-at` takes it:
@@ -358,7 +357,7 @@ impl SessionInfo {
                 session: details.session(),
                 mcp: details.mcp(),
                 skills: details.skills(),
-                indexes: indexes_text(&details.indexes()),
+                indexes: details.indexes(),
             }
         });
         self._load = Some(cx.spawn(async move |this, cx| {
@@ -917,7 +916,7 @@ impl Render for SessionInfo {
                     .child(row(
                         narrow,
                         "Indexes",
-                        facts.indexes.clone().unwrap_or_else(|| "None".to_string()),
+                        indexes_text(&facts.indexes).unwrap_or_else(|| "None".to_string()),
                         cx,
                     )),
             };
@@ -1032,14 +1031,7 @@ pub fn indexes_text(indexes: &[IndexFacts]) -> Option<String> {
     }
     let mut text = indexes
         .iter()
-        .map(|index| {
-            index_text(
-                &index.name,
-                index.kind,
-                index.embeddings.is_some(),
-                &index.watch,
-            )
-        })
+        .map(index_text)
         .collect::<Vec<_>>()
         .join(", ");
     let needs_key = indexes.iter().any(|index| {
@@ -1056,14 +1048,22 @@ pub fn indexes_text(indexes: &[IndexFacts]) -> Option<String> {
 
 /// An index as the banner names it: its name, its kind, "lexical" when it's
 /// searched by keywords only, and whether an Arko keeps it current.
-fn index_text(name: &str, kind: IndexKind, embedded: bool, watch: &IndexWatch) -> String {
-    let lexical = if embedded { "" } else { ", lexical" };
-    let monitored = match watch {
+fn index_text(index: &IndexFacts) -> String {
+    let lexical = if index.embeddings.is_some() {
+        ""
+    } else {
+        ", lexical"
+    };
+    let monitored = match index.watch {
         IndexWatch::Here => ", monitored",
         IndexWatch::Elsewhere => ", monitored by another Arko",
         _ => "",
     };
-    format!("{name} ({}{lexical}{monitored})", kind.as_str())
+    format!(
+        "{} ({}{lexical}{monitored})",
+        index.name,
+        index.kind.as_str()
+    )
 }
 
 #[cfg(test)]
@@ -1074,7 +1074,10 @@ mod tests {
         Field, background_value, clicked, field_command, handover_value, index_text, indexes_text,
         mcp_lines, skills_line,
     };
-    use arko::details::{IndexKind, IndexWatch, McpFacts, McpServerFacts, SkillFacts, SkillsFacts};
+    use arko::details::{
+        IndexEmbeddings, IndexFacts, IndexKind, IndexWatch, McpFacts, McpServerFacts, SkillFacts,
+        SkillsFacts,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -1173,28 +1176,59 @@ mod tests {
         assert_eq!(indexes_text(&[]), None);
     }
 
+    /// The index `name` of `kind`, with embeddings or not, kept current as
+    /// `watch` says.
+    fn index(name: &str, kind: IndexKind, embedded: bool, watch: IndexWatch) -> IndexFacts {
+        let mut index = IndexFacts::new(name, kind, PathBuf::from("/work").join(name));
+        index.watch = watch;
+        index.embeddings = embedded.then(|| IndexEmbeddings::new("voyage-code-4"));
+        index
+    }
+
     #[test]
     fn an_index_reads_as_the_banner_names_it() {
         assert_eq!(
-            index_text("arko", IndexKind::Code, true, &IndexWatch::Here),
+            index_text(&index("arko", IndexKind::Code, true, IndexWatch::Here)),
             "arko (code, monitored)"
         );
         assert_eq!(
-            index_text("docs", IndexKind::Docs, false, &IndexWatch::Off),
+            index_text(&index("docs", IndexKind::Docs, false, IndexWatch::Off)),
             "docs (docs, lexical)"
         );
         assert_eq!(
-            index_text("arko", IndexKind::Code, true, &IndexWatch::Elsewhere),
+            index_text(&index("arko", IndexKind::Code, true, IndexWatch::Elsewhere)),
             "arko (code, monitored by another Arko)"
         );
         assert_eq!(
-            index_text(
+            index_text(&index(
                 "arko",
                 IndexKind::Code,
                 true,
-                &IndexWatch::Failed("no watcher".into())
-            ),
+                IndexWatch::Failed("no watcher".into())
+            )),
             "arko (code)"
+        );
+    }
+
+    /// The indexes read in a line, which says when semantic search needs a
+    /// key.
+    #[test]
+    fn the_indexes_read_in_a_line() {
+        let arko = index("arko", IndexKind::Code, true, IndexWatch::Here);
+        let docs = index("docs", IndexKind::Docs, false, IndexWatch::Off);
+        assert_eq!(
+            indexes_text(&[arko.clone(), docs.clone()]).as_deref(),
+            Some("arko (code, monitored), docs (docs, lexical)")
+        );
+        let mut keyless = arko;
+        if let Some(embeddings) = &mut keyless.embeddings {
+            embeddings.needs_key = true;
+        }
+        assert_eq!(
+            indexes_text(&[keyless, docs]).as_deref(),
+            Some(
+                "arko (code, monitored), docs (docs, lexical) · semantic search needs VOYAGE_API_KEY"
+            )
         );
     }
 }

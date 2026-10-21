@@ -1816,8 +1816,8 @@ impl gpui_kit::Render for InfoCard {
 
 fn session_info(mode: ThemeMode) -> Screenshot {
     use arko::details::{
-        HandoverFacts, McpFacts, McpServerFacts, ModelFacts, SessionFacts, SkillFacts, SkillsFacts,
-        WorkersFacts,
+        HandoverFacts, IndexEmbeddings, IndexFacts, IndexKind, IndexWatch, McpFacts,
+        McpServerFacts, ModelFacts, SessionFacts, SkillFacts, SkillsFacts, WorkersFacts,
     };
     use arko_studio::backend::Mode;
     use arko_studio::session_info::{Facts, Preview, SessionInfo};
@@ -1921,7 +1921,19 @@ fn session_info(mode: ThemeMode) -> Screenshot {
             folders: Vec::new(),
             own_folder: PathBuf::new(),
         }),
-        indexes: Some("arko (code, monitored), docs (docs)".into()),
+        indexes: [
+            ("arko", IndexKind::Code, "voyage-code-4", IndexWatch::Here),
+            ("docs", IndexKind::Docs, "voyage-4", IndexWatch::Off),
+        ]
+        .into_iter()
+        .map(|(name, kind, model, watch)| {
+            let root = PathBuf::from("/home/ada/src/arko").join(name);
+            let mut index = IndexFacts::new(name, kind, root);
+            index.watch = watch;
+            index.embeddings = Some(IndexEmbeddings::new(model));
+            index
+        })
+        .collect(),
     };
     let window = app
         .open_window_with(size(px(560.), px(1300.)), 1., |options, cx| {
