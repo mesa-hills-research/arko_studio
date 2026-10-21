@@ -1747,11 +1747,6 @@ fn session_info(mode: ThemeMode) -> Screenshot {
             "/home/ada/.local/share/arko/sessions/20261016-091200-a1b2",
         )),
         reading: Arc::new(reading),
-        tools: vec![
-            "2 MCP servers".into(),
-            "2 skills".into(),
-            "indexes arko (code, monitored), docs (docs)".into(),
-        ],
     };
     let model = |shown: &str| ModelFacts {
         model: "claude-opus-5-5".into(),
@@ -1817,6 +1812,7 @@ fn session_info(mode: ThemeMode) -> Screenshot {
             folders: Vec::new(),
             own_folder: PathBuf::new(),
         }),
+        indexes: Some("arko (code, monitored), docs (docs)".into()),
     };
     let window = app
         .open_window_with(size(px(560.), px(1300.)), 1., |options, cx| {

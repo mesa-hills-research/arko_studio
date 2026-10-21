@@ -1229,15 +1229,11 @@ impl TranscriptView {
     ) -> AnyElement {
         let text = text.into();
         let highlights = self.highlights(entry, place, &text, cx);
-        let selectable = super::selectable(id, text.clone());
+        let selectable = super::selectable(id, text);
         if highlights.is_empty() {
             return selectable.into_any_element();
         }
-        let selectable = plain::Selectable {
-            text: selectable.highlights(highlights),
-            content: text,
-        };
-        self.found(entry, place, selectable)
+        self.found(entry, place, selectable.highlights(highlights))
     }
 
     /// `text` with the matches of `place` painted on it (for text that

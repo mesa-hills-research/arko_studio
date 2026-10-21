@@ -15,6 +15,9 @@
 
 mod find;
 mod fold;
+mod height;
+#[cfg(test)]
+mod height_tests;
 mod inbox;
 mod list;
 mod model;
@@ -189,6 +192,28 @@ struct Block {
     /// The lines of its longest code block (one in a list item or a quote
     /// counts), for "Show all N lines".
     code_lines: usize,
+    /// What its row's height is estimated from, its characters or lines
+    /// shown rendered and the characters of each line of its source shown
+    /// as source.
+    facts: height::BlockFacts,
+    lines: Vec<u32>,
+}
+
+/// What estimating the height of the block of `text` at `range` takes.
+fn block_facts(
+    text: &str,
+    range: &Option<Range<usize>>,
+    content: &TextBlockContent,
+) -> (height::BlockFacts, Vec<u32>) {
+    let source = range
+        .clone()
+        .and_then(|range| text.get(range))
+        .unwrap_or_default()
+        .trim_end();
+    (
+        height::BlockFacts::of(content, source),
+        height::hard_lines(source),
+    )
 }
 
 /// The lines of the longest code block of the block of `text` at `range`.
@@ -220,6 +245,30 @@ struct EntryUi {
     diff: Option<Entity<DiffViewState>>,
     /// A user's message, as its row draws it.
     text: Option<SharedString>,
+    /// The characters of each line of a message's, a notice's or an
+    /// output's text, which its row's height is estimated from.
+    lines: Vec<u32>,
+    /// Whether its text's rows are a thinking's, in small text, and whether
+    /// a line ("Question", "From …") goes over its first block, for their
+    /// heights' estimates.
+    small: bool,
+    labeled: bool,
+    /// How many images its item shows.
+    images: usize,
+}
+
+/// Whether the rows of `item`'s text are small, and whether its first
+/// block has a line over it ([`EntryUi::small`], [`EntryUi::labeled`]).
+fn text_look(item: &arko::remote::Item) -> (bool, bool) {
+    let labeled =
+        item.kind == Kind::Question || (item.kind == Kind::Message && item.from.is_some());
+    (item.kind == Kind::Thinking, labeled)
+}
+
+/// Whether the rows of an entry of `kind` show its text as plain text,
+/// whose lines its height is estimated from ([`EntryUi::lines`]).
+fn plain_text(kind: Kind) -> bool {
+    matches!(kind, Kind::User | Kind::Notice | Kind::Output)
 }
 
 /// Returns the current time in Unix milliseconds.
@@ -330,6 +379,15 @@ pub struct TranscriptView {
     renders: usize,
     /// Block views made since the last look for views to let go.
     views_made: usize,
+    /// The sizes the rows' heights are estimated with, for the theme and
+    /// fonts of the last frame.
+    metrics: Option<height::Metrics>,
+    /// Blocks whose text grew since the last frame, by entry and index. The
+    /// list counts their new height before it draws them again.
+    grown: Vec<(u64, usize)>,
+    /// Whether the list's scrollbar counts estimated heights for the rows
+    /// it hasn't drawn (always, but for measurements).
+    estimates: bool,
     /// The rows of each frame drawn, in order.
     #[cfg(test)]
     frames: Vec<usize>,
@@ -400,6 +458,9 @@ impl TranscriptView {
             cursor: None,
             renders: 0,
             views_made: 0,
+            metrics: None,
+            grown: Vec::new(),
+            estimates: true,
             #[cfg(test)]
             frames: Vec::new(),
             _prefs: observe_prefs,
@@ -565,6 +626,15 @@ impl TranscriptView {
         cx.notify();
     }
 
+    /// Counts rows the list hasn't drawn at the heights it last measured or
+    /// at none (`false`) rather than at estimated heights, for measurements
+    /// of what the estimates bring.
+    #[doc(hidden)]
+    pub fn set_height_estimates(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.estimates = on;
+        cx.notify();
+    }
+
     /// Reads the time from `clock` instead of the system's: for tests and
     /// screenshots, whose elapsed times must not change.
     #[doc(hidden)]
@@ -650,6 +720,11 @@ impl TranscriptView {
             }
         }
         self.refresh_rows(cx);
+        if !changes.reset {
+            for id in changes.text.iter().chain(&changes.changed) {
+                self.remeasure_entry(*id);
+            }
+        }
         self.tick_while_running(cx);
         if changes.reset {
             self.find_changed_all(cx);
@@ -696,8 +771,15 @@ impl TranscriptView {
         let mut ui = EntryUi {
             expanded: self.chosen.remove(&id),
             text: (entry.item.kind == Kind::User).then(|| entry.item.text.clone().into()),
+            lines: if plain_text(entry.item.kind) {
+                height::hard_lines(&entry.item.text)
+            } else {
+                Vec::new()
+            },
             ..EntryUi::default()
         };
+        (ui.small, ui.labeled) = text_look(&entry.item);
+        ui.images = entry.item.images.len();
         if ui.expanded == Some(true) {
             ui.diff =
                 row::edit_diff(&entry.item).map(|diff| cx.new(|cx| DiffViewState::new(diff, cx)));
@@ -717,6 +799,8 @@ impl TranscriptView {
             if this.sync_blocks(id, cx) {
                 this.refresh_rows(cx);
                 cx.notify();
+            } else {
+                this.remeasure_grown();
             }
             // A parse brings the text a find searches as it renders.
             this.find_changed(&[], [id], cx);
@@ -746,6 +830,11 @@ impl TranscriptView {
         if entry.item.kind == Kind::User && ui.text.as_deref() != Some(text.as_str()) {
             ui.text = Some(text.clone().into());
         }
+        if plain_text(entry.item.kind) {
+            ui.lines = height::hard_lines(text);
+        }
+        (ui.small, ui.labeled) = text_look(&entry.item);
+        ui.images = entry.item.images.len();
         let Some(doc) = ui.doc.as_mut() else {
             if needs_doc {
                 let text = text.clone();
@@ -793,31 +882,75 @@ impl TranscriptView {
             doc.generation += 1;
         }
         // The last block grows while text streams in.
-        for (row, block) in doc
+        let mut grown = Vec::new();
+        for (ix, (row, block)) in doc
             .blocks
             .iter_mut()
             .zip(&blocks)
+            .enumerate()
             .skip(kept.saturating_sub(1))
         {
-            row.range = block.source_range();
+            let range = block.source_range();
+            if row.range == range && row.content == *block.content() {
+                continue;
+            }
+            row.range = range;
             row.content = block.content().clone();
             row.code_lines = code_lines(&doc.text, &row.range, &row.content);
+            (row.facts, row.lines) = block_facts(&doc.text, &row.range, &row.content);
+            grown.push(ix);
         }
         let added = blocks.len() > kept;
         let text = &doc.text;
         doc.blocks.extend(blocks[kept..].iter().map(|block| {
             let range = block.source_range();
             let content = block.content().clone();
+            let (facts, lines) = block_facts(text, &range, &content);
             Block {
                 id: block.id(),
                 view: None,
                 drawn: 0,
                 code_lines: code_lines(text, &range, &content),
+                facts,
+                lines,
                 content,
                 range,
             }
         }));
+        self.grown
+            .extend(grown.into_iter().map(|block| (id, block)));
         dropped || added
+    }
+
+    /// Has the list count the new height of the blocks whose text grew,
+    /// off screen too, rather than the height it measured before. (On
+    /// screen, it measures them again as it draws them.)
+    fn remeasure_grown(&mut self) {
+        for (id, block) in std::mem::take(&mut self.grown) {
+            let row = self.rows.iter().rposition(|row| {
+                matches!(row.key, RowKey::Block { id: row_id, block: row_block, .. }
+                    if row_id == id && row_block == block)
+            });
+            if let Some(ix) = row {
+                self.list.remeasure_row(ix);
+            }
+        }
+    }
+
+    /// Has the list count the new height of the rows of the entry `id`, a
+    /// call whose output came or a message whose text changed. (A text's
+    /// blocks are counted as they're parsed, by [`Self::remeasure_grown`].)
+    fn remeasure_entry(&mut self, id: u64) {
+        let has_doc = self.ui.get(&id).is_none_or(|ui| ui.doc.is_some());
+        if has_doc {
+            return;
+        }
+        for ix in 0..self.rows.len() {
+            let key = self.rows[ix].key;
+            if key.entry() == id && !matches!(key, RowKey::Block { .. }) {
+                self.list.remeasure_row(ix);
+            }
+        }
     }
 
     /// The view of block `block` of the entry `id`'s text, made now if its
@@ -962,6 +1095,7 @@ impl TranscriptView {
             self.scroll_to = None;
             self.list.scroll_to(ix, px(0.));
         }
+        self.remeasure_grown();
     }
 
     /// Where the row `key` is now, `offset` into it: the row itself, the
@@ -1375,12 +1509,20 @@ impl Render for TranscriptView {
             && window.last_input_was_keyboard()
             && self.cursor_index().is_none())
         .then(|| cx.theme().ring);
-        let view = cx.entity().downgrade();
+        // The sizes the heights of rows not drawn yet are estimated with.
+        self.metrics = Some(height::Metrics::current(self.metrics.take(), window, cx));
+        // (The list holds the estimates for this frame only.)
+        let estimate_view = cx.entity();
+        let view = estimate_view.downgrade();
         let rows = list::render(
             "transcript-rows",
             &self.list,
             new,
             move |ix, window, cx| row::render(&view, ix, window, cx),
+            self.estimates
+                .then_some(move |ix, width, window: &mut Window, cx: &mut App| {
+                    row::estimate(&estimate_view, ix, width, window, cx)
+                }),
             window,
             cx,
         );

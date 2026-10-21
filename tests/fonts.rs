@@ -66,6 +66,7 @@ fn a_font_added_while_the_fonts_are_read_is_drawn_and_listed() {
             settings.read(cx).font_pickers().is_none(),
             "the fonts are still being read"
         );
+        assert!(!fonts::is_available(&family, cx));
         settings.update(cx, |settings, cx| {
             settings.add_font_from(file.clone(), window, cx)
         });
@@ -75,6 +76,7 @@ fn a_font_added_while_the_fonts_are_read_is_drawn_and_listed() {
     app.update(|cx| {
         let names = cx.text_system().all_font_names();
         assert!(names.contains(&family), "{family} isn't registered");
+        assert!(fonts::is_available(&family, cx));
         let catalog = fonts::picker_catalog(cx).unwrap();
         assert!(
             catalog

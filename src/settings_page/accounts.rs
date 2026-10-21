@@ -318,16 +318,31 @@ impl AccountsPage {
             .detach();
     }
 
-    /// The page, as the accounts and the preferences are now.
-    pub fn page(&self, this: &Entity<Self>, cx: &App) -> SettingPage {
+    /// The page, as the accounts and the preferences are now. `revision`
+    /// counts the page's changes, and its groups draw again only then (or,
+    /// for New sessions, as the preferences it shows change).
+    pub fn page(&self, this: &Entity<Self>, revision: u64, cx: &App) -> SettingPage {
+        let chosen = &prefs::get(cx).new_sessions;
+        let new_sessions = (
+            revision,
+            chosen.mode,
+            &chosen.model,
+            &chosen.effort,
+            &chosen.worker_model,
+            &chosen.worker_effort,
+            chosen.cache_1h,
+        );
         // What reaches the models comes first: a model that needs a key
         // opens the page there.
         SettingPage::new(super::PAGES[2])
             .icon(IconName::Bot)
             .groups([
-                self.keys_group(this),
-                self.logins_group(this),
-                self.new_sessions_group(cx),
+                self.keys_group(this)
+                    .key(super::group_key("API keys", &revision)),
+                self.logins_group(this)
+                    .key(super::group_key("Logins", &revision)),
+                self.new_sessions_group(cx)
+                    .key(super::group_key("New sessions", &new_sessions)),
             ])
     }
 

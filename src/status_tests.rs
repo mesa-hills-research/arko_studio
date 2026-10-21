@@ -793,6 +793,8 @@ fn the_bar_and_the_info_follow_a_session_on_the_engine(cx: &mut TestAppContext) 
     });
     let facts = cx.read(|cx| info.read(cx).facts().cloned().unwrap());
     assert_eq!(facts.session.workspace, work);
+    // The indexes come with the facts, from the engine: the folder has none.
+    assert_eq!(facts.indexes, None);
 
     // Refresh Cache: the model is asked again.
     let asked = mock.bodies.lock().unwrap().len();

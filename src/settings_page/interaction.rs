@@ -810,3 +810,27 @@ fn the_choices_stay_inside_their_rows(cx: &mut TestAppContext) {
     }
     assert!(checked.iter().all(|&count| count > 20), "{checked:?}");
 }
+
+/// A preference changed outside Settings shows at once in its group, which
+/// otherwise draws again only when what it shows changes.
+#[gpui_kit::test]
+fn a_group_shows_a_preference_changed_elsewhere(cx: &mut TestAppContext) {
+    start_with(cx, prefs::Prefs::default());
+    // Notifications: When a turn ends, When a question arrives, Cache
+    // reminders, Sound.
+    let (window, _, _) = settings_window(cx, 4, 900.);
+    let sound = |cx: &mut TestAppContext| {
+        let mut checked = None;
+        act(cx, window, |window, _| {
+            checked = window.within("item-3").find("check").checked();
+        });
+        checked.unwrap()
+    };
+    let on = sound(cx);
+    for _ in 0..2 {
+        let now = sound(cx);
+        cx.update(|cx| prefs::update(cx, |prefs| prefs.notifications.sound = !now));
+        assert_eq!(sound(cx), !now);
+    }
+    assert_eq!(sound(cx), on);
+}

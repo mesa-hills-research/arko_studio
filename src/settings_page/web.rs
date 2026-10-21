@@ -26,8 +26,10 @@ pub struct WebPageSettings {
     port: TextSetting<u16>,
     /// The preferences as the page last showed them.
     seen: prefs::Prefs,
-    /// The sessions sharing their page, as last shown.
+    /// The sessions sharing their page, as last shown, and how many times
+    /// they changed.
     shared: Vec<Shared>,
+    shared_revision: u64,
     _subscriptions: Vec<Subscription>,
     _sessions: Vec<Subscription>,
 }
@@ -99,6 +101,7 @@ impl WebPageSettings {
             port,
             seen: super::shown_prefs(prefs::get(cx)),
             shared: shared_now(cx),
+            shared_revision: 0,
             _subscriptions: subscriptions,
             _sessions: Vec::new(),
         };
@@ -120,6 +123,7 @@ impl WebPageSettings {
         let shared = shared_now(cx);
         if shared != self.shared {
             self.shared = shared;
+            self.shared_revision += 1;
             cx.notify();
         }
     }
@@ -129,8 +133,16 @@ impl WebPageSettings {
         [self.address.error(), self.port.error()]
     }
 
-    pub fn page(&self) -> SettingPage {
+    pub fn page(&self, cx: &App) -> SettingPage {
         let defaults = prefs::WebPagePrefs::default();
+        let shown = &prefs::get(cx).web_page;
+        let errors = self.errors();
+        let sharing = (
+            shown.share_by_default,
+            &shown.address,
+            shown.port,
+            errors.each_ref().map(|error| error.as_deref()),
+        );
         let served = if self.shared.is_empty() {
             vec![
                 SettingItem::new(
@@ -167,6 +179,7 @@ impl WebPageSettings {
         };
         SettingPage::new(super::PAGES[5]).icon(IconName::Globe).groups([
             SettingGroup::new()
+                .key(super::group_key("Sharing", &sharing))
                 .title("Sharing")
                 .description(WHAT_IT_ALLOWS)
                 .items([
@@ -192,7 +205,10 @@ impl WebPageSettings {
                         ))
                         .keywords(["bind", "remote"]),
                 ]),
-            SettingGroup::new().title("Shared now").items(served),
+            SettingGroup::new()
+                .key(super::group_key("Shared now", &self.shared_revision))
+                .title("Shared now")
+                .items(served),
         ])
     }
 }

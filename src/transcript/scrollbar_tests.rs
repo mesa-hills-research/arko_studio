@@ -1,7 +1,7 @@
 //! The transcript's scrollbar while the reader scrolls and drags it, over
 //! rows of very different heights that the list hasn't all drawn yet.
 
-use arko::remote::{Delivery, Feed, Kind, Source};
+use arko::remote::{Delivery, Feed, Kind, Level, Source};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Entity, InputEvent as _, MouseButton, MouseDownEvent,
@@ -211,6 +211,255 @@ fn scroll_through(
         }
     }
     thumbs
+}
+
+/// Numbers for a seeded transcript (xorshift).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    /// A number in `range`.
+    fn int(&mut self, range: std::ops::RangeInclusive<usize>) -> usize {
+        range.start() + (self.next() % (range.end() - range.start() + 1) as u64) as usize
+    }
+
+    /// Whether a thing with `percent` chances in a hundred happens.
+    fn chance(&mut self, percent: usize) -> bool {
+        self.int(0..=99) < percent
+    }
+
+    /// A word of [`WORDS`].
+    fn word(&mut self) -> &'static str {
+        let count = WORDS.split(' ').count();
+        WORDS
+            .split(' ')
+            .nth(self.int(0..=count - 1))
+            .unwrap_or("word")
+    }
+}
+
+/// The words of the transcript's prose, inline code and emphasis among them.
+const WORDS: &str = "the list measures a row when it draws and estimates rest from its text parser keeps \
+    block open while streams in `Parser::feed` returns blocks completed finished is never \
+    parsed again so long answer costs what last configuration file `src/transcript/row.rs` \
+    function None width changes scrollbar thumb moves evenly tests pass cargo build I will \
+    check whether this right because we need to update **lock** file with every dependency \
+    that of for on at be by an or if implementation worker session transcript message \
+    window frame";
+
+fn sentence(rng: &mut Rng) -> String {
+    let count = rng.int(5..=22);
+    let mut words: Vec<String> = (0..count).map(|_| rng.word().to_string()).collect();
+    if let Some(first) = words.first_mut() {
+        let mut chars = first.chars();
+        if let Some(c) = chars.next() {
+            *first = c.to_uppercase().chain(chars).collect();
+        }
+    }
+    let mut sentence = words.join(" ");
+    sentence.push(if rng.chance(10) { ':' } else { '.' });
+    sentence
+}
+
+fn paragraph(rng: &mut Rng, sentences: std::ops::RangeInclusive<usize>) -> String {
+    let count = rng.int(sentences);
+    (0..count)
+        .map(|_| sentence(rng))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A long conversation as agents have them, the same for a seed:
+/// questions of a line, a paragraph or a few lines, reads and commands
+/// (some opened), notices now and then, and replies of prose, headings,
+/// lists, quotes, tables and code of many lengths.
+fn realistic_turns(feed: &Feed, turns: usize, seed: u64) {
+    let mut rng = Rng(seed);
+    for turn in 0..turns {
+        let question = match rng.int(0..=9) {
+            0..=5 => sentence(&mut rng),
+            6..=8 => paragraph(&mut rng, 2..=5),
+            _ => (0..rng.int(2..=4))
+                .map(|_| sentence(&mut rng))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+        feed.user(&question, Source::App, Delivery::Turn);
+        feed.turn_started();
+        for file in 0..rng.int(0..=4) {
+            let (tool, output) = if rng.chance(40) {
+                let lines = rng.int(3..=90);
+                let output: String = (1..=lines)
+                    .map(|n| format!("test transcript::case_{turn}_{n} ... ok\n"))
+                    .collect();
+                ("shell", format!("exit code 0\n{output}"))
+            } else {
+                ("read_file", "1 | fn a() {}\n".to_string())
+            };
+            let parameter = if tool == "shell" {
+                ("command", "cargo test --lib".into())
+            } else {
+                ("path", format!("src/f{turn}_{file}.rs").into())
+            };
+            let id = super::tests::call(feed, "main", tool, &[parameter]);
+            super::tests::result(feed, "main", id, tool, &output);
+        }
+        if rng.chance(5) {
+            feed.notice(Level::Warn, &sentence(&mut rng));
+        }
+        let mut reply = Vec::new();
+        for _ in 0..rng.int(1..=6) {
+            reply.push(match rng.int(0..=19) {
+                0..=10 => paragraph(&mut rng, 1..=6),
+                11 => format!("## {}", sentence(&mut rng)),
+                12..=14 => (0..rng.int(2..=8))
+                    .map(|_| format!("- {}", paragraph(&mut rng, 1..=2)))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                15..=17 => {
+                    let lines = rng.int(3..=120);
+                    let code: String = (1..=lines)
+                        .map(|n| format!("    let value_{n} = self.pending.drain(..{n});\n"))
+                        .collect();
+                    format!("```rust\n{code}```")
+                }
+                18 => format!("> {}", paragraph(&mut rng, 1..=3)),
+                _ => {
+                    let rows: String = (0..rng.int(2..=6))
+                        .map(|n| format!("| row {n} | {} |\n", sentence(&mut rng)))
+                        .collect();
+                    format!("| name | what |\n|---|---|\n{rows}")
+                }
+            });
+        }
+        feed.reply(&reply.join("\n\n"));
+        feed.turn_ended("12 s · $0.034", None);
+    }
+}
+
+/// How evenly the thumb moved over a leg, as GPUI's scroll harness measures
+/// it. Of the thumb's travel per wheel step, it takes the coefficient of
+/// variation (the standard deviation over the mean) and the largest step
+/// over the median step. The last step stops at the end of the track, short
+/// of a full step, and doesn't count.
+#[derive(Debug, Clone, Copy)]
+struct Evenness {
+    cv: f32,
+    spike: f32,
+    steps: usize,
+}
+
+fn evenness(thumbs: &[Thumb], down: bool) -> Evenness {
+    let direction = if down { 1. } else { -1. };
+    let mut travel: Vec<f32> = thumbs
+        .windows(2)
+        .map(|pair| (pair[1].top - pair[0].top) * direction)
+        .collect();
+    travel.pop();
+    let mean = travel.iter().sum::<f32>() / travel.len().max(1) as f32;
+    let sd = (travel.iter().map(|t| (t - mean).powi(2)).sum::<f32>() / travel.len().max(1) as f32)
+        .sqrt();
+    let mut sorted = travel.clone();
+    sorted.sort_by(f32::total_cmp);
+    let median = sorted
+        .get(((sorted.len().max(1) - 1) as f32 * 0.5).round() as usize)
+        .copied()
+        .unwrap_or_default();
+    let max = sorted.last().copied().unwrap_or_default();
+    Evenness {
+        cv: if mean > 0. { sd / mean } else { 0. },
+        spike: if median > 0. { max / median } else { 0. },
+        steps: travel.len(),
+    }
+}
+
+/// The thumb as the kit draws it from `state`.
+fn thumb_of(state: &gpui_kit::ListState) -> Thumb {
+    let track = f32::from(state.viewport_bounds().size.height);
+    let max = f32::from(state.max_offset_for_scrollbar().y);
+    let offset = -f32::from(state.scroll_px_offset_for_scrollbar().y);
+    let content = track + max;
+    let length = (track / content * track).clamp(MIN_THUMB, track);
+    let fraction = if max > 0. {
+        (offset / max).clamp(0., 1.)
+    } else {
+        0.
+    };
+    Thumb {
+        length,
+        top: fraction * (track - length),
+        fraction,
+        max,
+    }
+}
+
+/// Opens a realistic transcript of 40 turns, laid out with the app's fonts,
+/// at its end, and turns the wheel up to its start. Returns how evenly the
+/// thumb moved.
+#[cfg(target_os = "linux")]
+fn scroll_up_a_long_transcript(estimates: bool) -> Evenness {
+    use super::height_tests::real;
+    let feed = Feed::new("main");
+    realistic_turns(&feed, 40, 7);
+    let mut cx = real::app();
+    let (window, view) = real::open(&mut cx, &feed, (WIDTH, HEIGHT), estimates);
+    let calls: Vec<u64> = item_ids(&feed)
+        .into_iter()
+        .filter(|(_, kind)| *kind == Kind::Call)
+        .map(|(id, _)| id)
+        .collect();
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            for id in calls.iter().step_by(7) {
+                view.set_expanded(*id, true, cx);
+            }
+            view.scroll_to_end(cx);
+        })
+    });
+    real::settle(&mut cx, window);
+    let read = |cx: &mut gpui_kit::HeadlessAppContext| {
+        cx.update(|cx| thumb_of(&view.read(cx).list.handle()))
+    };
+    let mut thumbs = vec![read(&mut cx)];
+    for _ in 0..4000 {
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position: point(px(WIDTH / 2.), px(HEIGHT / 2.)),
+                    delta: ScrollDelta::Pixels(point(px(0.), px(WHEEL))),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+        real::frame(&mut cx, window);
+        let now = read(&mut cx);
+        thumbs.push(now);
+        if now.fraction == 0. {
+            break;
+        }
+    }
+    evenness(&thumbs, false)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_thumb_moves_evenly_up_a_long_transcript_it_has_not_drawn() {
+    let before = scroll_up_a_long_transcript(false);
+    let after = scroll_up_a_long_transcript(true);
+    eprintln!("without estimates: {before:?}\nwith estimates: {after:?}");
+    assert!(after.steps > 100, "{after:?}");
+    assert!(after.cv < 0.02, "{after:?}");
+    assert!(after.spike < 1.1, "{after:?}");
 }
 
 #[gpui_kit::test]

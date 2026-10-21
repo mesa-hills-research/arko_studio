@@ -17,6 +17,7 @@ use gpui_kit::component::{
     h_flex, v_flex,
 };
 use gpui_kit::*;
+use serde::Serialize;
 
 use crate::prefs::{self, Keymap, Motion, SendKey, Suggestions, ThemeMode};
 use crate::theme_picker::ThemePicker;
@@ -69,6 +70,10 @@ pub struct SettingsPage {
     sessions: Entity<SessionsPage>,
     web_page: Entity<WebPageSettings>,
     extensions: Entity<ExtensionsPage>,
+    /// How many times Models & accounts and Extensions changed: the keys of
+    /// their groups, which draw again only then.
+    accounts_revision: u64,
+    extensions_revision: u64,
     /// The page to show, set from outside (the command palette), and how
     /// many times it was: the page list starts afresh on it each time.
     page: usize,
@@ -92,6 +97,33 @@ fn shown_changed(seen: &mut prefs::Prefs, cx: &App) -> bool {
     true
 }
 
+/// A Settings group's key, which it draws again only when it changes: a
+/// hash of what its rows show. `title` tells apart the groups a page shows
+/// in turn at one place.
+fn group_key(title: &str, shown: &impl Serialize) -> u64 {
+    use std::hash::{DefaultHasher, Hash as _, Hasher};
+
+    /// Hashes the text as it's written.
+    struct Hashing(DefaultHasher);
+
+    impl std::io::Write for Hashing {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Hasher::write(&mut self.0, bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut hashing = Hashing(DefaultHasher::new());
+    title.hash(&mut hashing.0);
+    // Plain values, which serialize without failing.
+    serde_json::to_writer(&mut hashing, shown).ok();
+    hashing.0.finish()
+}
+
 /// The preferences Settings shows: all but where the window is and how
 /// wide its panes are, which a resize or a drag changes many times a second.
 fn shown_prefs(prefs: &prefs::Prefs) -> prefs::Prefs {
@@ -113,10 +145,16 @@ impl SettingsPage {
         // time: the pickers show once they're there.
         fonts::load_picker_catalog(cx);
         let subscriptions = vec![
-            cx.observe(&accounts, |_, _, cx| cx.notify()),
+            cx.observe(&accounts, |this, _, cx| {
+                this.accounts_revision += 1;
+                cx.notify()
+            }),
             cx.observe(&sessions, |_, _, cx| cx.notify()),
             cx.observe(&web_page, |_, _, cx| cx.notify()),
-            cx.observe(&extensions, |_, _, cx| cx.notify()),
+            cx.observe(&extensions, |this, _, cx| {
+                this.extensions_revision += 1;
+                cx.notify()
+            }),
             cx.observe_global_in::<fonts::PickerCatalog>(window, |this, window, cx| {
                 this.make_font_pickers(window, cx)
             }),
@@ -141,6 +179,8 @@ impl SettingsPage {
             sessions,
             web_page,
             extensions,
+            accounts_revision: 0,
+            extensions_revision: 0,
             page: 0,
             shown: 0,
             shown_prefs: shown_prefs(prefs::get(cx)),
@@ -422,18 +462,64 @@ impl SettingsPage {
         let this = cx.entity();
         vec![
             self.appearance_page(cx),
-            input_page(),
-            self.accounts.read(cx).page(&self.accounts, cx),
-            self.sessions.read(cx).page(),
-            notifications_page(),
-            self.web_page.read(cx).page(),
-            self.extensions.read(cx).page(&self.extensions),
-            advanced_page(&this, self.extensions.read(cx).extensions(), cx),
+            input_page(cx),
+            self.accounts
+                .read(cx)
+                .page(&self.accounts, self.accounts_revision, cx),
+            self.sessions.read(cx).page(cx),
+            notifications_page(cx),
+            self.web_page.read(cx).page(cx),
+            self.extensions
+                .read(cx)
+                .page(&self.extensions, self.extensions_revision),
+            advanced_page(
+                &this,
+                self.extensions.read(cx).extensions(),
+                self.extensions_revision,
+                cx,
+            ),
         ]
     }
 
     fn appearance_page(&self, cx: &mut Context<Self>) -> SettingPage {
         let defaults = prefs::Appearance::default();
+        let shown = &prefs::get(cx).appearance;
+        let picker_id = |picker: &Option<Entity<FontPickerState>>| {
+            picker.as_ref().map(|picker| picker.entity_id().as_u64())
+        };
+        let keys = [
+            group_key(
+                "Theme",
+                &(
+                    shown.theme_mode,
+                    &shown.light_theme,
+                    &shown.dark_theme,
+                    shown.theme_previews,
+                ),
+            ),
+            group_key(
+                "Interface font",
+                &(picker_id(&self.ui_font), &shown.ui_font),
+            ),
+            group_key(
+                "Code font",
+                &(
+                    picker_id(&self.code_font),
+                    &shown.code_font,
+                    shown.code_ligatures,
+                ),
+            ),
+            group_key("Zoom", &shown.zoom),
+            group_key(
+                "Transcript",
+                &(
+                    shown.render_markdown,
+                    shown.stream_fade,
+                    shown.expand_thinking,
+                ),
+            ),
+            group_key("Motion", &shown.motion),
+        ];
         let light = self.light_theme.clone();
         let dark = self.dark_theme.clone();
         let ui_font = self.ui_font.clone();
@@ -449,7 +535,7 @@ impl SettingsPage {
         SettingPage::new(PAGES[0])
             .icon(IconName::Palette)
             .groups([
-                SettingGroup::new().title("Theme").items([
+                SettingGroup::new().key(keys[0]).title("Theme").items([
                     SettingItem::new(
                         "Mode",
                         SettingField::dropdown(
@@ -515,9 +601,11 @@ impl SettingsPage {
                     .description("Resting on a theme in a theme list shows it. Moving between light and dark themes makes the window flash."),
                 ]),
                 SettingGroup::new()
+                    .key(keys[1])
                     .title("Interface font")
                     .item(SettingItem::render(move |_, _, cx| font_picker(ui_font.as_ref(), &prefs::get(cx).appearance.ui_font, false, cx)).keywords(["font", "typeface", "size"])),
                 SettingGroup::new()
+                    .key(keys[2])
                     .title("Code font")
                     .item(SettingItem::render(move |_, _, cx| font_picker(code_font.as_ref(), &prefs::get(cx).appearance.code_font, true, cx)).keywords(["font", "monospace", "size"]))
                     .item(
@@ -530,7 +618,7 @@ impl SettingsPage {
                         )
                         .keywords(["ligatures", "font", "monospace"]),
                     ),
-                SettingGroup::new().title("Font files").item(
+                SettingGroup::new().key(group_key("Font files", &())).title("Font files").item(
                     SettingItem::new(
                         "Add font file…",
                         SettingField::render(move |_, _, _| {
@@ -546,7 +634,7 @@ impl SettingsPage {
                     )
                     .description("Copies a .ttf or .otf file into Arko’s folder and lists it under both fonts."),
                 ),
-                SettingGroup::new().title("Zoom").item(
+                SettingGroup::new().key(keys[3]).title("Zoom").item(
                     SettingItem::new(
                         "Zoom",
                         SettingField::dropdown(
@@ -562,7 +650,7 @@ impl SettingsPage {
                     )
                     .description("Scales the whole window, as View › Zoom In and Zoom Out do."),
                 ),
-                SettingGroup::new().title("Transcript").items([
+                SettingGroup::new().key(keys[4]).title("Transcript").items([
                     switch(
                         "Render Markdown",
                         "Show replies formatted. Each message can still show its source.",
@@ -585,7 +673,7 @@ impl SettingsPage {
                         defaults.expand_thinking,
                     ),
                 ]),
-                SettingGroup::new().title("Motion").item(
+                SettingGroup::new().key(keys[5]).title("Motion").item(
                     SettingItem::new(
                         "Motion",
                         SettingField::dropdown(
@@ -732,8 +820,9 @@ fn send_key_options() -> &'static [(SendKey, &'static str)] {
     }
 }
 
-fn input_page() -> SettingPage {
+fn input_page(cx: &App) -> SettingPage {
     let defaults = prefs::Input::default();
+    let shown = &prefs::get(cx).input;
     let modifier = if cfg!(target_os = "macos") {
         "⌘"
     } else {
@@ -742,7 +831,10 @@ fn input_page() -> SettingPage {
     SettingPage::new(PAGES[1])
         .icon(IconName::ALargeSmall)
         .groups([
-            SettingGroup::new().title("Sending").item(
+            SettingGroup::new()
+                .key(group_key("Sending", &shown.send_key))
+                .title("Sending")
+                .item(
                 choice(
                     "Send key",
                     send_key_options(),
@@ -755,7 +847,18 @@ fn input_page() -> SettingPage {
                 ))
                 .keywords(["enter", "shift", "newline", "submit"]),
             ),
-            SettingGroup::new().title("Typing").items([
+            SettingGroup::new()
+                .key(group_key(
+                    "Typing",
+                    &(
+                        shown.smooth_typing,
+                        shown.spell_check,
+                        shown.suggestions,
+                        shown.keymap,
+                    ),
+                ))
+                .title("Typing")
+                .items([
                 switch(
                     "Smooth typing",
                     "The caret glides to each new letter. Follows Motion.",
@@ -803,7 +906,10 @@ fn input_page() -> SettingPage {
                 )
                 .keywords(["keymap", "vim", "emacs", "shortcuts"]),
             ]),
-            SettingGroup::new().title("Pasting").item(
+            SettingGroup::new()
+                .key(group_key("Pasting", &shown.paste_token_lines))
+                .title("Pasting")
+                .item(
                 SettingItem::new(
                     "Paste as a token",
                     SettingField::number_input(
@@ -830,11 +936,12 @@ fn input_page() -> SettingPage {
         ])
 }
 
-fn notifications_page() -> SettingPage {
+fn notifications_page(cx: &App) -> SettingPage {
     let defaults = prefs::Notifications::default();
+    let shown = &prefs::get(cx).notifications;
     SettingPage::new(PAGES[4])
         .icon(IconName::Bell)
-        .group(SettingGroup::new().items([
+        .group(SettingGroup::new().key(group_key("", shown)).items([
             switch(
                 "When a turn ends",
                 "A notification from your system while Arko Studio is in the background.",
@@ -871,10 +978,11 @@ fn notifications_page() -> SettingPage {
 }
 
 /// Settings › Advanced, with `read`, what Extensions last read of the MCP
-/// config files.
+/// config files, and how many times it read them.
 fn advanced_page(
     this: &Entity<SettingsPage>,
     read: Option<&crate::backend::extensions::Extensions>,
+    read_revision: u64,
     cx: &App,
 ) -> SettingPage {
     let home = cx.global::<crate::session_view::HomeFolder>().0.clone();
@@ -892,7 +1000,10 @@ fn advanced_page(
     // Only Windows runs commands in a shell the user picks.
     if cfg!(windows) {
         groups.push(
-            SettingGroup::new().title("Shell").item(
+            SettingGroup::new()
+                .key(group_key("Shell", &prefs::get(cx).advanced.windows_shell))
+                .title("Shell")
+                .item(
                 choice(
                     "Shell on Windows",
                     &[
@@ -976,9 +1087,16 @@ fn advanced_page(
         )
         .keywords(["mcp", "--mcp-config", "servers", "json"]),
     );
-    groups.push(SettingGroup::new().title("MCP config files").items(files));
+    let mcp_config = &prefs::get(cx).advanced.mcp_config;
     groups.push(
-        SettingGroup::new().title("Folders").items([
+        SettingGroup::new()
+            .key(group_key("MCP config files", &(mcp_config, read_revision)))
+            .title("MCP config files")
+            .items(files),
+    );
+    let folders = group_key("Folders", &(&data, &logs));
+    groups.push(
+        SettingGroup::new().key(folders).title("Folders").items([
             SettingItem::new(
                 "Arko’s folder",
                 SettingField::render(|_, _, _| {
@@ -1012,22 +1130,25 @@ fn advanced_page(
         ]),
     );
     groups.push(
-        SettingGroup::new().title("Reset").item(
-            SettingItem::new(
-                "Reset preferences…",
-                SettingField::render(|_, _, _| {
-                    Button::new("reset-preferences")
-                        .outline()
-                        .small()
-                        .label("Reset…")
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(ResetPreferences), cx)
-                        })
-                }),
-            )
-            .description("Every setting in Arko Studio goes back to its default.")
-            .keywords(["defaults", "studio.json"]),
-        ),
+        SettingGroup::new()
+            .key(group_key("Reset", &()))
+            .title("Reset")
+            .item(
+                SettingItem::new(
+                    "Reset preferences…",
+                    SettingField::render(|_, _, _| {
+                        Button::new("reset-preferences")
+                            .outline()
+                            .small()
+                            .label("Reset…")
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(ResetPreferences), cx)
+                            })
+                    }),
+                )
+                .description("Every setting in Arko Studio goes back to its default.")
+                .keywords(["defaults", "studio.json"]),
+            ),
     );
     SettingPage::new(PAGES[7])
         .icon(IconName::Settings2)
@@ -1106,8 +1227,18 @@ mod interaction;
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_zoom, zoom_label};
+    use super::{group_key, parse_zoom, zoom_label};
     use crate::prefs;
+
+    #[test]
+    fn a_groups_key_changes_with_what_it_shows_and_its_title() {
+        let shown = prefs::Prefs::default().notifications;
+        let mut changed = shown.clone();
+        changed.sound = !changed.sound;
+        assert_eq!(group_key("", &shown), group_key("", &shown.clone()));
+        assert_ne!(group_key("", &shown), group_key("", &changed));
+        assert_ne!(group_key("Zoom", &()), group_key("Reset", &()));
+    }
 
     #[test]
     fn zoom_labels_round_trip() {

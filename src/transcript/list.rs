@@ -155,12 +155,14 @@ impl RowList {
 
 /// Draws `list`, each row by `row`, with the jump-to-latest button while
 /// the reader is scrolled up; it says how many entries came meanwhile
-/// (`new`).
+/// (`new`). The scrollbar counts the rows not drawn yet at the heights
+/// `estimate` gives them at a width, if given.
 pub(super) fn render(
     id: &'static str,
     list: &RowList,
     new: usize,
     row: impl FnMut(usize, &mut Window, &mut App) -> AnyElement + 'static,
+    estimate: Option<impl FnMut(usize, Pixels, &mut Window, &mut App) -> Pixels + 'static>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -176,10 +178,12 @@ pub(super) fn render(
     let theme = cx.theme();
     let (border, background, foreground) = (theme.border, theme.background, theme.foreground);
     let radius = theme.radius_full();
-    let rows = gpui_kit::list(state.clone(), row)
-        .size_full()
-        .min_h_0()
-        .py_2();
+    let rows = gpui_kit::list(state.clone(), row);
+    let rows = match estimate {
+        Some(estimate) => rows.estimate_item_heights(estimate),
+        None => rows,
+    };
+    let rows = rows.size_full().min_h_0().py_2();
     div()
         .id(id)
         .relative()

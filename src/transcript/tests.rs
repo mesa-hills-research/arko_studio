@@ -86,7 +86,7 @@ fn event(agent: &str, event: AgentEvent) -> WorkflowEvent {
     }
 }
 
-fn say(feed: &Feed, agent: &str, text: &str) {
+pub(super) fn say(feed: &Feed, agent: &str, text: &str) {
     let label = (agent != "main").then_some(agent);
     feed.event(
         &event(agent, AgentEvent::AssistantResponseChunk(text.into())),
@@ -94,7 +94,7 @@ fn say(feed: &Feed, agent: &str, text: &str) {
     );
 }
 
-fn think(feed: &Feed, text: &str) {
+pub(super) fn think(feed: &Feed, text: &str) {
     feed.event(
         &event("main", AgentEvent::ReasoningChunk(text.into())),
         None,
@@ -691,7 +691,7 @@ fn a_replys_actions_stay_while_the_pointer_moves_onto_them_and_work(cx: &mut Tes
     let copied = cx.read_from_clipboard().and_then(|item| item.text());
     assert_eq!(
         copied.as_deref(),
-        Some("First paragraph.\nSecond paragraph.")
+        Some("First paragraph.\n\nSecond paragraph.")
     );
     cx.update_window(window, |_, window, cx| {
         window.click(("copy-markdown", reply), cx)
@@ -933,11 +933,11 @@ fn one_indicator_turns_at_a_time(cx: &mut TestAppContext) {
     // second, and the elapsed times tick once.
     let draws = draws_in_a_second(cx, &view);
     assert!((10..=16).contains(&draws), "{draws} draws");
-    // Then thinking streams: its shimmer is the one that moves.
+    // Then thinking streams: its shimmer is the one that moves, as often.
     think(&feed, "hmm");
     settle(cx, window);
     let draws = draws_in_a_second(cx, &view);
-    assert!((25..=34).contains(&draws), "{draws} draws");
+    assert!((10..=16).contains(&draws), "{draws} draws");
     let thinking = item_ids(&feed).last().unwrap().0;
     assert_eq!(cx.read(|cx| view.read(cx).animated), Some(thinking));
 }
@@ -1801,6 +1801,144 @@ fn a_selection_across_rows_copies_with_the_keyboard(cx: &mut TestAppContext) {
     assert!(copied.contains("bold"), "{copied:?}");
 }
 
+/// A selection across the rows of one long message holds while its rows
+/// scroll out of the list and back, a turn of the wheel at a time. In every
+/// frame, each row it covers on screen shows its part, and the selection is
+/// the same at the end. Copy takes all of it, its paragraphs a blank line
+/// apart.
+#[gpui_kit::test]
+fn a_selection_across_a_long_messages_rows_survives_scrolling(cx: &mut TestAppContext) {
+    use gpui_kit::base::TextSelection;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Explain the parser", Source::App, Delivery::Turn);
+    let paragraphs: Vec<String> = (1..=80)
+        .map(|n| format!("Paragraph {n} says what the parser does with a chunk."))
+        .collect();
+    feed.reply(&paragraphs.join("\n\n"));
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    load_all(cx, window, &view);
+    let reply = ids_of(&feed, Kind::Reply)[0];
+    let key = |block| RowKey::Block {
+        id: reply,
+        generation: 0,
+        block,
+        source: false,
+    };
+    // The reply's first rows at the top of the screen.
+    let first = keys(&view, cx)
+        .iter()
+        .position(|row| *row == key(0))
+        .unwrap();
+    scroll_to_row(cx, &view, first);
+    settle(cx, window);
+    // From the start of the first paragraph into the fourth. Each paragraph
+    // is one line, at the bottom of its row, in the reading column.
+    let (from, to) = cx
+        .update_window(window, |_, window, _| {
+            let row = |block| window.find(super::row::element_id(key(block))).bounds();
+            let (start, end) = (row(0), row(3));
+            let column = start.size.width.min(px(736.));
+            let text = start.left() + (start.size.width - column) / 2. + px(16.);
+            (
+                gpui_kit::point(text + px(1.), start.bottom() - px(6.)),
+                gpui_kit::point(text + px(120.), end.bottom() - px(6.)),
+            )
+        })
+        .unwrap();
+    cx.update_window(window, |_, window, cx| window.drag(from, to, cx))
+        .unwrap();
+    settle(cx, window);
+    let selected = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            TextSelection::selected_text(window, cx)
+        })
+        .unwrap()
+    };
+    let whole = selected(cx);
+    let middle = format!("{}\n\n{}", paragraphs[1], paragraphs[2]);
+    assert!(whole.starts_with(&paragraphs[0]), "{whole:?}");
+    assert!(whole.contains(&middle), "{whole:?}");
+    assert!(whole.contains("\n\nParagraph 4"), "{whole:?}");
+    assert!(!whole.contains(&paragraphs[3]), "{whole:?}");
+    // Copy takes it all, its paragraphs a blank line apart.
+    cx.update_window(window, |_, window, cx| window.press("secondary-c", cx))
+        .unwrap();
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert_eq!(copied, whole.trim());
+    // What each covered row shows selected, and the covered rows on screen.
+    let painted = |cx: &mut TestAppContext| -> Vec<String> {
+        cx.read(|cx| {
+            let doc = view.read(cx).ui[&reply].doc.as_ref().unwrap();
+            (0..4)
+                .map(|block| {
+                    doc.blocks[block]
+                        .view
+                        .as_ref()
+                        .map(|view| view.read(cx).selected_text().trim().to_string())
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+    };
+    let covered_on_screen = |cx: &mut TestAppContext| -> Vec<usize> {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            view.list
+                .on_screen()
+                .into_iter()
+                .filter_map(|ix| (0..4).find(|block| view.rows[ix].key == key(*block)))
+                .collect()
+        })
+    };
+    let shown = painted(cx);
+    assert_eq!(shown[1], paragraphs[1]);
+    assert_eq!(shown[2], paragraphs[2]);
+    assert!(shown.iter().all(|part| !part.is_empty()), "{shown:?}");
+    // The selection holds and shows, a turn of the wheel at a time.
+    let check = |cx: &mut TestAppContext, step: &str| {
+        assert_eq!(selected(cx), whole, "{step}");
+        let now = painted(cx);
+        for block in covered_on_screen(cx) {
+            assert_eq!(now[block], shown[block], "{step}: row {block}");
+        }
+    };
+    // One frame a turn.
+    let wheel = |cx: &mut TestAppContext, dy: f32| {
+        cx.update_window(window, |_, window, cx| {
+            window.scroll(
+                "transcript",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(dy))),
+                cx,
+            )
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    };
+    for step in 0..15 {
+        wheel(cx, -120.);
+        check(cx, &format!("away, step {step}"));
+    }
+    // The first rows are out of the list: nothing of them is drawn.
+    cx.update_window(window, |_, window, _| {
+        assert!(window.try_find(super::row::element_id(key(0))).is_none());
+    })
+    .unwrap();
+    for step in 0..15 {
+        wheel(cx, 120.);
+        check(cx, &format!("back, step {step}"));
+    }
+    assert_eq!(cx.read(|cx| view.read(cx).list.top().item_ix), first);
+    assert_eq!(painted(cx), shown);
+    assert_eq!(covered_on_screen(cx), [0, 1, 2, 3]);
+}
+
 /// A window with a sibling of the transcript, as the composer is.
 struct Column {
     sibling: Entity<Sibling>,
@@ -1946,10 +2084,26 @@ fn a_users_message_is_a_bubble_at_the_right_of_the_column(cx: &mut TestAppContex
     // The window's width, and the long message's widest: half the column,
     // a comfortable line, the whole column.
     type Widest = fn(f32, f32) -> f32;
-    let widths: [(f32, Widest); 3] = [
+    // The short message on one line, inside the bubble's padding.
+    let words = cx
+        .update_window(window, |_, window, _| {
+            let style = window.text_style();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let text = "Now fuzz it.";
+            let line =
+                window
+                    .text_system()
+                    .layout_line(text, size, &[style.to_run(text.len())], None);
+            f32::from(line.width) + 1.5 * rem
+        })
+        .unwrap();
+    // Wide, then narrower, then wide again: the bubbles take their widths
+    // back as the column widens.
+    let widths: [(f32, Widest); 4] = [
         (800., |column, _| column / 2.),
         (480., |_, rem| 17.5 * rem),
         (300., |column, _| column),
+        (800., |column, _| column / 2.),
     ];
     for (width, widest) in widths {
         cx.simulate_window_resize(window, size(px(width), px(600.)));
@@ -1968,6 +2122,10 @@ fn a_users_message_is_a_bubble_at_the_right_of_the_column(cx: &mut TestAppContex
                 "{width}: {long_bubble:?}"
             );
             assert!(short_bubble.size.width < long_bubble.size.width, "{width}");
+            assert!(
+                (short_bubble.size.width - px(words)).abs() < px(1.),
+                "{width}: {short_bubble:?}, {words}"
+            );
             // Its actions sit under it, at its right edge.
             for (message, bubble) in [(short, short_bubble), (long, long_bubble)] {
                 let copy = window.find(("copy-user", message)).bounds();

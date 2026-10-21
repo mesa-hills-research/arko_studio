@@ -252,17 +252,6 @@ impl WorkersPanel {
         (self.clock)()
     }
 
-    /// Whether the panel animates: its list shows a running worker's
-    /// spinner.
-    pub fn animates(&self) -> bool {
-        self.open.is_none()
-            && self
-                .source
-                .workers
-                .iter()
-                .any(|worker| worker.state == WorkerState::Running)
-    }
-
     /// The worker whose transcript shows.
     pub fn open_worker(&self) -> Option<&SharedString> {
         self.open.as_ref()
@@ -1133,10 +1122,14 @@ thread_local! {
         std::cell::RefCell::default();
     /// How many times the panel read its session's workers.
     static PULLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many times the panel was drawn.
+    static PANEL_DRAWN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl Render for WorkersPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        PANEL_DRAWN.with(|drawn| drawn.set(drawn.get() + 1));
         let now = self.now();
         self.tick(now, cx);
         let theme = cx.theme();
