@@ -1805,7 +1805,7 @@ fn a_selection_across_rows_copies_with_the_keyboard(cx: &mut TestAppContext) {
 /// scroll out of the list and back, a turn of the wheel at a time. In every
 /// frame, each row it covers on screen shows its part, and the selection is
 /// the same at the end. Copy takes all of it, its paragraphs a blank line
-/// apart.
+/// apart, also while the row the drag started in is out of the list.
 #[gpui_kit::test]
 fn a_selection_across_a_long_messages_rows_survives_scrolling(cx: &mut TestAppContext) {
     use gpui_kit::base::TextSelection;
@@ -1930,6 +1930,20 @@ fn a_selection_across_a_long_messages_rows_survives_scrolling(cx: &mut TestAppCo
         assert!(window.try_find(super::row::element_id(key(0))).is_none());
     })
     .unwrap();
+    // The keyboard's Copy still takes all of it, though the row the drag
+    // started in, which holds the focus, isn't drawn.
+    let focused = cx
+        .update_window(window, |_, window, cx| {
+            let doc = view.read(cx).ui[&reply].doc.as_ref().unwrap();
+            let row = doc.blocks[0].view.as_ref().unwrap();
+            row.read(cx).focus_handle().is_focused(window)
+        })
+        .unwrap();
+    assert!(focused, "the first row holds the focus");
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("Nothing yet".into()));
+    cx.update_window(window, |_, window, cx| window.press("secondary-c", cx))
+        .unwrap();
+    assert_eq!(clipboard_text(cx), whole.trim());
     for step in 0..15 {
         wheel(cx, 120.);
         check(cx, &format!("back, step {step}"));
