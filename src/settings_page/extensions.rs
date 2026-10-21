@@ -103,7 +103,9 @@ impl ExtensionsPage {
             .detach();
     }
 
-    pub fn page(&self, this: &Entity<Self>) -> SettingPage {
+    /// The page, as last read. `revision` counts the reads, and the groups
+    /// draw again only after one.
+    pub fn page(&self, this: &Entity<Self>, revision: u64) -> SettingPage {
         let home = self.home.as_deref();
         let (files, projects, skills) = match &self.extensions {
             None => {
@@ -150,6 +152,7 @@ impl ExtensionsPage {
         };
         let mut groups = vec![
             SettingGroup::new()
+                .key(super::group_key("MCP servers", &revision))
                 .title("MCP servers")
                 .description(
                     "Programs that give the agents more tools. Agent sessions opened from now on start the servers in these files, and a server named in two is taken from the first. Servers over HTTP are skipped, because Arko talks to servers over standard input and output.",
@@ -159,6 +162,7 @@ impl ExtensionsPage {
         if !projects.is_empty() {
             groups.push(
                 SettingGroup::new()
+                    .key(super::group_key("Projects’ servers", &revision))
                     .title("Projects’ servers")
                     .description(
                         "A project’s .mcp.json would run programs as soon as a session opens in its folder, so Arko asks first, and remembers the answer until the file’s servers change.",
@@ -168,6 +172,7 @@ impl ExtensionsPage {
         }
         groups.push(
             SettingGroup::new()
+                .key(super::group_key("Skills", &revision))
                 .title("Skills")
                 .description(
                     "Instructions for particular kinds of work, which the agents load when a task calls for them. A skill is a folder with a SKILL.md, or a Markdown file, whose front matter gives its name and description. Arko reads a project’s .agents/skills, .claude/skills and .skills, then skills in Arko’s folder, ~/.agents/skills and ~/.claude/skills. A skill named as an earlier one gets a number (pdf-2), and the same skill twice is read once.",

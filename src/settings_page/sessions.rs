@@ -208,13 +208,40 @@ impl SessionsPage {
         ]
     }
 
-    pub fn page(&self) -> SettingPage {
+    pub fn page(&self, cx: &App) -> SettingPage {
+        let prefs = prefs::get(cx);
+        let new = &prefs.new_sessions;
+        let errors = self.errors();
+        // What the groups show, which they draw again only when it changes.
+        // Their fields draw themselves as they're typed in.
+        let agent = (
+            (
+                new.handover_at,
+                new.workers_handover_at,
+                new.background_after,
+            ),
+            (
+                new.outside_access,
+                new.text_replies,
+                new.cc_compact,
+                new.extra_rules,
+                new.project_instructions,
+                new.worker_project_instructions,
+            ),
+            errors.each_ref().map(|error| error.as_deref()),
+        );
         SettingPage::new(super::PAGES[3])
             .icon(IconName::FolderOpen)
             .description(
                 "What new sessions start with. Click an open session’s title to change its settings in Session info.",
             )
-            .groups([self.agent_group(), self.chat_group(), confirmations_group()])
+            .groups([
+                self.agent_group()
+                    .key(super::group_key("Agent sessions", &agent)),
+                self.chat_group().key(super::group_key("Chats", &())),
+                confirmations_group()
+                    .key(super::group_key("Confirmations", &prefs.sessions)),
+            ])
     }
 
     fn agent_group(&self) -> SettingGroup {
