@@ -307,8 +307,26 @@ pub(super) fn element_id(key: RowKey) -> ElementId {
         RowKey::Output(id) => ("output", id),
         RowKey::Turn(id) => ("turn", id),
         RowKey::Worker(id) => ("worker", id),
+        RowKey::Working(id) => ("working", id),
     };
     (name, id).into()
+}
+
+/// The running indicator, turning when `turns` (and the system allows
+/// motion), a dozen times a second.
+fn spinner(id: impl Into<ElementId>, turns: bool, cx: &App) -> AnyElement {
+    let icon = Icon::new(IconName::Loader).xsmall();
+    if !turns || cx.reduce_motion() {
+        return icon.into_any_element();
+    }
+    icon.with_animation(
+        id,
+        Animation::new(Duration::from_millis(900))
+            .repeat()
+            .with_max_fps(SPINNER_FPS),
+        |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
+    )
+    .into_any_element()
 }
 
 /// "12 s", "1 m 5 s", "2 h 3 m".
@@ -482,6 +500,7 @@ impl TranscriptView {
             RowKey::Output(id) => self.output(id, cx),
             RowKey::Turn(id) => self.turn(id, view, cx),
             RowKey::Worker(id) => self.worker(id, view, cx),
+            RowKey::Working(id) => self.working(id, cx),
         }
     }
 
@@ -888,18 +907,22 @@ impl TranscriptView {
     /// frame draws the transcript, so one indicator turns, a dozen times a
     /// second.
     fn spinner(&self, id: u64, cx: &App) -> AnyElement {
-        let icon = Icon::new(IconName::Loader).xsmall();
-        if self.animated != Some(id) || cx.reduce_motion() {
-            return icon.into_any_element();
-        }
-        icon.with_animation(
-            ("running", id),
-            Animation::new(Duration::from_millis(900))
-                .repeat()
-                .with_max_fps(SPINNER_FPS),
-            |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
-        )
-        .into_any_element()
+        spinner(("running", id), self.animated == Some(id), cx)
+    }
+
+    /// "Working…" while the agent waits on the model and no other row says
+    /// it's busy. It's the latest thing that runs, so its indicator turns.
+    fn working(&self, id: u64, cx: &App) -> AnyElement {
+        let theme = cx.theme();
+        h_flex()
+            .h_5()
+            .px_1()
+            .gap_1()
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .child(spinner(("working-spinner", id), true, cx))
+            .child("Working…")
+            .into_any_element()
     }
 
     /// Whether thinking shows open unless the reader chose.

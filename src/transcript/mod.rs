@@ -50,7 +50,7 @@ use crate::prefs;
 
 pub use find::FindStatus;
 pub use model::AgentFilter;
-use model::{Changes, Layout, Model, Row, RowKey};
+use model::{Changes, Layout, Model, Row, RowKey, Waiting};
 pub use nav::{FocusTranscript, Leave, SelectNext, SelectPrevious, ToggleRow};
 
 /// The key context of the transcript, for its key bindings.
@@ -102,6 +102,11 @@ const FIRST_ENTRIES: usize = 200;
 /// Older entries made ready per frame after the first: each is a Markdown
 /// parse at most, so a frame stays well under 16 ms.
 const ENTRIES_PER_FRAME: usize = 100;
+
+/// How long, in milliseconds, the agent's text stops coming before
+/// "Working…" shows under it: the model may be writing a call, which shows
+/// only once it's whole.
+const STALL_MS: i64 = 2000;
 
 /// What the transcript asks of the views around it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,8 +305,18 @@ pub struct TranscriptView {
     /// Draws again every second while a call or a worker runs.
     ticker: Option<Task<()>>,
     /// The entry whose running indicator turns this frame: the latest
-    /// thing that runs.
+    /// thing that runs, unless "Working…" shows (it turns then).
     animated: Option<u64>,
+    /// The agent's entry "Working…" follows, while the agent waits on the
+    /// model ([`Self::working_after`]).
+    working: Option<u64>,
+    /// Whether the rows show "Working…" (not where a thinking's row says
+    /// it's busy).
+    shows_working: bool,
+    /// When the agent's text last came or grew, by [`Self::clock`].
+    text_at: i64,
+    /// Looks again whether the agent waits once its text stops coming.
+    stall: Option<Task<()>>,
     image_cache: Entity<LruImageCache>,
     /// Where the images the items show are read: the session's store.
     images: Option<ImageLookup>,
@@ -373,6 +388,10 @@ impl TranscriptView {
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
             animated: None,
+            working: None,
+            shows_working: false,
+            text_at: 0,
+            stall: None,
             image_cache: LruImageCache::new(IMAGE_BUDGET, cx),
             images: None,
             image_copies: Rc::default(),
@@ -576,6 +595,16 @@ impl TranscriptView {
     fn follow(&mut self, changes: Changes, cx: &mut Context<Self>) {
         if !changes.any() {
             return;
+        }
+        // (Only the agent's text: a note or a worker's news isn't output
+        // that shows it's busy.)
+        let text = changes.added.iter().chain(&changes.text).any(|id| {
+            self.model
+                .entry(*id)
+                .is_some_and(|entry| matches!(entry.item.kind, Kind::Text | Kind::Message))
+        });
+        if changes.reset || text {
+            self.text_at = (self.clock)();
         }
         if changes.reset {
             // What the reader chose to open stays open (also before the
@@ -849,7 +878,8 @@ impl TranscriptView {
     /// Rows in both keep their place and measured height, so the reader's
     /// row stays where it is. Where it went (folded into a group, shown as
     /// source), the row that took its entry's place does.
-    fn refresh_rows(&mut self, _: &mut Context<Self>) {
+    fn refresh_rows(&mut self, cx: &mut Context<Self>) {
+        self.working = self.working_after(cx);
         let render_markdown = self.settings.render_markdown;
         let ui = &self.ui;
         let blocks = |id: u64| {
@@ -870,6 +900,7 @@ impl TranscriptView {
                 group_open: &group_open,
                 source: &source,
                 first: self.loaded_from,
+                working: self.working,
             },
         );
         // The reader's place, unless they follow the latest row.
@@ -882,6 +913,7 @@ impl TranscriptView {
                     .map(|row| (row.key, top.offset_in_item))
             })
             .flatten();
+        self.shows_working = model::shows_working(&rows);
         let old = std::mem::take(&mut self.rows);
         let (changes, kept) = model::row_changes(&old, &rows);
         for (range, count) in changes.iter().rev() {
@@ -893,14 +925,18 @@ impl TranscriptView {
                 self.list.remeasure_row(new_ix);
             }
         }
-        // What came after the last row while the reader was away.
+        // What came after the last row while the reader was away ("Working…"
+        // gives way to it).
+        let working = |row: &Row| matches!(row.key, RowKey::Working(_));
         if scrolled_up
             && let Some((range, count)) = changes.last()
-            && range.start == old.len()
-            && !old.is_empty()
+            && range.end == old.len()
+            && old[range.clone()].iter().all(working)
+            && old.len() > range.len()
         {
             let mut entries: Vec<u64> = rows[rows.len() - count..]
                 .iter()
+                .filter(|row| !working(row))
                 .map(|row| row.key.entry())
                 .collect();
             entries.dedup();
@@ -949,6 +985,37 @@ impl TranscriptView {
             .rposition(|row| row.key.entry() <= entry)
             .unwrap_or(0);
         (!self.rows.is_empty()).then_some((ix, px(0.)))
+    }
+
+    /// The agent's entry "Working…" follows, while it shows: the agent shown
+    /// waits on the model, and no other row says it's busy. Text that
+    /// stopped coming [`STALL_MS`] ago counts as waiting, and while text
+    /// comes, a timer looks again when it would have stopped that long.
+    fn working_after(&mut self, cx: &mut Context<Self>) -> Option<u64> {
+        let after = match self.model.waiting() {
+            Waiting::No => return None,
+            Waiting::Yes(after) => return Some(after),
+            Waiting::AfterText(after) => after,
+        };
+        let quiet = (self.clock)() - self.text_at;
+        if quiet >= STALL_MS {
+            return Some(after);
+        }
+        if self.stall.is_none() {
+            let wait = Duration::from_millis((STALL_MS - quiet).max(1) as u64);
+            self.stall = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                this.update(cx, |this, cx| {
+                    this.stall = None;
+                    if this.working_after(cx) != this.working {
+                        this.refresh_rows(cx);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }));
+        }
+        None
     }
 
     /// Draws every second while something shows a running time.
@@ -1293,7 +1360,12 @@ impl Render for TranscriptView {
         if !self.list.is_scrolled_up() {
             self.new_while_away = 0;
         }
-        self.animated = self.latest_running();
+        // "Working…" is the latest thing that runs, when it shows.
+        self.animated = if self.shows_working {
+            None
+        } else {
+            self.latest_running()
+        };
         let new = self.new_while_away;
         // Reached by Tab, the transcript shows that it has the focus, with a
         // ring laid over its edge (a border would move the rows). A row the

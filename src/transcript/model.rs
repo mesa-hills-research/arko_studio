@@ -10,7 +10,9 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
 
-use arko::remote::{Activity, Delivery, Item, Kind, Level, Snapshot, Update, WorkerSummary};
+use arko::remote::{
+    Activity, CallStatus, Delivery, Item, Kind, Level, Snapshot, Update, WorkerState, WorkerSummary,
+};
 use gpui_kit::SharedString;
 
 use crate::prefs::TranscriptView as View;
@@ -465,7 +467,7 @@ impl Model {
         let agent = &entry.item.agent;
         let later = self.entries[ix + 1..]
             .iter()
-            .any(|later| &later.item.agent == agent);
+            .any(|later| &later.item.agent == agent && !is_aside(&later.item));
         if later {
             return false;
         }
@@ -485,9 +487,83 @@ impl Model {
         let entry = &self.entries[ix];
         let next = self.entries[ix + 1..]
             .iter()
-            .find(|later| later.item.agent == entry.item.agent)?;
+            .find(|later| later.item.agent == entry.item.agent && !is_aside(&later.item))?;
         let took = next.item.at - entry.item.at;
         (took >= 1000).then_some(took)
+    }
+
+    /// Whether the agent shown waits on the model with no row saying it's
+    /// busy, by its latest output.
+    pub fn waiting(&self) -> Waiting {
+        let busy = match &self.filter {
+            AgentFilter::Main => self.activity.working && self.activity.question.is_none(),
+            AgentFilter::Worker(id) => self
+                .worker(id)
+                .is_some_and(|worker| worker.state == WorkerState::Running),
+        };
+        if !busy {
+            return Waiting::No;
+        }
+        // What went beside the agent's output, and what Arko said of it (a
+        // retry, a change of model), leave it waiting.
+        let latest = self
+            .entries
+            .iter()
+            .rev()
+            .map(|entry| &entry.item)
+            .find(|item| {
+                let its = match &self.filter {
+                    AgentFilter::Main => item.is_main(),
+                    AgentFilter::Worker(id) => item.agent == id.as_ref(),
+                };
+                its && !is_aside(item) && !matches!(item.kind, Kind::Notice | Kind::Result)
+            });
+        let Some(latest) = latest else {
+            return Waiting::Yes(0);
+        };
+        let after = latest.id;
+        match latest.kind {
+            // A cache refresh's quiet row stands for its short turn.
+            Kind::User if is_refresh(latest) => Waiting::No,
+            // (A question no longer asked, as the agent goes on without its
+            // answer.)
+            Kind::User | Kind::Turn | Kind::Conversation | Kind::Question => Waiting::Yes(after),
+            Kind::Call if latest.status == Some(CallStatus::Running) => Waiting::No,
+            Kind::Call => Waiting::Yes(after),
+            // Its row says "Thinking…", where the view shows it.
+            Kind::Thinking => Waiting::Yes(after),
+            Kind::Text | Kind::Message => Waiting::AfterText(after),
+            _ => Waiting::No,
+        }
+    }
+}
+
+/// What the agent shown waits on ([`Model::waiting`]), after which of its
+/// entries (0 before any).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Waiting {
+    /// Nothing, or a row says it's busy: a call that runs, a question for
+    /// the user.
+    No,
+    /// The model, after the user's message, a call's result or thinking
+    /// (whose row, where the view shows it, says so itself).
+    Yes(u64),
+    /// The model, unless its text still comes: the text shows it's busy
+    /// while it grows.
+    AfterText(u64),
+}
+
+/// Whether `item` goes beside its agent's output rather than after it, as
+/// the feed places it: what the user typed that the agent hasn't read (a
+/// note, a command, a line waiting for a turn), Arko's output and a
+/// worker's card. The agent's text and thinking go on above it.
+fn is_aside(item: &Item) -> bool {
+    match item.kind {
+        Kind::Output | Kind::WorkerLine => true,
+        Kind::User => {
+            item.pending || matches!(item.delivery, Some(Delivery::Command | Delivery::Queued))
+        }
+        _ => false,
     }
 }
 
@@ -575,6 +651,9 @@ pub(crate) enum RowKey {
     Output(u64),
     Turn(u64),
     Worker(u64),
+    /// "Working…" while the agent waits on the model with nothing else
+    /// showing it, by the latest entry before it.
+    Working(u64),
 }
 
 impl RowKey {
@@ -593,6 +672,7 @@ impl RowKey {
             | RowKey::Output(id)
             | RowKey::Turn(id)
             | RowKey::Worker(id)
+            | RowKey::Working(id)
             | RowKey::Block { id, .. } => id,
         }
     }
@@ -701,6 +781,9 @@ pub(crate) struct Layout<'a> {
     /// The oldest entry ready to show, when older ones are still being made
     /// ready: the rows start there.
     pub first: Option<u64>,
+    /// "Working…" below the agent's output, by the agent's entry it follows
+    /// ([`Waiting`]).
+    pub working: Option<u64>,
 }
 
 struct Rows<'a> {
@@ -907,10 +990,34 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
             }
         }
     }
+    // What the agent goes on with, above the notes it hasn't read, unless
+    // its thinking's row says it.
+    if let Some(after) = layout.working {
+        let thinking = model
+            .entry(after)
+            .is_some_and(|entry| entry.item.kind == Kind::Thinking)
+            && rows
+                .out
+                .iter()
+                .rev()
+                .any(|row| row.key == RowKey::Thinking(after));
+        if !thinking {
+            rows.push(RowKey::Working(after), Class::Activity);
+        }
+    }
     for ix in waiting {
         rows.entry(&entries[ix], view, worker_view);
     }
     rows.out
+}
+
+/// Whether `rows` show "Working…". Only the notes the agent hasn't read
+/// come after it.
+pub(crate) fn shows_working(rows: &[Row]) -> bool {
+    rows.iter()
+        .rev()
+        .take_while(|row| matches!(row.key, RowKey::User(_) | RowKey::Working(_)))
+        .any(|row| matches!(row.key, RowKey::Working(_)))
 }
 
 /// The entries a group or count row stands for: the run starting at the
@@ -970,6 +1077,7 @@ mod tests {
             group_open: &|_| None,
             source: &|_| false,
             first: None,
+            working: None,
         }
     }
 
@@ -1516,6 +1624,199 @@ mod tests {
         model.apply(Update::Item(text), &mut changes);
         assert!(!model.is_streaming(0));
         assert_eq!(model.thought_for(0), Some(12_000));
+    }
+
+    /// What the user typed while the agent thinks, a worker's card and
+    /// Arko's output go beside the thinking, which goes on.
+    #[test]
+    fn thinking_streams_on_past_what_goes_beside_it() {
+        let mut note = item(2, Kind::User, "main", "Keep the old name.");
+        note.delivery = Some(Delivery::Note);
+        note.pending = true;
+        let mut command = item(3, Kind::User, "main", "/model sonnet");
+        command.delivery = Some(Delivery::Command);
+        let mut model = model(vec![
+            item(1, Kind::Thinking, "main", "hmm"),
+            note,
+            command,
+            item(4, Kind::WorkerLine, "main", "Write the fuzz target"),
+            item(5, Kind::Output, "main", "Model changed."),
+        ]);
+        let mut changes = Changes::default();
+        model.set_activity(
+            Activity {
+                working: true,
+                ..Activity::default()
+            },
+            &mut changes,
+        );
+        assert!(model.is_streaming(0));
+        assert_eq!(model.thought_for(0), None);
+    }
+
+    fn working(model: &mut Model) {
+        let mut changes = Changes::default();
+        model.set_activity(
+            Activity {
+                working: true,
+                ..Activity::default()
+            },
+            &mut changes,
+        );
+    }
+
+    /// The agent waits on the model after the user's message and after a
+    /// call's result, beside what the user typed and Arko said, and not
+    /// while a call runs, thinking streams, a question waits or no turn runs.
+    #[test]
+    fn the_agent_waits_on_the_model_between_its_outputs() {
+        let mut model = model(vec![item(1, Kind::User, "main", "go")]);
+        assert_eq!(model.waiting(), Waiting::No);
+        working(&mut model);
+        assert_eq!(model.waiting(), Waiting::Yes(1));
+
+        let mut changes = Changes::default();
+        let mut call = item(2, Kind::Call, "main", "cargo build");
+        call.status = Some(CallStatus::Running);
+        model.apply(Update::Item(call.clone()), &mut changes);
+        assert_eq!(model.waiting(), Waiting::No);
+        call.status = Some(CallStatus::Ok);
+        model.apply(Update::Change(call), &mut changes);
+        assert_eq!(model.waiting(), Waiting::Yes(2));
+
+        // A note, a worker's call and a notice leave it waiting.
+        let mut note = item(3, Kind::User, "main", "Use release mode.");
+        note.delivery = Some(Delivery::Note);
+        note.pending = true;
+        model.apply(Update::Item(note), &mut changes);
+        let mut worker_call = item(4, Kind::Call, "r1", "read a.rs");
+        worker_call.status = Some(CallStatus::Running);
+        model.apply(Update::Item(worker_call), &mut changes);
+        let retry = item(5, Kind::Notice, "main", "retrying in 5 s").level(Level::Warn);
+        model.apply(Update::Item(retry), &mut changes);
+        assert_eq!(model.waiting(), Waiting::Yes(2));
+
+        model.apply(
+            Update::Item(item(6, Kind::Thinking, "main", "hmm")),
+            &mut changes,
+        );
+        assert_eq!(model.waiting(), Waiting::Yes(6));
+        model.apply(
+            Update::Item(item(7, Kind::Text, "main", "Built.")),
+            &mut changes,
+        );
+        assert_eq!(model.waiting(), Waiting::AfterText(7));
+
+        let mut asking = model.activity.clone();
+        asking.question = Some(arko::remote::Question {
+            id: 1,
+            text: "Release or debug?".into(),
+        });
+        model.set_activity(asking, &mut changes);
+        assert_eq!(model.waiting(), Waiting::No);
+    }
+
+    /// A cache refresh's short turn shows as its quiet row only.
+    #[test]
+    fn a_cache_refresh_waits_without_saying_so() {
+        let mut refresh = item(1, Kind::User, "main", "(keep the cache warm)");
+        refresh.delivery = Some(Delivery::Refresh);
+        let mut model = model(vec![refresh]);
+        working(&mut model);
+        assert_eq!(model.waiting(), Waiting::No);
+    }
+
+    /// A worker waits on the model while it runs, and not while it waits
+    /// for a place or once it ended.
+    #[test]
+    fn a_worker_waits_on_the_model_while_it_runs() {
+        let mut model = Model::new(AgentFilter::Worker("r1".into()));
+        let mut changes = Changes::default();
+        let mut summary = WorkerSummary {
+            id: "r1".into(),
+            title: "Fuzz".into(),
+            state: WorkerState::Queued,
+            tool_calls: 0,
+            started_at: None,
+            ended_at: None,
+            last: None,
+            report: None,
+            ran_ms: 0,
+            running_since: None,
+        };
+        model.apply(Update::Worker(summary.clone()), &mut changes);
+        assert_eq!(model.waiting(), Waiting::No);
+        summary.state = WorkerState::Running;
+        model.apply(Update::Worker(summary.clone()), &mut changes);
+        assert_eq!(model.waiting(), Waiting::Yes(0));
+        let mut call = item(3, Kind::Call, "r1", "read a.rs");
+        call.status = Some(CallStatus::Ok);
+        model.apply(Update::Item(call), &mut changes);
+        assert_eq!(model.waiting(), Waiting::Yes(3));
+        summary.state = WorkerState::Finished;
+        model.apply(Update::Worker(summary), &mut changes);
+        assert_eq!(model.waiting(), Waiting::No);
+    }
+
+    /// Thinking's row says "Thinking…" where the view shows it. Where the
+    /// view hides it (Messages, a folded group of calls), "Working…" says it.
+    #[test]
+    fn working_shows_where_the_view_hides_the_thinking() {
+        let done = |id: u64| {
+            let mut call = item(id, Kind::Call, "main", "read a.rs");
+            call.status = Some(CallStatus::Ok);
+            call
+        };
+        let model = model(vec![
+            item(1, Kind::User, "main", "go"),
+            done(2),
+            done(3),
+            done(4),
+            done(5),
+            item(6, Kind::Thinking, "main", "hmm"),
+        ]);
+        let shown = |view: View| {
+            let layout = Layout {
+                working: Some(6),
+                ..layout(view)
+            };
+            let rows = rows(&model, &layout);
+            (shows_working(&rows), rows.last().map(|row| row.key))
+        };
+        assert_eq!(shown(View::Full), (false, Some(RowKey::Thinking(6))));
+        assert_eq!(shown(View::Quiet), (true, Some(RowKey::Working(6))));
+        assert_eq!(shown(View::Messages), (true, Some(RowKey::Working(6))));
+    }
+
+    /// "Working…" goes below the agent's output, above the notes it hasn't
+    /// read.
+    #[test]
+    fn working_goes_above_the_notes_not_read_yet() {
+        let mut note = item(3, Kind::User, "main", "Use release mode.");
+        note.delivery = Some(Delivery::Note);
+        note.pending = true;
+        let model = model(vec![
+            item(1, Kind::User, "main", "go"),
+            item(2, Kind::Call, "main", "cargo build"),
+            note,
+        ]);
+        let layout = Layout {
+            working: Some(2),
+            ..layout(View::Full)
+        };
+        let keys: Vec<RowKey> = rows(&model, &layout)
+            .into_iter()
+            .map(|row| row.key)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                RowKey::User(1),
+                RowKey::Call(2),
+                RowKey::Working(2),
+                RowKey::User(3)
+            ]
+        );
     }
 
     /// A user's message of turn `turn` that started it, at `index` of the

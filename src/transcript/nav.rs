@@ -49,6 +49,9 @@ impl TranscriptView {
     /// What assistive technology says of row `key`: whose it is or what,
     /// and the start of its text.
     pub(super) fn row_label(&self, key: RowKey) -> SharedString {
+        if let RowKey::Working(_) = key {
+            return "Working".into();
+        }
         let Some(item) = self.model.entry(key.entry()).map(|entry| &entry.item) else {
             return SharedString::default();
         };
@@ -93,6 +96,7 @@ impl TranscriptView {
             RowKey::Separator(_) | RowKey::Notice(_) | RowKey::Output(_) | RowKey::Turn(_) => {
                 first_line(&item.text)
             }
+            RowKey::Working(_) => "Working".to_string(),
         };
         label.into()
     }
@@ -128,7 +132,8 @@ impl TranscriptView {
         };
         let key = row.key;
         self.cursor = Some(key);
-        self.hovered = Some(key.entry());
+        // ("Working…" stands for no entry, so no actions show.)
+        self.hovered = (!matches!(key, RowKey::Working(_))).then(|| key.entry());
         self.list.reveal(ix);
         // Arrows from a toggle or an action inside move the rows' focus.
         if !self.focus_handle.is_focused(window) {
