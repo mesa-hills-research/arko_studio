@@ -563,3 +563,74 @@ fn in_the_window_a_spinner_draws_only_its_own_row(cx: &mut TestAppContext) {
     assert_eq!(drawn.get("r2"), None, "{drawn:?}");
     assert_eq!(drawn.get("r3"), None, "{drawn:?}");
 }
+
+/// Docked in the window and kept from frame to frame, the panel shows a
+/// running worker's spinner turning and its time going on, and draws again
+/// for them only, not with every frame of the window around it.
+#[gpui_kit::test]
+fn in_the_window_a_running_workers_time_goes_on(cx: &mut TestAppContext) {
+    use std::cell::Cell;
+
+    use crate::tests::{act, open};
+
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    cx.update(|cx| {
+        crate::prefs::update(cx, |prefs| {
+            prefs.appearance.motion = crate::prefs::Motion::On
+        });
+        cx.set_reduce_motion(false);
+    });
+    let (window, workspace) = open(cx, 1300.);
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::menus::ToggleWorkersPanel), cx)
+    });
+    let panel = cx.read(|cx| workspace.read(cx).workers_panel().clone());
+    let feed = feed();
+    let clock = Rc::new(Cell::new(chrono::Utc::now().timestamp_millis() + 1_000));
+    let now = clock.clone();
+    act(cx, window, |_, cx| {
+        panel.update(cx, |panel, cx| {
+            let key = cx.entity_id();
+            panel.set_source(source(&feed, key), cx);
+            panel.set_clock(move || now.get(), cx);
+        })
+    });
+    let elapsed = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let row = panel.read(cx).row_views.get("r1").unwrap().clone();
+            row.read(cx).facts.elapsed.clone()
+        })
+    };
+    let before = elapsed(cx);
+    super::ROWS_DRAWN.with(|drawn| drawn.borrow_mut().clear());
+    // Three seconds, at 30 frames a second.
+    for _ in 0..90 {
+        let frame = 1000 / 30 + 1;
+        clock.set(clock.get() + frame);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(frame as u64));
+        cx.run_until_parked();
+    }
+    assert_ne!(elapsed(cx), before, "the time goes on");
+    let rows = super::ROWS_DRAWN.with(|drawn| drawn.borrow().clone());
+    assert!(rows.get("r1").is_some_and(|&count| count >= 30), "{rows:?}");
+    // With the spinner still, frames for the rest of the window (the status
+    // bar's here) leave the panel as it was drawn.
+    cx.update(|cx| {
+        crate::prefs::update(cx, |prefs| {
+            prefs.appearance.motion = crate::prefs::Motion::Off
+        });
+        cx.set_reduce_motion(true);
+    });
+    act(cx, window, |_, _| {});
+    let status = cx.read(|cx| workspace.read(cx).status_bar().clone());
+    super::PANEL_DRAWN.with(|drawn| drawn.set(0));
+    for _ in 0..10 {
+        cx.update(|cx| status.update(cx, |_, cx| cx.notify()));
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    }
+    let drawn = super::PANEL_DRAWN.with(|drawn| drawn.get());
+    assert_eq!(drawn, 0, "the panel drew {drawn} times");
+}
