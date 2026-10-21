@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use arko::details::{McpFacts, SessionFacts, SkillsFacts};
+use arko::details::{IndexFacts, IndexKind, IndexWatch, McpFacts, SessionFacts, SkillsFacts};
 use arko::remote::Reading;
 use arko::{ExtraRules, ProjectFiles};
 use gpui_kit::component::clipboard::Clipboard;
@@ -63,6 +63,9 @@ pub struct Facts {
     pub session: SessionFacts,
     pub mcp: McpFacts,
     pub skills: Result<SkillsFacts, String>,
+    /// The workspace's search indexes as the info shows them
+    /// ("arko (code, monitored), docs (docs)"), or `None` without any.
+    pub indexes: Option<String>,
 }
 
 /// A handover size as the info shows it and `/handover-at` takes it:
@@ -164,8 +167,6 @@ pub struct Preview {
     pub id: String,
     pub dir: Option<PathBuf>,
     pub reading: Arc<Reading>,
-    /// The banner's lines of tools: MCP servers, skills, indexes.
-    pub tools: Vec<String>,
 }
 
 /// The session's facts the info shows.
@@ -176,7 +177,6 @@ struct About {
     id: String,
     dir: Option<PathBuf>,
     reading: Arc<Reading>,
-    indexes: Option<String>,
 }
 
 /// The info of the session a window shows, for its popover.
@@ -358,6 +358,7 @@ impl SessionInfo {
                 session: details.session(),
                 mcp: details.mcp(),
                 skills: details.skills(),
+                indexes: indexes_text(&details.indexes()),
             }
         });
         self._load = Some(cx.spawn(async move |this, cx| {
@@ -396,9 +397,6 @@ impl SessionInfo {
                 id: live.id().map(|id| id.to_string()).unwrap_or_default(),
                 dir: live.link().map(|link| link.info.dir.clone()),
                 reading: live.reading().clone(),
-                indexes: live
-                    .link()
-                    .and_then(|link| indexes_line(&link.banner.tools)),
             });
         }
         self.preview.as_ref().map(|preview| About {
@@ -408,7 +406,6 @@ impl SessionInfo {
             id: preview.id.clone(),
             dir: preview.dir.clone(),
             reading: preview.reading.clone(),
-            indexes: indexes_line(&preview.tools),
         })
     }
 
@@ -562,7 +559,6 @@ impl Render for SessionInfo {
             id,
             dir,
             reading,
-            indexes,
         }) = self.about(cx)
         else {
             return v_flex()
@@ -917,14 +913,14 @@ impl Render for SessionInfo {
                         )),
                         cx,
                     ))
-                    .child(row(narrow, "Skills", skills_line(&facts.skills), cx)),
+                    .child(row(narrow, "Skills", skills_line(&facts.skills), cx))
+                    .child(row(
+                        narrow,
+                        "Indexes",
+                        facts.indexes.clone().unwrap_or_else(|| "None".to_string()),
+                        cx,
+                    )),
             };
-            body = body.child(row(
-                narrow,
-                "Indexes",
-                indexes.unwrap_or_else(|| "None".to_string()),
-                cx,
-            ));
         }
         // Where it's kept.
         body = body
@@ -1028,14 +1024,46 @@ pub fn skills_line(skills: &Result<SkillsFacts, String>) -> String {
     }
 }
 
-/// The indexes, from the banner's line ("indexes arko (code, monitored),
-/// docs (docs)"): what follows the word.
-pub fn indexes_line(tools: &[String]) -> Option<String> {
-    tools.iter().find_map(|line| {
-        line.strip_prefix("indexes ")
-            .or_else(|| line.strip_prefix("index "))
-            .map(str::to_string)
-    })
+/// The workspace's indexes in a line, as Arko's banner lists them ("arko
+/// (code, monitored), docs (docs)"), or `None` without any.
+pub fn indexes_text(indexes: &[IndexFacts]) -> Option<String> {
+    if indexes.is_empty() {
+        return None;
+    }
+    let mut text = indexes
+        .iter()
+        .map(|index| {
+            index_text(
+                &index.name,
+                index.kind,
+                index.embeddings.is_some(),
+                &index.watch,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let needs_key = indexes.iter().any(|index| {
+        index
+            .embeddings
+            .as_ref()
+            .is_some_and(|embeddings| embeddings.needs_key)
+    });
+    if needs_key {
+        text.push_str(" · semantic search needs VOYAGE_API_KEY");
+    }
+    Some(text)
+}
+
+/// An index as the banner names it: its name, its kind, "lexical" when it's
+/// searched by keywords only, and whether an Arko keeps it current.
+fn index_text(name: &str, kind: IndexKind, embedded: bool, watch: &IndexWatch) -> String {
+    let lexical = if embedded { "" } else { ", lexical" };
+    let monitored = match watch {
+        IndexWatch::Here => ", monitored",
+        IndexWatch::Elsewhere => ", monitored by another Arko",
+        _ => "",
+    };
+    format!("{name} ({}{lexical}{monitored})", kind.as_str())
 }
 
 #[cfg(test)]
@@ -1043,10 +1071,10 @@ mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::{
-        Field, background_value, clicked, field_command, handover_value, indexes_line, mcp_lines,
-        skills_line,
+        Field, background_value, clicked, field_command, handover_value, index_text, indexes_text,
+        mcp_lines, skills_line,
     };
-    use arko::details::{McpFacts, McpServerFacts, SkillFacts, SkillsFacts};
+    use arko::details::{IndexKind, IndexWatch, McpFacts, McpServerFacts, SkillFacts, SkillsFacts};
     use std::path::PathBuf;
 
     #[test]
@@ -1142,16 +1170,32 @@ mod tests {
             own_folder: PathBuf::new(),
         };
         assert_eq!(skills_line(&Ok(skills)), "1 (docs-style)");
+        assert_eq!(indexes_text(&[]), None);
+    }
+
+    #[test]
+    fn an_index_reads_as_the_banner_names_it() {
         assert_eq!(
-            indexes_line(&["2 skills".into(), "indexes arko (code), docs (docs)".into()])
-                .as_deref(),
-            Some("arko (code), docs (docs)")
+            index_text("arko", IndexKind::Code, true, &IndexWatch::Here),
+            "arko (code, monitored)"
         );
         assert_eq!(
-            indexes_line(&["index arko (code)".into()]).as_deref(),
-            Some("arko (code)")
+            index_text("docs", IndexKind::Docs, false, &IndexWatch::Off),
+            "docs (docs, lexical)"
         );
-        assert_eq!(indexes_line(&[]), None);
+        assert_eq!(
+            index_text("arko", IndexKind::Code, true, &IndexWatch::Elsewhere),
+            "arko (code, monitored by another Arko)"
+        );
+        assert_eq!(
+            index_text(
+                "arko",
+                IndexKind::Code,
+                true,
+                &IndexWatch::Failed("no watcher".into())
+            ),
+            "arko (code)"
+        );
     }
 }
 
