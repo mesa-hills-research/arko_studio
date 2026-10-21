@@ -2,7 +2,6 @@
 //! which it keeps in `<arko folder>/fonts` and registers at start-up.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -76,14 +75,11 @@ fn is_font_file(path: &Path) -> bool {
         .is_some_and(|extension| FONT_EXTENSIONS.contains(&extension.to_lowercase().as_str()))
 }
 
-/// The fonts the app registered, kept for the font pickers, and the
-/// families the text system can draw.
+/// The fonts the app registered, kept for the font pickers.
 #[derive(Default)]
 pub struct Fonts {
     bundled: Vec<Cow<'static, [u8]>>,
     added: Vec<Cow<'static, [u8]>>,
-    /// Lowercased family names, read once and again after a font is added.
-    families: Option<HashSet<String>>,
 }
 
 impl Global for Fonts {}
@@ -105,31 +101,13 @@ pub fn init(bundled: Vec<Cow<'static, [u8]>>, added: Vec<Cow<'static, [u8]>>, cx
             tracing::error!("couldn't load a font ({error})");
         }
     }
-    cx.set_global(Fonts {
-        bundled,
-        added,
-        families: None,
-    });
+    cx.set_global(Fonts { bundled, added });
 }
 
-/// Whether the text system can draw `family`.
-pub fn is_available(family: &str, cx: &mut App) -> bool {
-    if !cx.has_global::<Fonts>() {
-        cx.set_global(Fonts::default());
-    }
-    if cx.global::<Fonts>().families.is_none() {
-        let names = cx
-            .text_system()
-            .all_font_names()
-            .into_iter()
-            .map(|name| name.to_lowercase())
-            .collect();
-        cx.global_mut::<Fonts>().families = Some(names);
-    }
-    cx.global::<Fonts>()
-        .families
-        .as_ref()
-        .is_some_and(|names| names.contains(&family.to_lowercase()))
+/// Whether the text system can draw `family`, a font the system has or
+/// one registered with it.
+pub fn is_available(family: &str, cx: &App) -> bool {
+    cx.text_system().has_font_family(family)
 }
 
 /// Records a font file the user just added and registered with the text
@@ -139,7 +117,6 @@ pub fn is_available(family: &str, cx: &mut App) -> bool {
 pub fn note_added(data: Cow<'static, [u8]>, cx: &mut App) {
     let fonts = cx.default_global::<Fonts>();
     fonts.added.push(data.clone());
-    fonts.families = None;
     let picker = cx.default_global::<PickerCatalog>();
     // Before the lists are read, the reading takes it with the other
     // added fonts.
