@@ -385,6 +385,7 @@ dependencies = [
  "chrono",
  "gpui-kit",
  "gpui-pre-screenshot",
+ "gpui-pre-wgpu",
  "ignore",
  "image",
  "markdown",

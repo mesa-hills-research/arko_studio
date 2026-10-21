@@ -60,6 +60,8 @@ uuid = "1"
 # Its goldens are drawn by Mesa's software Vulkan driver, on Linux.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 gpui-screenshot = { package = "gpui-pre-screenshot", git = "https://github.com/mesa-hills-research/gpui", rev = "c2afdb370ee2041147b65f4e3bff15a18cc2c075" }
+# Linux's text system with the system's fonts, for measuring Settings as it opens.
+gpui-wgpu = { package = "gpui-pre-wgpu", version = "0.3.8" }
 
 [build-dependencies]
 winresource = "0.1"

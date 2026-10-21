@@ -5,11 +5,15 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context as _, anyhow};
-use gpui_kit::component::Theme;
 use gpui_kit::component::font_picker::FontCatalog;
-use gpui_kit::{App, BorrowAppContext as _, FontFeatures, Global, SharedString, Styled};
+use gpui_kit::component::{ActiveTheme as _, Theme};
+use gpui_kit::{
+    App, AppContext as _, BorrowAppContext as _, Font, FontFeatures, FontWeight, Global,
+    SharedString, Styled, font,
+};
 
 /// Font files Arko Studio reads from the fonts folder.
 const FONT_EXTENSIONS: [&str; 4] = ["ttf", "otf", "ttc", "otc"];
@@ -149,7 +153,8 @@ pub fn note_added(data: Cow<'static, [u8]>, cx: &mut App) {
 /// The families the font pickers list: the system's, the bundled ones and
 /// the ones the user added, with their faces. Reading them takes a while
 /// (every installed font file is opened), so it's done once, in the
-/// background, the first time Settings opens, and the pickers wait for it.
+/// background, a moment after the start ([`warm_up`]) or as Settings opens
+/// if that's sooner. The pickers wait for it.
 #[derive(Default)]
 pub struct PickerCatalog {
     catalog: Option<FontCatalog>,
@@ -173,6 +178,46 @@ pub fn picker_catalog(cx: &App) -> Option<FontCatalog> {
 pub fn picker_catalog_version(cx: &App) -> u64 {
     cx.try_global::<PickerCatalog>()
         .map_or(0, |picker| picker.version)
+}
+
+/// How long after the start [`warm_up`] gets Settings' fonts ready, once
+/// the first window has drawn and the sessions are listed.
+pub const WARM_UP_AFTER: Duration = Duration::from_secs(2);
+
+/// A moment after the app starts, gets the fonts Settings shows ready in
+/// the background: the catalog its font pickers list, and the fonts its
+/// pages draw in. Settings then opens with its pickers at once the first
+/// time too, and draws its first frame sooner.
+pub fn warm_up(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(WARM_UP_AFTER).await;
+        cx.update(|cx| {
+            load_picker_catalog(cx);
+            let fonts = settings_fonts(cx.theme());
+            let text_system = cx.text_system().clone();
+            cx.background_spawn(async move { text_system.prewarm_fonts(&fonts) })
+                .detach();
+        })
+    })
+    .detach();
+}
+
+/// The fonts Settings draws in that the main window may not have used yet:
+/// the interface font's regular and medium, and the code font.
+fn settings_fonts(theme: &Theme) -> Vec<Font> {
+    let interface = |weight| Font {
+        weight,
+        ..font(theme.font_family.clone())
+    };
+    let code = Font {
+        features: theme.mono_font_features.clone(),
+        ..font(theme.mono_font_family.clone())
+    };
+    vec![
+        interface(FontWeight::NORMAL),
+        interface(FontWeight::MEDIUM),
+        code,
+    ]
 }
 
 /// Starts reading the fonts the pickers list, unless that's done or under

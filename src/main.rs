@@ -1,7 +1,7 @@
 // Release builds on Windows start without a console window.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use arko_studio::{Startup, assets::Assets, paths, workspace};
+use arko_studio::{Startup, assets::Assets, fonts, paths, workspace};
 
 fn main() {
     // Before any other thread starts: `claude` where Claude Code installs
@@ -25,6 +25,7 @@ fn main() {
             panic!("Arko Studio couldn’t open a window");
         }
         cx.activate(true);
+        fonts::warm_up(cx);
     });
 }
 
