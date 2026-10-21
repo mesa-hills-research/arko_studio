@@ -301,8 +301,9 @@ fn the_agents_question_is_answered_from_the_composer(cx: &mut TestAppContext) {
     app.close_all(cx);
 }
 
-/// The question's words can be selected and copied with the keyboard, and
-/// back in the composer, the answer goes as usual.
+/// The question's words can be selected and copied with the keyboard. Esc
+/// then gives the keyboard back to the composer, the question still asked,
+/// and the answer goes as usual.
 #[gpui_kit::test]
 fn the_agents_question_can_be_selected_and_copied(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, body| {
@@ -341,8 +342,15 @@ fn the_agents_question_can_be_selected_and_copied(cx: &mut TestAppContext) {
         .and_then(|item| item.text())
         .unwrap_or_default();
     assert_eq!(copied, "Tabs or spaces?");
+    act(cx, app.window, |window, cx| window.press("escape", cx));
+    use gpui_kit::Focusable as _;
+    let composer = cx.read(|cx| {
+        let view = app.workspace.read(cx).session_view().clone();
+        view.read(cx).composer().read(cx).textarea().clone()
+    });
     act(cx, app.window, |window, cx| {
-        window.click("composer-field", cx)
+        assert!(composer.read(cx).focus_handle(cx).is_focused(window));
+        assert!(window.try_find("question-card").is_some(), "still asked");
     });
     app.send(cx, "Two spaces.");
     app.wait_for_text(cx, "Indented with two spaces.");

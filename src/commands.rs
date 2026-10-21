@@ -224,6 +224,14 @@ pub fn commands() -> Vec<Command> {
             .keys(&["alt-up"])
             .context(crate::composer::CONTEXT)
             .not_in_palette(),
+        Command::new(
+            Composer,
+            "Back to the Composer from a Question",
+            crate::session_view::LeaveQuestion,
+        )
+        .keys(&["escape"])
+        .context(crate::session_view::QUESTION_CONTEXT)
+        .not_in_palette(),
         Command::new(Composer, "Expand Composer", ExpandComposer).keys(&["secondary-shift-e"]),
         Command::new(Composer, "Stop", StopTurn).keys(&["secondary-."]),
         // Esc stops a turn from the composer too (it handles that key itself).
