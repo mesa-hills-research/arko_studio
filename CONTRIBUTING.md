@@ -72,6 +72,15 @@ Override all five, so the app and Arko use the same framework crates. The checko
 must match the ones `Cargo.toml` asks for. Cargo records the override in `Cargo.lock`, so
 regenerate it without the override before committing.
 
+## App icon
+
+The artwork is in `assets/`. `icon.svg` is the full mark, `icon-small.svg` is a simpler version
+for 16 to 32 px, and `icon-tile.svg` puts the mark on a rounded tile. After changing an SVG, run
+`python3 assets/make-icons.py`, which needs `rsvg-convert` or `resvg`, and commit the files it
+writes. These are `assets/icon.ico`, `assets/icon-1024.png` and the icons in
+`packaging/linux/icons`. The screenshot tests use the 256 px icon as a sample image, so changing
+the artwork changes the transcript goldens too.
+
 ## Source layout
 
 | Path | What it holds |
@@ -90,8 +99,8 @@ regenerate it without the override before committing.
 | `src/commands.rs`, `src/menus.rs` | Commands, keyboard shortcuts and menus |
 | `src/paths.rs` | Data and log folders |
 | `themes/` | Color themes bundled into the binary |
-| `packaging/linux/` | The desktop entry and icon |
-| `assets/`, `build.rs` | The app icon and Windows resources |
+| `packaging/linux/` | The desktop entry and the icon sizes for Linux |
+| `assets/`, `build.rs` | The icon artwork, its generated files and the Windows resources |
 
 ## Platform windows
 

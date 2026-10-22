@@ -1,3 +1,5 @@
+<img src="assets/icon.svg" alt="" width="96" align="right">
+
 # Arko Studio
 
 Arko Studio is a desktop app for [Arko](https://github.com/mesa-hills-research/arko), an AI agent
