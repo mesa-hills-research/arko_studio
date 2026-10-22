@@ -2552,6 +2552,9 @@ impl SessionView {
             return None;
         }
         let theme = cx.theme();
+        // The request to save a worker profile shows as it is written, each
+        // line apart and the instructions unformatted, for the user to judge.
+        let plain = crate::workers::is_profile_approval(&text);
         Some(
             v_flex()
                 .id("question-card")
@@ -2588,7 +2591,19 @@ impl SessionView {
                                 .max_h(rems(QUESTION_MAX_HEIGHT))
                                 .overflow_y_scroll()
                                 .text_sm()
-                                .child(TextView::markdown(("question", id as usize), text)),
+                                .child(if plain {
+                                    div()
+                                        .id("question-plain")
+                                        .test_support()
+                                        .child(gpui_kit::base::SelectableText::new(
+                                            ("question", id),
+                                            text,
+                                        ))
+                                        .into_any_element()
+                                } else {
+                                    TextView::markdown(("question", id as usize), text)
+                                        .into_any_element()
+                                }),
                         )
                         .child(
                             Button::new("question-later")
