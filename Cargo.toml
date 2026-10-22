@@ -56,6 +56,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # drive a feed the way a session does.
 arko_agents = "0.1.0"
 arko_workflows = "0.1.0"
+# A session's saved conversation, for tests that reopen its transcript.
+arko_ai = "0.1.0"
 
 # The golden-screenshot harness, from the gpui fork at the rev of the [patch.crates-io] below.
 # Its goldens are drawn by Mesa's software Vulkan driver, on Linux.

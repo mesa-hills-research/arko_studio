@@ -380,6 +380,7 @@ dependencies = [
  "anyhow",
  "arko-tui",
  "arko_agents",
+ "arko_ai",
  "arko_workflows",
  "async-trait",
  "caseless",

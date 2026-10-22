@@ -2477,6 +2477,90 @@ fn a_command_started_in_the_background_can_be_stopped(cx: &mut TestAppContext) {
     assert!(!drawn(cx, window, ("stop-job", item)));
 }
 
+/// A reopened session's transcript shows the turns Arko started for news (a
+/// monitor's alert or warning, a background job's end, the workers' news)
+/// as the notices the live transcript showed, not as messages of the
+/// user's. Only the user's own messages can be edited.
+#[gpui_kit::test]
+fn a_reopened_sessions_turns_for_news_show_as_notices(cx: &mut TestAppContext) {
+    use arko_ai::Message;
+
+    start(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Full));
+    let started = |lead: &str| {
+        Message::new_user(&format!(
+            "{lead} (Arko started this turn for it. The user hasn't written.)"
+        ))
+    };
+    // A stopped run reopened with the user's words, and a monitor's alert
+    // that came meanwhile.
+    let reopened = format!(
+        "# Workflow context update\n\nYour run was stopped before it finished and has now been reopened: continue your task where you were.\n\nGo on.\n\nMonitor alert. Job {} (`npm run dev`, lines that match `ERROR`) printed 1 matching line since 22:47:55 UTC.\n  ERROR boom\nIt ends in 22 min.",
+        Uuid::new_v4()
+    );
+    let messages = [
+        Message::new_user("Watch the dev server."),
+        Message::new_assistant("Watching it."),
+        Message::new_user(&reopened),
+        Message::new_assistant("Going on."),
+        started("A monitor of yours alerted after your last turn ended. The alert follows."),
+        Message::new_assistant("It logged an error."),
+        started(
+            "A monitor of yours ends in 25 min. Its notice follows and asks whether to keep it.",
+        ),
+        Message::new_assistant("Kept it."),
+        started(
+            "A background job of yours finished after your last turn ended. Its update follows.",
+        ),
+        Message::new_assistant("Built."),
+        // As Arko worded the workers' news before.
+        Message::new_user(
+            "Your workers sent you news as your last turn ended: it follows. (Arko started this turn for it; the user hasn't written.)",
+        ),
+        Message::new_assistant("Noted."),
+    ];
+    let feed = Feed::new("main");
+    feed.restore(arko::remote::history(
+        &messages,
+        true,
+        &arko::images::Images::default(),
+    ));
+    let (_window, view) = open(cx, &feed, AgentFilter::Main, 900.);
+    let (users, notices) = cx.read(|cx| {
+        let view = view.read(cx);
+        let text = |id: u64| view.model.entry(id).unwrap().item.text.clone();
+        let (mut users, mut notices) = (Vec::new(), Vec::new());
+        for row in &view.rows {
+            match row.key {
+                RowKey::User(id) => users.push(text(id)),
+                RowKey::Notice(id) => notices.push(text(id)),
+                _ => {}
+            }
+        }
+        (users, notices)
+    });
+    assert_eq!(users, ["Watch the dev server.", "Go on."]);
+    assert_eq!(
+        notices,
+        [
+            "⇠ a monitor alerted, and its alert goes to the agent",
+            "⇠ a monitor ends in 25 min, and the agent is asked whether to keep it",
+            "⇠ a background job finished, and its update goes to the agent",
+            "⇠ the workers' news goes to the agent",
+        ]
+    );
+    // Alt+↑ edits the user's first message, the one that started a turn of
+    // its own, and an edit of it removes the second and the six replies.
+    let first = ids_of(&feed, Kind::User)[0];
+    assert_eq!(ids_of(&feed, Kind::User).len(), 2);
+    cx.read(|cx| {
+        let view = view.read(cx);
+        assert_eq!(view.last_message(), Some(first));
+        assert!(view.is_editable(first));
+        assert_eq!(view.messages_after(first), 7);
+    });
+}
+
 /// A monitor's call, as Arko feeds it: the call, the monitor's start, then
 /// the call's result. Gives the call's ID.
 fn monitor_call(feed: &Feed, job: Uuid, started: i64, ends_at: i64) -> Uuid {
