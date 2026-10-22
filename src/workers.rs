@@ -123,53 +123,36 @@ pub struct Placed {
     pub root: usize,
 }
 
-/// The workers in the order a list shows them: each worker followed by the
-/// workers it started, which follow in the order they were given, with the
-/// families in the order of their first workers. A worker whose parent isn't
-/// in the list starts a family of its own.
+/// The workers in the order a list shows them, which is Arko's own
+/// ([`arko::remote::family_order`]): each worker followed by the workers it
+/// started, depth first, in the order they started. A worker whose parent
+/// isn't in the list starts a family of its own.
 pub fn tree(workers: &[WorkerSummary]) -> Vec<Placed> {
     let index_of: std::collections::HashMap<&str, usize> = workers
         .iter()
         .enumerate()
         .map(|(index, worker)| (worker.id.as_str(), index))
         .collect();
-    let mut children: Vec<Vec<usize>> = vec![Vec::new(); workers.len()];
-    let mut roots: Vec<usize> = Vec::new();
-    for (index, worker) in workers.iter().enumerate() {
-        let parent = worker
-            .parent
-            .as_deref()
-            .and_then(|parent| index_of.get(parent).copied())
-            .filter(|parent| *parent != index);
-        match parent {
-            Some(parent) => children[parent].push(index),
-            None => roots.push(index),
-        }
-    }
-    let mut placed: Vec<Placed> = Vec::with_capacity(workers.len());
-    let mut seen = vec![false; workers.len()];
-    // (Workers that are each other's parents can't be reached from a root,
-    // and start families too.)
-    let starts = roots.into_iter().chain(0..workers.len());
-    for start in starts {
-        if seen[start] {
-            continue;
-        }
-        let mut stack = vec![(start, 0, start)];
-        while let Some((index, level, root)) = stack.pop() {
-            if std::mem::replace(&mut seen[index], true) {
-                continue;
-            }
-            placed.push(Placed { index, level, root });
-            stack.extend(
-                children[index]
-                    .iter()
-                    .rev()
-                    .map(|child| (*child, level + 1, root)),
-            );
-        }
-    }
-    placed
+    // Each worker's level and family, set when it is reached: its parent
+    // comes before it, unless the parents form a loop, which starts a family.
+    let mut reached: Vec<Option<(usize, usize)>> = vec![None; workers.len()];
+    arko::remote::family_order(workers)
+        .into_iter()
+        .map(|index| {
+            let above = workers[index]
+                .parent
+                .as_deref()
+                .and_then(|parent| index_of.get(parent).copied())
+                .filter(|parent| *parent != index)
+                .and_then(|parent| reached[parent]);
+            let (level, root) = match above {
+                Some((level, root)) => (level + 1, root),
+                None => (0, index),
+            };
+            reached[index] = Some((level, root));
+            Placed { index, level, root }
+        })
+        .collect()
 }
 
 /// Where each worker (by its place in `workers`) shows at `now`. A family
@@ -454,6 +437,35 @@ mod tests {
             .map(|n| worker(&format!("r{n}"), WorkerState::Running, Some(0), None))
             .collect();
         assert_eq!(at(&tree(&flat)), [(0, 0), (1, 0), (2, 0)]);
+    }
+
+    /// The list follows Arko's own order of a family, in the arrangements
+    /// that make it matter: a family that started interleaved with another,
+    /// a worker whose parent comes later in the list, a parent that isn't
+    /// listed and parents in a loop.
+    #[test]
+    fn the_list_goes_by_arkos_order_of_a_family() {
+        let arrangements: [Vec<WorkerSummary>; 4] = [
+            vec![
+                worker("r1", WorkerState::Running, Some(0), None),
+                worker("r2", WorkerState::Running, Some(0), None),
+                child("r3", "r1"),
+                child("r4", "r2"),
+                child("r5", "r1"),
+                child("r6", "r5"),
+            ],
+            // A worker listed before the worker that started it.
+            vec![
+                child("r2", "r1"),
+                worker("r1", WorkerState::Running, Some(0), None),
+            ],
+            vec![child("r1", "r9"), child("r2", "r1"), child("r3", "r2")],
+            vec![child("r1", "r2"), child("r2", "r1"), child("r3", "r2")],
+        ];
+        for workers in arrangements {
+            let ours: Vec<usize> = tree(&workers).iter().map(|placed| placed.index).collect();
+            assert_eq!(ours, arko::remote::family_order(&workers), "{workers:?}");
+        }
     }
 
     /// A worker whose parent isn't listed, one that is its own parent and
