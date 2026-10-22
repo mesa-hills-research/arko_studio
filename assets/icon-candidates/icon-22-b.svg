@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="22" height="22" viewBox="0 0 22 22" shape-rendering="crispEdges">
-  <!-- 22 px. The arch, the stem and the arrow, with the three nodes and the line through them.
+  <!-- 22 px, candidate B. As A, with the three nodes and the line through them.
        One line below is one row of pixels, drawn as a line one unit thick. -->
   <path stroke="#D5642A" d="
     M6 2.5h6

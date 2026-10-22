@@ -76,19 +76,23 @@ regenerate it without the override before committing.
 
 The artwork is in `assets/`. The mark has three levels of detail. The arch, the stem and the arrow
 come first, then the nodes, then the thin links and the gap in the top of the arch. A small icon
-can't hold all of them, so each size has the drawing that suits it and none is scaled from another.
+can't hold all of them, so every size below 48 px has drawings of its own and none is scaled from
+another. Sizes from 48 px up use `icon.svg`, the full mark.
 
-| Size | Drawing |
+Each of 16, 20, 22, 24, 32 and 40 px has three candidates in `assets/icon-candidates/`, named
+`icon-<size>-<letter>.svg`.
+
+| Letter | Drawing |
 |---|---|
-| 48 px and up | `icon.svg`, the full mark |
-| 40 and 32 px | `icon-40.svg` and `icon-32.svg`, vector shapes with the nodes and the links but no gap in the arch |
-| 24 and 22 px | `icon-24.svg` and `icon-22.svg`, pixel drawings with the nodes and one line through them |
-| 20 and 16 px | `icon-candidates/icon-20-*.svg` and `icon-16-*.svg`, three pixel drawings of each |
+| `a` | The arch, the stem and the arrow only |
+| `b` | Adds the nodes and the line through them, and at 32 and 40 px the links down to the bottom node |
+| `c` | The mark of `b` in near-black on a rounded tile |
 
-Each drawing is made on a grid of its own size, so its strokes and gaps are whole pixels when it is
-shown at that size. A line in a pixel drawing is one row of pixels. `SMALL_STYLE` in
-`assets/make-icons.py` picks the one used at 16 and 20 px. `icon-tile.svg` puts the mark on a rounded
-tile.
+`CHOICE` in `assets/make-icons.py` says which letter each size uses. To switch a size, change its
+letter and run the script again. Each drawing is made on a grid of its own size, so its strokes and
+gaps are whole pixels when it is shown at that size. Up to 24 px the drawings are pixel art with
+one line of the file per row of pixels. At 32 and 40 px they are vector shapes whose straight edges
+sit on whole pixels. `icon-tile.svg` puts the full mark on a rounded tile.
 
 After changing an SVG, run `python3 assets/make-icons.py`, which needs `rsvg-convert` or `resvg`,
 and commit the files it writes. These are `assets/icon.ico` (16, 20, 24, 32, 40, 48, 64, 128 and

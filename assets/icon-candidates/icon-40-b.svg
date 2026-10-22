@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="40" height="40" viewBox="0 0 40 40">
-  <!-- 40 px. One unit is one pixel. Straight edges sit on whole pixels, so only the curves are smoothed. -->
+  <!-- 40 px, candidate B. As A, with the three nodes, the line through them and the links down to the bottom node. One unit is one pixel and straight edges sit on whole pixels, so only the curves are smoothed. -->
   <g fill="#D5642A">
     <!-- the arch, stopping one pixel above the hollow node -->
     <path d="M2 17A15 15 0 0 1 32 17H28A11 11 0 0 0 6 17Z"/>

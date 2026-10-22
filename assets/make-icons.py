@@ -6,15 +6,16 @@ and `rsvg-convert` (from librsvg) or `resvg` on the PATH, and uses no network.
 
 The mark has three levels of detail (the arch, stem and arrow, then the nodes,
 then the thin links and the gap in the top of the arch). A small icon cannot carry
-all of them, so each size band has its own drawing and none is scaled from another.
+all of them, so every size below 48 px has its own drawings and none is scaled from
+another. Each of those sizes has three candidates, named icon-<size>-<letter>.svg
+in assets/icon-candidates.
 
-Sources
-  assets/icon.svg                       the full mark, used from 48 px up
-  assets/icon-40.svg, icon-32.svg       vector drawings on a grid of their own size
-  assets/icon-24.svg, icon-22.svg       pixel drawings, one line of the file per row of pixels
-  assets/icon-candidates/icon-16-*.svg  three pixel drawings each for 16 px and 20 px,
-  assets/icon-candidates/icon-20-*.svg  chosen by SMALL_STYLE below
-  assets/icon-tile.svg                  the mark on a rounded tile
+  a  the arch, the stem and the arrow only
+  b  adds the nodes and the line through them, and the links at 32 and 40 px
+  c  the mark of b in near-black on a rounded tile
+
+CHOICE below says which letter each size uses. Sizes from 48 px up always use the
+full mark in assets/icon.svg.
 
 Outputs
   assets/icon-1024.png                                  the tile at 1024 px
@@ -42,10 +43,9 @@ HICOLOR = os.path.join(ROOT, "packaging", "linux", "icons", "hicolor")
 FULL = os.path.join(ASSETS, "icon.svg")
 TILE = os.path.join(ASSETS, "icon-tile.svg")
 
-# The drawing used at 16 px and 20 px. "a" is the arch, stem and arrow only, "b" adds the
-# hollow node, and "c" cuts the same mark out of a rounded tile. Change the letter to
-# switch, or add icon-16-d.svg and icon-20-d.svg and name them here.
-SMALL_STYLE = "b"
+# The candidate used at each size below 48 px. To switch a size, change its letter
+# and run the script again. 22 px is only used for Linux, 20 and 40 px only for Windows.
+CHOICE = {16: "b", 20: "b", 22: "b", 24: "b", 32: "b", 40: "b"}
 
 # Windows sizes. The 64 px entry and the larger ones are stored as PNG, the
 # smaller ones as the classic bitmap that every Windows version reads.
@@ -56,10 +56,12 @@ LINUX_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512]
 
 def source(size):
     """The SVG for a size. A drawing made for one size is rendered at exactly that size."""
-    if size in (16, 20):
-        return os.path.join(CANDIDATES, f"icon-{size}-{SMALL_STYLE}.svg")
-    own = os.path.join(ASSETS, f"icon-{size}.svg")
-    return own if os.path.exists(own) else FULL
+    if size not in CHOICE:
+        return FULL
+    svg = os.path.join(CANDIDATES, f"icon-{size}-{CHOICE[size]}.svg")
+    if not os.path.exists(svg):
+        sys.exit(f"CHOICE[{size}] is {CHOICE[size]!r}, but {svg} does not exist.")
+    return svg
 
 
 def check_grid(svg, size):
