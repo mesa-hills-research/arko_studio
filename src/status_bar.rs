@@ -609,8 +609,12 @@ impl Render for StatusBar {
             .w_full()
             .h(STATUS_BAR_HEIGHT)
             .flex_none();
+        let unread = crate::notifications::unread(cx);
         let Some((reading, activity)) = self.status(cx) else {
             self.schedule_tick(None, cx);
+            if unread > 0 {
+                bar = bar.right(unread_button(unread));
+            }
             return bar;
         };
         let now = (self.clock)();
@@ -662,8 +666,30 @@ impl Render for StatusBar {
         {
             bar = bar.right(self.render_context(context, cx));
         }
+        // Last, at the right edge, and only while something is unread.
+        if unread > 0 {
+            bar = bar.right(unread_button(unread));
+        }
         bar
     }
+}
+
+/// The count of the notifications not seen yet, which opens the
+/// notifications panel.
+fn unread_button(unread: usize) -> AnyElement {
+    let label = match unread {
+        1 => "1 unread notification".to_string(),
+        count => format!("{count} unread notifications"),
+    };
+    Button::new("status-notifications")
+        .ghost()
+        .xsmall()
+        .icon(Icon::new(gpui_kit::assets::IconName::Bell))
+        .label(unread.to_string())
+        .tooltip_with_action(label.clone(), &menus::ToggleNotifications, None)
+        .accessibility_label(label)
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(menus::ToggleNotifications), cx))
+        .into_any_element()
 }
 
 /// The cost's popover: what was billed and what it would cost at API

@@ -239,6 +239,7 @@ mod tests {
                 "Sessions",
                 "Composer",
                 "Transcript",
+                "Notifications",
                 "View",
                 "Arko Commands",
                 "Settings",

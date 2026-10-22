@@ -492,8 +492,9 @@ impl SessionView {
         }
     }
 
-    /// Its window closed: the session it showed is no longer shown (and is
-    /// marked unseen from then on), and what was typed is kept.
+    /// Its window closed: the session it showed is no longer shown (and a
+    /// turn that ends gives it news from then on), and what was typed is
+    /// kept.
     fn window_closed(&mut self, cx: &mut App) {
         self.keep_draft(cx);
         self.closed = true;

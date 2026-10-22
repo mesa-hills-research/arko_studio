@@ -114,6 +114,8 @@ the artwork changes the transcript goldens too.
 | `src/session_view.rs`, `src/composer.rs` | Session controls, message input and attachments |
 | `src/transcript/` | Transcript rows, selection, navigation and find |
 | `src/status_bar.rs`, `src/workers_panel.rs`, `src/workers.rs` | Session figures, the workers panel and how it lists workers |
+| `src/notify.rs`, `src/cache_reminders.rs` | Notices for turns, questions and cache expiry |
+| `src/notifications.rs`, `src/notifications_panel.rs` | The notification history and the panel that lists it |
 | `src/settings_page.rs`, `src/settings_page/` | Settings pages and fields |
 | `src/theme_picker.rs`, `src/appearance.rs` | Themes, previews, fonts, zoom and motion |
 | `src/prefs.rs`, `src/drafts.rs` | Saved preferences and message drafts |

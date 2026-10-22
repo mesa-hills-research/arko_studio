@@ -20,6 +20,7 @@ Arko Studio adds these files inside the shared folder.
 |---|---|
 | `studio.json` | App preferences and window layout |
 | `studio-drafts.json` | Unsent message drafts |
+| `studio-notifications.json` | The notification history and the sessions with a dot |
 | `themes/` | User color themes, also listed in Arko's terminal view |
 | `fonts/` | Font files added in Settings |
 | `studio-writing/` | Learned vocabulary and words added to the dictionary |
@@ -44,6 +45,16 @@ format.
 
 **Settings › Sessions** sets who chooses the workers' models, and how many levels of workers a new
 session allows, along with the other defaults for new sessions.
+
+**Settings › Notifications** chooses which events notify and whether a sound plays. Each one names
+its session, and clicking it shows that session. Every notification that is on is also kept in a
+history, even when the window was in front and nothing popped up. Open the history from the unread
+count in the status bar, **View › Notifications** or Ctrl+Shift+M (Cmd+Shift+M on macOS). The
+latest 200 are kept across restarts. A notification is unread until you open its session.
+
+A session that finished a turn or asked a question while you looked at another one has a dot in the
+sidebar until you open it, also when those notifications are off. A closed folder shows the dot
+too while a session inside has one.
 
 **Settings › Web page** controls sharing. A session's link lets anyone who has it read the
 conversation, send messages and commands, answer questions and stop turns. The page is not

@@ -26,6 +26,8 @@ pub mod layout;
 pub mod live;
 pub mod mentions;
 pub mod menus;
+pub mod notifications;
+pub mod notifications_panel;
 pub mod notify;
 pub mod palette;
 pub mod paths;
@@ -55,6 +57,8 @@ mod engine_tests;
 mod key_tests;
 #[cfg(test)]
 mod sharing_tests;
+#[cfg(test)]
+mod sidebar_tests;
 #[cfg(test)]
 mod status_tests;
 #[cfg(test)]
@@ -100,8 +104,11 @@ pub struct Startup {
     /// The user's themes, watched while the app runs.
     themes_folder: Option<ThemesFolder>,
     drafts: BTreeMap<String, String>,
-    /// Arko's folder, where the drafts, the input history and the writing
-    /// aids' vocabulary are kept. `None` keeps them in memory (tests).
+    /// The notifications of earlier runs, and the sessions with news.
+    notifications: notifications::Saved,
+    /// Arko's folder, where the drafts, the notification history, the input
+    /// history and the writing aids' vocabulary are kept. `None` keeps them
+    /// in memory (tests).
     arko: Option<PathBuf>,
 }
 
@@ -133,6 +140,7 @@ impl Startup {
             logs: paths::logs_folder(),
             themes_folder: Some(ThemesFolder::Watch(paths::themes_folder(&arko))),
             drafts: drafts::load(&drafts::file(&arko)),
+            notifications: notifications::load(&notifications::file(&arko)),
             arko: Some(arko),
         }
     }
@@ -155,6 +163,7 @@ impl Startup {
             logs: Some(PathBuf::from("/home/ada/.local/state").join(APP_ID)),
             themes_folder: None,
             drafts: BTreeMap::new(),
+            notifications: notifications::Saved::default(),
             arko: None,
         }
     }
@@ -183,6 +192,22 @@ impl Startup {
         self.drafts = drafts;
         self
     }
+
+    /// Starts with these notifications in the history (tests and
+    /// screenshots).
+    pub fn with_notifications(mut self, entries: Vec<notifications::Entry>) -> Self {
+        self.notifications.entries = entries;
+        self
+    }
+
+    /// Starts with news in these sessions, by id (tests and screenshots).
+    pub fn with_news(mut self, sessions: &[&str]) -> Self {
+        self.notifications.news = sessions
+            .iter()
+            .map(|session| (session.to_string(), 0))
+            .collect();
+        self
+    }
 }
 
 /// Sets the app up, before its first window.
@@ -208,6 +233,11 @@ pub fn init(startup: Startup, cx: &mut App) {
     drafts::init(
         startup.drafts,
         startup.arko.as_deref().map(drafts::file),
+        cx,
+    );
+    notifications::init(
+        startup.notifications,
+        startup.arko.as_deref().map(notifications::file),
         cx,
     );
     let themes = match startup.themes {
