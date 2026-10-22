@@ -99,11 +99,22 @@ impl Command {
         self
     }
 
-    /// Its chords, ready for the keymap.
+    /// Its chords, ready for the keymap. A chord that holds Shift on a key
+    /// with a symbol on top is bound as the platforms send it too (see
+    /// [`delivered_form`]), between two bindings of the chord as it reads.
+    /// Menus and keycaps show one binding of an action. The kit takes the last
+    /// and macOS's menu bar takes the first, so both show Ctrl+Shift+\.
     pub fn key_bindings(&self) -> Vec<KeyBinding> {
         self.keys
             .iter()
-            .map(|key| (self.bind)(key, self.context))
+            .flat_map(|key| {
+                let written = (*key).to_string();
+                match delivered_form(key) {
+                    Some(delivered) => vec![written.clone(), delivered, written],
+                    None => vec![written],
+                }
+            })
+            .map(|key| (self.bind)(&key, self.context))
             .collect()
     }
 
@@ -114,6 +125,46 @@ impl Command {
             .filter_map(|key| Keystroke::parse(key).ok())
             .collect()
     }
+}
+
+/// The keys that carry two symbols on a US keyboard, with the one Shift makes.
+const SHIFTED_SYMBOLS: [(&str, &str); 21] = [
+    ("`", "~"),
+    ("1", "!"),
+    ("2", "@"),
+    ("3", "#"),
+    ("4", "$"),
+    ("5", "%"),
+    ("6", "^"),
+    ("7", "&"),
+    ("8", "*"),
+    ("9", "("),
+    ("0", ")"),
+    ("-", "_"),
+    ("=", "+"),
+    ("[", "{"),
+    ("]", "}"),
+    ("\\", "|"),
+    (";", ":"),
+    ("'", "\""),
+    (",", "<"),
+    (".", ">"),
+    ("/", "?"),
+];
+
+/// What the platforms send when `chord` holds Shift on one of the keys in
+/// [`SHIFTED_SYMBOLS`]. They report the symbol alone, without the Shift
+/// modifier, so Ctrl+Shift+\ arrives as `ctrl-|` and a binding written
+/// `ctrl-shift-\` never matches it. `None` for a chord of any other kind.
+pub fn delivered_form(chord: &str) -> Option<String> {
+    let mut stroke = Keystroke::parse(chord).ok()?;
+    if !stroke.modifiers.shift {
+        return None;
+    }
+    let (_, symbol) = SHIFTED_SYMBOLS.iter().find(|(key, _)| *key == stroke.key)?;
+    stroke.modifiers.shift = false;
+    stroke.key = (*symbol).to_string();
+    Some(stroke.unparse())
 }
 
 /// The app's commands on this platform, in the order the sheet lists them.
@@ -373,9 +424,86 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{Group, commands};
+    use super::{Group, SHIFTED_SYMBOLS, commands, delivered_form};
     use crate::menus::{MenuStateKey, menus};
-    use gpui_kit::MenuItem;
+    use gpui_kit::{Keystroke, MenuItem};
+
+    #[test]
+    fn a_chord_with_shift_on_a_symbol_key_is_delivered_as_the_symbol() {
+        let secondary = if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "ctrl"
+        };
+        let cases = [
+            ("secondary-shift-\\", format!("{secondary}-|")),
+            ("secondary-shift-=", format!("{secondary}-+")),
+            ("secondary-shift--", format!("{secondary}-_")),
+            ("secondary-shift-/", format!("{secondary}-?")),
+            ("secondary-shift-1", format!("{secondary}-!")),
+            ("alt-shift-[", "alt-{".to_string()),
+            ("shift-,", "<".to_string()),
+        ];
+        for (chord, delivered) in cases {
+            assert_eq!(delivered_form(chord), Some(delivered), "{chord}");
+        }
+        // Letters keep Shift, named keys keep it, and a chord without Shift
+        // is sent as it reads.
+        for chord in [
+            "secondary-shift-p",
+            "shift-tab",
+            "shift-f3",
+            "secondary-shift-enter",
+            "secondary-\\",
+            "secondary-+",
+            "secondary-=",
+            "secondary--",
+        ] {
+            assert_eq!(delivered_form(chord), None, "{chord}");
+        }
+        assert_eq!(delivered_form("shift"), None);
+    }
+
+    #[test]
+    fn every_shifted_symbol_of_the_table_is_a_single_key_that_parses() {
+        for (key, symbol) in SHIFTED_SYMBOLS {
+            let stroke = Keystroke::parse(&format!("shift-{key}")).unwrap();
+            assert_eq!(stroke.key, key);
+            assert!(stroke.modifiers.shift);
+            let delivered = delivered_form(&format!("ctrl-shift-{key}")).unwrap();
+            let stroke = Keystroke::parse(&delivered).unwrap();
+            assert_eq!(stroke.key, symbol);
+            assert!(!stroke.modifiers.shift && stroke.modifiers.control);
+        }
+    }
+
+    /// Every chord of the table that holds Shift on a key with a symbol on
+    /// top is bound as the platforms send it too. The chord as it reads comes
+    /// before and after, so it is the first and the last binding of its
+    /// command, the two the menus and the palette show.
+    #[test]
+    fn a_shifted_symbol_chord_is_bound_as_delivered_and_as_it_reads() {
+        let mut checked = 0;
+        for command in commands() {
+            let strokes: Vec<Keystroke> = command
+                .key_bindings()
+                .iter()
+                .map(|binding| binding.keystrokes()[0].inner().clone())
+                .collect();
+            let mut expected = Vec::new();
+            for chord in &command.keys {
+                let written = Keystroke::parse(chord).unwrap();
+                if let Some(delivered) = delivered_form(chord) {
+                    expected.push(written.clone());
+                    expected.push(Keystroke::parse(&delivered).unwrap());
+                    checked += 1;
+                }
+                expected.push(written);
+            }
+            assert_eq!(strokes, expected, "{}", command.name);
+        }
+        assert!(checked > 0);
+    }
 
     #[test]
     fn every_menu_action_is_a_command() {

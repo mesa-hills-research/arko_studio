@@ -907,10 +907,17 @@ fn every_bound_key_is_on_the_shortcuts_sheet(cx: &mut TestAppContext) {
             continue;
         }
         let stroke = gpui_kit::AsKeystroke::as_keystroke(&binding.keystrokes()[0]).clone();
+        // The sheet lists a chord with Shift on a symbol key as it reads
+        // (Ctrl+Shift+\). The keymap has it as the platforms send it too.
         assert!(
-            sheet
-                .iter()
-                .any(|row| row.action == action && row.keys.contains(&stroke)),
+            sheet.iter().any(|row| row.action == action
+                && row.keys.iter().any(|key| {
+                    key == &stroke
+                        || crate::commands::delivered_form(&key.unparse())
+                            .and_then(|form| gpui_kit::Keystroke::parse(&form).ok())
+                            .as_ref()
+                            == Some(&stroke)
+                })),
             "{action} on {stroke:?} isn't on the sheet"
         );
         checked += 1;
