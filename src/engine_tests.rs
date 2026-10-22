@@ -1242,6 +1242,11 @@ fn a_message_to_a_worker_reaches_it_and_shows_in_its_transcript_only(cx: &mut Te
     wait_until(cx, "the message in the feed", |cx| {
         items(cx).iter().any(|item| item.text == "Use tabs.")
     });
+    // The docked panel shows r1's transcript, which shows the message, so
+    // no notification says it went.
+    act(cx, app.window, |window, cx| {
+        assert!(gpui_kit::component::WindowExt::notifications(window, cx).is_empty())
+    });
     go.send(true).unwrap();
     // (Closing asks first while the status says workers run.)
     wait_until(cx, "the lead to hear both reports", |cx| {

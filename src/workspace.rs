@@ -603,6 +603,16 @@ impl Workspace {
                 self.workers
                     .update(cx, |panel, cx| panel.show_worker(id.clone(), window, cx));
             }
+            // The message shows in the worker's transcript only. Unless the
+            // docked panel shows that transcript, a notification says it went.
+            SessionViewEvent::SentToWorker(id) => {
+                let shown = self.width.docks_panel()
+                    && self.workers_open
+                    && self.workers.read(cx).open_worker() == Some(id);
+                if !shown {
+                    window.push_notification(Notification::info(format!("Sent to {id}.")), cx);
+                }
+            }
         }
     }
 
