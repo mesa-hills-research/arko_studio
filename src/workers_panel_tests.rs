@@ -578,9 +578,10 @@ fn writing_to_a_worker_ends_an_edit(cx: &mut TestAppContext) {
     });
 }
 
-/// A running worker's spinner draws its own row again, not the others'.
+/// A running worker's spinner turns as it paints. It draws no row again, its own
+/// included, apart from the time that goes on.
 #[gpui_kit::test]
-fn a_spinner_draws_only_its_own_row(cx: &mut TestAppContext) {
+fn a_spinner_draws_no_row(cx: &mut TestAppContext) {
     let panel = open(cx);
     cx.update(|cx| {
         crate::prefs::update(cx, |prefs| {
@@ -597,12 +598,9 @@ fn a_spinner_draws_only_its_own_row(cx: &mut TestAppContext) {
         cx.run_until_parked();
     }
     let drawn = super::ROWS_DRAWN.with(|drawn| drawn.borrow().clone());
-    // r1 runs, and its spinner turns. r2 and r3 ended: nothing of theirs
-    // changed, so their rows aren't drawn again.
-    assert!(
-        drawn.get("r1").is_some_and(|&count| count >= 10),
-        "{drawn:?}"
-    );
+    // r1 runs, and its spinner turns, with its time going on once in a
+    // second. r2 and r3 ended, and nothing of theirs changed.
+    assert!(drawn.get("r1").is_none_or(|&count| count <= 2), "{drawn:?}");
     assert_eq!(drawn.get("r2"), None, "{drawn:?}");
     assert_eq!(drawn.get("r3"), None, "{drawn:?}");
 }
@@ -682,11 +680,10 @@ fn with_vim_escape_in_normal_mode_writes_to_arko_again(cx: &mut TestAppContext) 
     assert_eq!(target(cx), None);
 }
 
-/// Docked in the window, with a worker running: its spinner draws its own
-/// row, not the others, though the window keeps the panel from frame to
-/// frame otherwise.
+/// Docked in the window, with a worker running: its spinner turns as it
+/// paints, so no row is drawn again for it, though the window draws for it.
 #[gpui_kit::test]
-fn in_the_window_a_spinner_draws_only_its_own_row(cx: &mut TestAppContext) {
+fn in_the_window_a_spinner_draws_no_row(cx: &mut TestAppContext) {
     use crate::tests::{act, open};
 
     let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
@@ -718,17 +715,14 @@ fn in_the_window_a_spinner_draws_only_its_own_row(cx: &mut TestAppContext) {
         cx.run_until_parked();
     }
     let drawn = super::ROWS_DRAWN.with(|drawn| drawn.borrow().clone());
-    assert!(
-        drawn.get("r1").is_some_and(|&count| count >= 10),
-        "{drawn:?}"
-    );
+    assert!(drawn.get("r1").is_none_or(|&count| count <= 2), "{drawn:?}");
     assert_eq!(drawn.get("r2"), None, "{drawn:?}");
     assert_eq!(drawn.get("r3"), None, "{drawn:?}");
 }
 
 /// Docked in the window and kept from frame to frame, the panel shows a
-/// running worker's spinner turning and its time going on, and draws again
-/// for them only, not with every frame of the window around it.
+/// running worker's time going on, and draws again for it only, once in a
+/// second, not with every frame of the window around it or of its spinner.
 #[gpui_kit::test]
 fn in_the_window_a_running_workers_time_goes_on(cx: &mut TestAppContext) {
     use std::cell::Cell;
@@ -776,7 +770,11 @@ fn in_the_window_a_running_workers_time_goes_on(cx: &mut TestAppContext) {
     }
     assert_ne!(elapsed(cx), before, "the time goes on");
     let rows = super::ROWS_DRAWN.with(|drawn| drawn.borrow().clone());
-    assert!(rows.get("r1").is_some_and(|&count| count >= 30), "{rows:?}");
+    assert!(
+        rows.get("r1")
+            .is_some_and(|&count| (2..=5).contains(&count)),
+        "{rows:?}"
+    );
     // With the spinner still, frames for the rest of the window (the status
     // bar's here) leave the panel as it was drawn.
     cx.update(|cx| {

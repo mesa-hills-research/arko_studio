@@ -589,18 +589,19 @@ pub(super) fn element_id(key: RowKey) -> ElementId {
 }
 
 /// The running indicator, turning when `turns` (and the system allows
-/// motion), a dozen times a second.
+/// motion), a dozen times a second. It turns as it paints, so the
+/// transcript isn't drawn again for each step.
 fn spinner(id: impl Into<ElementId>, turns: bool, cx: &App) -> AnyElement {
     let icon = Icon::new(IconName::Loader).xsmall();
     if !turns || cx.reduce_motion() {
         return icon.into_any_element();
     }
-    icon.with_animation(
+    icon.with_paint_animation(
         id,
         Animation::new(Duration::from_millis(900))
             .repeat()
             .with_max_fps(SPINNER_FPS),
-        |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
+        |delta| PaintEffect::rotation(percentage(delta).into()),
     )
     .into_any_element()
 }
