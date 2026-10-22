@@ -840,6 +840,11 @@ impl WorkersPanel {
             .as_ref()
             .is_some_and(|worker| worker.state.is_active());
         let facts = self.facts(&id, now);
+        let with_workers = self
+            .source
+            .workers
+            .iter()
+            .any(|other| other.parent.as_deref() == Some(id.as_ref()));
         let transcript = self.transcript().map(TranscriptView::cached);
         let (stop_id, message_id) = (id.clone(), id.clone());
         let full_title: SharedString = title.clone().into();
@@ -935,7 +940,7 @@ impl WorkersPanel {
                                 .ghost()
                                 .xsmall()
                                 .label("Stop")
-                                .tooltip("Stop this worker (Arko can resume it)")
+                                .tooltip(workers::stop_tip(with_workers))
                                 .on_click(
                                     cx.listener(move |this, _, _, cx| this.stop(&stop_id, cx)),
                                 ),

@@ -154,6 +154,16 @@ pub fn row_label(worker: &WorkerSummary) -> String {
     label
 }
 
+/// What Stop in a worker's view says it does. Stopping a worker stops the
+/// workers it started, which `with_workers` says it has.
+pub fn stop_tip(with_workers: bool) -> &'static str {
+    if with_workers {
+        "Stop this worker and its workers (Arko can resume them)"
+    } else {
+        "Stop this worker (Arko can resume it)"
+    }
+}
+
 /// Where a worker stands in a list that keeps a worker's workers under it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Placed {
@@ -438,6 +448,12 @@ mod tests {
         assert_eq!(cost_label(&worker).as_deref(), Some("≈ $0.12"));
         worker.cost_billed = 0.34;
         assert_eq!(cost_label(&worker).as_deref(), Some("$0.34"));
+    }
+
+    #[test]
+    fn stopping_a_worker_says_it_stops_the_workers_it_started() {
+        assert_eq!(stop_tip(false), "Stop this worker (Arko can resume it)");
+        assert!(stop_tip(true).starts_with("Stop this worker and its workers"));
     }
 
     /// A family's cost reads as Arko words it, once it is more than the
