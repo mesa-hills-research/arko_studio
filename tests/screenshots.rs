@@ -2556,6 +2556,138 @@ fn notification_card_long_title_dark() {
     );
 }
 
+/// The clock of the notification screenshots, in Unix milliseconds.
+const NOTIFICATIONS_NOW: i64 = 1_760_000_000_000;
+
+/// Four notifications, two of them unread, none older than an hour (older
+/// ones show the time of day, which depends on the time zone).
+fn notification_entries() -> Vec<arko_studio::notifications::Entry> {
+    use arko_studio::notifications::Entry;
+    const MINUTE: i64 = 60_000;
+    let entry = |id: u64, title: &str, message: &str, ago: i64, read: bool| Entry {
+        id,
+        session: Some(format!("20261016-0912{id:02}-a1b2")),
+        title: title.into(),
+        message: message.into(),
+        at: NOTIFICATIONS_NOW - ago,
+        read,
+    };
+    vec![
+        entry(
+            1,
+            "Naming a desktop app",
+            "Arko finished its turn.",
+            41 * MINUTE,
+            true,
+        ),
+        entry(
+            2,
+            "Golden screenshots on Linux",
+            "The prompt cache expires in a minute\nRefresh ≈ $0.04 · Letting it expire re-caches ≈ $0.90",
+            14 * MINUTE,
+            true,
+        ),
+        entry(
+            3,
+            "Variable fonts and the wght axis",
+            "Arko asks “Tabs or spaces?”",
+            3 * MINUTE,
+            false,
+        ),
+        entry(
+            4,
+            "Split the engine out of main.rs",
+            "Arko finished its turn.",
+            12_000,
+            false,
+        ),
+    ]
+}
+
+/// A window of Arko Studio, `width` logical pixels wide, with the
+/// notifications `entries` in the history and the clock at
+/// [`NOTIFICATIONS_NOW`], and the notifications panel opened.
+fn notifications_window(
+    mode: ThemeMode,
+    width: f32,
+    entries: Vec<arko_studio::notifications::Entry>,
+) -> Screenshot {
+    use arko_studio::cache_reminders::ReminderClock;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_notifications(entries)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| {
+        arko_studio::init(startup, cx);
+        cx.set_global(ReminderClock(std::rc::Rc::new(|| NOTIFICATIONS_NOW)));
+    });
+    let window = app
+        .open_window_with(size(px(width), px(800.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, _)| window)
+        })
+        .unwrap();
+    app.update_window(window, |_, window, cx| {
+        window.dispatch_action(Box::new(arko_studio::menus::ToggleNotifications), cx)
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn notifications_light() {
+    goldens().assert(
+        "notifications-light",
+        &notifications_window(ThemeMode::Light, 1300., notification_entries()),
+    );
+}
+
+#[test]
+fn notifications_dark() {
+    goldens().assert(
+        "notifications-dark",
+        &notifications_window(ThemeMode::Dark, 1300., notification_entries()),
+    );
+}
+
+#[test]
+fn notifications_empty_light() {
+    goldens().assert(
+        "notifications-empty-light",
+        &notifications_window(ThemeMode::Light, 1300., Vec::new()),
+    );
+}
+
+#[test]
+fn notifications_empty_dark() {
+    goldens().assert(
+        "notifications-empty-dark",
+        &notifications_window(ThemeMode::Dark, 1300., Vec::new()),
+    );
+}
+
+#[test]
+fn notifications_sheet_light() {
+    goldens().assert(
+        "notifications-sheet-light",
+        &notifications_window(ThemeMode::Light, 640., notification_entries()),
+    );
+}
+
+#[test]
+fn notifications_sheet_dark() {
+    goldens().assert(
+        "notifications-sheet-dark",
+        &notifications_window(ThemeMode::Dark, 640., notification_entries()),
+    );
+}
+
 /// A session's info, as its popover shows it.
 struct InfoCard {
     info: gpui_kit::Entity<arko_studio::session_info::SessionInfo>,

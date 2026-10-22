@@ -89,6 +89,33 @@ pub fn when(unix_seconds: i64, now_ms: i64) -> String {
     when_local(then, now)
 }
 
+/// How long ago `then_ms` was at `now_ms` (Unix milliseconds) for a list of
+/// what happened: "Just now", "5 min ago", then once it is more than an
+/// hour back the time of day, with the date when it isn't today ("14:05",
+/// "Oct 15 14:05").
+pub fn ago(then_ms: i64, now_ms: i64) -> String {
+    let minutes = (now_ms - then_ms).max(0) / 60_000;
+    match minutes {
+        0 => "Just now".to_string(),
+        1..=59 => format!("{minutes} min ago"),
+        _ => {
+            let (Some(then), Some(now)) = (
+                Local.timestamp_millis_opt(then_ms).single(),
+                Local.timestamp_millis_opt(now_ms).single(),
+            ) else {
+                return String::new();
+            };
+            if then.date_naive() == now.date_naive() {
+                then.format("%H:%M").to_string()
+            } else if then.year() == now.year() {
+                then.format("%b %-d %H:%M").to_string()
+            } else {
+                then.format("%b %-d, %Y %H:%M").to_string()
+            }
+        }
+    }
+}
+
 fn when_local(then: DateTime<Local>, now: DateTime<Local>) -> String {
     let days = (then.date_naive() - now.date_naive()).num_days();
     if days == 0 {
@@ -276,6 +303,23 @@ mod tests {
         assert_eq!(when_local(at(16, 14), now), "14:00");
         assert_eq!(when_local(at(19, 9), now), "Mon 09:00");
         assert_eq!(when_local(at(30, 9), now), "Oct 30");
+    }
+
+    #[test]
+    fn recent_times_are_relative_and_older_ones_say_the_time() {
+        let now = Local
+            .with_ymd_and_hms(2026, 10, 16, 14, 30, 0)
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(ago(now, now), "Just now");
+        assert_eq!(ago(now - 59_000, now), "Just now");
+        // A time ahead of the clock (another machine's) reads as now.
+        assert_eq!(ago(now + 60_000, now), "Just now");
+        assert_eq!(ago(now - 60_000, now), "1 min ago");
+        assert_eq!(ago(now - 59 * 60_000, now), "59 min ago");
+        assert_eq!(ago(now - 90 * 60_000, now), "13:00");
+        assert_eq!(ago(now - 24 * 3_600_000, now), "Oct 15 14:30");
+        assert_eq!(ago(now - 400 * 24 * 3_600_000, now), "Sep 11, 2025 14:30");
     }
 
     #[test]

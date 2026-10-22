@@ -27,6 +27,7 @@ pub mod live;
 pub mod mentions;
 pub mod menus;
 pub mod notifications;
+pub mod notifications_panel;
 pub mod notify;
 pub mod palette;
 pub mod paths;

@@ -12,6 +12,8 @@ use crate::appearance;
 use crate::backend::{SessionEntry, SessionId, SharedBackend};
 use crate::layout::WidthClass;
 use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase};
+use crate::notifications::NotificationHistory;
+use crate::notifications_panel::{NotificationsPanel, NotificationsPanelEvent};
 use crate::prefs::{self, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
 use crate::session_view::{Branched, SessionView, SessionViewEvent, recent_folders};
 use crate::settings_page::{CloseRequested, SettingsPage};
@@ -73,7 +75,10 @@ pub fn open_with(session: Option<SessionId>, cx: &mut App) -> Option<AnyWindowHa
 #[derive(Clone, Copy, PartialEq)]
 enum Edge {
     Sidebar,
+    /// The workers panel.
     Panel,
+    /// The notifications panel, which takes the workers panel's place.
+    Notifications,
 }
 
 #[derive(Clone)]
@@ -92,6 +97,7 @@ pub struct Workspace {
     sidebar: Entity<Sidebar>,
     session_view: Entity<SessionView>,
     workers: Entity<WorkersPanel>,
+    notifications: Entity<NotificationsPanel>,
     settings: Option<Entity<SettingsPage>>,
     /// The session this window shows. It runs on whether shown or not.
     session: Option<Entity<LiveSession>>,
@@ -100,6 +106,9 @@ pub struct Workspace {
     shown_title: Option<SharedString>,
     width: WidthClass,
     workers_open: bool,
+    /// The notifications panel docks where the workers panel does, one of
+    /// the two at a time.
+    notifications_open: bool,
     /// The pane showing as a sheet over a narrow window.
     sheet: Option<Edge>,
     /// The sidebar's state and the panes' widths in the preferences, as the
@@ -121,6 +130,7 @@ impl Workspace {
         let sidebar = cx.new(|cx| Sidebar::new(window, cx));
         let session_view = cx.new(|cx| SessionView::new(window, cx));
         let workers = cx.new(|cx| WorkersPanel::new(window, cx));
+        let notifications = cx.new(|cx| NotificationsPanel::new(sidebar.clone(), window, cx));
         let sidebar_prefs = prefs::get(cx).sidebar.clone();
         let panel_width = prefs::get(cx).workers_panel.width;
 
@@ -142,6 +152,11 @@ impl Workspace {
             cx.subscribe_in(&sidebar, window, Self::on_sidebar_event),
             cx.subscribe_in(&session_view, window, Self::on_session_view_event),
             cx.subscribe_in(&workers, window, Self::on_workers_event),
+            cx.subscribe_in(&notifications, window, Self::on_notifications_event),
+            // The status bar's count of what is unread.
+            cx.observe_global::<NotificationHistory>(|this, cx| {
+                this.status_bar.update(cx, |_, cx| cx.notify())
+            }),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 this.prefs_changed(window, cx)
             }),
@@ -154,12 +169,14 @@ impl Workspace {
             sidebar,
             session_view,
             workers,
+            notifications,
             settings: None,
             session: None,
             _session: Vec::new(),
             shown_title: None,
             width: WidthClass::of(window.viewport_size().width),
             workers_open: false,
+            notifications_open: false,
             sheet: None,
             panes: (sidebar_prefs.open, sidebar_prefs.width(), panel_width),
             sidebar_width: sidebar_prefs.width(),
@@ -201,6 +218,12 @@ impl Workspace {
         &self.workers
     }
 
+    /// The notifications panel (tests and screenshots).
+    #[doc(hidden)]
+    pub fn notifications_panel(&self) -> &Entity<NotificationsPanel> {
+        &self.notifications
+    }
+
     pub fn session_view(&self) -> &Entity<SessionView> {
         &self.session_view
     }
@@ -225,6 +248,14 @@ impl Workspace {
         self.workers_open
     }
 
+    /// Whether the notifications panel shows, docked or as a sheet.
+    pub fn is_notifications_open(&self) -> bool {
+        match self.width.docks_panel() {
+            true => self.notifications_open,
+            false => self.sheet == Some(Edge::Notifications),
+        }
+    }
+
     /// Whether the sidebar shows docked beside the main column.
     pub fn is_sidebar_docked(&self, cx: &App) -> bool {
         self.width.docks_sidebar() && prefs::get(cx).sidebar.open
@@ -240,7 +271,7 @@ impl Workspace {
         // A sheet opened for a narrower window gives way to the docked view.
         let docks = match self.sheet {
             Some(Edge::Sidebar) => !was.docks_sidebar() && width.docks_sidebar(),
-            Some(Edge::Panel) => !was.docks_panel() && width.docks_panel(),
+            Some(Edge::Panel | Edge::Notifications) => !was.docks_panel() && width.docks_panel(),
             None => false,
         };
         if docks {
@@ -308,6 +339,9 @@ impl Workspace {
         let workers = (had_workers || workers_open).then_some(workers_open);
         self.workers
             .update(cx, |panel, cx| panel.set_shown(workers_open, cx));
+        let notifications_open = self.is_notifications_open();
+        self.notifications
+            .update(cx, |panel, cx| panel.set_shown(notifications_open, cx));
         self.title_bar.update(cx, |bar, cx| {
             bar.set_session(Some(title.clone()), folder, cx);
             bar.set_sidebar_open(open, cx);
@@ -408,10 +442,11 @@ impl Workspace {
         let view = match edge {
             Edge::Sidebar => AnyView::from(self.sidebar.clone()),
             Edge::Panel => AnyView::from(self.workers.clone()),
+            Edge::Notifications => AnyView::from(self.notifications.clone()),
         };
         let placement = match edge {
             Edge::Sidebar => Placement::Left,
-            Edge::Panel => Placement::Right,
+            Edge::Panel | Edge::Notifications => Placement::Right,
         };
         let this = cx.entity().downgrade();
         window.open_sheet_at(placement, cx, move |sheet, _, _| {
@@ -624,6 +659,7 @@ impl Workspace {
         if self.width.docks_panel() {
             if !self.workers_open {
                 self.workers_open = true;
+                self.notifications_open = false;
                 self.sync_chrome(window, cx);
                 cx.notify();
             }
@@ -941,6 +977,8 @@ impl Workspace {
         let had_focus = self.workers.read(cx).contains_focus(window, cx);
         let open = if self.width.docks_panel() {
             self.workers_open = !self.workers_open;
+            // The two panels share the place at the right.
+            self.notifications_open &= !self.workers_open;
             self.sync_chrome(window, cx);
             cx.notify();
             self.workers_open
@@ -960,6 +998,58 @@ impl Workspace {
             });
         } else if had_focus {
             self.focus_composer(window, cx);
+        }
+    }
+
+    fn toggle_notifications(
+        &mut self,
+        _: &menus::ToggleNotifications,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let had_focus = self.notifications.read(cx).contains_focus(window, cx);
+        let open = if self.width.docks_panel() {
+            self.notifications_open = !self.notifications_open;
+            // The two panels share the place at the right.
+            self.workers_open &= !self.notifications_open;
+            self.sync_chrome(window, cx);
+            cx.notify();
+            self.notifications_open
+        } else if self.sheet == Some(Edge::Notifications) {
+            self.close_sheet(window, cx);
+            false
+        } else {
+            self.open_sheet(Edge::Notifications, window, cx);
+            true
+        };
+        // The keyboard goes with the panel: into it as it opens, back to the
+        // composer when it closes with the focus in it.
+        if open {
+            let panel = self.notifications.clone();
+            window.defer(cx, move |window, cx| {
+                panel.update(cx, |panel, cx| panel.focus(window, cx));
+            });
+        } else if had_focus {
+            self.focus_composer(window, cx);
+        }
+    }
+
+    /// What the notifications panel asks.
+    fn on_notifications_event(
+        &mut self,
+        _: &Entity<NotificationsPanel>,
+        event: &NotificationsPanelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            NotificationsPanelEvent::Open(id) => self.open_session(id.clone(), window, cx),
+            NotificationsPanelEvent::Leave => {
+                if self.sheet == Some(Edge::Notifications) {
+                    self.close_sheet(window, cx);
+                }
+                self.focus_composer(window, cx);
+            }
         }
     }
 
@@ -1089,7 +1179,7 @@ impl Workspace {
                 let width = f32::from(position.x) / rem;
                 self.sidebar_width = width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
             }
-            Edge::Panel => {
+            Edge::Panel | Edge::Notifications => {
                 let width = f32::from(window.viewport_size().width - position.x) / rem;
                 self.panel_width = width.clamp(MIN_PANEL_WIDTH, MAX_PANEL_WIDTH);
             }
@@ -1139,7 +1229,7 @@ fn resize_handle(edge: Edge, cx: &mut Context<Workspace>) -> impl IntoElement {
     div()
         .id(match edge {
             Edge::Sidebar => "sidebar-resize",
-            Edge::Panel => "panel-resize",
+            Edge::Panel | Edge::Notifications => "panel-resize",
         })
         .test_support()
         .absolute()
@@ -1147,7 +1237,7 @@ fn resize_handle(edge: Edge, cx: &mut Context<Workspace>) -> impl IntoElement {
         .bottom_0()
         .map(|this| match edge {
             Edge::Sidebar => this.right(px(-3.)),
-            Edge::Panel => this.left(px(-3.)),
+            Edge::Panel | Edge::Notifications => this.left(px(-3.)),
         })
         // A physical hit area: 6 px at any zoom, around a 1 px hairline.
         .w(px(6.))
@@ -1179,7 +1269,8 @@ impl Render for Workspace {
             theme.sidebar_border,
         );
         let sidebar_docked = self.is_sidebar_docked(cx);
-        let panel_docked = self.width.docks_panel() && self.workers_open;
+        let panel_docked =
+            self.width.docks_panel() && (self.workers_open || self.notifications_open);
         // A pane never takes more than its share of a small window.
         let room = f32::from(window.viewport_size().width) / f32::from(window.rem_size());
         let sidebar_width = self.sidebar_width.min(room * 0.4);
@@ -1199,6 +1290,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_session))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_workers))
+            .on_action(cx.listener(Self::toggle_notifications))
             .on_action(cx.listener(Self::focus_filter))
             .on_action(cx.listener(Self::rename_session))
             .on_action(cx.listener(Self::delete_session))
@@ -1356,7 +1448,11 @@ impl Render for Workspace {
                                 // worker's spinner draws the panel again,
                                 // and its other rows, each kept, stay as
                                 // they were drawn.
-                                .child(pane(&self.workers))
+                                .child(if self.notifications_open {
+                                    pane(&self.notifications)
+                                } else {
+                                    pane(&self.workers)
+                                })
                                 .child(resize_handle(Edge::Panel, cx)),
                         )
                     }),
