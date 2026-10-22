@@ -15,12 +15,6 @@ path = "src/lib.rs"
 name = "arko-studio"
 path = "src/main.rs"
 
-# A window of spinner styles to choose from. `cargo run --release --example spinner_lab` opens it.
-# `cargo test` also draws it headlessly.
-[[example]]
-name = "spinner_lab"
-test = true
-
 [dependencies]
 # GPUI Kit from Mesa Hills Research's fork. It pins the matching mhr-gpui release from
 # crates.io and re-exports it, so GPUI is `gpui_kit::*` and needs no entry of its own.

@@ -34,10 +34,6 @@ UPDATE_GOLDENS=1 cargo test --locked --test screenshots
 Look at the updated images in light and dark themes. The commit body should name the goldens
 that changed and explain why.
 
-### Spinner lab
-
-`cargo run --release --example spinner_lab` opens a window of spinner styles on light and dark panels at the sizes the app uses. It has controls for the frame rate and the speed, and shows how many frames a second the machine draws.
-
 ## Building against a local GPUI Kit
 
 `Cargo.toml` pins GPUI Kit to a Git commit. The kit takes GPUI from the published `mhr-gpui`

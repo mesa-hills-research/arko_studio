@@ -9,7 +9,7 @@ use std::time::Duration;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::ease_in_out;
 
-/// How long one turn takes. The owner picked it in the spinner lab (style J, about 10% faster).
+/// How long one turn takes.
 pub const TURN: Duration = Duration::from_millis(1200);
 
 /// The spinner of running work. The caller sets its size and color.
