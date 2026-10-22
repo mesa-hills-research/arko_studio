@@ -308,33 +308,68 @@ fn a_narrow_window_shows_the_sidebar_as_a_sheet_that_closes_on_a_choice(cx: &mut
     });
 }
 
-/// Where the workers panel is a sheet, a worker's Message closes the sheet,
-/// which covers the composer. A message the user then sends shows only in
-/// that worker's transcript, which is out of sight, so a notification says
-/// it went. Messages to the main agent show in the transcript, with no
-/// notification.
-#[gpui_kit::test]
-fn a_message_to_a_worker_from_a_sheet_says_it_went(cx: &mut TestAppContext) {
+/// A session of the workspace in a window `width` wide, and the number of
+/// notifications the window shows.
+fn session_in_workspace(
+    cx: &mut TestAppContext,
+    width: f32,
+) -> (
+    AnyWindowHandle,
+    Entity<Workspace>,
+    Entity<crate::live::LiveSession>,
+) {
     use crate::live::LiveSession;
-    use crate::workers_panel::WorkersPanelEvent;
 
     start(cx);
-    let (window, workspace) = open(cx, 900.);
-    assert!(!cx.read(|cx| workspace.read(cx).width_class().docks_panel()));
+    let (window, workspace) = open(cx, width);
     let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
     act(cx, window, |window, cx| {
         workspace.update(cx, |workspace, cx| {
             workspace.show_session(session.clone(), window, cx)
         })
     });
-    let notifications = |cx: &mut TestAppContext| {
-        cx.update_window(window, |_, window, cx| window.notifications(cx).len())
-            .unwrap()
-    };
-    let send = |cx: &mut TestAppContext, text: &str| {
-        act(cx, window, |window, cx| window.input(text, cx));
-        act(cx, window, |window, cx| window.press("enter", cx));
-    };
+    (window, workspace, session)
+}
+
+fn notifications(cx: &mut TestAppContext, window: AnyWindowHandle) -> usize {
+    cx.update_window(window, |_, window, cx| window.notifications(cx).len())
+        .unwrap()
+}
+
+/// Types `text` in the composer and sends it.
+fn send_text(cx: &mut TestAppContext, window: AnyWindowHandle, text: &str) {
+    act(cx, window, |window, cx| window.input(text, cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+}
+
+/// The messages the session has queued, as typed.
+fn queued_messages(
+    session: &Entity<crate::live::LiveSession>,
+    cx: &mut TestAppContext,
+) -> Vec<String> {
+    cx.read(|cx| {
+        session
+            .read(cx)
+            .queued()
+            .iter()
+            .filter_map(|input| match input {
+                arko::Input::Message(message) => Some(message.text.clone()),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// Where the workers panel is a sheet, a worker's Message closes the sheet,
+/// which covers the composer. A message the user then sends shows only in
+/// that worker's transcript, which is out of sight, so a notification says
+/// it went. Messages to the main agent show in the transcript, with no
+/// notification.
+fn a_message_to_a_worker_from_a_sheet_says_it_went(cx: &mut TestAppContext, width: f32) {
+    use crate::workers_panel::WorkersPanelEvent;
+
+    let (window, workspace, session) = session_in_workspace(cx, width);
+    assert!(!cx.read(|cx| workspace.read(cx).width_class().docks_panel()));
     act(cx, window, |window, cx| {
         window.dispatch_action(Box::new(menus::ToggleWorkersPanel), cx)
     });
@@ -349,27 +384,117 @@ fn a_message_to_a_worker_from_a_sheet_says_it_went(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| {
         assert!(!window.has_active_sheet(cx))
     });
-    send(cx, "Use tabs.");
-    let sent = cx.read(|cx| {
-        session
-            .read(cx)
-            .queued()
-            .iter()
-            .filter_map(|input| match input {
-                arko::Input::Message(message) => Some(message.text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    });
-    assert_eq!(sent, ["/message r1 Use tabs."]);
-    assert_eq!(notifications(cx), 1);
+    send_text(cx, window, "Use tabs.");
+    assert_eq!(queued_messages(&session, cx), ["/message r1 Use tabs."]);
+    assert_eq!(notifications(cx, window), 1);
     // Back to the main agent: its messages need no word.
     act(cx, window, |window, cx| window.press("escape", cx));
     let view = cx.read(|cx| workspace.read(cx).session_view().clone());
     assert_eq!(cx.read(|cx| view.read(cx).target().cloned()), None);
-    send(cx, "And the tests.");
+    send_text(cx, window, "And the tests.");
     assert_eq!(cx.read(|cx| session.read(cx).queued().len()), 2);
-    assert_eq!(notifications(cx), 1);
+    assert_eq!(notifications(cx, window), 1);
+}
+
+#[gpui_kit::test]
+fn a_message_to_a_worker_from_a_sheet_says_it_went_in_a_medium_window(cx: &mut TestAppContext) {
+    a_message_to_a_worker_from_a_sheet_says_it_went(cx, 900.);
+}
+
+#[gpui_kit::test]
+fn a_message_to_a_worker_from_a_sheet_says_it_went_in_a_narrow_window(cx: &mut TestAppContext) {
+    a_message_to_a_worker_from_a_sheet_says_it_went(cx, 600.);
+}
+
+/// Where the workers panel docks, a message to a worker says it went unless
+/// the panel shows that worker's transcript. It says so while the panel is
+/// closed, and while the panel shows another worker.
+#[gpui_kit::test]
+fn a_message_to_a_worker_says_it_went_unless_its_transcript_shows(cx: &mut TestAppContext) {
+    use crate::workers_panel::{PanelSource, WorkersPanelEvent};
+    use arko::remote::{Feed, WorkerChange};
+
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    assert!(cx.read(|cx| workspace.read(cx).width_class().docks_panel()));
+    let panel = cx.read(|cx| workspace.read(cx).workers_panel().clone());
+    let message = |cx: &mut TestAppContext, worker: &str| {
+        let worker = worker.to_string();
+        act(cx, window, |_, cx| {
+            panel.update(cx, |_, cx| {
+                cx.emit(WorkersPanelEvent::Message(worker.into()))
+            })
+        });
+    };
+
+    // The panel is closed.
+    assert!(!cx.read(|cx| workspace.read(cx).is_workers_open()));
+    message(cx, "r1");
+    send_text(cx, window, "Use tabs.");
+    assert_eq!(notifications(cx, window), 1);
+
+    // It shows r2's transcript, not r1's.
+    let feed = Feed::new("main");
+    feed.turn_started();
+    feed.worker("r1", "Fix the parser", WorkerChange::Started);
+    feed.worker("r2", "Write the changelog", WorkerChange::Started);
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(menus::ToggleWorkersPanel), cx)
+    });
+    assert!(cx.read(|cx| workspace.read(cx).is_workers_open()));
+    // The panel shows `worker` from the feed above. (The session's own
+    // source has no feed, and its key is the one the panel keeps its
+    // transcripts for.)
+    let key = (
+        session.entity_id(),
+        cx.read(|cx| session.read(cx).opening()),
+    );
+    let show = |cx: &mut TestAppContext, worker: &str| {
+        let (feed, shown) = (feed.clone(), worker.to_string());
+        act(cx, window, |window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_source(
+                    PanelSource {
+                        workers: feed.subscribe().0.workers,
+                        feed: Some(feed),
+                        key: Some(key),
+                        ..PanelSource::default()
+                    },
+                    cx,
+                );
+                panel.show_worker(shown.into(), window, cx);
+            })
+        });
+        assert_eq!(
+            cx.read(|cx| panel.read(cx).open_worker().cloned()),
+            Some(worker.to_string().into())
+        );
+    };
+    show(cx, "r2");
+    message(cx, "r1");
+    send_text(cx, window, "And the tests.");
+    assert_eq!(notifications(cx, window), 2);
+
+    // It shows r1's, so the message is in sight and needs no word.
+    show(cx, "r1");
+    message(cx, "r1");
+    send_text(cx, window, "Thanks.");
+    assert_eq!(
+        queued_messages(&session, cx),
+        [
+            "/message r1 Use tabs.",
+            "/message r1 And the tests.",
+            "/message r1 Thanks."
+        ]
+    );
+    assert_eq!(notifications(cx, window), 2);
+}
+
+/// The confirmation names the worker and reads as a sentence.
+#[test]
+fn the_confirmation_of_a_message_to_a_worker_reads_as_a_sentence() {
+    let text = workspace::sent_to("r1");
+    assert_eq!(text, "Sent to r1.");
+    assert!(!text.contains([':', ';']), "{text}");
 }
 
 #[gpui_kit::test]

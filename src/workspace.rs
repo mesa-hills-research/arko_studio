@@ -610,7 +610,7 @@ impl Workspace {
                     && self.workers_open
                     && self.workers.read(cx).open_worker() == Some(id);
                 if !shown {
-                    window.push_notification(Notification::info(format!("Sent to {id}.")), cx);
+                    window.push_notification(Notification::info(sent_to(id)), cx);
                 }
             }
         }
@@ -1111,6 +1111,12 @@ impl Workspace {
             None => self.session_view.clone().into_any_element(),
         }
     }
+}
+
+/// What the window says when a message to the worker `id` went and its
+/// transcript isn't in sight.
+pub(crate) fn sent_to(id: &str) -> String {
+    format!("Sent to {id}.")
 }
 
 /// A pane of the window filling its place, kept from frame to frame and
