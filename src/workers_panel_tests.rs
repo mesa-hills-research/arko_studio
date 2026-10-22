@@ -338,6 +338,49 @@ fn a_nested_row_says_whose_worker_it_is_to_a_screen_reader(cx: &mut TestAppConte
     assert_eq!(list, (Some(gpui_kit::Role::List), Some("Workers".into())));
 }
 
+/// The keyboard goes through a family in its order, a worker's worker opens
+/// like any other with its own Stop, and its view says whose it is.
+#[gpui_kit::test]
+fn the_keyboard_goes_through_a_family_and_stops_a_nested_worker(cx: &mut TestAppContext) {
+    use arko::remote::WorkerState::Running;
+    let panel = open(cx);
+    panel.show(
+        cx,
+        vec![
+            summary("r1", None, Running, None),
+            summary("r2", None, Running, None),
+            summary("r3", Some("r1"), Running, None),
+            summary("r4", Some("r3"), Running, None),
+        ],
+    );
+    let entity = panel.panel.clone();
+    cx.update_window(panel.window, |_, window, cx| {
+        entity.update(cx, |panel, cx| panel.focus(window, cx))
+    })
+    .unwrap();
+    panel.draw(cx);
+    let cursor = |cx: &mut TestAppContext| cx.read(|cx| panel.panel.read(cx).cursor.clone());
+    assert_eq!(cursor(cx), Some(worker("r1")));
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        panel.press(cx, "down");
+        seen.push(cursor(cx).unwrap());
+    }
+    // r1, then its workers, then the next family.
+    assert_eq!(seen, [worker("r3"), worker("r4"), worker("r2")]);
+    panel.press(cx, "up");
+    assert_eq!(cursor(cx), Some(worker("r4")));
+    panel.press(cx, "enter");
+    assert_eq!(panel.open_worker(cx).as_deref(), Some("r4"));
+    let facts = cx.read(|cx| panel.panel.read(cx).facts("r4", *panel.now.borrow()));
+    assert!(facts.starts_with("Running · under r3 · "), "{facts}");
+    panel.click(cx, "worker-stop");
+    assert_eq!(
+        panel.events.borrow().last(),
+        Some(&WorkersPanelEvent::Command("/stop-workers r4".into()))
+    );
+}
+
 /// The card of a worker's worker is in the worker's own view, and opens the
 /// worker in the panel.
 #[gpui_kit::test]
