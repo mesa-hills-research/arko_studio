@@ -10,7 +10,7 @@ all of them, so every size below 48 px can use one of two kinds of drawing.
 
 Full mark, drawn from assets/icon.svg by this script
   n  the full mark scaled to the size, with the margin it has in icon.svg
-  d  the same drawing scaled to fill the canvas
+  d  the same drawing scaled to fill the canvas, the default at every size
   e  d with extra weight, so the thin shapes keep their weight after the downscale
   f  e with its size, position and weight nudged so the stem, the arrow shaft and
      the circles fall on whole pixels, drawn at 8 times the size and averaged down
@@ -54,7 +54,7 @@ TILE = os.path.join(ASSETS, "icon-tile.svg")
 
 # The drawing used at each size below 48 px. To switch a size, change its letter
 # and run the script again. 22 px is only used for Linux, 20 and 40 px only for Windows.
-CHOICE = {16: "g", 20: "g", 22: "g", 24: "g", 32: "g", 40: "g"}
+CHOICE = {16: "d", 20: "d", 22: "d", 24: "d", 32: "d", 40: "d"}
 
 # Windows sizes. The 64 px entry and the larger ones are stored as PNG, the
 # smaller ones as the classic bitmap that every Windows version reads.

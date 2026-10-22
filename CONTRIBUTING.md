@@ -75,17 +75,17 @@ regenerate it without the override before committing.
 ## App icon
 
 The artwork is in `assets/`. The mark has three levels of detail. The arch, the stem and the arrow
-come first, then the nodes, then the thin links and the gap in the top of the arch. Scaled down
-as it is, the thin parts turn to smudges below about 48 px. So every size below 48 px is drawn
-for its own size, and sizes from 48 px up use `icon.svg`, the full mark.
+come first, then the nodes, then the thin links and the gap in the top of the arch. The full mark
+sits in a wide margin, so scaled down as it is, it fills only part of a small icon. Sizes from 48 px
+up use `icon.svg` as it is. The sizes below 48 px use the same mark scaled to fill the canvas.
 
 `CHOICE` in `assets/make-icons.py` gives the drawing for 16, 20, 22, 24, 32 and 40 px as a letter.
-To switch a size, change its letter and run the script again.
+It is `d` at every size. To switch a size, change its letter and run the script again.
 
 | Letter | Drawing |
 |---|---|
-| `n` | The full mark scaled to the size, as before |
-| `d` | The full mark scaled to fill the canvas |
+| `d` | The full mark scaled to fill the canvas. This is the default |
+| `n` | The full mark scaled to the size with its margin, as it was before `d` |
 | `e` | `d` with weight added around every shape |
 | `f` | `e` with its size, position and weight fitted to the pixel grid, then drawn at 8 times the size and averaged down |
 | `g` | Like `f`, but only the thin parts get heavier, the arrow shaft is a whole number of pixels thick and the nodes grow a little |
