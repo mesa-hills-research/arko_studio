@@ -4,7 +4,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arko::remote::{CallStatus, Delivery, Item, Kind, Level, Source, WorkerState};
+use arko::remote::{
+    CallStatus, Delivery, Item, JobKind, JobState, JobSummary, Kind, Level, Source, WorkerState,
+};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::image_cache::LruImageCache;
 use gpui_kit::base::text::{TextView, TextViewMotion, TextViewStyle};
@@ -622,47 +624,163 @@ pub(super) fn job_time(ms: i64) -> String {
 }
 
 /// What a call's row says of the background job the call made: the call
-/// moved there, or it started a command there (`terminal_start`).
+/// moved there, it started a command there (`terminal_start`), or it
+/// started a monitor (`monitor_start`).
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum JobLine {
     /// The job runs, since `since` (Unix milliseconds). The row offers to
     /// stop it.
     Running { job: SharedString, since: i64 },
+    /// The monitor `job` runs, has alerted `alerts` times so far, and ends
+    /// at `ends_at` (Unix milliseconds). The row offers to stop it.
+    Monitoring {
+        job: SharedString,
+        alerts: u32,
+        ends_at: Option<i64>,
+    },
     /// The call moved to the background, and how its job does isn't known.
     Moved,
-    /// The job of a call that moved there ended, as the call's outcome says
-    /// ("Finished in the background · 4 min", "Stopped").
-    Ended { text: String, failed: bool },
+    /// How the job did, as Arko words it ("Finished in the background · 4
+    /// min", "Stopped", "Ended after 30 min · 4 alerts"), with the failure
+    /// mark when it failed.
+    Outcome { text: String, failed: bool },
 }
 
 impl TranscriptView {
     pub(super) fn job_line(&self, item: &Item) -> Option<JobLine> {
         let job = item.job.as_deref()?;
-        if let Some(summary) = self.model.job(job).filter(|job| job.state.is_running()) {
+        let summary = self.model.job(job);
+        if let Some(summary) = summary.filter(|job| job.kind == JobKind::Monitor) {
+            return Some(match summary.state.is_running() {
+                true => JobLine::Monitoring {
+                    job: job.to_string().into(),
+                    alerts: summary.alerts.unwrap_or(0),
+                    ends_at: summary.expires_at,
+                },
+                false => {
+                    let (text, failed) = monitor_ended(summary);
+                    JobLine::Outcome { text, failed }
+                }
+            });
+        }
+        if let Some(summary) = summary.filter(|job| job.state.is_running()) {
             return Some(JobLine::Running {
                 job: job.to_string().into(),
                 since: summary.started_at,
             });
         }
         // Arko's words for a moved call: "in the background · job 4d2c1a9b"
-        // until its job ends, then how it ended.
+        // until its job ends, then how it ended. A monitor's call says
+        // "monitoring · 3 alerts" while it runs, then how it ended, which
+        // tells it when the transcript doesn't have the monitor's summary
+        // (the summaries of jobs that ended long ago are let go).
         let outcome = item.outcome.as_deref()?;
         if outcome.starts_with("in the background") {
             return Some(JobLine::Moved);
         }
-        let ended = outcome.starts_with("finished in the background")
+        let monitor = item.tool.as_deref() == Some("monitor_start")
+            || (item.tool.is_none() && Tool::of(item) == Tool::Monitor);
+        let shown = outcome.starts_with("finished in the background")
             || outcome.starts_with("failed in the background")
             || outcome == "stopped"
-            || outcome == "interrupted";
-        ended.then(|| JobLine::Ended {
+            || outcome == "interrupted"
+            || (monitor
+                && ["monitoring", "ended", "stopped", "its command exited"]
+                    .iter()
+                    .any(|start| outcome.starts_with(start)));
+        shown.then(|| JobLine::Outcome {
             text: capitalized(outcome),
-            failed: item.status == Some(CallStatus::Failed) && outcome != "stopped",
+            failed: item.status == Some(CallStatus::Failed) && !outcome.starts_with("stopped"),
         })
+    }
+
+    /// What a call's row says of its job, `line`, now.
+    fn job_words(&self, line: &JobLine) -> String {
+        match line {
+            JobLine::Running { since, .. } => {
+                format!("In the background · {}", job_time((self.clock)() - since))
+            }
+            JobLine::Monitoring {
+                alerts, ends_at, ..
+            } => monitoring(*alerts, ends_at.map(|at| at - (self.clock)())),
+            JobLine::Moved => "In the background".into(),
+            JobLine::Outcome { text, .. } => text.clone(),
+        }
+    }
+
+    /// What the row of the call `item` says of its job, as it draws now.
+    #[cfg(test)]
+    pub(crate) fn job_text(&self, item: u64) -> Option<String> {
+        let line = self.job_line(&self.model.entry(item)?.item)?;
+        Some(self.job_words(&line))
     }
 }
 
+/// How a monitor that ended did, as Arko words it on its call's line, and
+/// whether it failed: "Ended after 30 min · 4 alerts", "Stopped · 2
+/// alerts", "Its command exited (exit 1)".
+pub(super) fn monitor_ended(job: &JobSummary) -> (String, bool) {
+    let alerts = match job.alerts.unwrap_or(0) {
+        0 => String::new(),
+        1 => " · 1 alert".to_string(),
+        count => format!(" · {count} alerts"),
+    };
+    match job.state {
+        JobState::Expired => (
+            match job.ended_at {
+                Some(at) => format!("Ended after {}{alerts}", job_time(at - job.started_at)),
+                None => format!("Ended{alerts}"),
+            },
+            false,
+        ),
+        JobState::Finished => (format!("Its command exited{alerts}"), false),
+        JobState::Failed => (
+            match &job.outcome {
+                Some(how) => format!("Its command exited ({how}){alerts}"),
+                None => format!("Its command exited{alerts}"),
+            },
+            true,
+        ),
+        JobState::Interrupted => ("Interrupted".to_string(), true),
+        _ => (format!("Stopped{alerts}"), false),
+    }
+}
+
+/// What a running monitor's row says: "Monitoring · 3 alerts · ends in 22
+/// min", `left` milliseconds before it ends. Its minutes round as Arko's
+/// `/jobs` rounds them.
+pub(super) fn monitoring(alerts: u32, left: Option<i64>) -> String {
+    let mut parts = vec!["Monitoring".to_string()];
+    match alerts {
+        0 => {}
+        1 => parts.push("1 alert".into()),
+        count => parts.push(format!("{count} alerts")),
+    }
+    if let Some(left) = left {
+        parts.push(match left.max(0) / 1000 {
+            0..60 => "ends in less than a minute".to_string(),
+            seconds => format!("ends in {} min", (seconds + 30) / 60),
+        });
+    }
+    parts.join(" · ")
+}
+
+/// How long until a running monitor's "ends in" changes, `left`
+/// milliseconds before it ends, or `None` once it says less than a minute
+/// (its end comes from the feed).
+pub(super) fn monitoring_changes_in(left: i64) -> Option<Duration> {
+    if left < 60_000 {
+        return None;
+    }
+    // The minutes round to the nearest one, and the last minute reads
+    // "less than a minute".
+    let rounded = (left + 30_000) % 60_000;
+    let last = left - 60_000;
+    Some(Duration::from_millis(rounded.min(last) as u64 + 50))
+}
+
 /// `text` with its first letter in capitals.
-fn capitalized(text: &str) -> String {
+pub(super) fn capitalized(text: &str) -> String {
     let mut chars = text.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
@@ -1324,28 +1442,19 @@ impl TranscriptView {
                 .into_any_element()
         };
         let trailing: Option<AnyElement> = match (&job, item.status) {
-            (Some(JobLine::Running { since, .. }), _) => Some(muted(format!(
-                "In the background · {}",
-                job_time((self.clock)() - since)
-            ))),
-            (Some(JobLine::Moved), _) => Some(muted("In the background".into())),
-            (
-                Some(JobLine::Ended {
-                    text,
-                    failed: false,
-                }),
-                _,
-            ) => Some(muted(text.clone())),
-            (Some(JobLine::Ended { text, failed: true }), _) => Some(
+            (Some(JobLine::Outcome { text, failed: true }), _) => Some(
                 h_flex()
                     .flex_none()
+                    .min_w_0()
+                    .max_w(rems(18.))
                     .gap_1()
                     .text_xs()
                     .text_color(theme.danger)
                     .child(Icon::new(Lucide::CircleX).xsmall())
-                    .child(text.clone())
+                    .child(div().min_w_0().truncate().child(text.clone()))
                     .into_any_element(),
             ),
+            (Some(job), _) => Some(muted(self.job_words(job))),
             (None, Some(CallStatus::Running)) => Some(
                 h_flex()
                     .flex_none()
@@ -1380,7 +1489,7 @@ impl TranscriptView {
         // What the row offers to do with the call while it runs, or with
         // its job while that runs.
         let action = match &job {
-            Some(JobLine::Running { job, .. }) => {
+            Some(JobLine::Running { job, .. } | JobLine::Monitoring { job, .. }) => {
                 let (view, job) = (view.downgrade(), job.clone());
                 Some(
                     Button::new(("stop-job", id))

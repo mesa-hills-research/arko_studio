@@ -68,6 +68,9 @@ pub enum SessionViewEvent {
     ShowPrompt,
     /// The reader opened a worker's card in the transcript.
     OpenWorker(SharedString),
+    /// A message went to the worker named here. It shows in that worker's
+    /// transcript only.
+    SentToWorker(SharedString),
     /// A branch of the session was made: the window opens it.
     OpenBranch(Box<Branched>),
 }
@@ -1620,6 +1623,7 @@ impl SessionView {
         // As in the terminal, a command runs while a question waits, and the
         // question stays open. Other text answers it.
         let command = arko::commands::find(&text).is_some();
+        let worker = self.session.as_ref().and(self.target.clone());
         let result = match (&self.session, &self.target) {
             (Some(_), Some(_)) if !message.images.is_empty() => Err(
                 "A message to a worker takes text only. Remove the images, or send them to Arko."
@@ -1662,6 +1666,9 @@ impl SessionView {
                     .update(cx, |composer, cx| composer.sent(&text, window, cx));
                 self.keep_draft(cx);
                 self.composer_empty = true;
+                if let Some(worker) = worker {
+                    cx.emit(SessionViewEvent::SentToWorker(worker));
+                }
                 cx.notify();
             }
             Err(why) => window.push_notification(why, cx),

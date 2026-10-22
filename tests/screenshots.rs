@@ -498,6 +498,57 @@ parse of the whole text.";
         (feed, running)
     }
 
+    /// Calls that started monitors: one that runs and alerted three times,
+    /// one that ended after its time, one stopped, and one whose command
+    /// failed. `now` is the time the rows are read at, 8 minutes after the
+    /// running one started.
+    pub fn monitors(now: i64) -> Feed {
+        use arko::remote::{JobKind, JobStart, JobState, MAIN_AGENT};
+
+        let feed = Feed::new("main");
+        feed.user(
+            "Run the dev server and the tests, and tell me when something breaks.",
+            Source::App,
+            Delivery::Turn,
+        );
+        // The feed times their ends by its own clock, so the ended ones
+        // started 30 minutes before it.
+        let ago = chrono::Utc::now().timestamp_millis() - 30 * 60_000 - 5_000;
+        let monitor = |command: &str, pattern: &str, started: i64| {
+            let job = Uuid::new_v4();
+            let id = call(
+                &feed,
+                "monitor_start",
+                &[("command", command.into()), ("pattern", pattern.into())],
+            );
+            feed.job_started(
+                JobStart::new(job, MAIN_AGENT, JobKind::Monitor, command)
+                    .made_by(id)
+                    .started(started)
+                    .monitoring(format!("lines that match {pattern}"), started + 30 * 60_000),
+            );
+            result(
+                &feed,
+                id,
+                "monitor_start",
+                &format!("Monitor {job} started. It watches `{command}`."),
+            );
+            job
+        };
+        let expired = monitor("cargo watch -x test", "FAILED", ago);
+        feed.job_changed(expired, 4, ago + 30 * 60_000);
+        feed.job_ended(expired, JobState::Expired, None);
+        let stopped = monitor("tail -F logs/app.log", "panic", ago);
+        feed.job_ended(stopped, JobState::Stopped, None);
+        let failed = monitor("npm run e2e -- --watch", "fail", ago);
+        feed.job_changed(failed, 1, ago + 30 * 60_000);
+        feed.job_ended(failed, JobState::Failed, Some("exit 1".into()));
+        let started = now - 8 * 60_000 - 10_000;
+        let running = monitor("npm run dev", "error|warn", started);
+        feed.job_changed(running, 3, started + 30 * 60_000);
+        feed
+    }
+
     /// A turn whose agent waits on the model after a call's result.
     pub fn working_after_a_call() -> Feed {
         let feed = Feed::new("main");
@@ -709,6 +760,54 @@ fn transcript_background_dark() {
     goldens().assert(
         "transcript-background-dark",
         &background_window(ThemeMode::Dark),
+    );
+}
+
+/// Calls that started monitors: how three ended, and one that runs with its
+/// alerts, when it ends and Stop.
+fn monitors_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let now = chrono::Utc::now().timestamp_millis();
+    let feed = feed::monitors(now);
+    let window = app
+        .open_window_with(size(px(900.), px(260.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
+                    view.set_clock(move || now, cx);
+                    view
+                })
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn transcript_monitors_light() {
+    goldens().assert(
+        "transcript-monitors-light",
+        &monitors_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn transcript_monitors_dark() {
+    goldens().assert(
+        "transcript-monitors-dark",
+        &monitors_window(ThemeMode::Dark),
     );
 }
 
@@ -1936,7 +2035,7 @@ fn session_info(mode: ThemeMode) -> Screenshot {
         .collect(),
     };
     let window = app
-        .open_window_with(size(px(560.), px(1300.)), 1., |options, cx| {
+        .open_window_with(size(px(560.), px(1450.)), 1., |options, cx| {
             gpui_kit::open_window(options, cx, |window, cx| {
                 let info = cx.new(|cx| {
                     let mut info = SessionInfo::new(window, cx);

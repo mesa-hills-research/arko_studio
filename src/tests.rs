@@ -308,6 +308,70 @@ fn a_narrow_window_shows_the_sidebar_as_a_sheet_that_closes_on_a_choice(cx: &mut
     });
 }
 
+/// Where the workers panel is a sheet, a worker's Message closes the sheet,
+/// which covers the composer. A message the user then sends shows only in
+/// that worker's transcript, which is out of sight, so a notification says
+/// it went. Messages to the main agent show in the transcript, with no
+/// notification.
+#[gpui_kit::test]
+fn a_message_to_a_worker_from_a_sheet_says_it_went(cx: &mut TestAppContext) {
+    use crate::live::LiveSession;
+    use crate::workers_panel::WorkersPanelEvent;
+
+    start(cx);
+    let (window, workspace) = open(cx, 900.);
+    assert!(!cx.read(|cx| workspace.read(cx).width_class().docks_panel()));
+    let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+    act(cx, window, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(session.clone(), window, cx)
+        })
+    });
+    let notifications = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| window.notifications(cx).len())
+            .unwrap()
+    };
+    let send = |cx: &mut TestAppContext, text: &str| {
+        act(cx, window, |window, cx| window.input(text, cx));
+        act(cx, window, |window, cx| window.press("enter", cx));
+    };
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(menus::ToggleWorkersPanel), cx)
+    });
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_sheet(cx))
+    });
+    // r1's Message, as the panel's button gives it.
+    let panel = cx.read(|cx| workspace.read(cx).workers_panel().clone());
+    act(cx, window, |_, cx| {
+        panel.update(cx, |_, cx| cx.emit(WorkersPanelEvent::Message("r1".into())))
+    });
+    act(cx, window, |window, cx| {
+        assert!(!window.has_active_sheet(cx))
+    });
+    send(cx, "Use tabs.");
+    let sent = cx.read(|cx| {
+        session
+            .read(cx)
+            .queued()
+            .iter()
+            .filter_map(|input| match input {
+                arko::Input::Message(message) => Some(message.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(sent, ["/message r1 Use tabs."]);
+    assert_eq!(notifications(cx), 1);
+    // Back to the main agent: its messages need no word.
+    act(cx, window, |window, cx| window.press("escape", cx));
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    assert_eq!(cx.read(|cx| view.read(cx).target().cloned()), None);
+    send(cx, "And the tests.");
+    assert_eq!(cx.read(|cx| session.read(cx).queued().len()), 2);
+    assert_eq!(notifications(cx), 1);
+}
+
 #[gpui_kit::test]
 fn dragging_the_sidebars_edge_resizes_it_and_remembers(cx: &mut TestAppContext) {
     start(cx);

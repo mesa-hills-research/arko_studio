@@ -85,6 +85,18 @@ pub fn handover_value(tokens: usize) -> String {
 }
 
 use arko::commands::{parse_background_after, parse_handover_size};
+use arko::monitors::{Wakes, parse_wakes};
+
+/// How long monitors' warnings wake the agent, as a number the fields
+/// compare: its seconds, 0 for never, or `u64::MAX` for always.
+fn wakes_number(wakes: Wakes) -> u64 {
+    wakes.0.unwrap_or(u64::MAX)
+}
+
+/// The setting [`wakes_number`] made `number` of.
+fn wakes_of(number: u64) -> Wakes {
+    Wakes((number != u64::MAX).then_some(number))
+}
 
 /// After how long a running command moves to the background, as
 /// `/background-after` takes it: "off", "90s", "10m", "1h".
@@ -107,6 +119,7 @@ pub fn field_command(field: Field, text: &str, current: u64) -> Result<Option<St
     let value = match field {
         Field::HandoverMain | Field::HandoverWorkers => parse_handover_size(text)? as u64,
         Field::BackgroundAfter => parse_background_after(text)?,
+        Field::MonitorWakes => wakes_number(parse_wakes(text)?),
     };
     if value == current {
         return Ok(None);
@@ -117,6 +130,7 @@ pub fn field_command(field: Field, text: &str, current: u64) -> Result<Option<St
             format!("/handover-at workers {}", handover_value(value as usize))
         }
         Field::BackgroundAfter => format!("/background-after {}", background_value(value)),
+        Field::MonitorWakes => format!("/monitor-wakes {}", wakes_of(value).shown()),
     }))
 }
 
@@ -126,6 +140,7 @@ pub enum Field {
     HandoverMain,
     HandoverWorkers,
     BackgroundAfter,
+    MonitorWakes,
 }
 
 impl Field {
@@ -136,6 +151,7 @@ impl Field {
             Field::HandoverMain => settings.handover_at as u64,
             Field::HandoverWorkers => settings.workers_handover_at as u64,
             Field::BackgroundAfter => settings.background_after,
+            Field::MonitorWakes => wakes_number(settings.monitor_wakes),
         }
     }
 
@@ -152,6 +168,7 @@ impl Field {
                 .map(handover_value)
                 .unwrap_or_default(),
             Field::BackgroundAfter => background_value(settings.background_after),
+            Field::MonitorWakes => settings.monitor_wakes.shown(),
         }
     }
 }
@@ -205,6 +222,7 @@ impl SessionInfo {
             (Field::HandoverMain, "950k"),
             (Field::HandoverWorkers, "200k"),
             (Field::BackgroundAfter, "10m or off"),
+            (Field::MonitorWakes, "2h or always"),
         ]
         .into_iter()
         .map(|(field, placeholder)| {
@@ -806,6 +824,20 @@ impl Render for SessionInfo {
                 ))
                 .child(row(
                     narrow,
+                    "Monitor wakes",
+                    v_flex()
+                        .gap_1()
+                        .child(h_flex().children(input(Field::MonitorWakes, self)))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(settings.monitor_wakes.sentence().replace('\'', "’")),
+                        ),
+                    cx,
+                ))
+                .child(row(
+                    narrow,
                     "Text replies",
                     switch(
                         "text-replies",
@@ -1113,10 +1145,28 @@ mod tests {
         assert!(command(Field::HandoverMain, "1.2345k", 950_000).is_err());
         assert!(command(Field::BackgroundAfter, "10 minutes", 600).is_err());
         assert!(command(Field::BackgroundAfter, "2h", 600).is_err());
+        // Monitor wakes takes a time up to a day, always, or off.
+        assert_eq!(
+            command(Field::MonitorWakes, "always", 7_200),
+            Ok(Some("/monitor-wakes always".into()))
+        );
+        assert_eq!(
+            command(Field::MonitorWakes, "never", 7_200),
+            Ok(Some("/monitor-wakes off".into()))
+        );
+        assert_eq!(
+            command(Field::MonitorWakes, "90m", u64::MAX),
+            Ok(Some("/monitor-wakes 90m".into()))
+        );
+        assert_eq!(command(Field::MonitorWakes, "120m", 7_200), Ok(None));
+        assert_eq!(command(Field::MonitorWakes, "Always", u64::MAX), Ok(None));
+        assert!(command(Field::MonitorWakes, "25h", 7_200).is_err());
+        assert!(command(Field::MonitorWakes, "soon", 7_200).is_err());
         for command in [
             "/handover-at main 300k",
             "/handover-at main 950,500",
             "/background-after off",
+            "/monitor-wakes always",
             "/outside on",
             "/text-replies off",
             "/cc-compact on",
@@ -1485,6 +1535,8 @@ mod view_tests {
         assert_eq!(cx.read(|cx| main.read(cx).value().to_string()), "950k");
         let after = cx.read(|cx| info.read(cx).field(Field::BackgroundAfter));
         assert_eq!(cx.read(|cx| after.read(cx).value().to_string()), "10m");
+        let wakes = cx.read(|cx| info.read(cx).field(Field::MonitorWakes));
+        assert_eq!(cx.read(|cx| wakes.read(cx).value().to_string()), "2h");
 
         act(cx, window, |window, cx| window.click("outside-access", cx));
         // Fixed: a click does nothing.
@@ -1520,5 +1572,25 @@ mod view_tests {
             "no reason under the field"
         );
         assert!(shows(window, cx, "session-info"), "Enter closed the info");
+        // Monitor wakes sends /monitor-wakes, and says why it can't take a
+        // time longer than a day.
+        for typed in ["always", "25h"] {
+            act(cx, window, |window, cx| {
+                wakes.update(cx, |input, cx| {
+                    input.set_value(typed, window, cx);
+                    input.focus(window, cx);
+                })
+            });
+            act(cx, window, |window, cx| window.press("enter", cx));
+        }
+        assert_eq!(
+            sent(&session, cx),
+            [
+                "/outside on",
+                "/handover-at main 300k",
+                "/monitor-wakes always"
+            ]
+        );
+        assert!(cx.read(|cx| info.read(cx).error(Field::MonitorWakes).is_some()));
     }
 }

@@ -12,6 +12,7 @@ use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
 use arko::commands::MIN_HANDOVER_SIZE;
+use arko::monitors::Wakes;
 
 /// arko's own time before a command moves to the background, in seconds.
 pub const DEFAULT_BACKGROUND_AFTER: u64 = 600;
@@ -21,6 +22,7 @@ pub struct SessionsPage {
     handover: TextSetting<usize>,
     workers_handover: TextSetting<usize>,
     background_after: TextSetting<u64>,
+    monitor_wakes: TextSetting<Wakes>,
     chat_instructions: Entity<TextareaState>,
     /// The chat instructions the field last showed or saved.
     instructions_seen: String,
@@ -68,6 +70,25 @@ impl SessionsPage {
             window,
             cx,
         );
+        let monitor_wakes = TextSetting::new(
+            TextKind {
+                get: |prefs| {
+                    prefs
+                        .new_sessions
+                        .monitor_wakes
+                        .as_deref()
+                        .and_then(|wakes| arko::monitors::parse_wakes(wakes).ok())
+                },
+                set: |prefs, value| {
+                    prefs.new_sessions.monitor_wakes = value.map(|wakes| wakes.shown())
+                },
+                parse: parse_monitor_wakes,
+                show: |wakes| wakes.shown(),
+            },
+            &Wakes::default().shown(),
+            window,
+            cx,
+        );
         let writing = cx.global::<WritingAids>().0.clone();
         let chat_instructions = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -93,6 +114,11 @@ impl SessionsPage {
                 background_after.input(),
                 cx,
             ),
+            fields::subscribe(
+                |page: &mut Self| &mut page.monitor_wakes,
+                monitor_wakes.input(),
+                cx,
+            ),
             // Saved once the typing rests, or as the field is left.
             cx.subscribe(&chat_instructions, |this, _, event, cx| match event {
                 InputEvent::Change => {
@@ -114,6 +140,7 @@ impl SessionsPage {
                 this.handover.follow(window, cx);
                 this.workers_handover.follow(window, cx);
                 this.background_after.follow(window, cx);
+                this.monitor_wakes.follow(window, cx);
                 this.follow_input(cx);
                 // Instructions changed elsewhere (a reset) show, and what's
                 // typed but not saved yet stays.
@@ -134,6 +161,7 @@ impl SessionsPage {
             this.handover.commit(cx);
             this.workers_handover.commit(cx);
             this.background_after.commit(cx);
+            this.monitor_wakes.commit(cx);
             if this.instructions_typed.take().is_some() {
                 this.save_instructions(cx);
             }
@@ -143,6 +171,7 @@ impl SessionsPage {
             handover,
             workers_handover,
             background_after,
+            monitor_wakes,
             chat_instructions,
             instructions_seen: new.chat_instructions,
             instructions_typed: None,
@@ -189,22 +218,24 @@ impl SessionsPage {
     }
 
     /// Why each typed setting isn't saved, if one isn't: main agent's
-    /// handover size, workers', background after.
-    pub fn errors(&self) -> [Option<SharedString>; 3] {
+    /// handover size, workers', background after, monitor wakes.
+    pub fn errors(&self) -> [Option<SharedString>; 4] {
         [
             self.handover.error(),
             self.workers_handover.error(),
             self.background_after.error(),
+            self.monitor_wakes.error(),
         ]
     }
 
     /// What's typed in each field: main agent's handover size, workers',
-    /// background after.
-    pub fn typed(&self, cx: &App) -> [SharedString; 3] {
+    /// background after, monitor wakes.
+    pub fn typed(&self, cx: &App) -> [SharedString; 4] {
         [
             self.handover.typed(cx),
             self.workers_handover.typed(cx),
             self.background_after.typed(cx),
+            self.monitor_wakes.typed(cx),
         ]
     }
 
@@ -219,6 +250,7 @@ impl SessionsPage {
                 new.handover_at,
                 new.workers_handover_at,
                 new.background_after,
+                new.monitor_wakes.clone(),
             ),
             (
                 new.outside_access,
@@ -265,6 +297,12 @@ impl SessionsPage {
                     "A shell command still running then moves to the background, and the agent goes on with its work. 90s, 10m or 1h at most, or off.",
                 )
                 .keywords(["shell", "command", "timeout", "jobs"]),
+                self.monitor_wakes
+                    .item("Monitor wakes", "monitor-wakes")
+                .description(
+                    "A monitor’s warning before it ends wakes an idle agent for this long after your last message, so it can keep the monitor. 30m, 2h or 24h at most, always, or off.",
+                )
+                .keywords(["monitor", "warning", "wake", "idle", "jobs"]),
                 super::switch(
                     "Outside access",
                     "The agents may change files outside the session’s folder. The status bar says so while it’s on.",
@@ -440,6 +478,17 @@ pub fn parse_background_after(text: &str) -> Result<Option<u64>, String> {
     arko::commands::parse_background_after(text).map(Some)
 }
 
+/// How long monitors' warnings wake the agent, as arko's `/monitor-wakes`
+/// reads it: `30m`, `2h` or `24h` at most, `always`, or `off`. Empty:
+/// arko's own.
+pub fn parse_monitor_wakes(text: &str) -> Result<Option<Wakes>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    arko::monitors::parse_wakes(text).map(Some)
+}
+
 /// A time in seconds as the field shows it: `90s`, `10m`, `1h`, or `off`.
 pub fn shown_background_after(seconds: u64) -> String {
     match seconds {
@@ -452,7 +501,10 @@ pub fn shown_background_after(seconds: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_background_after, parse_handover, shown_background_after, shown_tokens};
+    use super::{
+        parse_background_after, parse_handover, parse_monitor_wakes, shown_background_after,
+        shown_tokens,
+    };
 
     #[test]
     fn handover_sizes_read_as_arko_reads_them() {
@@ -515,6 +567,22 @@ mod tests {
                 parse_background_after(&shown_background_after(seconds)),
                 Ok(Some(seconds))
             );
+        }
+    }
+
+    #[test]
+    fn monitor_wakes_read_as_arko_reads_them() {
+        use arko::monitors::Wakes;
+
+        assert_eq!(parse_monitor_wakes(""), Ok(None));
+        assert_eq!(parse_monitor_wakes("2h"), Ok(Some(Wakes(Some(7_200)))));
+        assert_eq!(parse_monitor_wakes(" Always "), Ok(Some(Wakes(None))));
+        assert_eq!(parse_monitor_wakes("off"), Ok(Some(Wakes(Some(0)))));
+        for text in ["soon", "25h", "0m"] {
+            assert!(parse_monitor_wakes(text).is_err(), "{text}");
+        }
+        for wakes in [Wakes(Some(0)), Wakes(Some(1_800)), Wakes(None)] {
+            assert_eq!(parse_monitor_wakes(&wakes.shown()), Ok(Some(wakes)));
         }
     }
 }

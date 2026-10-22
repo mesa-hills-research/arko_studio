@@ -27,6 +27,8 @@ pub struct SessionDefaults {
     pub workers_handover_at: Option<usize>,
     /// In seconds, 0 for never. `None`: arko's own.
     pub background_after: Option<u64>,
+    /// How long monitors' warnings wake the agent. `None`: arko's own.
+    pub monitor_wakes: Option<arko::monitors::Wakes>,
     pub outside_access: bool,
     pub text_replies: bool,
     pub cc_compact: bool,
@@ -71,6 +73,10 @@ impl SessionDefaults {
             handover_at: new.handover_at,
             workers_handover_at: new.workers_handover_at,
             background_after: new.background_after,
+            monitor_wakes: new
+                .monitor_wakes
+                .as_deref()
+                .and_then(|wakes| arko::monitors::parse_wakes(wakes).ok()),
             outside_access: new.outside_access,
             text_replies: new.text_replies,
             cc_compact: new.cc_compact,
@@ -128,6 +134,7 @@ impl SessionDefaults {
         options.handover_at = self.handover_at;
         options.workers_handover_at = self.workers_handover_at;
         options.background_after = self.background_after;
+        options.monitor_wakes = self.monitor_wakes;
         if cfg!(windows) {
             options.shell = self.shell;
         }
@@ -184,6 +191,7 @@ mod tests {
         assert_eq!(options.cache_1h, None);
         assert_eq!(options.handover_at, None);
         assert_eq!(options.background_after, None);
+        assert_eq!(options.monitor_wakes, None);
         assert!(!options.allow_outside_workspace);
         assert_eq!(options.text_replies, Some(true));
         assert_eq!(options.cc_compact, Some(true));
@@ -204,6 +212,7 @@ mod tests {
         new.handover_at = Some(950_000);
         new.workers_handover_at = Some(300_000);
         new.background_after = Some(0);
+        new.monitor_wakes = Some("always".into());
         new.outside_access = true;
         new.text_replies = false;
         new.cc_compact = false;
@@ -222,6 +231,7 @@ mod tests {
         assert_eq!(options.handover_at, Some(950_000));
         assert_eq!(options.workers_handover_at, Some(300_000));
         assert_eq!(options.background_after, Some(0));
+        assert_eq!(options.monitor_wakes, Some(arko::monitors::Wakes(None)));
         assert!(options.allow_outside_workspace);
         assert_eq!(options.text_replies, Some(false));
         assert_eq!(options.cc_compact, Some(false));
