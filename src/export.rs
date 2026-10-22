@@ -195,8 +195,7 @@ fn code(text: &str) -> String {
 }
 
 /// What the export says under its header when it starts partway.
-const STARTS_PARTWAY: &str =
-    "This export starts partway through the conversation. Earlier messages aren’t included.";
+const STARTS_PARTWAY: &str = "This export leaves out the earliest messages.";
 
 /// The fence a block of `text` needs: a backtick more than its longest run
 /// of them, and three at least.
@@ -744,7 +743,7 @@ Thanks.
         let text = markdown(&header, &[item(Kind::User, "Go on.")]);
         assert!(
             text.starts_with(
-                "# Long\n\n*Chat · exported now*\n\n*This export starts partway through the conversation. Earlier messages aren’t included.*\n"
+                "# Long\n\n*Chat · exported now*\n\n*This export leaves out the earliest messages.*\n"
             ),
             "{text}"
         );

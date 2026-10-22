@@ -3079,6 +3079,16 @@ pub(crate) struct Export {
     pub starts_partway: bool,
 }
 
+/// What the notification says of an export written to `path`.
+fn exported_words(path: &Path, starts_partway: bool) -> String {
+    let tail = if starts_partway {
+        ", without the earliest messages."
+    } else {
+        "."
+    };
+    format!("Exported to {}{tail}", path.display())
+}
+
 /// Writes `export` to `path` off the UI thread, and says how it went. It
 /// goes to a file beside `path` first, which then takes its name, so a
 /// failed write leaves a file that was there whole.
@@ -3092,13 +3102,7 @@ fn write_export(export: Export, path: PathBuf, window: &mut Window, cx: &mut App
         .spawn(cx, async move |cx| {
             let written = written.await;
             cx.update(|window, cx| match written {
-                Ok(()) => {
-                    let mut said = format!("Exported to {}.", path.display());
-                    if starts_partway {
-                        said.push_str(" It starts partway, without the earliest messages.");
-                    }
-                    window.push_notification(said, cx)
-                }
+                Ok(()) => window.push_notification(exported_words(&path, starts_partway), cx),
                 Err(error) => window.push_notification(
                     gpui_kit::component::notification::Notification::error(format!(
                         "Couldn’t export to {}. {}",
@@ -3118,8 +3122,8 @@ mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::{
-        FindStatus, find_status_text, images_not_kept, mode_description, recent_folders,
-        shown_folder_from,
+        FindStatus, exported_words, find_status_text, images_not_kept, mode_description,
+        recent_folders, shown_folder_from,
     };
     use crate::backend::Backend as _;
     use crate::backend::{FakeBackend, Mode, SessionEntry};
@@ -3132,6 +3136,16 @@ mod tests {
         assert_eq!(
             mode_description(Mode::Agent, true),
             "Agent works in a folder with tools and workers. Switching re-reads the conversation without its cache."
+        );
+    }
+
+    #[test]
+    fn an_export_that_starts_partway_says_so_in_one_sentence() {
+        let path = Path::new("/tmp/Notes.md");
+        assert_eq!(exported_words(path, false), "Exported to /tmp/Notes.md.");
+        assert_eq!(
+            exported_words(path, true),
+            "Exported to /tmp/Notes.md, without the earliest messages."
         );
     }
 
