@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="20" height="20" viewBox="0 0 20 20" shape-rendering="crispEdges">
+  <!-- 20 px, candidate B. As A, with the hollow node and its line to the arrow.
+       One line below is one row of pixels, drawn as a line one unit thick. -->
+  <path stroke="#D5642A" d="
+    M5 1.5h5
+    M3 2.5h9
+    M2 3.5h3M10 3.5h3
+    M1 4.5h3M11 4.5h3
+    M1 5.5h2M12 5.5h2
+    M0 6.5h2M13 6.5h2
+    M0 7.5h2M13 7.5h2
+    M0 8.5h2M13 8.5h2M17 8.5h1
+    M0 9.5h3M17 9.5h2
+    M0 10.5h1M2 10.5h18
+    M0 11.5h3M17 11.5h2
+    M13 12.5h2M17 12.5h1
+    M13 13.5h2
+    M13 14.5h2
+    M12 15.5h3
+    M10 16.5h5
+    M7 17.5h8
+    M8 18.5h7
+  "/>
+</svg>
