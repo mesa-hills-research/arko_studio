@@ -18,6 +18,7 @@ use gpui_kit::component::{
     diff_view::{Diff, DiffView},
     h_flex,
     shimmer::ShimmerText,
+    spinner::Spinner,
     tooltip::Tooltip,
     v_flex,
 };
@@ -32,9 +33,8 @@ use super::model::{Gap, RowKey};
 use super::tool::{self, Tool};
 use super::{AgentFilter, CODE_LINES, TranscriptEvent, TranscriptView};
 
-/// How often the running indicator turns, and "Thinking…" shimmers, in
-/// frames a second.
-const SPINNER_FPS: f32 = 12.;
+/// How often "Thinking…" shimmers, in frames a second.
+const SHIMMER_FPS: f32 = 12.;
 
 /// The reading column's widest.
 const COLUMN: f32 = 46.;
@@ -589,21 +589,17 @@ pub(super) fn element_id(key: RowKey) -> ElementId {
 }
 
 /// The running indicator, turning when `turns` (and the system allows
-/// motion), a dozen times a second. It turns as it paints, so the
-/// transcript isn't drawn again for each step.
+/// motion). It is the kit's spinner, which turns evenly in each frame the
+/// display shows and turns as it paints, so the transcript isn't drawn again
+/// for each step.
 fn spinner(id: impl Into<ElementId>, turns: bool, cx: &App) -> AnyElement {
-    let icon = Icon::new(IconName::Loader).xsmall();
     if !turns || cx.reduce_motion() {
-        return icon.into_any_element();
+        return Icon::new(IconName::Loader).xsmall().into_any_element();
     }
-    icon.with_paint_animation(
-        id,
-        Animation::new(Duration::from_millis(900))
-            .repeat()
-            .with_max_fps(SPINNER_FPS),
-        |delta| PaintEffect::rotation(percentage(delta).into()),
-    )
-    .into_any_element()
+    div()
+        .id(id)
+        .child(Spinner::new().xsmall())
+        .into_any_element()
 }
 
 /// "12 s", "1 m 5 s", "2 h 3 m".
@@ -1335,9 +1331,7 @@ impl TranscriptView {
     }
 
     /// The running indicator of the entry `id`: it turns only for the
-    /// latest thing that runs, and stands still for the others. Each turning
-    /// frame draws the transcript, so one indicator turns, a dozen times a
-    /// second.
+    /// latest thing that runs, and stands still for the others.
     fn spinner(&self, id: u64, cx: &App) -> AnyElement {
         spinner(("running", id), self.animated == Some(id), cx)
     }
@@ -1387,7 +1381,7 @@ impl TranscriptView {
         let label: AnyElement = if streaming && self.animated == Some(id) && !cx.reduce_motion() {
             ShimmerText::new("Thinking…")
                 .id(("thinking-shimmer", id))
-                .max_fps(SPINNER_FPS)
+                .max_fps(SHIMMER_FPS)
                 .into_any_element()
         } else if streaming {
             "Thinking…".into_any_element()

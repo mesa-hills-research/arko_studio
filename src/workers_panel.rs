@@ -1085,9 +1085,8 @@ struct RowFacts {
 }
 
 /// A worker's row, as a view of its own: it draws again only when what it
-/// shows changes. A running worker's spinner, which asks for a frame 30
-/// times a second, draws its own row again and leaves the others as they
-/// were drawn.
+/// shows changes. A running worker's spinner turns as it paints, so it draws
+/// no row again.
 struct WorkerRow {
     facts: RowFacts,
 }

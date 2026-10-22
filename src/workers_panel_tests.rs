@@ -28,6 +28,18 @@ struct Panel {
     now: Rc<RefCell<i64>>,
 }
 
+/// A frame of a 60 Hz display. The clock moves 1/60 second and the window
+/// shows its next frame, which the spinners that turn in each frame ask for.
+fn display_frame(cx: &mut TestAppContext, window: AnyWindowHandle) {
+    cx.executor()
+        .advance_clock(std::time::Duration::from_micros(16_667));
+    cx.update_window(window, |_, window, cx| {
+        window.simulate_next_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
 /// A worker's text, as the workflow streams it.
 fn say(feed: &Feed, agent: &str, text: &str) {
     feed.event(
@@ -591,11 +603,9 @@ fn a_spinner_draws_no_row(cx: &mut TestAppContext) {
     });
     panel.draw(cx);
     super::ROWS_DRAWN.with(|drawn| drawn.borrow_mut().clear());
-    // A second, at 30 frames a second.
-    for _ in 0..30 {
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(1000 / 30 + 1));
-        cx.run_until_parked();
+    // A second of a 60 Hz display.
+    for _ in 0..60 {
+        display_frame(cx, panel.window);
     }
     let drawn = super::ROWS_DRAWN.with(|drawn| drawn.borrow().clone());
     // r1 runs, and its spinner turns, with its time going on once in a
@@ -709,10 +719,8 @@ fn in_the_window_a_spinner_draws_no_row(cx: &mut TestAppContext) {
         })
     });
     super::ROWS_DRAWN.with(|drawn| drawn.borrow_mut().clear());
-    for _ in 0..30 {
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(1000 / 30 + 1));
-        cx.run_until_parked();
+    for _ in 0..60 {
+        display_frame(cx, window);
     }
     let drawn = super::ROWS_DRAWN.with(|drawn| drawn.borrow().clone());
     assert!(drawn.get("r1").is_none_or(|&count| count <= 2), "{drawn:?}");
@@ -760,13 +768,10 @@ fn in_the_window_a_running_workers_time_goes_on(cx: &mut TestAppContext) {
     };
     let before = elapsed(cx);
     super::ROWS_DRAWN.with(|drawn| drawn.borrow_mut().clear());
-    // Three seconds, at 30 frames a second.
-    for _ in 0..90 {
-        let frame = 1000 / 30 + 1;
-        clock.set(clock.get() + frame);
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(frame as u64));
-        cx.run_until_parked();
+    // Three seconds of a 60 Hz display.
+    for _ in 0..180 {
+        clock.set(clock.get() + 1000 / 60);
+        display_frame(cx, window);
     }
     assert_ne!(elapsed(cx), before, "the time goes on");
     let rows = super::ROWS_DRAWN.with(|drawn| drawn.borrow().clone());

@@ -899,19 +899,28 @@ fn rows_draw_without_making_their_ids_or_the_users_text_again(cx: &mut TestAppCo
     assert_eq!(text(cx), message.trim());
 }
 
-/// How many times the transcript draws in a second of the test clock.
-fn draws_in_a_second(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> usize {
-    for _ in 0..200 {
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(1));
-        cx.run_until_parked();
-    }
+/// How many times the transcript draws in a second of the test clock, with a
+/// frame of a 60 Hz display every 1/60 second. The transcript is the root of
+/// the window here, so it draws with each draw of the window.
+fn draws_in_a_second(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    view: &Entity<TranscriptView>,
+) -> usize {
+    let frames = |cx: &mut TestAppContext, count: usize| {
+        for _ in 0..count {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_micros(16_667));
+            cx.update_window(window, |_, window, cx| {
+                window.simulate_next_frame(cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+        }
+    };
+    frames(cx, 12);
     let before = cx.read(|cx| view.read(cx).render_count());
-    for _ in 0..1000 {
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(1));
-        cx.run_until_parked();
-    }
+    frames(cx, 60);
     cx.read(|cx| view.read(cx).render_count()) - before
 }
 
@@ -929,14 +938,15 @@ fn one_indicator_turns_at_a_time(cx: &mut TestAppContext) {
     feed.worker("r1", "Write the fuzz target", WorkerChange::Started);
     call(&feed, "main", "shell", &[("command", "cargo build".into())]);
     let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
-    // A worker and a call run: the call's indicator turns, a dozen times a
-    // second, and the elapsed times tick once.
-    let draws = draws_in_a_second(cx, &view);
-    assert!((10..=16).contains(&draws), "{draws} draws");
-    // Then thinking streams: its shimmer is the one that moves, as often.
+    // A worker and a call run: the call's indicator turns, in each frame of
+    // the display.
+    let draws = draws_in_a_second(cx, window, &view);
+    assert!((58..=62).contains(&draws), "{draws} draws");
+    // Then thinking streams: its shimmer is the one that moves, a dozen times
+    // a second.
     think(&feed, "hmm");
     settle(cx, window);
-    let draws = draws_in_a_second(cx, &view);
+    let draws = draws_in_a_second(cx, window, &view);
     assert!((10..=16).contains(&draws), "{draws} draws");
     let thinking = item_ids(&feed).last().unwrap().0;
     assert_eq!(cx.read(|cx| view.read(cx).animated), Some(thinking));
@@ -960,7 +970,7 @@ fn hand_clock(view: &Entity<TranscriptView>, cx: &mut TestAppContext) -> Rc<Cell
 /// "Working…" shows while the agent waits on the model with nothing else
 /// showing it's busy: before the turn's first output, after a call's
 /// result, and once its text stops coming. It goes as soon as output
-/// comes. It's the one indicator that turns, a dozen times a second.
+/// comes. It's the one indicator that turns.
 #[gpui_kit::test]
 fn working_shows_while_the_agent_waits_on_the_model(cx: &mut TestAppContext) {
     start(cx);
@@ -999,8 +1009,8 @@ fn working_shows_while_the_agent_waits_on_the_model(cx: &mut TestAppContext) {
     settle(cx, window);
     let after_call = *ids_of(&feed, Kind::Call).last().unwrap();
     assert_eq!(keys(&view, cx).last(), Some(&RowKey::Working(after_call)));
-    let draws = draws_in_a_second(cx, &view);
-    assert!((10..=16).contains(&draws), "{draws} draws");
+    let draws = draws_in_a_second(cx, window, &view);
+    assert!((58..=62).contains(&draws), "{draws} draws");
     assert_eq!(cx.read(|cx| view.read(cx).animated), None);
 
     // Text says it's busy while it comes. Two seconds without more, it

@@ -1514,8 +1514,9 @@ fn a_long_session(cx: &mut TestAppContext) -> (App, Mock) {
 
 /// What a second of time costs with the spinners turning, and how often the
 /// session view and the transcript drew in it. Time is stepped in sixtieths of
-/// a second, on the test platform, which doesn't shape text. A time is of the
-/// processor, for the fastest of 12 seconds.
+/// a second, with a display frame at each step, on the test platform, which
+/// doesn't shape text. A time is of the processor, for the fastest of 12
+/// seconds.
 fn spinner_seconds(cx: &mut TestAppContext, app: &App, name: &str) {
     // The time this thread has run, which other programs using the processor
     // don't stretch, where the clock on the wall would.
@@ -1549,6 +1550,11 @@ fn spinner_seconds(cx: &mut TestAppContext, app: &App, name: &str) {
         let start = cpu_time();
         for _ in 0..60 {
             cx.executor().advance_clock(Duration::from_micros(16_667));
+            // The display's next frame, for the spinners that turn in each one.
+            cx.update_window(app.window, |_, window, cx| {
+                window.simulate_next_frame(cx);
+            })
+            .unwrap();
             cx.run_until_parked();
         }
         times.push(cpu_time() - start);
@@ -1573,7 +1579,8 @@ fn spinner_seconds(cx: &mut TestAppContext, app: &App, name: &str) {
 }
 
 /// What the running indicator of a command costs in a long session, which
-/// turns at 12 frames a second. It runs 40 turns, so it is ignored by default.
+/// turns in each frame of the display. It runs 40 turns, so it is ignored by
+/// default.
 ///
 /// ```sh
 /// cargo test --lib frames_while_a_command_runs -- --ignored --nocapture
@@ -1593,8 +1600,8 @@ fn frames_while_a_command_runs(cx: &mut TestAppContext) {
 }
 
 /// What the spinner of a session that works in the background costs next to
-/// a long session, in the sidebar, at 30 frames a second. It runs 40 turns, so
-/// it is ignored by default.
+/// a long session, in the sidebar, in each frame of the display. It runs 40
+/// turns, so it is ignored by default.
 ///
 /// ```sh
 /// cargo test --lib frames_while_another_session_works -- --ignored --nocapture
