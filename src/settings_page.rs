@@ -1199,7 +1199,6 @@ fn advanced_page(
                         })
                 }),
             )
-            .description("Every setting in Arko Studio goes back to its default.")
             .keywords(["defaults", "studio.json"]),
         ),
     );
