@@ -535,20 +535,22 @@ fn a_session_streams_on_while_the_window_shows_another(cx: &mut TestAppContext) 
                 })
                 .unwrap()
     });
-    // It ends unseen: the sidebar says so until the window shows it.
+    // It ends out of sight: the sidebar's dot says so until the window shows it.
     wait_until(cx, "the slow reply", |cx| {
         app.feed_of(Some(&slow), cx)
             .iter()
             .any(|item| item.contains("Slow answer."))
     });
-    wait_until(cx, "the unseen mark", |cx| indicator(cx).unseen);
+    let has_news =
+        |cx: &mut TestAppContext| cx.read(|cx| crate::notifications::has_news(&slow_id, cx));
+    wait_until(cx, "the sidebar's dot", |cx| has_news(cx));
     act(cx, app.window, |window, cx| {
         let workspace = app.workspace.clone();
         workspace.update(cx, |workspace, cx| {
             workspace.open_session(slow_id.clone(), window, cx)
         });
     });
-    assert!(!indicator(cx).unseen);
+    assert!(!has_news(cx));
     assert_eq!(cx.read(|cx| LiveSessions::all(cx).len()), 2);
     // Its transcript was kept, with the answer that came meanwhile.
     app.wait_for_rows(cx, 2);
@@ -750,7 +752,7 @@ fn closing_a_session_with_a_background_job_asks_first(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_turn_that_ends_after_its_window_closed_marks_the_session_unseen(cx: &mut TestAppContext) {
+fn a_turn_that_ends_after_its_window_closed_gives_the_session_news(cx: &mut TestAppContext) {
     // Slow enough for the window to close first on a loaded machine.
     let mock = Mock::start(|_, _| answer("Slow answer.", Duration::from_secs(6)));
     let app = start(cx, &mock);
@@ -771,7 +773,7 @@ fn a_turn_that_ends_after_its_window_closed_marks_the_session_unseen(cx: &mut Te
     wait_until(cx, "the reply", |cx| {
         cx.read(|cx| !slow.read(cx).is_working())
     });
-    assert!(cx.read(|cx| LiveSessions::indicator(&id, cx)).unseen);
+    assert!(cx.read(|cx| crate::notifications::has_news(&id, cx)));
     act(cx, second, |window, cx| {
         crate::quit::close(LiveSessions::all(cx), false, window, cx);
     });

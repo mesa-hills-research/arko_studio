@@ -15,7 +15,7 @@ use crate::sidebar::{
     SelectNext, SelectPrevious,
 };
 use crate::sidebar::{FILTER_CONTEXT, LIST_CONTEXT, RENAME_CONTEXT};
-use crate::workers_panel;
+use crate::{notifications_panel, workers_panel};
 
 /// The sections of the shortcuts sheet and the palette.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,16 +25,18 @@ pub enum Group {
     Composer,
     Transcript,
     Workers,
+    Notifications,
     View,
 }
 
 impl Group {
-    pub const ALL: [Group; 6] = [
+    pub const ALL: [Group; 7] = [
         Group::General,
         Group::Sessions,
         Group::Composer,
         Group::Transcript,
         Group::Workers,
+        Group::Notifications,
         Group::View,
     ];
 
@@ -45,6 +47,7 @@ impl Group {
             Group::Composer => "Composer",
             Group::Transcript => "Transcript",
             Group::Workers => "Workers",
+            Group::Notifications => "Notifications",
             Group::View => "View",
         }
     }
@@ -398,6 +401,63 @@ pub fn commands() -> Vec<Command> {
             .keys(&["escape"])
             .context(workers_panel::WORKER_CONTEXT)
             .not_in_palette(),
+        // The notifications panel's list, and what works on all of them.
+        Command::new(Notifications, "Toggle Notifications", ToggleNotifications)
+            .keys(&["secondary-shift-m"]),
+        Command::new(
+            Notifications,
+            "Mark All Notifications Read",
+            MarkNotificationsRead,
+        ),
+        Command::new(Notifications, "Clear Notifications", ClearNotifications),
+        Command::new(
+            Notifications,
+            "Previous Notification",
+            notifications_panel::SelectPrevious,
+        )
+        .keys(&["up"])
+        .context(notifications_panel::LIST_CONTEXT)
+        .not_in_palette(),
+        Command::new(
+            Notifications,
+            "Next Notification",
+            notifications_panel::SelectNext,
+        )
+        .keys(&["down"])
+        .context(notifications_panel::LIST_CONTEXT)
+        .not_in_palette(),
+        Command::new(
+            Notifications,
+            "First Notification",
+            notifications_panel::SelectFirst,
+        )
+        .keys(&["home"])
+        .context(notifications_panel::LIST_CONTEXT)
+        .not_in_palette(),
+        Command::new(
+            Notifications,
+            "Last Notification",
+            notifications_panel::SelectLast,
+        )
+        .keys(&["end"])
+        .context(notifications_panel::LIST_CONTEXT)
+        .not_in_palette(),
+        Command::new(
+            Notifications,
+            "Open Notification",
+            notifications_panel::OpenSelected,
+        )
+        .keys(&["enter"])
+        .context(notifications_panel::LIST_CONTEXT)
+        .not_in_palette(),
+        Command::new(
+            Notifications,
+            "Back to the Composer",
+            notifications_panel::Back,
+        )
+        .keys(&["escape"])
+        .context(notifications_panel::LIST_CONTEXT)
+        .not_in_palette(),
         Command::new(View, "Toggle Sidebar", ToggleSidebar).keys(&["secondary-\\"]),
         Command::new(View, "Toggle Workers Panel", ToggleWorkersPanel)
             .keys(&["secondary-shift-\\"]),
@@ -503,6 +563,27 @@ mod tests {
             assert_eq!(strokes, expected, "{}", command.name);
         }
         assert!(checked > 0);
+    }
+
+    /// No two commands take the same chord in the same key context, so a
+    /// chord does one thing wherever the keyboard is.
+    #[test]
+    fn no_chord_means_two_things_in_one_context() {
+        let mut seen: Vec<(String, Option<&str>, &str)> = Vec::new();
+        for command in commands() {
+            for chord in &command.keys {
+                let stroke = Keystroke::parse(chord).unwrap().unparse();
+                if let Some((_, _, other)) = seen
+                    .iter()
+                    .find(|(seen, context, _)| *seen == stroke && *context == command.context)
+                {
+                    // The same command listed twice (a menu's and a
+                    // list's, say) is one command.
+                    assert_eq!(*other, command.name, "{chord} in {:?}", command.context);
+                }
+                seen.push((stroke, command.context, command.name));
+            }
+        }
     }
 
     #[test]

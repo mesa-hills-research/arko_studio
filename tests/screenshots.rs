@@ -2417,6 +2417,7 @@ fn status_popovers_dark() {
 /// window.
 fn cache_reminder(mode: ThemeMode) -> Screenshot {
     use arko_studio::cache_reminders::{Countdown, ReminderClock, last_reminder};
+    use arko_studio::notify::SessionLink;
     use gpui_kit::AppContext as _;
     use gpui_kit::component::WindowExt as _;
 
@@ -2443,7 +2444,11 @@ fn cache_reminder(mode: ThemeMode) -> Screenshot {
             .update(cx, |_, window, cx| {
                 let countdown = cx.new(|cx| {
                     Countdown::new(
-                        "Split the engine out of main.rs".into(),
+                        SessionLink::new(
+                            1,
+                            "Split the engine out of main.rs",
+                            std::rc::Rc::new(|_, _| {}),
+                        ),
                         "Refresh ≈ $0.04 · Letting it expire re-caches ≈ $0.90".into(),
                         status::NOW + 42_000,
                         cx,
@@ -2464,6 +2469,289 @@ fn cache_reminder_light() {
 #[test]
 fn cache_reminder_dark() {
     goldens().assert("cache-reminder-dark", &cache_reminder(ThemeMode::Dark));
+}
+
+/// The first cache reminder, or (`long`) a question's card whose session's
+/// title is too long for it, each with the title as a link.
+fn notification_card(mode: ThemeMode, long: bool) -> Screenshot {
+    use arko_studio::cache_reminders::first_reminder;
+    use arko_studio::notify::{SessionLink, card};
+    use gpui_kit::AppContext as _;
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::component::notification::Notification;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(560.), px(200.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| gpui_kit::Empty))
+                .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.update(|cx| {
+        window
+            .update(cx, |_, window, cx| {
+                let opens: arko_studio::notify::Opens = std::rc::Rc::new(|_, _| {});
+                let note = if long {
+                    let link = SessionLink::new(
+                        2,
+                        "A session whose title runs on and on, well past the width of a card",
+                        opens,
+                    );
+                    Notification::new()
+                        .id1::<u8>(gpui_kit::ElementId::Integer(2))
+                        .content(move |_, _, cx| card(&link, "Arko asks “Tabs or spaces?”", cx))
+                } else {
+                    let link = SessionLink::new(1, "Split the engine out of main.rs", opens);
+                    first_reminder(
+                        1,
+                        link,
+                        "The prompt cache expires in 5 minutes".into(),
+                        "Letting it expire re-caches ≈ $0.90".into(),
+                    )
+                };
+                window.push_notification(note, cx);
+            })
+            .unwrap();
+    });
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn notification_card_light() {
+    goldens().assert(
+        "notification-card-light",
+        &notification_card(ThemeMode::Light, false),
+    );
+}
+
+#[test]
+fn notification_card_dark() {
+    goldens().assert(
+        "notification-card-dark",
+        &notification_card(ThemeMode::Dark, false),
+    );
+}
+
+#[test]
+fn notification_card_long_title_light() {
+    goldens().assert(
+        "notification-card-long-title-light",
+        &notification_card(ThemeMode::Light, true),
+    );
+}
+
+#[test]
+fn notification_card_long_title_dark() {
+    goldens().assert(
+        "notification-card-long-title-dark",
+        &notification_card(ThemeMode::Dark, true),
+    );
+}
+
+/// The clock of the notification screenshots, in Unix milliseconds.
+const NOTIFICATIONS_NOW: i64 = 1_760_000_000_000;
+
+/// Four notifications, two of them unread, none older than an hour (older
+/// ones show the time of day, which depends on the time zone).
+fn notification_entries() -> Vec<arko_studio::notifications::Entry> {
+    use arko_studio::notifications::Entry;
+    const MINUTE: i64 = 60_000;
+    let entry = |id: u64, title: &str, message: &str, ago: i64, read: bool| Entry {
+        id,
+        session: Some(format!("20261016-0912{id:02}-a1b2")),
+        title: title.into(),
+        message: message.into(),
+        at: NOTIFICATIONS_NOW - ago,
+        read,
+    };
+    vec![
+        entry(
+            1,
+            "Naming a desktop app",
+            "Arko finished its turn.",
+            41 * MINUTE,
+            true,
+        ),
+        entry(
+            2,
+            "Golden screenshots on Linux",
+            "The prompt cache expires in a minute\nRefresh ≈ $0.04 · Letting it expire re-caches ≈ $0.90",
+            14 * MINUTE,
+            true,
+        ),
+        entry(
+            3,
+            "Variable fonts and the wght axis",
+            "Arko asks “Tabs or spaces?”",
+            3 * MINUTE,
+            false,
+        ),
+        entry(
+            4,
+            "Split the engine out of main.rs",
+            "Arko finished its turn.",
+            12_000,
+            false,
+        ),
+    ]
+}
+
+/// A window of Arko Studio, `width` logical pixels wide, with the
+/// notifications `entries` in the history and the clock at
+/// [`NOTIFICATIONS_NOW`], and the notifications panel opened.
+fn notifications_window(
+    mode: ThemeMode,
+    width: f32,
+    entries: Vec<arko_studio::notifications::Entry>,
+) -> Screenshot {
+    use arko_studio::cache_reminders::ReminderClock;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_notifications(entries)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| {
+        arko_studio::init(startup, cx);
+        cx.set_global(ReminderClock(std::rc::Rc::new(|| NOTIFICATIONS_NOW)));
+    });
+    let window = app
+        .open_window_with(size(px(width), px(800.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, _)| window)
+        })
+        .unwrap();
+    app.update_window(window, |_, window, cx| {
+        window.dispatch_action(Box::new(arko_studio::menus::ToggleNotifications), cx)
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn notifications_light() {
+    goldens().assert(
+        "notifications-light",
+        &notifications_window(ThemeMode::Light, 1300., notification_entries()),
+    );
+}
+
+#[test]
+fn notifications_dark() {
+    goldens().assert(
+        "notifications-dark",
+        &notifications_window(ThemeMode::Dark, 1300., notification_entries()),
+    );
+}
+
+#[test]
+fn notifications_empty_light() {
+    goldens().assert(
+        "notifications-empty-light",
+        &notifications_window(ThemeMode::Light, 1300., Vec::new()),
+    );
+}
+
+#[test]
+fn notifications_empty_dark() {
+    goldens().assert(
+        "notifications-empty-dark",
+        &notifications_window(ThemeMode::Dark, 1300., Vec::new()),
+    );
+}
+
+#[test]
+fn notifications_sheet_light() {
+    goldens().assert(
+        "notifications-sheet-light",
+        &notifications_window(ThemeMode::Light, 640., notification_entries()),
+    );
+}
+
+#[test]
+fn notifications_sheet_dark() {
+    goldens().assert(
+        "notifications-sheet-dark",
+        &notifications_window(ThemeMode::Dark, 640., notification_entries()),
+    );
+}
+
+/// The sidebar with its marks together: a session that works and has news,
+/// one that asks a question and has news, a chat with news, a closed folder
+/// whose session has news, and one with no mark. `width` is the sidebar's,
+/// in rem.
+fn sidebar_marks(mode: ThemeMode, width: f32) -> Screenshot {
+    use arko_studio::live::{Indicator, LiveSessions};
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    settings.sidebar.width = width;
+    settings.sidebar.collapsed = vec!["/home/ada/src/gpui_kit".into()];
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_news(&[
+            "20261016-091200-a1b2",
+            "20261015-171000-c3d4",
+            "20261016-080000-a7b8",
+            "20261014-110500-e5f6",
+        ])
+        .with_fonts(fonts::bundled());
+    app.update(|cx| {
+        arko_studio::init(startup, cx);
+        let mark = |id: &str, working: bool, question: bool, cx: &mut gpui_kit::App| {
+            LiveSessions::set_indicator(&SessionId(id.into()), Indicator { working, question }, cx)
+        };
+        mark("20261016-091200-a1b2", true, false, cx);
+        mark("20261015-171000-c3d4", false, true, cx);
+    });
+    let window = app
+        .open_window_with(size(px(1300.), px(560.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, _)| window)
+        })
+        .unwrap();
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn sidebar_marks_light() {
+    goldens().assert("sidebar-marks-light", &sidebar_marks(ThemeMode::Light, 16.));
+}
+
+#[test]
+fn sidebar_marks_dark() {
+    goldens().assert("sidebar-marks-dark", &sidebar_marks(ThemeMode::Dark, 16.));
+}
+
+#[test]
+fn sidebar_marks_narrow_light() {
+    goldens().assert(
+        "sidebar-marks-narrow-light",
+        &sidebar_marks(ThemeMode::Light, 13.),
+    );
+}
+
+#[test]
+fn sidebar_marks_narrow_dark() {
+    goldens().assert(
+        "sidebar-marks-narrow-dark",
+        &sidebar_marks(ThemeMode::Dark, 13.),
+    );
 }
 
 /// A session's info, as its popover shows it.

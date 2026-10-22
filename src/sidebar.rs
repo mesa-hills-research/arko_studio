@@ -21,6 +21,7 @@ use crate::backend::{BackendError, Mode, SessionEntry, SessionId, SharedBackend}
 use crate::layout::relative_time;
 use crate::live::{LiveSessions, Phase};
 use crate::menus::{DeleteSession, NewSession, RenameSession};
+use crate::notifications::{self, NotificationHistory};
 use crate::prefs;
 
 /// The key contexts of the list, the filter and a rename in place.
@@ -267,6 +268,8 @@ impl Sidebar {
                 this.live_ids = ids;
                 cx.notify();
             }),
+            // Which sessions have news.
+            cx.observe_global::<NotificationHistory>(|_, cx| cx.notify()),
         ];
         let mut this = Self {
             focus_handle: cx.focus_handle(),
@@ -316,6 +319,17 @@ impl Sidebar {
 
     pub fn rows(&self) -> &[Row] {
         &self.rows
+    }
+
+    /// Whether a session of the group `key` that this window doesn't show
+    /// has news.
+    fn group_has_news(&self, key: &str, cx: &App) -> bool {
+        self.sessions
+            .iter()
+            .filter(|entry| group_key(entry) == key)
+            .any(|entry| {
+                self.active.as_ref() != Some(&entry.id) && notifications::has_news(&entry.id, cx)
+            })
     }
 
     /// Marks the session open in this window.
@@ -826,6 +840,7 @@ impl Sidebar {
         let base = h_flex()
             .id(("row", index))
             .test_support()
+            .relative()
             .h_7()
             .w_full()
             .px_2()
@@ -849,35 +864,47 @@ impl Sidebar {
 
         match row.clone() {
             Row::Group {
+                key,
                 title,
                 path,
                 collapsed,
-                ..
-            } => base
-                .role(Role::TreeItem)
-                .aria_label(SharedString::from(title.clone()))
-                .aria_expanded(!collapsed)
-                .text_xs()
-                .font_medium()
-                .text_color(theme.muted_foreground)
-                .child(
-                    Icon::new(if collapsed {
-                        IconName::ChevronRight
-                    } else {
-                        IconName::ChevronDown
+            } => {
+                // A closed group says one of its sessions has news.
+                let news = collapsed && self.group_has_news(&key, cx);
+                base.role(Role::TreeItem)
+                    .aria_label(SharedString::from(row_label(&title, false, false, news)))
+                    .aria_expanded(!collapsed)
+                    .text_xs()
+                    .font_medium()
+                    .text_color(theme.muted_foreground)
+                    .child(
+                        Icon::new(if collapsed {
+                            IconName::ChevronRight
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .xsmall(),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1p5()
+                            .child(div().min_w_0().truncate().child(title))
+                            .when(news, |this| {
+                                this.child(news_dot(("group-news", index), theme.info))
+                            }),
+                    )
+                    .when_some(path, |this, path| {
+                        let path = SharedString::from(path.display().to_string());
+                        this.tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
                     })
-                    .xsmall(),
-                )
-                .child(div().flex_1().min_w_0().truncate().child(title))
-                .when_some(path, |this, path| {
-                    let path = SharedString::from(path.display().to_string());
-                    this.tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.cursor = this.rows.get(index).map(Row::key);
-                    this.open_row(index, cx);
-                }))
-                .into_any_element(),
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.cursor = this.rows.get(index).map(Row::key);
+                        this.open_row(index, cx);
+                    }))
+                    .into_any_element()
+            }
             Row::Session {
                 id,
                 title,
@@ -922,17 +949,29 @@ impl Sidebar {
                 let focus = self.focus_handle.clone();
                 let sidebar = cx.entity().downgrade();
                 // What the session does here, when it is unusual: working or
-                // asking while another is shown, a turn that ended unseen.
+                // asking while another is shown, and news (a turn that ended
+                // or a question that came while the user looked elsewhere).
                 let indicator = LiveSessions::indicator(&id, cx);
                 let background = !is_active;
                 let working = background && indicator.working && !indicator.question;
                 let asking = background && indicator.question;
-                let unseen = indicator.unseen;
+                let news = background && notifications::has_news(&id, cx);
+                let info = theme.info;
                 base.role(Role::TreeItem)
-                    .aria_label(SharedString::from(row_label(&title, working, asking, unseen)))
+                    .aria_label(SharedString::from(row_label(&title, working, asking, news)))
                     .aria_selected(is_active)
                     .when(conversations, |this| this.aria_expanded(expanded))
                     .pl(rems(1.25))
+                    // In the space left of the title, so it never takes any
+                    // from it, and with the other marks.
+                    .when(news, |this| {
+                        this.child(
+                            news_dot(("row-news", index), info)
+                                .absolute()
+                                .left(rems(0.5))
+                                .top(rems(0.625)),
+                        )
+                    })
                     .child(
                         div()
                             .w(rems(1.))
@@ -961,7 +1000,6 @@ impl Sidebar {
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .when(unseen, |this| this.font_semibold())
                                     .child(title.clone()),
                             )
                             .when(working, |this| {
@@ -1112,8 +1150,8 @@ impl Sidebar {
 }
 
 /// A session row as a screen reader names it: the title, and the state the
-/// row's marks show.
-fn row_label(title: &str, working: bool, asking: bool, unseen: bool) -> String {
+/// row's marks show. The dot for news isn't read, the label says it.
+fn row_label(title: &str, working: bool, asking: bool, news: bool) -> String {
     let mut label = title.to_string();
     if working {
         label.push_str(", working");
@@ -1121,10 +1159,25 @@ fn row_label(title: &str, working: bool, asking: bool, unseen: bool) -> String {
     if asking {
         label.push_str(", a question waits");
     }
-    if unseen {
-        label.push_str(", new reply");
+    if news {
+        label.push_str(", new activity");
     }
     label
+}
+
+/// The dot that says a session, or a closed group of them, has news. It
+/// has no name or role of its own, so a screen reader leaves it out.
+fn news_dot(
+    id: impl Into<ElementId>,
+    color: Hsla,
+) -> gpui_kit::base::ObservedElement<Stateful<Div>> {
+    div()
+        .id(id)
+        .test_support()
+        .flex_none()
+        .size_2()
+        .rounded_full()
+        .bg(color)
 }
 
 /// Tells the user why a backend call failed.
@@ -1266,7 +1319,7 @@ mod tests {
         );
         assert_eq!(
             row_label("Fix the parser", true, false, true),
-            "Fix the parser, working, new reply"
+            "Fix the parser, working, new activity"
         );
         assert_eq!(
             row_label("Fix the parser", false, true, false),

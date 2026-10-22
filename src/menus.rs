@@ -29,6 +29,9 @@ actions!(
         FindPrevious,
         ToggleSidebar,
         ToggleWorkersPanel,
+        ToggleNotifications,
+        MarkNotificationsRead,
+        ClearNotifications,
         FocusSessionFilter,
         CommandPalette,
         CycleView,
@@ -67,6 +70,8 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &NewWindow, cx| {
         crate::workspace::open(cx);
     });
+    cx.on_action(|_: &MarkNotificationsRead, cx| crate::notifications::mark_all_read(cx));
+    cx.on_action(|_: &ClearNotifications, cx| crate::notifications::clear(cx));
     cx.on_action(|_: &ZoomIn, cx| appearance::zoom(1, cx));
     cx.on_action(|_: &ZoomOut, cx| appearance::zoom(-1, cx));
     cx.on_action(|_: &ResetZoom, cx| appearance::zoom(0, cx));
@@ -217,6 +222,7 @@ fn view_menu(state: MenuStateKey) -> Menu {
     Menu::new("View").items([
         MenuItem::action(sidebar, ToggleSidebar),
         MenuItem::action("Workers Panel", ToggleWorkersPanel),
+        MenuItem::action("Notifications", ToggleNotifications),
         MenuItem::separator(),
         checked(
             "Full Transcript",
@@ -337,6 +343,13 @@ mod tests {
         };
         assert_eq!(view(&open), "Hide Sidebar");
         assert_eq!(view(&closed), "Show Sidebar");
+    }
+
+    #[test]
+    fn the_view_menu_lists_the_notifications_panel() {
+        let menus = menus(MenuStateKey::default());
+        let view = menus.iter().find(|menu| menu.name == "View").unwrap();
+        assert!(names(view).contains(&"Notifications".to_string()));
     }
 
     #[test]

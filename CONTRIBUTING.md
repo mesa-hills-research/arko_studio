@@ -78,11 +78,32 @@ regenerate it without the override before committing.
 
 ## App icon
 
-The artwork is in `assets/`. `icon.svg` is the full mark, `icon-small.svg` is a simpler version
-for 16 to 32 px, and `icon-tile.svg` puts the mark on a rounded tile. After changing an SVG, run
-`python3 assets/make-icons.py`, which needs `rsvg-convert` or `resvg`, and commit the files it
-writes. These are `assets/icon.ico`, `assets/icon-1024.png` and the icons in
-`packaging/linux/icons`. The screenshot tests use the 256 px icon as a sample image, so changing
+The artwork is in `assets/`. The mark has three levels of detail. The arch, the stem and the arrow
+come first, then the nodes, then the thin links and the gap in the top of the arch. The full mark
+sits in a wide margin, so scaled down as it is, it fills only part of a small icon. Sizes from 48 px
+up use `icon.svg` as it is. The sizes below 48 px use the same mark scaled to fill the canvas.
+
+`CHOICE` in `assets/make-icons.py` gives the drawing for 16, 20, 22, 24, 32 and 40 px as a letter.
+It is `d` at every size. To switch a size, change its letter and run the script again.
+
+| Letter | Drawing |
+|---|---|
+| `d` | The full mark scaled to fill the canvas. This is the default |
+| `n` | The full mark scaled to the size with its margin, as it was before `d` |
+| `e` | `d` with weight added around every shape |
+| `f` | `e` with its size, position and weight fitted to the pixel grid, then drawn at 8 times the size and averaged down |
+| `g` | Like `f`, but only the thin parts get heavier, the arrow shaft is a whole number of pixels thick and the nodes grow a little |
+| `a`, `b`, `c` | Hand drawn candidates in `assets/icon-candidates/`, named `icon-<size>-<letter>.svg`. These are the arch, stem and arrow only (`a`), with the nodes and the line through them (`b`), and the mark of `b` on a rounded tile (`c`) |
+
+The drawings `d` to `g` come from `icon.svg` by script, so a change to the mark reaches every size.
+`LOOK` in the script sets the weight for each size, and the numbers that fitting aligns to the
+pixel grid are next to it. `icon-tile.svg` puts the full mark on a rounded tile.
+
+After changing an SVG, run `python3 assets/make-icons.py`, which needs `rsvg-convert` or `resvg`,
+and commit the files it writes. These are `assets/icon.ico` (16, 20, 24, 32, 40, 48, 64, 128 and
+256 px), `assets/icon-1024.png` and the icons in `packaging/linux/icons`. Judge a small drawing at
+its own size. A viewer that scales it hides the edges it is made to keep, so enlarge it without
+smoothing to look closer. The screenshot tests use the 256 px icon as a sample image, so changing
 the artwork changes the transcript goldens too.
 
 ## Source layout
@@ -97,6 +118,8 @@ the artwork changes the transcript goldens too.
 | `src/session_view.rs`, `src/composer.rs` | Session controls, message input and attachments |
 | `src/transcript/` | Transcript rows, selection, navigation and find |
 | `src/status_bar.rs`, `src/workers_panel.rs`, `src/workers.rs` | Session figures, the workers panel and how it lists workers |
+| `src/notify.rs`, `src/cache_reminders.rs` | Notices for turns, questions and cache expiry |
+| `src/notifications.rs`, `src/notifications_panel.rs` | The notification history and the panel that lists it |
 | `src/settings_page.rs`, `src/settings_page/` | Settings pages and fields |
 | `src/theme_picker.rs`, `src/appearance.rs` | Themes, previews, fonts, zoom and motion |
 | `src/prefs.rs`, `src/drafts.rs` | Saved preferences and message drafts |

@@ -32,8 +32,6 @@ pub struct Indicator {
     pub working: bool,
     /// The agent asked a question that waits for an answer.
     pub question: bool,
-    /// A turn ended while no window showed the session.
-    pub unseen: bool,
 }
 
 /// The sessions open in this app, shared by its windows.
@@ -93,7 +91,10 @@ impl LiveSessions {
         });
     }
 
-    fn set_indicator(id: &SessionId, indicator: Indicator, cx: &mut App) {
+    /// Shows `indicator` for the session `id` (previews and screenshots,
+    /// where no session runs). A running session sets its own.
+    #[doc(hidden)]
+    pub fn set_indicator(id: &SessionId, indicator: Indicator, cx: &mut App) {
         if cx.global::<Self>().indicators.get(id) != Some(&indicator) {
             cx.update_global::<Self, _>(|this, _| {
                 this.indicators.insert(id.clone(), indicator);
@@ -296,8 +297,6 @@ pub struct LiveSession {
     reading: Arc<Reading>,
     activity: Activity,
     workers: Vec<WorkerSummary>,
-    /// Each worker's runs, for its time over all of them.
-    unseen: bool,
     /// How many windows show it.
     shown: usize,
     /// Input sent before it opened, sent once it does.
@@ -358,7 +357,6 @@ impl LiveSession {
             reading: Arc::default(),
             activity: Activity::default(),
             workers: Vec::new(),
-            unseen: false,
             shown: 0,
             queued: Vec::new(),
             queued_requests: Default::default(),
@@ -652,9 +650,6 @@ impl LiveSession {
                 // answer may come while its turn already runs).
                 self.refreshed_last = std::mem::take(&mut self.refresh_running)
                     || std::mem::take(&mut self.refresh_coming);
-                if self.shown == 0 && !self.refreshed_last {
-                    self.unseen = true;
-                }
                 cx.emit(LiveEvent::TurnEnded);
             }
             if question(&was) != question(now) {
@@ -697,7 +692,6 @@ impl LiveSession {
             let indicator = Indicator {
                 working: self.activity.working,
                 question: self.activity.question.is_some(),
-                unseen: self.unseen,
             };
             LiveSessions::set_indicator(id, indicator, cx);
         }
@@ -961,7 +955,10 @@ impl LiveSession {
     pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
         if shown {
             self.shown += 1;
-            self.unseen = false;
+            // What happened in it out of sight is seen now.
+            if let Some(id) = &self.id {
+                crate::notifications::mark_session_read(id, cx);
+            }
             self.touched_at = crate::figures::now_ms();
         } else {
             self.shown = self.shown.saturating_sub(1);
@@ -1354,8 +1351,8 @@ mod tests {
         });
     }
 
-    /// A turn that ends while no window shows the session leaves it
-    /// unseen. A question that closes without this app's answer was
+    /// The session tells of the turns that end and the questions that come
+    /// and go. A question that closes without this app's answer was
     /// answered elsewhere.
     #[gpui_kit::test]
     fn turns_and_questions_are_told_as_they_change(cx: &mut TestAppContext) {
@@ -1416,52 +1413,6 @@ mod tests {
                 },
             ]
         );
-        assert!(indicator(cx).unseen, "no window showed it");
-        session.update(cx, |session, cx| session.set_shown(true, cx));
-        assert!(!indicator(cx).unseen);
-    }
-
-    /// The turn that keeps the cache warm with a short message is no news:
-    /// it leaves a session nobody shows as it was.
-    #[gpui_kit::test]
-    fn a_cache_refresh_turn_is_no_news(cx: &mut TestAppContext) {
-        cx.update(super::init);
-        let session = cx.new(|cx| {
-            let mut session = LiveSession::blank(cx);
-            session.id = Some(crate::backend::SessionId("s1".into()));
-            session.answer_refresh_with(Ok(arko::Refreshed::Message));
-            session
-        });
-        let turn = |cx: &mut TestAppContext| {
-            for working in [true, false] {
-                session.update(cx, |session, cx| {
-                    session.set_status(
-                        arko::remote::Reading::default(),
-                        Activity {
-                            working,
-                            ..Activity::default()
-                        },
-                        cx,
-                    )
-                });
-            }
-        };
-        session
-            .update(cx, |session, cx| session.refresh_cache(cx))
-            .detach();
-        cx.run_until_parked();
-        turn(cx);
-        let unseen = |cx: &mut TestAppContext| {
-            cx.read(|cx| {
-                super::LiveSessions::indicator(&crate::backend::SessionId("s1".into()), cx).unseen
-            })
-        };
-        assert!(cx.read(|cx| session.read(cx).turn_was_refresh()));
-        assert!(!unseen(cx));
-        // The next turn is news again.
-        turn(cx);
-        assert!(!cx.read(|cx| session.read(cx).turn_was_refresh()));
-        assert!(unseen(cx));
     }
 
     /// What the engine says in a burst (here 4,000 changes of the turn's
