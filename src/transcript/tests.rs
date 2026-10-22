@@ -1950,10 +1950,16 @@ fn a_cache_refresh_shows_as_one_quiet_row(cx: &mut TestAppContext) {
     say(&feed, "main", "Acknowledged");
     feed.reply("Acknowledged");
     feed.turn_ended("1 s · $0.001", None);
-    let (_, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
     let refresh = item_ids(&feed)[2].0;
     let rows = keys(&view, cx);
     assert_eq!(rows.last(), Some(&RowKey::Refresh(refresh)));
+    // A screen reader says what the row reads.
+    cx.update_window(window, |_, window, _| {
+        let row = super::row::element_id(RowKey::Refresh(refresh));
+        assert_eq!(window.find(row).label(), Some("Cache refreshed"));
+    })
+    .unwrap();
     assert_eq!(
         rows.iter()
             .filter(|key| matches!(key, RowKey::Block { .. }))

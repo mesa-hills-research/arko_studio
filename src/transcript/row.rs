@@ -43,6 +43,11 @@ const COLUMN: f32 = 46.;
 const USER_BUBBLE_WIDTH: f32 = 17.5;
 /// The least room, in rem, between a reply's other actions and Regenerate.
 const REGENERATE_GAP: f32 = 2.;
+/// What the Regenerate buttons' tooltips say.
+const REGENERATE_HINT: &str = "Send your last message again";
+/// What a message that only kept the prompt cache warm reads, and what a
+/// screen reader says of it.
+pub(super) const CACHE_REFRESHED: &str = "Cache refreshed";
 /// The room, in rem, a line keeps at its right for Regenerate laid over it.
 const REGENERATE_ROOM: f32 = 1.75;
 /// Lines of a call's output shown before "Show all N lines".
@@ -980,7 +985,7 @@ impl TranscriptView {
             .px_2()
             .text_xs()
             .text_color(theme.muted_foreground)
-            .child("Cache refreshed")
+            .child(CACHE_REFRESHED)
             .into_any_element()
     }
 
@@ -1333,7 +1338,7 @@ impl TranscriptView {
                         this.child(div().flex_1().min_w(rems(REGENERATE_GAP)))
                             .child(regenerate_button(
                                 id,
-                                busy.unwrap_or("Send your last message again for a new reply"),
+                                busy.unwrap_or(REGENERATE_HINT),
                                 busy.is_some(),
                                 shown,
                                 muted,
@@ -2003,15 +2008,8 @@ impl TranscriptView {
                 id: ("end-actions", id).into(),
                 shown: self.hovered == Some(id),
                 build: Box::new(move |shown| {
-                    regenerate_button(
-                        id,
-                        "Send your last message again for a reply",
-                        false,
-                        shown,
-                        muted,
-                        view,
-                    )
-                    .into_any_element()
+                    regenerate_button(id, REGENERATE_HINT, false, shown, muted, view)
+                        .into_any_element()
                 }),
             }
             .into_any_element(),
@@ -2529,8 +2527,8 @@ mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::{
-        OutputViewer, apply_diff_patch, code_lines, duration, edit_diff, longest_code, preview,
-        user_tags,
+        CACHE_REFRESHED, OutputViewer, REGENERATE_HINT, apply_diff_patch, code_lines, duration,
+        edit_diff, longest_code, preview, user_tags,
     };
     use arko::remote::{Delivery, Item, Kind, Source};
     use gpui_kit::AppContext as _;
@@ -2615,6 +2613,14 @@ mod tests {
         assert_eq!(code_lines("```rust\nfn a() {}\nfn b() {}\n```\n"), 2);
         assert_eq!(code_lines("```rust\nfn a() {}\nfn b() {}"), 2);
         assert_eq!(code_lines("    indented\n    code\n"), 2);
+    }
+
+    /// Both Regenerate buttons, the one among a reply's actions and the one
+    /// on a turn's last line, say the same.
+    #[test]
+    fn the_regenerate_buttons_share_their_words() {
+        assert_eq!(REGENERATE_HINT, "Send your last message again");
+        assert_eq!(CACHE_REFRESHED, "Cache refreshed");
     }
 
     #[test]

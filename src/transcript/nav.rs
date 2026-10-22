@@ -87,7 +87,7 @@ impl TranscriptView {
             }
             RowKey::Count(_) => "Calls".to_string(),
             RowKey::Actions(_) => "Actions".to_string(),
-            RowKey::Refresh(_) => "Kept the cache warm".to_string(),
+            RowKey::Refresh(_) => super::row::CACHE_REFRESHED.to_string(),
             RowKey::Worker(_) => {
                 let worker = item.worker.as_deref().unwrap_or_default();
                 let setup = self
