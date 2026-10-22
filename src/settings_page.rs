@@ -1015,6 +1015,14 @@ fn notifications_page(cx: &App) -> SettingPage {
             )
             .keywords(["ask_user", "answer", "notify", "unfocused"]),
             switch(
+                "When a worker reports or fails",
+                "A notification from your system while Arko Studio is in the background. A worker that another worker started notifies only when it fails.",
+                |prefs| prefs.notifications.workers,
+                |prefs, on| prefs.notifications.workers = on,
+                defaults.workers,
+            )
+            .keywords(["subagent", "report", "failed", "error", "notify", "unfocused"]),
+            switch(
                 "Cache reminders",
                 "5 minutes before a session’s prompt cache expires (for an hour-long cache), and at 1 minute with a countdown and Refresh.",
                 |prefs| prefs.notifications.cache_reminders,

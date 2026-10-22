@@ -902,13 +902,13 @@ fn the_choices_stay_inside_their_rows(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_group_shows_a_preference_changed_elsewhere(cx: &mut TestAppContext) {
     start_with(cx, prefs::Prefs::default());
-    // Notifications: When a turn ends, When a question arrives, Cache
-    // reminders, Sound.
+    // Notifications: When a turn ends, When a question arrives, When a
+    // worker reports or fails, Cache reminders, Sound.
     let (window, _, _) = settings_window(cx, NOTIFICATIONS_PAGE, 900.);
     let sound = |cx: &mut TestAppContext| {
         let mut checked = None;
         act(cx, window, |window, _| {
-            checked = window.within("item-3").find("check").checked();
+            checked = window.within("item-4").find("check").checked();
         });
         checked.unwrap()
     };

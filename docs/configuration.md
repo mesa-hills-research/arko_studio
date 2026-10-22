@@ -52,9 +52,9 @@ history, even when the window was in front and nothing popped up. Open the histo
 count in the status bar, **View › Notifications** or Ctrl+Shift+M (Cmd+Shift+M on macOS). The
 latest 200 are kept across restarts. A notification is unread until you open its session.
 
-A session that finished a turn or asked a question while you looked at another one has a dot in the
-sidebar until you open it, also when those notifications are off. A closed folder shows the dot
-too while a session inside has one.
+A session that finished a turn, asked a question, or had a worker report or fail while you looked at
+another one has a dot in the sidebar until you open it, also when those notifications are off. A
+closed folder shows the dot too while a session inside has one.
 
 **Settings › Web page** controls sharing. A session's link lets anyone who has it read the
 conversation, send messages and commands, answer questions and stop turns. The page is not

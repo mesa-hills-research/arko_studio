@@ -521,6 +521,8 @@ impl Default for Input {
 pub struct Notifications {
     pub turn_ended: bool,
     pub question: bool,
+    /// A worker the main agent started reports, or any worker fails.
+    pub workers: bool,
     pub cache_reminders: bool,
     pub sound: bool,
 }
@@ -530,6 +532,7 @@ impl Default for Notifications {
         Self {
             turn_ended: true,
             question: true,
+            workers: true,
             cache_reminders: true,
             sound: false,
         }

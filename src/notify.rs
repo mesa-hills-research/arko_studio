@@ -1,9 +1,9 @@
 //! Notifications that reach the user away from the session: a turn that
-//! ends or a question that arrives while Arko Studio is in the background
-//! posts an OS notification and asks for the window's attention (each as
-//! Settings › Notifications says), and a question in a session no window
-//! shows comes up in the app. A sound goes with them when the user wants
-//! one.
+//! ends, a question that arrives, a worker that reports or one that fails
+//! while Arko Studio is in the background posts an OS notification and asks
+//! for the window's attention (each as Settings › Notifications says), and a
+//! question in a session no window shows comes up in the app. A sound goes
+//! with them when the user wants one.
 
 use std::rc::Rc;
 
@@ -13,7 +13,7 @@ use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, v_flex
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::live::{LiveEvent, LiveSession};
+use crate::live::{LiveEvent, LiveSession, WorkerEnd};
 use crate::prefs;
 use crate::workspace::Workspace;
 
@@ -264,7 +264,38 @@ pub fn notice(
                 (false, _) => Delivery::System,
             },
         }),
+        LiveEvent::WorkerEnded(end) if settings.workers => {
+            // A worker that another worker started finishing is routine. Its
+            // failure isn't.
+            if end.parent.is_some() && !end.failed {
+                return None;
+            }
+            Some(Notice {
+                title: title.to_string(),
+                body: worker_words(end),
+                delivery: if focused {
+                    Delivery::History
+                } else {
+                    Delivery::System
+                },
+            })
+        }
         _ => None,
+    }
+}
+
+/// What a worker's end says, as Arko words it: "r1 reported. Fixed the
+/// parser", and "r2 (under r1) failed (the model gave no reply)".
+fn worker_words(end: &WorkerEnd) -> String {
+    let name = match &end.parent {
+        Some(parent) => format!("{} (under {parent})", end.id),
+        None => end.id.clone(),
+    };
+    match (end.failed, end.detail.as_deref().map(first_line)) {
+        (false, Some(report)) => format!("{name} reported. {report}"),
+        (false, None) => format!("{name} reported."),
+        (true, Some(why)) => format!("{name} failed ({why})"),
+        (true, None) => format!("{name} failed."),
     }
 }
 
@@ -282,10 +313,21 @@ fn first_line(text: &str) -> String {
     short
 }
 
+/// Whether `event` is news for the user, who gets the sidebar's dot when
+/// it comes out of their sight: a turn that ended, a question, a worker the
+/// main agent started that reported and any worker that failed.
+fn is_news(event: &LiveEvent) -> bool {
+    match event {
+        LiveEvent::TurnEnded | LiveEvent::QuestionAsked => true,
+        LiveEvent::WorkerEnded(end) => end.parent.is_none() || end.failed,
+        _ => false,
+    }
+}
+
 struct TurnNotice;
 
-/// Tells the user of `session`'s turns and questions as they come, as
-/// Settings › Notifications says. Called once for each session the app
+/// Tells the user of `session`'s turns, questions and workers as they come,
+/// as Settings › Notifications says. Called once for each session the app
 /// opens.
 pub fn watch(session: &Entity<LiveSession>, cx: &mut App) {
     cx.subscribe(session, |session, event: &LiveEvent, cx| {
@@ -295,10 +337,9 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) {
         }
         let window = window_for(&session, cx);
         let shown = shown_in_front(&session, cx);
-        // A turn that ended or a question that came out of the user's sight
-        // gives the session news, for the sidebar's dot, whichever
-        // notifications Settings has on.
-        if matches!(event, LiveEvent::TurnEnded | LiveEvent::QuestionAsked)
+        // What came out of the user's sight gives the session news, for the
+        // sidebar's dot, whichever notifications Settings has on.
+        if is_news(event)
             && !shown
             && let Some(id) = session.read(cx).id().cloned()
         {
@@ -375,7 +416,7 @@ mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::{Delivery, Notice, first_line, notice};
-    use crate::live::{LiveEvent, LiveSession};
+    use crate::live::{LiveEvent, LiveSession, WorkerEnd};
     use crate::prefs::Notifications;
     use crate::tests::open;
     use arko::remote::{Activity, Question, Reading};
@@ -443,6 +484,82 @@ mod tests {
         );
     }
 
+    fn ended(id: &str, parent: Option<&str>, failed: bool, detail: Option<&str>) -> LiveEvent {
+        LiveEvent::WorkerEnded(WorkerEnd {
+            id: id.into(),
+            parent: parent.map(str::to_string),
+            failed,
+            detail: detail.map(str::to_string),
+        })
+    }
+
+    /// A report of a worker the main agent started and any failure notify.
+    /// A worker that another worker started finishing is routine.
+    #[test]
+    fn workers_notify_when_the_main_agents_report_or_any_fail() {
+        let on = Notifications::default();
+        let words = |event: &LiveEvent, focused| {
+            notice(event, "Fonts", None, focused, false, &on).map(|notice| notice.body)
+        };
+        let report = ended("r1", None, false, Some("Wrote the changelog."));
+        assert_eq!(
+            words(&report, false).as_deref(),
+            Some("r1 reported. Wrote the changelog.")
+        );
+        assert_eq!(
+            notice(&report, "Fonts", None, false, false, &on).map(|notice| notice.delivery),
+            Some(Delivery::System)
+        );
+        // In front, the history keeps it and nothing pops up.
+        assert_eq!(
+            notice(&report, "Fonts", None, true, false, &on).map(|notice| notice.delivery),
+            Some(Delivery::History)
+        );
+        assert_eq!(
+            words(&ended("r1", None, false, None), false).as_deref(),
+            Some("r1 reported.")
+        );
+        // A worker's worker finishing is routine, its failure is not.
+        assert_eq!(
+            words(&ended("r2", Some("r1"), false, Some("Counted 14.")), false),
+            None
+        );
+        assert_eq!(
+            words(
+                &ended("r2", Some("r1"), true, Some("the model gave no reply")),
+                false
+            )
+            .as_deref(),
+            Some("r2 (under r1) failed (the model gave no reply)")
+        );
+        assert_eq!(
+            words(&ended("r3", None, true, None), false).as_deref(),
+            Some("r3 failed.")
+        );
+        // A report's first line only, cut when long.
+        let long = format!("Found it.\n{}", "x".repeat(200));
+        assert_eq!(
+            words(&ended("r1", None, false, Some(&long)), false).as_deref(),
+            Some("r1 reported. Found it.")
+        );
+        let off = Notifications {
+            workers: false,
+            ..Notifications::default()
+        };
+        assert_eq!(notice(&report, "Fonts", None, false, false, &off), None);
+        assert_eq!(
+            notice(
+                &ended("r3", None, true, None),
+                "Fonts",
+                None,
+                false,
+                false,
+                &off
+            ),
+            None
+        );
+    }
+
     fn start(cx: &mut TestAppContext) {
         let backend = Arc::new(crate::backend::FakeBackend::sample(
             "/arko",
@@ -501,6 +618,93 @@ mod tests {
         // The OS shows the session's title, then what happened.
         assert_eq!(shown[0].title.as_ref(), "Fonts");
         assert_eq!(shown[0].body.as_ref(), "Arko finished its turn.");
+    }
+
+    /// A worker that goes on and ends posts an OS notification in the
+    /// background. One the session already had ended, and a summary that says
+    /// it again, don't.
+    #[gpui_kit::test]
+    fn a_worker_that_ends_in_the_background_posts_an_os_notification(cx: &mut TestAppContext) {
+        use arko::remote::{WorkerState, WorkerSummary};
+
+        start(cx);
+        let (window, _) = open(cx, 1300.);
+        activate(window, cx);
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        session.update(cx, |session, cx| {
+            let reading = Reading {
+                title: "Fonts".into(),
+                ..Reading::default()
+            };
+            session.set_status(reading, Activity::default(), cx)
+        });
+        cx.update(|cx| super::watch(&session, cx));
+        let worker = |id: &str, parent: Option<&str>, state, report: Option<&str>| {
+            let mut worker = WorkerSummary::new(id);
+            worker.state = state;
+            worker.parent = parent.map(str::to_string);
+            worker.report = report.map(str::to_string);
+            worker.last = (state == WorkerState::Failed).then(|| "the model failed".to_string());
+            worker
+        };
+        let send = |cx: &mut TestAppContext, workers: Vec<WorkerSummary>| {
+            session.update(cx, |session, cx| session.set_workers(workers, cx));
+            cx.run_until_parked();
+        };
+        // One that ended before the session was shown is no news.
+        send(
+            cx,
+            vec![worker("r0", None, WorkerState::Finished, Some("Old."))],
+        );
+        VisualTestContext::from_window(window, cx).deactivate_window();
+        send(
+            cx,
+            vec![
+                worker("r1", None, WorkerState::Running, None),
+                worker("r2", Some("r1"), WorkerState::Running, None),
+            ],
+        );
+        assert!(cx.shown_system_notifications().is_empty());
+        // The worker's worker finishing is routine.
+        send(
+            cx,
+            vec![
+                worker("r1", None, WorkerState::Running, None),
+                worker("r2", Some("r1"), WorkerState::Finished, Some("Counted 14.")),
+            ],
+        );
+        assert!(cx.shown_system_notifications().is_empty());
+        // The worker the main agent started reports.
+        let done = vec![
+            worker("r1", None, WorkerState::Finished, Some("Reviewed.\nMore.")),
+            worker("r2", Some("r1"), WorkerState::Finished, Some("Counted 14.")),
+        ];
+        send(cx, done.clone());
+        let shown = cx.shown_system_notifications();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].title.as_ref(), "Fonts");
+        assert_eq!(shown[0].body.as_ref(), "r1 reported. Reviewed.");
+        // Told again, it says nothing more.
+        send(cx, done);
+        assert_eq!(cx.shown_system_notifications().len(), 1);
+        // A failure of a worker's worker does.
+        send(
+            cx,
+            vec![
+                worker("r3", None, WorkerState::Running, None),
+                worker("r4", Some("r3"), WorkerState::Running, None),
+            ],
+        );
+        send(
+            cx,
+            vec![worker("r4", Some("r3"), WorkerState::Failed, None)],
+        );
+        let shown = cx.shown_system_notifications();
+        assert_eq!(shown.len(), 2);
+        assert_eq!(
+            shown[1].body.as_ref(),
+            "r4 (under r3) failed (the model failed)"
+        );
     }
 
     /// Clicking the OS notification of a session shows that session in the

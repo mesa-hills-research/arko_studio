@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use arko::remote::{Activity, Feed, Question, Reading, Update, WorkerSummary};
+use arko::remote::{Activity, Feed, Question, Reading, Update, WorkerState, WorkerSummary};
 use async_trait::async_trait;
 use gpui_kit::*;
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -158,6 +158,49 @@ pub enum LiveEvent {
     },
     /// A request to the engine failed: the sentence to show.
     Refused(String),
+    /// A worker finished or failed.
+    WorkerEnded(WorkerEnd),
+}
+
+/// A worker that finished or failed, as a notification tells of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkerEnd {
+    /// Its ID, such as `r2`.
+    pub id: String,
+    /// The worker that started it, when a worker did and not the main agent.
+    pub parent: Option<String>,
+    /// Whether it failed, else it finished with a report.
+    pub failed: bool,
+    /// The first line of its report, or why it failed.
+    pub detail: Option<String>,
+}
+
+impl WorkerEnd {
+    /// How `worker` ended, if it finished or failed.
+    fn of(worker: &WorkerSummary) -> Option<Self> {
+        let failed = match worker.state {
+            WorkerState::Finished => false,
+            WorkerState::Failed => true,
+            _ => return None,
+        };
+        let detail = if failed {
+            worker.last.as_deref()
+        } else {
+            worker
+                .report
+                .as_deref()
+                .and_then(|report| report.lines().find(|line| !line.trim().is_empty()))
+        };
+        Some(Self {
+            id: worker.id.clone(),
+            parent: worker.parent.clone(),
+            failed,
+            detail: detail
+                .map(str::trim)
+                .filter(|detail| !detail.is_empty())
+                .map(str::to_string),
+        })
+    }
 }
 
 /// What a session asks as it opens.
@@ -664,9 +707,20 @@ impl LiveSession {
             }
         }
         for worker in drained.workers {
+            // A worker that was going on and ended, not one the session
+            // already had ended (as it opened, or when it is told again).
+            let ended = self
+                .workers
+                .iter()
+                .find(|known| known.id == worker.id)
+                .filter(|known| known.state.is_active() && !worker.state.is_active())
+                .and_then(|_| WorkerEnd::of(&worker));
             match self.workers.iter_mut().find(|known| known.id == worker.id) {
                 Some(known) => *known = worker,
                 None => self.workers.push(worker),
+            }
+            if let Some(end) = ended {
+                cx.emit(LiveEvent::WorkerEnded(end));
             }
         }
         for ask in drained.quit_asks {
@@ -830,6 +884,18 @@ impl LiveSession {
             Drained {
                 reading: Some(Arc::new(reading)),
                 activity: Some(activity),
+                ..Drained::default()
+            },
+            cx,
+        );
+    }
+
+    /// Takes `workers` as if the feed had sent their summaries (tests).
+    #[cfg(test)]
+    pub fn set_workers(&mut self, workers: Vec<WorkerSummary>, cx: &mut Context<Self>) {
+        self.apply(
+            Drained {
+                workers,
                 ..Drained::default()
             },
             cx,
