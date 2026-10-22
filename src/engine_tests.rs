@@ -1323,3 +1323,108 @@ fn a_message_to_a_worker_reaches_it_and_shows_in_its_transcript_only(cx: &mut Te
     assert!(!exported.iter().any(|item| item.text.contains("Use tabs.")));
     app.close_all(cx);
 }
+
+/// What frames cost around a long session, and how often each view draws,
+/// as the sidebar, the status bar, the composer and the transcript ask for
+/// them. It runs 40 turns, so it is ignored by default.
+///
+/// ```sh
+/// cargo test --lib frames_around_a_long_session -- --ignored --nocapture
+/// ```
+///
+/// Each step asks for a frame and draws one more, so a time is for two draws
+/// of the window, on the test platform, which doesn't shape text. The times are
+/// of the fastest batch, as they vary with the load.
+#[gpui_kit::test]
+#[ignore]
+fn frames_around_a_long_session(cx: &mut TestAppContext) {
+    use std::time::Instant;
+
+    let mock = Mock::start(|_, body| {
+        let n = body.matches("Question ").count();
+        let text = format!(
+            "Answer {n}, the first paragraph, with `code` and **bold** words in it.\n\nThe second paragraph of answer {n} goes on a while, so that it wraps over a couple of lines in the column.\n\n- a list item\n- another one\n\n```rust\nfn answer_{n}() {{}}\n```\n\nAnd a last paragraph."
+        );
+        Box::pin(async move { arko::testing::reply("r1", &text) })
+    });
+    let app = start(cx, &mock);
+    for n in 0..40 {
+        app.send(cx, &format!("Question {n}"));
+        app.wait_for_text(cx, &format!("Answer {}", n + 1));
+        wait_until(cx, "the turn to end", |cx| {
+            app.shown(cx)
+                .is_some_and(|session| cx.read(|cx| !session.read(cx).is_working()))
+        });
+    }
+    let transcript = app.transcript(cx).unwrap();
+    let (sidebar, status, view) = cx.read(|cx| {
+        let workspace = app.workspace.read(cx);
+        (
+            workspace.sidebar().clone(),
+            workspace.status_bar().clone(),
+            workspace.session_view().clone(),
+        )
+    });
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    let draw = |cx: &mut TestAppContext| {
+        cx.update_window(app.window, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    };
+    for _ in 0..5 {
+        cx.run_until_parked();
+        draw(cx);
+    }
+    eprintln!("{} rows", cx.read(|cx| transcript.read(cx).row_count()));
+    let draws = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            (
+                view.read(cx).render_count(),
+                transcript.read(cx).render_count(),
+            )
+        })
+    };
+    let frames = |cx: &mut TestAppContext, name: &str, ask: &dyn Fn(&mut TestAppContext)| {
+        const BATCHES: usize = 15;
+        const STEPS: usize = 20;
+        let (session_view, rows) = draws(cx);
+        let mut times = Vec::new();
+        for _ in 0..BATCHES {
+            let start = Instant::now();
+            for _ in 0..STEPS {
+                ask(cx);
+                draw(cx);
+            }
+            times.push(start.elapsed());
+        }
+        times.sort();
+        let (session_view_after, rows_after) = draws(cx);
+        eprintln!(
+            "{name}: {:.2} ms a step (the fastest of {BATCHES} batches), the session view drew {} times and the transcript {} times in {} steps",
+            times[0].as_secs_f64() * 1000. / STEPS as f64,
+            session_view_after - session_view,
+            rows_after - rows,
+            BATCHES * STEPS
+        );
+    };
+    for _ in 0..2 {
+        frames(cx, "the workspace", &|cx| {
+            app.workspace.update(cx, |_, cx| cx.notify())
+        });
+        frames(cx, "the sidebar", &|cx| {
+            sidebar.update(cx, |_, cx| cx.notify())
+        });
+        frames(cx, "the status bar", &|cx| {
+            status.update(cx, |_, cx| cx.notify())
+        });
+        frames(cx, "the composer", &|cx| {
+            composer.update(cx, |_, cx| cx.notify())
+        });
+        frames(cx, "the session view", &|cx| {
+            view.update(cx, |_, cx| cx.notify())
+        });
+        frames(cx, "the transcript", &|cx| {
+            transcript.update(cx, |_, cx| cx.notify())
+        });
+    }
+    app.close_all(cx);
+}

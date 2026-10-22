@@ -148,6 +148,8 @@ impl EventEmitter<SessionViewEvent> for SessionView {}
 
 /// What the main column shows: a session, or a new one not started yet.
 pub struct SessionView {
+    /// How many times it has drawn (for tests and measurements).
+    renders: usize,
     session: Option<Entity<LiveSession>>,
     draft: Draft,
     /// The folders of recent agent sessions, the latest first.
@@ -249,6 +251,7 @@ impl SessionView {
             cx,
         );
         let mut this = Self {
+            renders: 0,
             session: None,
             draft: Draft {
                 mode: default_mode(cx),
@@ -642,6 +645,11 @@ impl SessionView {
             self.width = width;
             cx.notify();
         }
+    }
+
+    /// How many times the view has drawn (for tests and measurements).
+    pub fn render_count(&self) -> usize {
+        self.renders
     }
 
     /// The composer.
@@ -2969,6 +2977,7 @@ pub fn not_yet(what: &str, window: &mut Window, cx: &mut App) {
 
 impl Render for SessionView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders += 1;
         let narrow = self.width == WidthClass::Narrow;
         let question = self.render_question(cx);
         let prompt = self.render_prompt(cx);

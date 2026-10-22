@@ -1105,9 +1105,14 @@ impl Workspace {
     fn render_main(&self) -> AnyElement {
         match &self.settings {
             Some(settings) => pane(settings),
-            // Not kept itself: GPUI draws every kept view inside a kept view
-            // that draws again, and the session view draws with each
-            // keystroke and blink of the caret. Its transcript is kept.
+            // Not kept like the panes around it. A kept view inside another
+            // that draws again is reused now, so keeping it would save about
+            // half of a frame that a view outside it asks for (a spinner in
+            // the sidebar, the status bar's clock). But a kept view that
+            // isn't drawn adds nothing to the accessibility tree, so the
+            // composer, the find bar and the question card would drop out of
+            // what a screen reader sees in each of those frames. The
+            // transcript is kept.
             None => self.session_view.clone().into_any_element(),
         }
     }
