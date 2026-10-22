@@ -1472,3 +1472,177 @@ fn frames_around_a_long_session(cx: &mut TestAppContext) {
     }
     app.close_all(cx);
 }
+
+/// A session of 40 turns, and a mock model that answers "The last question"
+/// with a shell command that runs for a while.
+fn a_long_session(cx: &mut TestAppContext) -> (App, Mock) {
+    let mock = Mock::start(|_, body| {
+        if body.contains("The last question") {
+            if body.contains("call_m1") {
+                return reply("r1", "Done.");
+            }
+            let call = arko::testing::tool_call(
+                "m1",
+                "shell",
+                serde_json::json!({ "command": "sleep 30" }),
+            );
+            return Box::pin(async move { call });
+        }
+        let n = body.matches("Question ").count();
+        let text = format!(
+            "Answer {n}, the first paragraph, with `code` and **bold** words in it.\n\nThe second paragraph of answer {n} goes on a while, so that it wraps over a couple of lines in the column.\n\n- a list item\n- another one\n\n```rust\nfn answer_{n}() {{}}\n```\n\nAnd a last paragraph."
+        );
+        Box::pin(async move { arko::testing::reply("r1", &text) })
+    });
+    let app = start(cx, &mock);
+    cx.update(|cx| {
+        crate::prefs::update(cx, |prefs| {
+            prefs.appearance.motion = crate::prefs::Motion::On
+        });
+        cx.set_reduce_motion(false);
+    });
+    for n in 0..40 {
+        app.send(cx, &format!("Question {n}"));
+        app.wait_for_text(cx, &format!("Answer {}", n + 1));
+        wait_until(cx, "the turn to end", |cx| {
+            app.shown(cx)
+                .is_some_and(|session| cx.read(|cx| !session.read(cx).is_working()))
+        });
+    }
+    (app, mock)
+}
+
+/// What a second of time costs with the spinners turning, and how often the
+/// session view and the transcript drew in it. Time is stepped in sixtieths of
+/// a second, on the test platform, which doesn't shape text. A time is of the
+/// processor, for the fastest of 12 seconds.
+fn spinner_seconds(cx: &mut TestAppContext, app: &App, name: &str) {
+    // The time this thread has run, which other programs using the processor
+    // don't stretch, where the clock on the wall would.
+    fn cpu_time() -> Duration {
+        std::fs::read_to_string("/proc/thread-self/schedstat")
+            .ok()
+            .and_then(|stat| stat.split_whitespace().next()?.parse::<u64>().ok())
+            .map(Duration::from_nanos)
+            .unwrap_or_default()
+    }
+
+    let transcript = app.transcript(cx).unwrap();
+    let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
+    for _ in 0..30 {
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(17));
+    }
+    let draws = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            (
+                view.read(cx).render_count(),
+                transcript.read(cx).render_count(),
+            )
+        })
+    };
+    const SECONDS: usize = 12;
+    crate::testing::count_renders();
+    let (session_view, rows_drawn) = draws(cx);
+    let mut times = Vec::new();
+    for _ in 0..SECONDS {
+        let start = cpu_time();
+        for _ in 0..60 {
+            cx.executor().advance_clock(Duration::from_micros(16_667));
+            cx.run_until_parked();
+        }
+        times.push(cpu_time() - start);
+    }
+    times.sort();
+    let (session_view_after, rows_drawn_after) = draws(cx);
+    let per_second = |name: &str| {
+        crate::testing::renders()
+            .get(name)
+            .copied()
+            .unwrap_or_default() as f64
+            / SECONDS as f64
+    };
+    eprintln!(
+        "{name}: {:.2} ms a second (the fastest of {SECONDS}). A second draws the workspace {:.1} times, the sidebar {:.1}, the session view {:.1} and the transcript {:.1}",
+        times[0].as_secs_f64() * 1000.,
+        per_second("Workspace"),
+        per_second("Sidebar"),
+        (session_view_after - session_view) as f64 / SECONDS as f64,
+        (rows_drawn_after - rows_drawn) as f64 / SECONDS as f64,
+    );
+}
+
+/// What the running indicator of a command costs in a long session, which
+/// turns at 12 frames a second. It runs 40 turns, so it is ignored by default.
+///
+/// ```sh
+/// cargo test --lib frames_while_a_command_runs -- --ignored --nocapture
+/// ```
+#[gpui_kit::test]
+#[ignore]
+fn frames_while_a_command_runs(cx: &mut TestAppContext) {
+    let (app, _mock) = a_long_session(cx);
+    app.send(cx, "The last question");
+    let session = app.shown(cx).unwrap();
+    wait_until(cx, "the command to run", |cx| {
+        cx.read(|cx| !session.read(cx).reading().movable.is_empty())
+    });
+    spinner_seconds(cx, &app, "a command running in the shown session");
+    // The command runs on: the session ends with the app.
+    app.close_all(cx);
+}
+
+/// What the spinner of a session that works in the background costs next to
+/// a long session, in the sidebar, at 30 frames a second. It runs 40 turns, so
+/// it is ignored by default.
+///
+/// ```sh
+/// cargo test --lib frames_while_another_session_works -- --ignored --nocapture
+/// ```
+#[gpui_kit::test]
+#[ignore]
+fn frames_while_another_session_works(cx: &mut TestAppContext) {
+    let (app, _mock) = a_long_session(cx);
+    let long = app.shown(cx).unwrap();
+    // A second session starts a command, and the window goes back to the long one.
+    act(cx, app.window, |window, cx| window.click("new-session", cx));
+    let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
+    cx.update(|cx| view.update(cx, |view, cx| view.set_draft_folder(app.work.clone(), cx)));
+    app.send(cx, "The last question");
+    let other = app.shown(cx).unwrap();
+    wait_until(cx, "the command to run", |cx| {
+        cx.read(|cx| !other.read(cx).reading().movable.is_empty())
+    });
+    // The sidebar lists the group and both sessions.
+    wait_until(cx, "the sidebar's rows", |cx| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(("row", 2usize)).is_some()
+        })
+        .unwrap()
+    });
+    for row in 1..3usize {
+        act(cx, app.window, |window, cx| window.click(("row", row), cx));
+        if app.shown(cx).map(|shown| shown.entity_id()) == Some(long.entity_id()) {
+            break;
+        }
+    }
+    assert_eq!(
+        app.shown(cx).map(|shown| shown.entity_id()),
+        Some(long.entity_id())
+    );
+    app.wait_for_rows(cx, 40);
+    let spinning = cx
+        .update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            (0..3usize).any(|row| window.try_find(("row-working", row)).is_some())
+        })
+        .unwrap();
+    assert!(spinning, "the sidebar shows no spinner");
+    spinner_seconds(
+        cx,
+        &app,
+        "a spinner in the sidebar next to the long session",
+    );
+    app.close_all(cx);
+}
