@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2a2f"/>
+      <stop offset="1" stop-color="#161619"/>
+    </linearGradient>
+  </defs>
+  <!-- the tile, with the corner radius of a macOS app icon (22.4%) -->
+  <rect width="1024" height="1024" rx="229" fill="url(#tile)"/>
+  <g fill="#D5642A">
+    <!-- the hollow node -->
+    <path fill-rule="evenodd" d="M194.1 528a55.3 55.3 0 1 1 110.6 0a55.3 55.3 0 1 1 -110.6 0ZM220.5 528a28.8 28.8 0 1 0 57.6 0a28.8 28.8 0 1 0 -57.6 0Z"/>
+    <!-- the right node -->
+    <circle cx="522" cy="518.1" r="50.8"/>
+    <!-- the bottom node -->
+    <circle cx="419.7" cy="749.1" r="51.3"/>
+    <!-- the top left of the arc -->
+    <path d="M463.9 221.6A248.4 248.4 0 0 0 210 466.8A72.7 72.7 0 0 1 277 460.7A182 182 0 0 1 463.9 285.2Z"/>
+    <!-- the top right of the arc and the stem under it -->
+    <path d="M487.9 219.2A239.2 239.2 0 0 1 716.1 458.1L716.1 484.6L650.3 484.6L650.3 457.6A174.3 174.3 0 0 0 487.9 283.8Z"/>
+    <!-- the bottom of the arc and the stem -->
+    <path d="M650.3 563.4L650.3 612.2A133.9 133.9 0 0 1 488.8 743.2A69.3 69.3 0 0 1 468 798.8A196.9 196.9 0 0 0 650.3 746.4L650.3 797.5L716.1 797.5L716.1 563.4Z"/>
+    <!-- the link from the hollow node to the right node -->
+    <path d="M291 509.4L461.6 509.4A61 61 0 0 0 463.6 535.8L291 535.8Z"/>
+    <!-- the link from the hollow node to the bottom node -->
+    <path d="M257.8 562L365.9 705.5A69.3 69.3 0 0 1 384.6 689.4L288.6 562Z"/>
+    <!-- the link from the right node to the bottom node -->
+    <path d="M494.9 554.7L438.3 682.3A69.3 69.3 0 0 1 460.7 693.2L522 554.7Z"/>
+    <!-- the arrow shaft -->
+    <path d="M581.9 506.5L779.7 506.5L779.7 538.6L579.5 538.6A61 61 0 0 0 581.9 506.5Z"/>
+    <!-- the arrow head -->
+    <path d="M769.5 465L830 523.7L769.5 582.4Z"/>
+  </g>
+</svg>
