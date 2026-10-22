@@ -764,6 +764,17 @@ impl TranscriptView {
             for id in &ids[start..] {
                 self.add_ui(*id, cx);
             }
+            // A note the agent hasn't read waits at the end, whichever entry
+            // it came after, so it is ready with them.
+            for id in &ids[..start] {
+                if self
+                    .model
+                    .entry(*id)
+                    .is_some_and(|entry| entry.item.pending)
+                {
+                    self.add_ui(*id, cx);
+                }
+            }
             self.loaded_from = ids.get(start).copied().filter(|_| start > 0);
             self.rows.clear();
             self.list.reset(0);
@@ -822,7 +833,9 @@ impl TranscriptView {
         let ids: Vec<u64> = entries[start..end].iter().map(|e| e.item.id).collect();
         self.loaded_from = entries.get(start).map(|e| e.item.id).filter(|_| start > 0);
         for id in ids {
-            self.add_ui(id, cx);
+            if !self.ui.contains_key(&id) {
+                self.add_ui(id, cx);
+            }
         }
         self.refresh_rows(cx);
         self.loaded_from.is_some()

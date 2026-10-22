@@ -970,12 +970,13 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
         .first
         .map_or(0, |first| model.position(first).unwrap_or_else(|ix| ix));
     // Notes the agent hasn't read wait at the end, below what it goes on
-    // with, until they come again where it read them.
-    let mut waiting = Vec::new();
+    // with, until they come again where it read them. Those older than the
+    // entries ready to show wait there too.
     let waits = |at: usize| {
         let item = &entries[at].item;
         item.pending && show(filter, view, item) != Show::Hidden
     };
+    let mut waiting: Vec<usize> = (0..ix).filter(|at| waits(*at)).collect();
     while ix < entries.len() {
         let entry = &entries[ix];
         if entry.item.pending {

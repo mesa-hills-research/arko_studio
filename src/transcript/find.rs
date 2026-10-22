@@ -919,7 +919,9 @@ impl TranscriptView {
         let ids: Vec<u64> = entries[start..end].iter().map(|e| e.item.id).collect();
         self.loaded_from = entries.get(start).map(|e| e.item.id).filter(|_| start > 0);
         for id in ids {
-            self.add_ui(id, cx);
+            if !self.ui.contains_key(&id) {
+                self.add_ui(id, cx);
+            }
         }
         self.refresh_rows(cx);
     }

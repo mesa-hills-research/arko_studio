@@ -1248,6 +1248,65 @@ fn a_long_transcript_shows_its_end_first_and_the_rest_a_chunk_a_frame(cx: &mut T
     assert!(row_top(cx, window, RowKey::User(item_ids(&feed)[449].0)).is_some());
 }
 
+/// A note the agent hasn't read waits at the end of the transcript, however
+/// far back in the history it came. It shows with the latest entries, not
+/// once the older ones are ready, and it shows once.
+#[gpui_kit::test]
+fn a_note_waiting_from_before_the_first_entries_shows_with_them(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Rename it.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let note = feed.note("Keep the old name.", Source::App, 1, Vec::new());
+    for ix in 0..450 {
+        say(&feed, "main", &format!("Step {ix}.\n\n"));
+        let id = call(
+            &feed,
+            "main",
+            "read_file",
+            &[("path", format!("src/f{ix}.rs").into())],
+        );
+        result(&feed, "main", id, "read_file", "1 | fn a() {}\n");
+    }
+    let opened = feed.clone();
+    let (window, view) = cx
+        .update(|cx| {
+            gpui_kit::open_window(options(800., 400.), cx, |window, cx| {
+                cx.new(|cx| TranscriptView::new(&opened, AgentFilter::Main, window, cx))
+            })
+        })
+        .unwrap();
+    // The history shows from the next frame on: the latest entries first.
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(cx.read(|cx| view.read(cx).loaded_from.is_some()));
+    let rows = keys(&view, cx);
+    let first = *item_ids(&feed)
+        .iter()
+        .find(|(id, _)| *id > note)
+        .map(|(id, _)| id)
+        .unwrap();
+    assert!(
+        !rows.iter().any(|row| row.entry() == first),
+        "the entries after the note aren't all ready"
+    );
+    assert_eq!(rows.last(), Some(&RowKey::User(note)));
+    assert!(cx.read(|cx| view.read(cx).ui.contains_key(&note)));
+
+    // Once all are ready, the note is still last and shows once.
+    load_all(cx, window, &view);
+    let rows = keys(&view, cx);
+    assert_eq!(rows.last(), Some(&RowKey::User(note)));
+    assert_eq!(
+        rows.iter()
+            .filter(|row| **row == RowKey::User(note))
+            .count(),
+        1
+    );
+    assert!(row_top(cx, window, RowKey::User(note)).is_some());
+}
+
 #[gpui_kit::test]
 fn block_views_far_off_screen_are_let_go(cx: &mut TestAppContext) {
     start(cx);
