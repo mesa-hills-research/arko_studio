@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="16" height="16" viewBox="0 0 16 16" shape-rendering="crispEdges">
+  <!-- 16 px, candidate C. The mark of candidate B in near-black on a rounded tile.
+       One line below is one row of pixels, drawn as a line one unit thick. -->
+  <path stroke="#D5642A" d="
+    M2 0.5h12
+    M1 1.5h14
+    M0 2.5h16
+    M0 3.5h16
+    M0 4.5h16
+    M0 5.5h16
+    M0 6.5h16
+    M0 7.5h16
+    M0 8.5h16
+    M0 9.5h16
+    M0 10.5h16
+    M0 11.5h16
+    M0 12.5h16
+    M0 13.5h16
+    M1 14.5h14
+    M2 15.5h12
+  "/>
+  <path stroke="#1b1b1f" d="
+    M4 2.5h4
+    M2 3.5h8
+    M2 4.5h2M8 4.5h2
+    M1 5.5h2M9 5.5h2
+    M1 6.5h2M9 6.5h2M12 6.5h1
+    M1 7.5h3M12 7.5h2
+    M1 8.5h1M3 8.5h12
+    M1 9.5h3M12 9.5h2
+    M9 10.5h2M12 10.5h1
+    M8 11.5h3
+    M5 12.5h6
+    M6 13.5h5
+  "/>
+</svg>
