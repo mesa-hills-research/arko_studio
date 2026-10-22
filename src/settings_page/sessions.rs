@@ -11,8 +11,11 @@ use super::fields::{self, TextKind, TextSetting};
 use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
+use crate::workers::{curly, models_about};
+use arko::ModelChoice;
 use arko::commands::MIN_HANDOVER_SIZE;
 use arko::monitors::Wakes;
+use arko::workers;
 
 /// arko's own time before a command moves to the background, in seconds.
 pub const DEFAULT_BACKGROUND_AFTER: u64 = 600;
@@ -253,6 +256,11 @@ impl SessionsPage {
                 new.monitor_wakes.clone(),
             ),
             (
+                new.worker_models,
+                new.worker_depth,
+                crate::workers::nested(),
+            ),
+            (
                 new.outside_access,
                 new.text_replies,
                 new.cc_compact,
@@ -262,13 +270,13 @@ impl SessionsPage {
             ),
             errors.each_ref().map(|error| error.as_deref()),
         );
-        SettingPage::new(super::PAGES[3])
+        SettingPage::new(super::PAGES[super::SESSIONS_PAGE])
             .icon(IconName::FolderOpen)
             .description(
                 "What new sessions start with. Click an open session’s title to change its settings in Session info.",
             )
             .groups([
-                self.agent_group()
+                self.agent_group(cx)
                     .key(super::group_key("Agent sessions", &agent)),
                 self.chat_group().key(super::group_key("Chats", &())),
                 confirmations_group()
@@ -276,8 +284,9 @@ impl SessionsPage {
             ])
     }
 
-    fn agent_group(&self) -> SettingGroup {
+    fn agent_group(&self, cx: &App) -> SettingGroup {
         let defaults = NewSessions::default();
+        let new = &prefs::get(cx).new_sessions;
         SettingGroup::new()
             .title("Agent sessions")
             .items([
@@ -291,6 +300,28 @@ impl SessionsPage {
                     .item("Workers’ handover size", "workers-handover-at")
                 .description("The same for workers, each up to what its own model takes.")
                 .keywords(["context", "tokens", "handover-at", "workers"]),
+                super::choice_of(
+                    workers::MODELS_NAME,
+                    ModelChoice::ALL
+                        .map(|choice| (choice, SharedString::from(curly(choice.label()))))
+                        .to_vec(),
+                    |prefs| prefs.new_sessions.worker_models,
+                    |prefs, choice| prefs.new_sessions.worker_models = choice,
+                    defaults.worker_models,
+                )
+                .description(models_about(new.worker_models))
+                .keywords(["workers", "profiles", "model", "worker-models", "agent chooses"]),
+                super::choice_of(
+                    workers::DEPTH_NAME,
+                    (1..=workers::MAX_DEPTH)
+                        .map(|depth| (depth, SharedString::from(depth.to_string())))
+                        .collect(),
+                    |prefs| prefs.new_sessions.worker_depth,
+                    |prefs, depth| prefs.new_sessions.worker_depth = depth,
+                    defaults.worker_depth,
+                )
+                .description(curly(workers::depth_about(crate::workers::nested())))
+                .keywords(["workers", "nested", "levels", "worker-depth"]),
                 self.background_after
                     .item("Background after", "background-after")
                 .description(

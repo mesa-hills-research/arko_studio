@@ -884,7 +884,17 @@ fn the_command_palette_opens_settings_pages_and_sessions(cx: &mut TestAppContext
             .settings()
             .map(|settings| settings.read(cx).page())
     });
-    assert_eq!(page, Some(4));
+    assert_eq!(page, Some(crate::settings_page::NOTIFICATIONS_PAGE));
+    // Worker profiles is a page of its own, between Models & accounts and
+    // Sessions.
+    run_from_palette(cx, window, "settings › worker profiles");
+    let page = cx.read(|cx| {
+        workspace
+            .read(cx)
+            .settings()
+            .map(|settings| settings.read(cx).page())
+    });
+    assert_eq!(page, Some(crate::settings_page::PROFILES_PAGE));
     run_from_palette(cx, window, "naming a desktop");
     assert_eq!(
         open_title(&workspace, cx).as_deref(),
@@ -993,7 +1003,9 @@ fn reset_preferences_asks_first_and_keeps_the_windows_place(cx: &mut TestAppCont
     act(cx, window, |window, cx| window.press("secondary-,", cx));
     cx.update(|cx| {
         let settings = workspace.read(cx).settings().unwrap().clone();
-        settings.update(cx, |settings, cx| settings.show_page(7, cx));
+        settings.update(cx, |settings, cx| {
+            settings.show_page(crate::settings_page::ADVANCED_PAGE, cx)
+        });
     });
     act(cx, window, |window, cx| {
         // Advanced's first buttons show. Reset sits lower, under the fold of

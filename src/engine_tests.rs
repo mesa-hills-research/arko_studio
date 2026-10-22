@@ -393,6 +393,50 @@ fn a_long_question_scrolls_inside_its_card(cx: &mut TestAppContext) {
     app.close_all(cx);
 }
 
+/// The agent's request to save a worker profile shows as it is written,
+/// not as Markdown that would run its lines together, and long instructions
+/// scroll inside the card without pushing the composer off the window.
+#[gpui_kit::test]
+fn a_request_to_save_a_profile_shows_its_instructions_and_scrolls(cx: &mut TestAppContext) {
+    let mut profile = arko::profiles::Profile::new("3d-judge", "Judges 3D results");
+    profile.model = Some("sol".into());
+    profile.instructions = (1..=60)
+        .map(|line| format!("Check that the render matches the reference, point {line}."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let question = arko::profiles::approval_text(&profile, arko::profiles::Place::User);
+    assert!(question.lines().count() > 60, "the whole profile is in it");
+    let mock = Mock::start(move |_, _| {
+        let call = arko::testing::tool_call(
+            "q1",
+            "ask_user",
+            serde_json::json!({ "questions": question.clone() }),
+        );
+        Box::pin(async move { call })
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Save a judge profile.");
+    wait_until(cx, "the question card", |cx| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("question-text").is_some()
+        })
+        .unwrap()
+    });
+    act(cx, app.window, |window, _| {
+        assert!(window.try_find("question-plain").is_some());
+        let tallest = window.rem_size() * crate::session_view::QUESTION_MAX_HEIGHT;
+        let height = window.find("question-text").bounds().size.height;
+        assert!(height <= tallest + gpui_kit::px(0.5), "{height:?}");
+        let composer = window.find("composer-field").bounds();
+        assert!(composer.bottom() <= window.viewport_size().height);
+        // The plain text is the long one: far taller than the card.
+        let text = window.find("question-plain").bounds().size.height;
+        assert!(text > tallest * 4., "{text:?} in {tallest:?}");
+    });
+    app.close_all(cx);
+}
+
 #[gpui_kit::test]
 fn a_command_typed_while_a_question_waits_runs_and_the_question_stays(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, body| {

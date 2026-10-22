@@ -1,10 +1,54 @@
 //! Where a list shows each worker and how its figures read.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use arko::ModelChoice;
 use arko::remote::{WorkerState, WorkerSummary};
+use arko::workers::{MODELS_ABOUT, MODELS_APPLIES};
 
 /// A worker that ended stays among the others this long, then moves to the
 /// "Finished" group at the bottom of the list.
 pub const ENDED_SHOWS_FOR_MS: i64 = 5 * 60 * 1000;
+
+/// Whether the sessions say workers can start workers of their own yet
+/// (`LiveSettings::nested_workers`), as the last one to say. Until one has,
+/// they can't, which is how Arko 0.4 builds.
+static NESTED: AtomicBool = AtomicBool::new(false);
+
+/// Records what a session's status says about workers starting workers.
+pub fn note_nested(nested: bool) {
+    NESTED.store(nested, Ordering::Relaxed);
+}
+
+/// Whether workers can start workers of their own, so the worker depth
+/// setting does something.
+pub fn nested() -> bool {
+    NESTED.load(Ordering::Relaxed)
+}
+
+/// Arko's words in the app's typography: the apostrophes it types straight
+/// are typographic here.
+pub fn curly(text: &str) -> String {
+    text.replace('\'', "’")
+}
+
+/// What the "Models for workers" setting does and what `choice` means,
+/// in Arko's words.
+pub fn models_about(choice: ModelChoice) -> String {
+    curly(&format!(
+        "{MODELS_ABOUT} {} {MODELS_APPLIES}",
+        choice.about()
+    ))
+}
+
+/// Whether `question` is the main agent's request to save a worker profile,
+/// as `arko::profiles::approval_text` words it. It puts each fact on a
+/// line of its own and shows the instructions as written, which Markdown
+/// would run together and format, so the question card shows it as plain
+/// text.
+pub fn is_profile_approval(question: &str) -> bool {
+    question.starts_with("The main agent wants to save the worker profile ")
+}
 
 /// How long the worker has worked, including runs before the session
 /// reopened. A worker waiting for its first run has no time yet.
@@ -49,6 +93,117 @@ pub fn next_move(workers: &[WorkerSummary], now: i64, seen: impl Fn(&str) -> boo
         .filter_map(|worker| worker.ended_at)
         .map(|ended| ended + ENDED_SHOWS_FOR_MS)
         .min()
+}
+
+/// A worker's setup in a few words, as the terminal lists it: its model in as
+/// few characters as still name it, its effort and its profile, such as
+/// "sol · high · 3d-judge". `None` until the session has recorded them.
+pub fn setup_label(worker: &WorkerSummary) -> Option<String> {
+    let known = |text: &Option<String>| text.clone().filter(|text| !text.is_empty());
+    let mut parts: Vec<String> = Vec::new();
+    parts.extend(known(&worker.model).map(|model| arko::workers::short_model_name(&model)));
+    parts.extend(known(&worker.effort));
+    parts.extend(known(&worker.profile));
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// What a worker's model calls cost, as the status bar's figure reads: what
+/// it billed, else (work on a plan) what it would cost at API prices, "≈ $0.12".
+/// `None` before anything cost.
+pub fn cost_label(worker: &WorkerSummary) -> Option<String> {
+    if worker.cost_billed >= 0.005 {
+        Some(crate::figures::dollars(worker.cost_billed))
+    } else if worker.cost_list >= 0.005 {
+        Some(format!("≈ {}", crate::figures::dollars(worker.cost_list)))
+    } else {
+        None
+    }
+}
+
+/// Where a worker stands in a list that keeps a worker's workers under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placed {
+    /// The worker's place in the list given.
+    pub index: usize,
+    /// How many workers it is under: 0 for a worker the main agent started.
+    pub level: usize,
+    /// The place of the worker its family starts from.
+    pub root: usize,
+}
+
+/// The workers in the order a list shows them: each worker followed by the
+/// workers it started, which follow in the order they were given, with the
+/// families in the order of their first workers. A worker whose parent isn't
+/// in the list starts a family of its own.
+pub fn tree(workers: &[WorkerSummary]) -> Vec<Placed> {
+    let index_of: std::collections::HashMap<&str, usize> = workers
+        .iter()
+        .enumerate()
+        .map(|(index, worker)| (worker.id.as_str(), index))
+        .collect();
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); workers.len()];
+    let mut roots: Vec<usize> = Vec::new();
+    for (index, worker) in workers.iter().enumerate() {
+        let parent = worker
+            .parent
+            .as_deref()
+            .and_then(|parent| index_of.get(parent).copied())
+            .filter(|parent| *parent != index);
+        match parent {
+            Some(parent) => children[parent].push(index),
+            None => roots.push(index),
+        }
+    }
+    let mut placed: Vec<Placed> = Vec::with_capacity(workers.len());
+    let mut seen = vec![false; workers.len()];
+    // (Workers that are each other's parents can't be reached from a root,
+    // and start families too.)
+    let starts = roots.into_iter().chain(0..workers.len());
+    for start in starts {
+        if seen[start] {
+            continue;
+        }
+        let mut stack = vec![(start, 0, start)];
+        while let Some((index, level, root)) = stack.pop() {
+            if std::mem::replace(&mut seen[index], true) {
+                continue;
+            }
+            placed.push(Placed { index, level, root });
+            stack.extend(
+                children[index]
+                    .iter()
+                    .rev()
+                    .map(|child| (*child, level + 1, root)),
+            );
+        }
+    }
+    placed
+}
+
+/// Where each worker (by its place in `workers`) shows at `now`. A family
+/// moves to the "Finished" group together, when all its workers would, so
+/// a worker that finished doesn't sit alone below a parent that still
+/// shows. `seen` says which failures the user has opened.
+pub fn family_sections(
+    workers: &[WorkerSummary],
+    tree: &[Placed],
+    now: i64,
+    seen: impl Fn(&str) -> bool,
+) -> Vec<Section> {
+    let mut current = vec![false; workers.len()];
+    for placed in tree {
+        let worker = &workers[placed.index];
+        if section(worker, now, seen(&worker.id)) == Section::Current {
+            current[placed.root] = true;
+        }
+    }
+    let mut sections = vec![Section::Finished; workers.len()];
+    for placed in tree {
+        if current[placed.root] {
+            sections[placed.index] = Section::Current;
+        }
+    }
+    sections
 }
 
 /// A worker's time as a list shows it: "12 s", "4 m", "1 h 05 m". The
@@ -114,18 +269,45 @@ mod tests {
         started: Option<i64>,
         ended: Option<i64>,
     ) -> WorkerSummary {
-        WorkerSummary {
-            id: id.into(),
-            title: format!("Task of {id}"),
-            state,
-            tool_calls: 3,
-            started_at: started,
-            ended_at: ended,
-            ran_ms: started.zip(ended).map_or(0, |(s, e)| (e - s).max(0) as u64),
-            running_since: started.filter(|_| state == WorkerState::Running),
-            last: None,
-            report: None,
+        let mut summary = WorkerSummary::new(id);
+        summary.title = format!("Task of {id}");
+        summary.state = state;
+        summary.tool_calls = 3;
+        summary.started_at = started;
+        summary.ended_at = ended;
+        summary.ran_ms = started.zip(ended).map_or(0, |(s, e)| (e - s).max(0) as u64);
+        summary.running_since = started.filter(|_| state == WorkerState::Running);
+        summary
+    }
+
+    /// The question the agent's save of a profile asks is recognized in all
+    /// three places, and an ordinary question isn't.
+    #[test]
+    fn the_agents_request_to_save_a_profile_is_recognized() {
+        use arko::profiles::{Place, Profile};
+        let mut profile = Profile::new("3d-judge", "Judges 3D results");
+        profile.instructions = "Compare the render.\nBe brief.".into();
+        for place in Place::ALL {
+            let question = arko::profiles::approval_text(&profile, place);
+            assert!(is_profile_approval(&question), "{question}");
         }
+        assert!(!is_profile_approval("Tabs or spaces?"));
+        assert!(!is_profile_approval("Shall I save the worker profile?"));
+    }
+
+    #[test]
+    fn the_models_setting_reads_in_arkos_words() {
+        for choice in ModelChoice::ALL {
+            let about = models_about(choice);
+            assert!(about.starts_with("Who picks a worker’s model. "), "{about}");
+            assert!(about.ends_with("A change applies to the next worker started."));
+            assert!(!about.contains('\''), "{about}");
+        }
+        assert!(
+            models_about(ModelChoice::Session)
+                .contains("Every worker runs the session’s worker model.")
+        );
+        assert_eq!(curly("Session's worker model"), "Session’s worker model");
     }
 
     #[test]
@@ -173,6 +355,153 @@ mod tests {
             Some(now - 60_000 + ENDED_SHOWS_FOR_MS)
         );
         assert_eq!(next_move(&all[..1], now, |_| true), None);
+    }
+
+    /// The model's short name, the effort and the profile, as the terminal
+    /// lists them.
+    #[test]
+    fn a_workers_setup_reads_in_a_few_words() {
+        let mut worker = worker("r1", WorkerState::Running, Some(0), None);
+        assert_eq!(setup_label(&worker), None);
+        worker.model = Some("gpt-6.1-sol".into());
+        assert_eq!(setup_label(&worker).as_deref(), Some("sol"));
+        worker.effort = Some("high".into());
+        worker.profile = Some("3d-judge".into());
+        assert_eq!(
+            setup_label(&worker).as_deref(),
+            Some("sol · high · 3d-judge")
+        );
+        worker.model = Some("cc:claude-opus-5-5".into());
+        worker.effort = None;
+        worker.profile = None;
+        assert_eq!(setup_label(&worker).as_deref(), Some("cc:opus"));
+        // A model no alias names stays as it is, cut when it is long.
+        worker.model = Some("openrouter:vendor/some-model-with-a-very-long-slug".into());
+        let label = setup_label(&worker).unwrap();
+        assert!(
+            label.ends_with('…') && label.chars().count() <= 28,
+            "{label}"
+        );
+        worker.model = None;
+        worker.profile = Some("reviewer".into());
+        assert_eq!(setup_label(&worker).as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn a_workers_cost_is_what_it_billed_else_the_api_price() {
+        let mut worker = worker("r1", WorkerState::Running, Some(0), None);
+        assert_eq!(cost_label(&worker), None);
+        worker.cost_billed = 0.0004;
+        worker.cost_list = 0.003;
+        assert_eq!(cost_label(&worker), None, "under half a cent");
+        worker.cost_list = 0.12;
+        assert_eq!(cost_label(&worker).as_deref(), Some("≈ $0.12"));
+        worker.cost_billed = 0.34;
+        assert_eq!(cost_label(&worker).as_deref(), Some("$0.34"));
+    }
+
+    fn child(id: &str, parent: &str) -> WorkerSummary {
+        let mut child = worker(id, WorkerState::Running, Some(0), None);
+        child.parent = Some(parent.into());
+        child
+    }
+
+    /// The workers of a worker follow it, in the order they were given, and
+    /// the families keep the order of their first workers.
+    #[test]
+    fn workers_stand_under_the_worker_that_started_them() {
+        let workers = [
+            worker("r1", WorkerState::Running, Some(0), None),
+            worker("r2", WorkerState::Running, Some(0), None),
+            child("r3", "r1"),
+            child("r4", "r1"),
+            child("r5", "r3"),
+            child("r6", "r2"),
+        ];
+        let at = |placed: &[Placed]| -> Vec<(usize, usize)> {
+            placed
+                .iter()
+                .map(|placed| (placed.index, placed.level))
+                .collect()
+        };
+        let placed = tree(&workers);
+        // r1, r3, r5, r4, r2, r6.
+        assert_eq!(
+            at(&placed),
+            [(0, 0), (2, 1), (4, 2), (3, 1), (1, 0), (5, 1)]
+        );
+        assert_eq!(
+            placed.iter().map(|placed| placed.root).collect::<Vec<_>>(),
+            [0, 0, 0, 0, 1, 1]
+        );
+        // Without parents, the order given.
+        let flat: Vec<WorkerSummary> = (1..=3)
+            .map(|n| worker(&format!("r{n}"), WorkerState::Running, Some(0), None))
+            .collect();
+        assert_eq!(at(&tree(&flat)), [(0, 0), (1, 0), (2, 0)]);
+    }
+
+    /// A worker whose parent isn't listed, one that is its own parent and
+    /// two that are each other's still show, once each.
+    #[test]
+    fn a_parent_that_is_missing_or_a_loop_loses_no_worker() {
+        let workers = [
+            child("r1", "r9"),
+            child("r2", "r2"),
+            child("r3", "r4"),
+            child("r4", "r3"),
+        ];
+        let placed = tree(&workers);
+        let mut indexes: Vec<usize> = placed.iter().map(|placed| placed.index).collect();
+        indexes.sort();
+        assert_eq!(indexes, [0, 1, 2, 3]);
+        assert_eq!(placed[0].level, 0);
+        assert_eq!(placed[1].level, 0);
+    }
+
+    /// A family moves to "Finished" together: a parent and its worker that
+    /// ended a while ago go, but not while any of them still shows.
+    #[test]
+    fn a_family_moves_to_finished_together() {
+        let now = 10_000_000;
+        let long_ago = now - ENDED_SHOWS_FOR_MS - 1;
+        let ended = |id: &str, parent: Option<&str>, at: i64| {
+            let mut worker = worker(id, WorkerState::Finished, Some(0), Some(at));
+            worker.parent = parent.map(str::to_string);
+            worker
+        };
+        let sections = |workers: &[WorkerSummary], seen: bool| {
+            family_sections(workers, &tree(workers), now, |_| seen)
+        };
+        // All ended long ago.
+        let family = [
+            ended("r1", None, long_ago),
+            ended("r2", Some("r1"), long_ago - 1_000),
+        ];
+        assert_eq!(sections(&family, true), [Section::Finished; 2]);
+        // A worker that ended just now keeps its family in sight.
+        let family = [
+            ended("r1", None, long_ago),
+            ended("r2", Some("r1"), now - 1_000),
+        ];
+        assert_eq!(sections(&family, true), [Section::Current; 2]);
+        // So does one still running, and an unseen failure.
+        let mut running = [
+            ended("r1", None, long_ago),
+            worker("r2", WorkerState::Running, Some(0), None),
+        ];
+        running[1].parent = Some("r1".into());
+        assert_eq!(sections(&running, true), [Section::Current; 2]);
+        let mut failed = [
+            ended("r1", None, long_ago),
+            ended("r2", Some("r1"), long_ago),
+        ];
+        failed[1].state = WorkerState::Failed;
+        assert_eq!(sections(&failed, false), [Section::Current; 2]);
+        assert_eq!(sections(&failed, true), [Section::Finished; 2]);
+        // Another family is its own.
+        let two = [ended("r1", None, long_ago), ended("r2", None, now - 1_000)];
+        assert_eq!(sections(&two, true), [Section::Finished, Section::Current]);
     }
 
     #[test]

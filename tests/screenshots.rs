@@ -10,6 +10,10 @@ use std::time::SystemTime;
 
 use arko_studio::backend::{Backend as _, FakeBackend, SessionEntry, SessionId};
 use arko_studio::prefs::{self, Motion, Prefs, ThemeMode};
+use arko_studio::settings_page::{
+    ACCOUNTS_PAGE, ADVANCED_PAGE, APPEARANCE_PAGE, EXTENSIONS_PAGE, INPUT_PAGE, NOTIFICATIONS_PAGE,
+    PROFILES_PAGE, SESSIONS_PAGE, WEB_PAGE_PAGE,
+};
 use arko_studio::{Startup, assets::Assets, fonts, workspace};
 use gpui_kit::{px, size};
 use gpui_screenshot::{Goldens, Screenshot, ScreenshotApp, Tolerance};
@@ -139,12 +143,38 @@ fn narrow_dark() {
 /// Settings' page `page` in a window `width` wide, on the sample sessions
 /// and accounts.
 fn settings_window(mode: ThemeMode, width: f32, page: usize) -> Screenshot {
+    settings_window_on(
+        FakeBackend::sample("/arko", SystemTime::now()),
+        mode,
+        width,
+        page,
+    )
+}
+
+/// Settings' page `page` as [`settings_window`], on `backend`.
+fn settings_window_on(
+    backend: FakeBackend,
+    mode: ThemeMode,
+    width: f32,
+    page: usize,
+) -> Screenshot {
+    settings_window_with(backend, mode, width, page, |_, _| {})
+}
+
+/// Settings' page `page` as [`settings_window`], on `backend`, once
+/// `change` has acted on the window.
+fn settings_window_with(
+    backend: FakeBackend,
+    mode: ThemeMode,
+    width: f32,
+    page: usize,
+    change: impl FnOnce(&mut ScreenshotApp, gpui_kit::AnyWindowHandle),
+) -> Screenshot {
     let mut app = ScreenshotApp::with_assets(Assets).unwrap();
     let mut settings = Prefs::default();
     settings.appearance.theme_mode = mode;
     settings.appearance.motion = Motion::Off;
-    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
-    let startup = Startup::for_tests(backend)
+    let startup = Startup::for_tests(Arc::new(backend))
         .with_prefs(settings)
         .with_fonts(fonts::bundled());
     app.update(|cx| arko_studio::init(startup, cx));
@@ -167,6 +197,7 @@ fn settings_window(mode: ThemeMode, width: f32, page: usize) -> Screenshot {
         let settings = workspace.read(cx).settings().unwrap().clone();
         settings.update(cx, |settings, cx| settings.show_page(page, cx));
     });
+    change(&mut app, window);
     app.capture(window).unwrap()
 }
 
@@ -174,7 +205,7 @@ fn settings_window(mode: ThemeMode, width: f32, page: usize) -> Screenshot {
 fn settings_appearance_light() {
     goldens().assert(
         "settings-appearance-light",
-        &settings_window(ThemeMode::Light, 1300., 0),
+        &settings_window(ThemeMode::Light, 1300., APPEARANCE_PAGE),
     );
 }
 
@@ -182,7 +213,7 @@ fn settings_appearance_light() {
 fn settings_appearance_dark() {
     goldens().assert(
         "settings-appearance-dark",
-        &settings_window(ThemeMode::Dark, 1300., 0),
+        &settings_window(ThemeMode::Dark, 1300., APPEARANCE_PAGE),
     );
 }
 
@@ -190,7 +221,7 @@ fn settings_appearance_dark() {
 fn settings_input_light() {
     goldens().assert(
         "settings-input-light",
-        &settings_window(ThemeMode::Light, 1300., 1),
+        &settings_window(ThemeMode::Light, 1300., INPUT_PAGE),
     );
 }
 
@@ -198,7 +229,7 @@ fn settings_input_light() {
 fn settings_input_dark() {
     goldens().assert(
         "settings-input-dark",
-        &settings_window(ThemeMode::Dark, 1300., 1),
+        &settings_window(ThemeMode::Dark, 1300., INPUT_PAGE),
     );
 }
 
@@ -207,7 +238,7 @@ fn settings_input_dark() {
 fn settings_input_medium_light() {
     goldens().assert(
         "settings-input-medium-light",
-        &settings_window(ThemeMode::Light, 980., 1),
+        &settings_window(ThemeMode::Light, 980., INPUT_PAGE),
     );
 }
 
@@ -215,7 +246,7 @@ fn settings_input_medium_light() {
 fn settings_input_medium_dark() {
     goldens().assert(
         "settings-input-medium-dark",
-        &settings_window(ThemeMode::Dark, 980., 1),
+        &settings_window(ThemeMode::Dark, 980., INPUT_PAGE),
     );
 }
 
@@ -223,7 +254,7 @@ fn settings_input_medium_dark() {
 fn settings_accounts_light() {
     goldens().assert(
         "settings-accounts-light",
-        &settings_window(ThemeMode::Light, 1300., 2),
+        &settings_window(ThemeMode::Light, 1300., ACCOUNTS_PAGE),
     );
 }
 
@@ -231,7 +262,7 @@ fn settings_accounts_light() {
 fn settings_accounts_dark() {
     goldens().assert(
         "settings-accounts-dark",
-        &settings_window(ThemeMode::Dark, 1300., 2),
+        &settings_window(ThemeMode::Dark, 1300., ACCOUNTS_PAGE),
     );
 }
 
@@ -239,7 +270,7 @@ fn settings_accounts_dark() {
 fn settings_sessions_light() {
     goldens().assert(
         "settings-sessions-light",
-        &settings_window(ThemeMode::Light, 1300., 3),
+        &settings_window(ThemeMode::Light, 1300., SESSIONS_PAGE),
     );
 }
 
@@ -247,7 +278,7 @@ fn settings_sessions_light() {
 fn settings_sessions_dark() {
     goldens().assert(
         "settings-sessions-dark",
-        &settings_window(ThemeMode::Dark, 1300., 3),
+        &settings_window(ThemeMode::Dark, 1300., SESSIONS_PAGE),
     );
 }
 
@@ -255,7 +286,7 @@ fn settings_sessions_dark() {
 fn settings_notifications_light() {
     goldens().assert(
         "settings-notifications-light",
-        &settings_window(ThemeMode::Light, 1300., 4),
+        &settings_window(ThemeMode::Light, 1300., NOTIFICATIONS_PAGE),
     );
 }
 
@@ -263,7 +294,7 @@ fn settings_notifications_light() {
 fn settings_notifications_dark() {
     goldens().assert(
         "settings-notifications-dark",
-        &settings_window(ThemeMode::Dark, 1300., 4),
+        &settings_window(ThemeMode::Dark, 1300., NOTIFICATIONS_PAGE),
     );
 }
 
@@ -271,7 +302,7 @@ fn settings_notifications_dark() {
 fn settings_web_page_light() {
     goldens().assert(
         "settings-web-page-light",
-        &settings_window(ThemeMode::Light, 1300., 5),
+        &settings_window(ThemeMode::Light, 1300., WEB_PAGE_PAGE),
     );
 }
 
@@ -279,7 +310,7 @@ fn settings_web_page_light() {
 fn settings_web_page_dark() {
     goldens().assert(
         "settings-web-page-dark",
-        &settings_window(ThemeMode::Dark, 1300., 5),
+        &settings_window(ThemeMode::Dark, 1300., WEB_PAGE_PAGE),
     );
 }
 
@@ -287,7 +318,7 @@ fn settings_web_page_dark() {
 fn settings_extensions_light() {
     goldens().assert(
         "settings-extensions-light",
-        &settings_window(ThemeMode::Light, 1300., 6),
+        &settings_window(ThemeMode::Light, 1300., EXTENSIONS_PAGE),
     );
 }
 
@@ -295,7 +326,7 @@ fn settings_extensions_light() {
 fn settings_extensions_dark() {
     goldens().assert(
         "settings-extensions-dark",
-        &settings_window(ThemeMode::Dark, 1300., 6),
+        &settings_window(ThemeMode::Dark, 1300., EXTENSIONS_PAGE),
     );
 }
 
@@ -303,7 +334,7 @@ fn settings_extensions_dark() {
 fn settings_advanced_light() {
     goldens().assert(
         "settings-advanced-light",
-        &settings_window(ThemeMode::Light, 1300., 7),
+        &settings_window(ThemeMode::Light, 1300., ADVANCED_PAGE),
     );
 }
 
@@ -311,7 +342,7 @@ fn settings_advanced_light() {
 fn settings_advanced_dark() {
     goldens().assert(
         "settings-advanced-dark",
-        &settings_window(ThemeMode::Dark, 1300., 7),
+        &settings_window(ThemeMode::Dark, 1300., ADVANCED_PAGE),
     );
 }
 
@@ -320,7 +351,7 @@ fn settings_advanced_dark() {
 fn settings_sessions_narrow_light() {
     goldens().assert(
         "settings-sessions-narrow-light",
-        &settings_window(ThemeMode::Light, 460., 3),
+        &settings_window(ThemeMode::Light, 460., SESSIONS_PAGE),
     );
 }
 
@@ -328,7 +359,252 @@ fn settings_sessions_narrow_light() {
 fn settings_sessions_narrow_dark() {
     goldens().assert(
         "settings-sessions-narrow-dark",
-        &settings_window(ThemeMode::Dark, 460., 3),
+        &settings_window(ThemeMode::Dark, 460., SESSIONS_PAGE),
+    );
+}
+
+/// The profiles Settings lists in the screenshots, over Arko's folder `/arko`.
+fn profiles_sample() -> arko_studio::backend::profiles::Profiles {
+    arko_studio::backend::profiles::Profiles::sample(std::path::Path::new("/arko"))
+}
+
+fn profiles_backend(profiles: arko_studio::backend::profiles::Profiles) -> FakeBackend {
+    FakeBackend::sample("/arko", SystemTime::now()).with_profiles(profiles)
+}
+
+/// Worker profiles with the editor open on the profile at `row`, or on a
+/// new one.
+fn profile_editor(
+    backend: FakeBackend,
+    mode: ThemeMode,
+    width: f32,
+    row: Option<usize>,
+) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+    settings_window_with(backend, mode, width, PROFILES_PAGE, |app, window| {
+        app.run_until_parked();
+        app.update_window(window, |_, window, cx| match row {
+            Some(row) => window.click(("edit-profile", row), cx),
+            None => window.click("add-profile", cx),
+        })
+        .unwrap();
+        app.run_until_parked();
+    })
+}
+
+fn profiles_page(backend: FakeBackend, mode: ThemeMode, width: f32) -> Screenshot {
+    settings_window_with(backend, mode, width, PROFILES_PAGE, |app, _| {
+        app.run_until_parked()
+    })
+}
+
+#[test]
+fn settings_profiles_empty_light() {
+    goldens().assert(
+        "settings-profiles-empty-light",
+        &profiles_page(
+            profiles_backend(Default::default()),
+            ThemeMode::Light,
+            1300.,
+        ),
+    );
+}
+
+#[test]
+fn settings_profiles_empty_dark() {
+    goldens().assert(
+        "settings-profiles-empty-dark",
+        &profiles_page(profiles_backend(Default::default()), ThemeMode::Dark, 1300.),
+    );
+}
+
+#[test]
+fn settings_profiles_light() {
+    goldens().assert(
+        "settings-profiles-light",
+        &profiles_page(profiles_backend(profiles_sample()), ThemeMode::Light, 1300.),
+    );
+}
+
+#[test]
+fn settings_profiles_dark() {
+    goldens().assert(
+        "settings-profiles-dark",
+        &profiles_page(profiles_backend(profiles_sample()), ThemeMode::Dark, 1300.),
+    );
+}
+
+#[test]
+fn settings_profiles_narrow_light() {
+    goldens().assert(
+        "settings-profiles-narrow-light",
+        &profiles_page(profiles_backend(profiles_sample()), ThemeMode::Light, 460.),
+    );
+}
+
+#[test]
+fn settings_profiles_narrow_dark() {
+    goldens().assert(
+        "settings-profiles-narrow-dark",
+        &profiles_page(profiles_backend(profiles_sample()), ThemeMode::Dark, 460.),
+    );
+}
+
+#[test]
+fn settings_profile_editor_light() {
+    goldens().assert(
+        "settings-profile-editor-light",
+        &profile_editor(
+            profiles_backend(profiles_sample()),
+            ThemeMode::Light,
+            1300.,
+            Some(0),
+        ),
+    );
+}
+
+#[test]
+fn settings_profile_editor_dark() {
+    goldens().assert(
+        "settings-profile-editor-dark",
+        &profile_editor(
+            profiles_backend(profiles_sample()),
+            ThemeMode::Dark,
+            1300.,
+            Some(0),
+        ),
+    );
+}
+
+#[test]
+fn settings_profile_editor_narrow_light() {
+    goldens().assert(
+        "settings-profile-editor-narrow-light",
+        &profile_editor(
+            profiles_backend(profiles_sample()),
+            ThemeMode::Light,
+            460.,
+            Some(0),
+        ),
+    );
+}
+
+#[test]
+fn settings_profile_editor_narrow_dark() {
+    goldens().assert(
+        "settings-profile-editor-narrow-dark",
+        &profile_editor(
+            profiles_backend(profiles_sample()),
+            ThemeMode::Dark,
+            460.,
+            Some(0),
+        ),
+    );
+}
+
+/// The models of the profile screenshots. Claude needs a key, OpenAI doesn't.
+fn profile_models() -> arko_studio::backend::ModelChoices {
+    use arko_studio::backend::{ModelChoice, ModelChoices, ModelGroup};
+    let group = |name: &str, needs: Option<&str>, models: &[(&str, &str)]| ModelGroup {
+        name: name.into(),
+        needs: needs.map(str::to_string),
+        models: models
+            .iter()
+            .map(|(name, alias)| ModelChoice {
+                name: (*name).into(),
+                alias: (*alias).into(),
+            })
+            .collect(),
+    };
+    ModelChoices {
+        groups: vec![
+            group(
+                "Anthropic API, billed per token",
+                Some("ANTHROPIC_API_KEY"),
+                &[("claude-opus-5-5", "opus"), ("claude-haiku-5-5", "haiku")],
+            ),
+            group("OpenAI, with your API key", None, &[("gpt-6.1-sol", "sol")]),
+        ],
+        default: None,
+        note: None,
+    }
+}
+
+/// The user's profiles and a project's, read only.
+fn profiles_with_project() -> arko_studio::backend::profiles::Profiles {
+    use arko::profiles::Profile;
+    use arko_studio::backend::profiles::{Entry, List, Project, Unreadable};
+    let mut lint = Profile::new("lint", "Runs the linter and reports what it finds");
+    lint.model = Some("haiku".into());
+    let mut docs = Profile::new("docs-writer", "Writes the changelog entry for a change");
+    docs.model = Some("sol".into());
+    docs.effort = Some(arko::Effort::Medium);
+    let entry = |profile: Profile| Entry {
+        file: format!("/home/ada/src/arko/.agents/profiles/{}.md", profile.name).into(),
+        note: profile.model_problem(),
+        profile,
+    };
+    let mut profiles = profiles_sample();
+    profiles.projects.push(Project {
+        folder: "/home/ada/src/arko".into(),
+        list: List {
+            entries: vec![entry(docs), entry(lint)],
+            unreadable: vec![Unreadable {
+                file: "/home/ada/src/arko/.agents/profiles/torn.md".into(),
+                reason: "it has no description".into(),
+            }],
+        },
+    });
+    profiles
+}
+
+#[test]
+fn settings_profiles_needing_a_key_light() {
+    goldens().assert(
+        "settings-profiles-key-light",
+        &profile_editor(
+            profiles_backend(profiles_sample()).with_models(profile_models()),
+            ThemeMode::Light,
+            1300.,
+            Some(1),
+        ),
+    );
+}
+
+#[test]
+fn settings_profiles_needing_a_key_dark() {
+    goldens().assert(
+        "settings-profiles-key-dark",
+        &profile_editor(
+            profiles_backend(profiles_sample()).with_models(profile_models()),
+            ThemeMode::Dark,
+            1300.,
+            Some(1),
+        ),
+    );
+}
+
+#[test]
+fn settings_profiles_project_light() {
+    goldens().assert(
+        "settings-profiles-project-light",
+        &profiles_page(
+            profiles_backend(profiles_with_project()).with_models(profile_models()),
+            ThemeMode::Light,
+            1300.,
+        ),
+    );
+}
+
+#[test]
+fn settings_profiles_project_dark() {
+    goldens().assert(
+        "settings-profiles-project-dark",
+        &profiles_page(
+            profiles_backend(profiles_with_project()).with_models(profile_models()),
+            ThemeMode::Dark,
+            1300.,
+        ),
     );
 }
 
@@ -1350,19 +1626,18 @@ fn workers_window(mode: ThemeMode) -> Screenshot {
     app.update(|cx| arko_studio::init(startup, cx));
     const NOW: i64 = 1_760_000_000_000;
     const MINUTE: i64 = 60_000;
-    let worker =
-        |id: &str, title: &str, state, calls, started, ended, last: Option<&str>| WorkerSummary {
-            id: id.into(),
-            title: title.into(),
-            state,
-            tool_calls: calls,
-            started_at: started,
-            ended_at: ended,
-            ran_ms: started.zip(ended).map_or(0, |(s, e)| (e - s).max(0) as u64),
-            running_since: started.filter(|_| state == WorkerState::Running),
-            last: last.map(Into::into),
-            report: None,
-        };
+    let worker = |id: &str, title: &str, state, calls, started, ended, last: Option<&str>| {
+        let mut summary = WorkerSummary::new(id);
+        summary.title = title.into();
+        summary.state = state;
+        summary.tool_calls = calls;
+        summary.started_at = started;
+        summary.ended_at = ended;
+        summary.ran_ms = started.zip(ended).map_or(0, |(s, e)| (e - s).max(0) as u64);
+        summary.running_since = started.filter(|_| state == WorkerState::Running);
+        summary.last = last.map(Into::into);
+        summary
+    };
     let mut finished = worker(
         "r4",
         "Update the changelog",
@@ -1463,6 +1738,222 @@ fn workers_light() {
 #[test]
 fn workers_dark() {
     goldens().assert("workers-dark", &workers_window(ThemeMode::Dark));
+}
+
+/// The clock of the workers' screenshots, in Unix milliseconds.
+const WORKERS_NOW: i64 = 1_760_000_000_000;
+
+/// A running worker with workers under it, one of them finished a moment
+/// ago, each row with its model, profile and cost, and a finished family in
+/// the collapsed group. The session lists them as they started, and the
+/// panel puts a worker's workers under it.
+fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
+    use arko::remote::{AgentStatus, WorkerState, WorkerSummary};
+    use arko_studio::workers_panel::PanelSource;
+
+    const MINUTE: i64 = 60_000;
+    let worker = |id: &str, parent: Option<&str>, title: &str, state, started: i64, ended| {
+        let mut summary = WorkerSummary::new(id);
+        summary.title = title.into();
+        summary.state = state;
+        summary.parent = parent.map(str::to_string);
+        summary.depth = if parent.is_some() { 2 } else { 1 };
+        summary.started_at = Some(WORKERS_NOW - started * MINUTE);
+        summary.ended_at = ended;
+        summary.ran_ms = ended.map_or(0, |ended| (ended - (WORKERS_NOW - started * MINUTE)) as u64);
+        summary.running_since =
+            (state == WorkerState::Running).then(|| WORKERS_NOW - started * MINUTE);
+        summary
+    };
+    let mut parser = worker(
+        "r1",
+        None,
+        "Split the parser into modules",
+        WorkerState::Running,
+        12,
+        None,
+    );
+    parser.model = Some("claude-opus-5-5".into());
+    parser.effort = Some("high".into());
+    parser.cost_billed = 0.84;
+    parser.tool_calls = 31;
+    parser.last = Some("edit src/parser/mod.rs".into());
+    let mut renderer = worker(
+        "r2",
+        None,
+        "Profile the renderer under load",
+        WorkerState::Running,
+        65,
+        None,
+    );
+    renderer.model = Some("cc:claude-opus-5-5".into());
+    renderer.effort = Some("xhigh".into());
+    renderer.cost_list = 3.4;
+    renderer.tool_calls = 142;
+    renderer.last = Some("read src/render/scene.rs:120-180".into());
+    let mut tests = worker(
+        "r3",
+        Some("r1"),
+        "Fix the tokenizer tests",
+        WorkerState::Running,
+        4,
+        None,
+    );
+    tests.model = Some("claude-haiku-5-5".into());
+    tests.profile = Some("quick-reader".into());
+    tests.cost_billed = 0.02;
+    tests.tool_calls = 9;
+    tests.last = Some("$ cargo test -p parse".into());
+    let mut keys = worker(
+        "r4",
+        Some("r1"),
+        "Rename the config keys",
+        WorkerState::Finished,
+        6,
+        Some(WORKERS_NOW - MINUTE),
+    );
+    keys.model = Some("claude-haiku-5-5".into());
+    keys.profile = Some("quick-reader".into());
+    keys.cost_billed = 0.01;
+    keys.tool_calls = 11;
+    keys.report = Some("Renamed 14 keys and updated the docs.".into());
+    let mut changelog = worker(
+        "r5",
+        None,
+        "Update the changelog",
+        WorkerState::Finished,
+        50,
+        Some(WORKERS_NOW - 30 * MINUTE),
+    );
+    changelog.model = Some("gpt-6.1-sol".into());
+    changelog.profile = Some("3d-judge".into());
+    changelog.cost_billed = 0.4;
+    let mut notes = worker(
+        "r6",
+        Some("r5"),
+        "Check the links",
+        WorkerState::Finished,
+        45,
+        Some(WORKERS_NOW - 35 * MINUTE),
+    );
+    notes.model = Some("claude-haiku-5-5".into());
+    let agent = |id: &str, tokens, window| AgentStatus {
+        id: id.into(),
+        context_tokens: Some(tokens),
+        context_window: Some(window),
+        handover_at: None,
+        compacts: false,
+    };
+    PanelSource {
+        workers: vec![parser, renderer, tests, keys, changelog, notes],
+        agents: vec![
+            agent("r1", 88_000, 200_000),
+            agent("r2", 152_000, 1_000_000),
+            agent("r3", 31_000, 200_000),
+        ],
+        feed: None,
+        images: None,
+        movable: Vec::new(),
+        key: None,
+    }
+}
+
+/// The workers panel docked, over the family of workers.
+fn workers_family_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::workers_panel::WorkersPanel;
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let source = workers_family_source();
+    let window = app
+        .open_window_with(size(px(352.), px(480.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut panel = WorkersPanel::new(window, cx);
+                    panel.set_source(source, cx);
+                    panel.set_clock(|| WORKERS_NOW, cx);
+                    panel
+                })
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn workers_family_light() {
+    goldens().assert(
+        "workers-family-light",
+        &workers_family_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn workers_family_dark() {
+    goldens().assert(
+        "workers-family-dark",
+        &workers_family_window(ThemeMode::Dark),
+    );
+}
+
+/// The same workers in the panel as a sheet from the right, in a window
+/// too narrow to dock it.
+fn workers_sheet_window(mode: ThemeMode) -> Screenshot {
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let opened = std::cell::RefCell::new(None);
+    let window = app
+        .open_window_with(size(px(640.), px(640.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened.replace(Some(workspace));
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.take().unwrap();
+    app.update_window(window, |_, window, cx| {
+        window.dispatch_action(Box::new(arko_studio::menus::ToggleWorkersPanel), cx)
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.update(|cx| {
+        let panel = workspace.read(cx).workers_panel().clone();
+        panel.update(cx, |panel, cx| {
+            panel.set_source(workers_family_source(), cx);
+            panel.set_clock(|| WORKERS_NOW, cx);
+        });
+    });
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn workers_sheet_light() {
+    goldens().assert(
+        "workers-sheet-light",
+        &workers_sheet_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn workers_sheet_dark() {
+    goldens().assert("workers-sheet-dark", &workers_sheet_window(ThemeMode::Dark));
 }
 
 /// The dialog that asks before an edit in an agent session removes the

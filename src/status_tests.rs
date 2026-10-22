@@ -426,7 +426,7 @@ fn a_page_only_this_computer_opens_has_no_qr_code(cx: &mut TestAppContext) {
     let settings = cx.read(|cx| workspace.read(cx).settings().cloned());
     assert_eq!(
         settings.map(|settings| cx.read(|cx| settings.read(cx).page())),
-        Some(5)
+        Some(crate::settings_page::WEB_PAGE_PAGE)
     );
     assert!(!shows(cx, "web-page-panel"), "the popover stayed open");
 }

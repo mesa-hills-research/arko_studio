@@ -21,10 +21,7 @@ use crate::title_bar::AppTitleBar;
 use crate::workers_panel::{WorkersPanel, WorkersPanelEvent};
 use crate::{about, chrome, menus, palette, prompts, quit, shortcuts};
 
-/// The Settings page of models and accounts.
-const ACCOUNTS_PAGE: usize = 2;
-/// The Settings page of the web page.
-const WEB_PAGE_PAGE: usize = 5;
+use crate::settings_page::{ACCOUNTS_PAGE, WEB_PAGE_PAGE};
 
 /// Why a new session's page can't be shared yet.
 pub const NO_SESSION_TO_SHARE: &str = "Send a message first, then share the session’s web page.";
@@ -198,7 +195,8 @@ impl Workspace {
         &self.sidebar
     }
 
-    #[cfg(test)]
+    /// The workers panel (tests and screenshots).
+    #[doc(hidden)]
     pub fn workers_panel(&self) -> &Entity<WorkersPanel> {
         &self.workers
     }

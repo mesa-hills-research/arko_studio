@@ -8,6 +8,7 @@ The native interface is written in Rust with [GPUI](https://www.gpui.rs) and
 ![Arko Studio showing a conversation and tool calls in a dark theme](tests/screenshots/transcript-wide-dark.png)
 
 - Chat with a model, or work in a folder with tools and background workers.
+- Run workers on models of their own, with profiles that set a model, an effort and instructions.
 - Read streamed replies, Markdown, highlighted code, diffs and images in one transcript.
 - Find, edit, regenerate, branch and export conversations, with keyboard shortcuts and a command
   palette.

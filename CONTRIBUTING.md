@@ -77,13 +77,13 @@ regenerate it without the override before committing.
 | Path | What it holds |
 |---|---|
 | `src/main.rs`, `src/lib.rs` | Logging, startup and app globals |
-| `src/backend.rs`, `src/backend/` | Session storage, credentials and defaults |
+| `src/backend.rs`, `src/backend/` | Session storage, credentials, defaults and worker profiles |
 | `src/live.rs` | Running sessions and engine events |
 | `src/workspace.rs` | Window panes, sheets, resizing and actions |
 | `src/sidebar.rs` | Session grouping, filtering, renaming and deleting |
 | `src/session_view.rs`, `src/composer.rs` | Session controls, message input and attachments |
 | `src/transcript/` | Transcript rows, selection, navigation and find |
-| `src/status_bar.rs`, `src/workers_panel.rs` | Session figures and worker transcripts |
+| `src/status_bar.rs`, `src/workers_panel.rs`, `src/workers.rs` | Session figures, the workers panel and how it lists workers |
 | `src/settings_page.rs`, `src/settings_page/` | Settings pages and fields |
 | `src/theme_picker.rs`, `src/appearance.rs` | Themes, previews, fonts, zoom and motion |
 | `src/prefs.rs`, `src/drafts.rs` | Saved preferences and message drafts |

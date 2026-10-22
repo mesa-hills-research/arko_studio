@@ -88,11 +88,19 @@ impl TranscriptView {
             RowKey::Count(_) => "Calls".to_string(),
             RowKey::Actions(_) => "Actions".to_string(),
             RowKey::Refresh(_) => "Kept the cache warm".to_string(),
-            RowKey::Worker(_) => format!(
-                "Worker {}, {}",
-                item.worker.as_deref().unwrap_or_default(),
-                first_line(&item.text)
-            ),
+            RowKey::Worker(_) => {
+                let worker = item.worker.as_deref().unwrap_or_default();
+                let setup = self
+                    .model
+                    .worker(worker)
+                    .and_then(crate::workers::setup_label);
+                match setup {
+                    Some(setup) => {
+                        format!("Worker {worker}, {}, {setup}", first_line(&item.text))
+                    }
+                    None => format!("Worker {worker}, {}", first_line(&item.text)),
+                }
+            }
             RowKey::Separator(_) | RowKey::Notice(_) | RowKey::Output(_) | RowKey::Turn(_) => {
                 first_line(&item.text)
             }

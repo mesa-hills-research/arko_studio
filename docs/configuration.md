@@ -34,6 +34,17 @@ Keys saved there go in the Arko folder's `.env` file. ChatGPT and Claude Code us
 logins. See [Arko's documentation](https://github.com/mesa-hills-research/arko) for providers and
 credential discovery.
 
+**Settings › Worker profiles** lists the profiles the main agent starts workers with. A profile is
+a Markdown file in the `profiles` folder of the Arko folder, with a model, an effort and
+instructions, so Arko in the terminal reads the same ones. Add, edit, duplicate and delete your
+profiles there. The page also lists each recent project's `.agents/profiles`, read only. The main
+agent can save profiles too, and asks you first when it saves one for a project or for every
+project. See [Arko's documentation](https://github.com/mesa-hills-research/arko) for the file
+format.
+
+**Settings › Sessions** sets who chooses the workers' models, and how many levels of workers a new
+session allows, along with the other defaults for new sessions.
+
 **Settings › Web page** controls sharing. A session's link lets anyone who has it read the
 conversation, send messages and commands, answer questions and stop turns. The page is not
 encrypted, so share it only on networks you trust. **New key** ends the old links.

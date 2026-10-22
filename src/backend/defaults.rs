@@ -29,6 +29,10 @@ pub struct SessionDefaults {
     pub background_after: Option<u64>,
     /// How long monitors' warnings wake the agent. `None`: arko's own.
     pub monitor_wakes: Option<arko::monitors::Wakes>,
+    /// Who chooses the workers' models.
+    pub worker_models: arko::ModelChoice,
+    /// How many levels of workers, when it is a depth a session can have.
+    pub worker_depth: Option<u32>,
     pub outside_access: bool,
     pub text_replies: bool,
     pub cc_compact: bool,
@@ -77,6 +81,8 @@ impl SessionDefaults {
                 .monitor_wakes
                 .as_deref()
                 .and_then(|wakes| arko::monitors::parse_wakes(wakes).ok()),
+            worker_models: new.worker_models,
+            worker_depth: arko::workers::check_depth(new.worker_depth).ok(),
             outside_access: new.outside_access,
             text_replies: new.text_replies,
             cc_compact: new.cc_compact,
@@ -135,6 +141,8 @@ impl SessionDefaults {
         options.workers_handover_at = self.workers_handover_at;
         options.background_after = self.background_after;
         options.monitor_wakes = self.monitor_wakes;
+        options.worker_models = Some(self.worker_models);
+        options.worker_depth = self.worker_depth;
         if cfg!(windows) {
             options.shell = self.shell;
         }
@@ -192,6 +200,9 @@ mod tests {
         assert_eq!(options.handover_at, None);
         assert_eq!(options.background_after, None);
         assert_eq!(options.monitor_wakes, None);
+        // Arko's own choices for the workers, passed on as set.
+        assert_eq!(options.worker_models, Some(arko::ModelChoice::Agent));
+        assert_eq!(options.worker_depth, Some(arko::workers::DEFAULT_DEPTH));
         assert!(!options.allow_outside_workspace);
         assert_eq!(options.text_replies, Some(true));
         assert_eq!(options.cc_compact, Some(true));
@@ -213,6 +224,8 @@ mod tests {
         new.workers_handover_at = Some(300_000);
         new.background_after = Some(0);
         new.monitor_wakes = Some("always".into());
+        new.worker_models = arko::ModelChoice::Profiles;
+        new.worker_depth = 3;
         new.outside_access = true;
         new.text_replies = false;
         new.cc_compact = false;
@@ -232,6 +245,8 @@ mod tests {
         assert_eq!(options.workers_handover_at, Some(300_000));
         assert_eq!(options.background_after, Some(0));
         assert_eq!(options.monitor_wakes, Some(arko::monitors::Wakes(None)));
+        assert_eq!(options.worker_models, Some(arko::ModelChoice::Profiles));
+        assert_eq!(options.worker_depth, Some(3));
         assert!(options.allow_outside_workspace);
         assert_eq!(options.text_replies, Some(false));
         assert_eq!(options.cc_compact, Some(false));
@@ -251,6 +266,19 @@ mod tests {
         options.model = Some("sonnet".into());
         SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent));
         assert_eq!(options.model.as_deref(), Some("sonnet"));
+    }
+
+    /// A depth a hand-edited file holds that a session can't have is left to
+    /// Arko, which would refuse the number.
+    #[test]
+    fn a_worker_depth_out_of_range_is_left_to_arko() {
+        for depth in [0, 5, 100] {
+            let mut prefs = Prefs::default();
+            prefs.new_sessions.worker_depth = depth;
+            let mut options = new_options();
+            SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent));
+            assert_eq!(options.worker_depth, None, "{depth}");
+        }
     }
 
     #[test]
@@ -276,6 +304,7 @@ mod tests {
         let mut prefs = Prefs::default();
         prefs.new_sessions.model = Some("claude-opus-5-5".into());
         prefs.new_sessions.handover_at = Some(300_000);
+        prefs.new_sessions.worker_models = arko::ModelChoice::Session;
         prefs.new_sessions.outside_access = true;
         prefs.advanced.mcp_config = vec![PathBuf::from("/home/ada/mcp.json")];
         prefs.web_page.share_by_default = true;
@@ -286,6 +315,8 @@ mod tests {
         assert_eq!(options.model, None);
         assert_eq!(options.handover_at, None);
         assert_eq!(options.workers_handover_at, None);
+        assert_eq!(options.worker_models, None);
+        assert_eq!(options.worker_depth, None);
         assert!(!options.allow_outside_workspace);
         assert_eq!(options.text_replies, None);
         assert_eq!(options.mcp_config.len(), 1);
