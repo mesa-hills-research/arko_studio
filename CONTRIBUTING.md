@@ -117,6 +117,13 @@ edges when the window floats.
 Buttons and menus in the title bar sit inside `title_bar_item`, which keeps clicks on them from
 starting a window drag.
 
+## Words in the app
+
+Everything a user reads uses the fewest words that keep the meaning. A label doesn't repeat what
+surrounds it, a state the user can already see isn't named, and one word replaces a sentence where
+it says the same ("Pending" for a note the agent hasn't read). Keep every fact the reader needs,
+write plain sentences, and join clauses with periods, commas or "so", not colons or semicolons.
+
 ## Commit messages
 
 Use an area followed by a sentence in the subject, such as `sidebar: Enter opens the first match
