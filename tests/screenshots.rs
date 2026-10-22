@@ -1,7 +1,7 @@
-//! Golden screenshots of Arko Studio's window, rendered headlessly by the GPUI
-//! fork's gpui-pre-screenshot on Mesa's software Vulkan driver, in Work Sans
-//! and JetBrains Mono. The goldens live in `tests/screenshots`. On a mismatch
-//! the actual image and a diff go to `tests/screenshots/failures`, and
+//! Golden screenshots of Arko Studio's window, rendered headlessly by
+//! mhr-gpui-screenshot on Mesa's software Vulkan driver, in Work Sans and
+//! JetBrains Mono. The goldens live in `tests/screenshots`. On a mismatch the
+//! actual image and a diff go to `tests/screenshots/failures`, and
 //! `UPDATE_GOLDENS=1` rewrites the goldens.
 #![cfg(target_os = "linux")]
 

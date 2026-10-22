@@ -36,18 +36,21 @@ that changed and explain why.
 
 ## Building against a local GPUI Kit
 
-`Cargo.toml` pins GPUI Kit to a Git commit and selects the matching GPUI fork through
-`[patch.crates-io]`. To try a change in a local kit checkout, add this override to the ignored
-`.cargo/config.toml`.
+`Cargo.toml` pins GPUI Kit to a Git commit. The kit takes GPUI from the published `mhr-gpui`
+crates, so the app has no GPUI dependency of its own besides the screenshot harness. To try a
+change in a local kit checkout, add this override to the ignored `.cargo/config.toml`.
 
 ```toml
 [patch."https://github.com/mesa-hills-research/gpui_kit"]
 gpui-kit = { path = "../gpui_kit/crates/kit" }
 ```
 
-The kit checkout must use the same GPUI commit as the app. When updating the published kit
-revision, change both `gpui-kit` entries in `Cargo.toml`, the GPUI patches and the screenshot
-harness revision to match the kit, then regenerate `Cargo.lock` without the local override.
+The kit checkout must use the same `mhr-gpui` release as the app. When updating the kit revision,
+change both `gpui-kit` entries in `Cargo.toml`. If the kit moves to another `mhr-gpui` release,
+also set the screenshot harness to the gpui commit that release was cut from, and set the `=`
+versions of `mhr-gpui-wgpu` and of the two entries in
+`[patch."https://github.com/mesa-hills-research/gpui"]` to the kit's. Then regenerate `Cargo.lock`
+without the local override.
 
 ## Building against local Arko and framework checkouts
 

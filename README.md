@@ -17,7 +17,7 @@ The native interface is written in Rust with [GPUI](https://www.gpui.rs) and
 ## Build and install
 
 Install a current stable [Rust toolchain](https://rustup.rs). The app's minimum Rust version is
-1.89. Platform build tools are also needed.
+1.95. Platform build tools are also needed.
 
 - On macOS, install Xcode and its command-line tools. With Xcode 26, install the Metal toolchain
   using `xcodebuild -downloadComponent MetalToolchain` if it is missing.
@@ -30,8 +30,8 @@ sudo apt install build-essential pkg-config cmake libfontconfig-dev libwayland-d
   libxkbcommon-x11-dev libx11-xcb-dev libvulkan1 mesa-vulkan-drivers
 ```
 
-Clone the repository and build it. Cargo fetches Arko and its framework from crates.io, and the
-pinned GPUI Kit and GPUI commits from GitHub.
+Clone the repository and build it. Cargo fetches Arko, its framework and GPUI (the `mhr-gpui`
+crates) from crates.io, and the pinned GPUI Kit commit from GitHub.
 
 ```sh
 git clone https://github.com/mesa-hills-research/arko_studio.git
