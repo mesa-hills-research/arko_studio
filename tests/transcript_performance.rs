@@ -33,9 +33,13 @@ use serde_json::Value;
 use uuid::Uuid;
 
 fn app() -> ScreenshotApp {
+    app_with(Motion::Off)
+}
+
+fn app_with(motion: Motion) -> ScreenshotApp {
     let mut app = ScreenshotApp::with_assets(Assets).unwrap();
     let mut prefs = Prefs::default();
-    prefs.appearance.motion = Motion::Off;
+    prefs.appearance.motion = motion;
     let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
     let startup = Startup::for_tests(backend)
         .with_prefs(prefs)
@@ -331,6 +335,98 @@ fn streaming_a_20k_token_reply() {
     report("streaming a 20k-token reply, 40-byte chunks", &frames);
     let tail = &frames[frames.len() - 400..];
     report("  its last 200 chunks", tail);
+}
+
+/// Streams a reply into a transcript of `turns` finished turns for ten seconds
+/// of a fake clock, on a 60 Hz display, in chunks of 40 bytes 7.5 times a second
+/// (about 75 tokens a second), and reports how often the window drew and how
+/// much processor time the UI thread used. With `Motion::On` the new text
+/// fades in, which draws the window in between the chunks. With `Motion::Off`
+/// it appears at once.
+fn stream_for_ten_seconds(motion: Motion, turns: usize) {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// The processor time this thread has used.
+    fn cpu_time() -> Duration {
+        std::fs::read_to_string("/proc/thread-self/schedstat")
+            .ok()
+            .and_then(|stat| stat.split_whitespace().next()?.parse::<u64>().ok())
+            .map(Duration::from_nanos)
+            .unwrap_or_default()
+    }
+
+    /// The transcript, counting the draws of the window.
+    struct Counted(Entity<TranscriptView>, Rc<Cell<usize>>);
+
+    impl Render for Counted {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.1.set(self.1.get() + 1);
+            self.0.clone()
+        }
+    }
+
+    let mut app = app_with(motion);
+    app.update(|cx| cx.set_reduce_motion(motion == Motion::Off));
+    let feed = long_feed(turns);
+    feed.user("Explain the parser.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let draws = Rc::new(Cell::new(0));
+    let window = app
+        .open_window_with(size(px(1000.), px(900.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                let view = cx.new(|cx| TranscriptView::new(&feed, AgentFilter::Main, window, cx));
+                let draws = draws.clone();
+                cx.new(|_| Counted(view, draws))
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    for _ in 0..3 {
+        app.run_until_parked();
+        frame(&mut app, window);
+    }
+    let text = reply(0, 3500);
+    let mut at = 0;
+    let (start_draws, start_cpu) = (draws.get(), cpu_time());
+    let mut worst = Duration::ZERO;
+    for step in 0..600 {
+        if step % 8 == 0 && at < text.len() {
+            let mut end = (at + 40).min(text.len());
+            while !text.is_char_boundary(end) {
+                end += 1;
+            }
+            say(&feed, &text[at..end]);
+            at = end;
+        }
+        app.advance_clock(Duration::from_micros(16_667));
+        let before = cpu_time();
+        app.update_window(window, |_, window, cx| {
+            window.simulate_next_frame(cx);
+        })
+        .unwrap();
+        app.run_until_parked();
+        worst = worst.max(cpu_time() - before);
+    }
+    let cpu = cpu_time() - start_cpu;
+    println!(
+        "{} turns, motion {motion:?}: {:.1} window draws a second, {:.1} ms of processor time a second ({:.2} ms a step at most), {at} bytes streamed",
+        turns,
+        (draws.get() - start_draws) as f64 / 10.,
+        cpu.as_secs_f64() * 100.,
+        worst.as_secs_f64() * 1000.
+    );
+}
+
+#[test]
+#[ignore = "a measurement: run it in release"]
+fn streaming_a_reply_with_and_without_the_text_fade() {
+    for turns in [0, 40] {
+        for _ in 0..2 {
+            stream_for_ten_seconds(Motion::Off, turns);
+            stream_for_ten_seconds(Motion::On, turns);
+        }
+    }
 }
 
 /// Streams the last 8 KB of a 200 KB Rust code block, at the top level or
