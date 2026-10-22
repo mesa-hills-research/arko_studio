@@ -36,6 +36,18 @@ pub const FIXED: &str = "Fixed once the conversation started.";
 /// the conversation has started.
 pub const MODEL_KEPT: &str = "The main agent keeps its model once the conversation starts.";
 
+/// The tooltip over a setting the conversation has fixed, drawn as the
+/// kit's tooltips are. The selector lets tests see it.
+struct Fixed(AnyView);
+
+impl Render for Fixed {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .debug_selector(|| "fixed-tooltip".into())
+            .child(self.0.clone())
+    }
+}
+
 /// How long a switch or a segment shows the user's choice before the
 /// session's status does (the status comes about half a second after a
 /// change, and says why not when the session refused it).
@@ -727,6 +739,20 @@ impl Render for SessionInfo {
                     }
                 })
         };
+        // Locked with the others, and says so on hover.
+        let extra_rules = h_flex().child(
+            div()
+                .id("extra-rules-fixed")
+                .test_support()
+                .when(started, |this| {
+                    this.tooltip(|window, cx| {
+                        let said =
+                            gpui_kit::component::tooltip::Tooltip::new(FIXED).build(window, cx);
+                        cx.new(|_| Fixed(said)).into()
+                    })
+                })
+                .child(extra_rules),
+        );
         let project = {
             let choose = ProjectFiles::ALL.map(|files| {
                 choose(
@@ -933,41 +959,26 @@ impl Render for SessionInfo {
                     cx,
                 ))
                 .child(row(narrow, "Extra rules", extra_rules, cx))
-                .when(started, |this| {
-                    this.child(
-                        div()
-                            .when(!narrow, |this| this.pl(rems(9.25)))
-                            .text_xs()
-                            .text_color(muted)
-                            .child("Text replies, Claude Code compaction and the extra rules are fixed once the conversation started."),
-                    )
-                })
                 .child(row(
                     narrow,
                     "Project instructions",
                     v_flex()
                         .gap_1()
                         .child(project)
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(muted)
-                                .child({
-                                    let said = crate::backend::sentence(
-                                        settings.project_instructions.describe(),
-                                    );
-                                    // Before the first message, it holds for
-                                    // the conversation coming.
-                                    if started {
-                                        format!(
-                                            "{}, from the next conversation.",
-                                            said.trim_end_matches('.')
-                                        )
-                                    } else {
-                                        said
-                                    }
-                                }),
-                        )
+                        .child(div().text_xs().text_color(muted).child({
+                            let said =
+                                crate::backend::sentence(settings.project_instructions.describe());
+                            // Before the first message, it holds for
+                            // the conversation coming.
+                            if started {
+                                format!(
+                                    "{}, from the next conversation.",
+                                    said.trim_end_matches('.')
+                                )
+                            } else {
+                                said
+                            }
+                        }))
                         .when(reading.models.has_workers, |this| {
                             this.child(
                                 h_flex()
@@ -1608,6 +1619,92 @@ mod view_tests {
         cx.executor().advance_clock(super::HOLD);
         cx.run_until_parked();
         assert_eq!(checked(cx), Some(false));
+    }
+
+    /// Opens the info of a session that has (`started`) or hasn't started
+    /// its conversation, and hovers `id` until a tooltip would show.
+    /// Whether one did.
+    fn tooltip_on(cx: &mut TestAppContext, started: bool, id: &'static str) -> bool {
+        start(cx);
+        let (window, workspace) = open(cx, 1300.);
+        let reading = Reading {
+            models: Models {
+                started,
+                ..Models::default()
+            },
+            ..Reading::default()
+        };
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        session.update(cx, |session, cx| {
+            session.set_status(reading, Activity::default(), cx)
+        });
+        let title_bar = cx.read(|cx| workspace.read(cx).title_bar().clone());
+        cx.update_window(window, |_, window, cx| {
+            title_bar.update(cx, |bar, cx| {
+                bar.set_live_session(Some(session.clone()), window, cx);
+                bar.toggle_info(cx);
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+        // The rows are past the first screenful of the info.
+        for _ in 0..40 {
+            let seen = cx
+                .update_window(window, |_, window, cx| {
+                    window.render_frame(cx);
+                    let info = window.find("session-info").bounds();
+                    window
+                        .try_find(id)
+                        .is_some_and(|found| info.contains(&found.bounds().center()))
+                })
+                .unwrap();
+            if seen {
+                break;
+            }
+            act(cx, window, |window, cx| {
+                window.scroll(
+                    "session-info",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                        gpui_kit::px(0.),
+                        gpui_kit::px(-120.),
+                    )),
+                    cx,
+                )
+            });
+        }
+        let center = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let bounds = window.find(id).bounds();
+                gpui_kit::point(bounds.origin.x + gpui_kit::px(10.), bounds.center().y)
+            })
+            .unwrap();
+        let cx = &mut gpui_kit::VisualTestContext::from_window(window, cx);
+        cx.simulate_mouse_move(center, None, gpui_kit::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(2));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.debug_bounds("tooltip").is_some() || cx.debug_bounds("fixed-tooltip").is_some()
+    }
+
+    /// Once the conversation has started, the settings it fixes say so
+    /// when hovered, the Extra rules too. Before, they have no tooltip.
+    #[gpui_kit::test]
+    fn the_settings_a_conversation_fixes_say_so_on_hover(cx: &mut TestAppContext) {
+        assert!(tooltip_on(cx, true, "text-replies"));
+    }
+
+    #[gpui_kit::test]
+    fn the_extra_rules_say_they_are_fixed_on_hover(cx: &mut TestAppContext) {
+        assert!(tooltip_on(cx, true, "extra-rules-fixed"));
+    }
+
+    #[gpui_kit::test]
+    fn the_extra_rules_say_nothing_before_the_conversation_starts(cx: &mut TestAppContext) {
+        assert!(!tooltip_on(cx, false, "extra-rules-fixed"));
     }
 
     /// Who chooses the workers' models and how deep workers go send the
