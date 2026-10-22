@@ -2477,6 +2477,118 @@ fn a_command_started_in_the_background_can_be_stopped(cx: &mut TestAppContext) {
     assert!(!drawn(cx, window, ("stop-job", item)));
 }
 
+/// Whether the element `inner` is drawn inside the element `outer`.
+fn drawn_in(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    inner: impl Into<ElementId>,
+    outer: impl Into<ElementId>,
+) -> bool {
+    let (inner, outer) = (inner.into(), outer.into());
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let (Some(inner), Some(outer)) = (window.try_find(inner), window.try_find(outer)) else {
+            return false;
+        };
+        outer.bounds().contains(&inner.bounds().center())
+    })
+    .unwrap()
+}
+
+/// A Quiet group of more than three calls folds them, and its header offers
+/// what the row of the call it names would: Move to background for the
+/// running call that can move, else Stop for the latest call whose job
+/// runs. Opening the group moves the buttons to the calls' rows.
+#[gpui_kit::test]
+fn a_folded_groups_header_offers_move_and_stop(cx: &mut TestAppContext) {
+    use arko::remote::{JobKind, JobState, MAIN_AGENT};
+
+    start(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Quiet));
+    let feed = Feed::new("main");
+    feed.user("Serve it, then build", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let read = call(&feed, "main", "read_file", &[("path", "src/a.rs".into())]);
+    result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
+    let (served, job) = (
+        call(
+            &feed,
+            "main",
+            "terminal_start",
+            &[("command", "npm run dev".into())],
+        ),
+        Uuid::new_v4(),
+    );
+    result(
+        &feed,
+        "main",
+        served,
+        "terminal_start",
+        &format!("Started job {job}."),
+    );
+    feed.job_started(
+        arko::remote::JobStart::new(job, MAIN_AGENT, JobKind::Command, "npm run dev")
+            .made_by(served),
+    );
+    let read = call(&feed, "main", "read_file", &[("path", "src/b.rs".into())]);
+    result(&feed, "main", read, "read_file", "1 | fn b() {}\n");
+    let building = call(&feed, "main", "shell", &[("command", "cargo build".into())]);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    let calls = ids_of(&feed, Kind::Call);
+    let (serving, building_item) = (calls[1], calls[3]);
+    view.update(cx, |view, cx| view.set_movable(&[building_item], cx));
+    settle(cx, window);
+    let group = super::row::element_id(RowKey::Group(calls[0]));
+    let rows = keys(&view, cx);
+    assert!(rows.contains(&RowKey::Group(calls[0])), "{rows:?}");
+    assert!(!rows.contains(&RowKey::Call(building_item)), "{rows:?}");
+
+    // Folded, the header names the running command and offers to move it.
+    let move_button = ("move-call", building_item);
+    let stop_button = ("stop-job", serving);
+    assert!(drawn_in(cx, window, move_button, group.clone()));
+    assert!(!drawn(cx, window, stop_button), "one call at a time");
+    let (events, _subscription) = events_of(&view, cx);
+    cx.update_window(window, |_, window, cx| window.click(move_button, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        *events.borrow(),
+        [TranscriptEvent::MoveToBackground(building_item)]
+    );
+
+    // Opened, the calls' rows offer both, and the header doesn't.
+    view.update(cx, |view, cx| view.toggle_group(calls[0], cx));
+    settle(cx, window);
+    for (button, call) in [(stop_button, serving), (move_button, building_item)] {
+        let row = super::row::element_id(RowKey::Call(call));
+        assert!(drawn_in(cx, window, button, row), "{button:?}");
+        assert!(!drawn_in(cx, window, button, group.clone()), "{button:?}");
+    }
+
+    // Folded again, with the command done, the header names the job's call
+    // and offers to stop it.
+    view.update(cx, |view, cx| view.toggle_group(calls[0], cx));
+    result(&feed, "main", building, "shell", "exit code 0, 1.0 s\n");
+    view.update(cx, |view, cx| view.set_movable(&[], cx));
+    settle(cx, window);
+    assert!(drawn_in(cx, window, stop_button, group.clone()));
+    assert!(!drawn(cx, window, move_button));
+    events.borrow_mut().clear();
+    cx.update_window(window, |_, window, cx| window.click(stop_button, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        *events.borrow(),
+        [TranscriptEvent::StopJob(job.to_string().into())]
+    );
+
+    // The job ends: nothing to offer.
+    feed.job_ended(job, JobState::Stopped, None);
+    settle(cx, window);
+    assert!(!drawn(cx, window, stop_button));
+}
+
 /// A reopened session's transcript shows the turns Arko started for news (a
 /// monitor's alert or warning, a background job's end, the workers' news)
 /// as the notices the live transcript showed, not as messages of the

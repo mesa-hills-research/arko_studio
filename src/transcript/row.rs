@@ -1486,50 +1486,7 @@ impl TranscriptView {
             ),
             _ => None,
         };
-        // What the row offers to do with the call while it runs, or with
-        // its job while that runs.
-        let action = match &job {
-            Some(JobLine::Running { job, .. } | JobLine::Monitoring { job, .. }) => {
-                let (view, job) = (view.downgrade(), job.clone());
-                Some(
-                    Button::new(("stop-job", id))
-                        .ghost()
-                        .xsmall()
-                        .label("Stop")
-                        .on_click(move |_, _, cx| {
-                            view.update(cx, |_, cx| cx.emit(TranscriptEvent::StopJob(job.clone())))
-                                .ok();
-                        })
-                        .into_any_element(),
-                )
-            }
-            None if item.status == Some(CallStatus::Running) && self.movable.contains(&id) => {
-                let view = view.downgrade();
-                let button = Button::new(("move-call", id))
-                    .ghost()
-                    .xsmall()
-                    .label("Move to background");
-                // Ctrl+B moves the main agent's call.
-                let button = if item.is_main() {
-                    button.tooltip_with_action(
-                        "Move to background",
-                        &crate::menus::MoveToBackground,
-                        None,
-                    )
-                } else {
-                    button
-                };
-                Some(
-                    button
-                        .on_click(move |_, _, cx| {
-                            view.update(cx, |_, cx| cx.emit(TranscriptEvent::MoveToBackground(id)))
-                                .ok();
-                        })
-                        .into_any_element(),
-                )
-            }
-            _ => None,
-        };
+        let action = self.call_action(item, job.as_ref(), view);
         let header_view = view.downgrade();
         let header = Disclosure {
             id: ("call-toggle", id).into(),
@@ -1585,6 +1542,59 @@ impl TranscriptView {
             )
             .when(open, |this| this.child(self.call_details(id, cx)))
             .into_any_element()
+    }
+
+    /// What a call offers to do with itself while it runs (Move to
+    /// background) or with its job while that runs (Stop).
+    fn call_action(
+        &self,
+        item: &Item,
+        job: Option<&JobLine>,
+        view: &Entity<Self>,
+    ) -> Option<AnyElement> {
+        let id = item.id;
+        match job {
+            Some(JobLine::Running { job, .. } | JobLine::Monitoring { job, .. }) => {
+                let (view, job) = (view.downgrade(), job.clone());
+                Some(
+                    Button::new(("stop-job", id))
+                        .ghost()
+                        .xsmall()
+                        .label("Stop")
+                        .on_click(move |_, _, cx| {
+                            view.update(cx, |_, cx| cx.emit(TranscriptEvent::StopJob(job.clone())))
+                                .ok();
+                        })
+                        .into_any_element(),
+                )
+            }
+            None if item.status == Some(CallStatus::Running) && self.movable.contains(&id) => {
+                let view = view.downgrade();
+                let button = Button::new(("move-call", id))
+                    .ghost()
+                    .xsmall()
+                    .label("Move to background");
+                // Ctrl+B moves the main agent's call.
+                let button = if item.is_main() {
+                    button.tooltip_with_action(
+                        "Move to background",
+                        &crate::menus::MoveToBackground,
+                        None,
+                    )
+                } else {
+                    button
+                };
+                Some(
+                    button
+                        .on_click(move |_, _, cx| {
+                            view.update(cx, |_, cx| cx.emit(TranscriptEvent::MoveToBackground(id)))
+                                .ok();
+                        })
+                        .into_any_element(),
+                )
+            }
+            _ => None,
+        }
     }
 
     /// A call's details: its parameters in full, its output, its diff.
@@ -1694,55 +1704,87 @@ impl TranscriptView {
         let running = calls
             .iter()
             .rev()
-            .find(|item| item.status == Some(CallStatus::Running));
+            .find(|item| item.status == Some(CallStatus::Running))
+            .copied();
         let failed = calls
             .iter()
             .filter(|item| item.status == Some(CallStatus::Failed))
             .count();
         let open = self.group_open(id);
+        // A folded group's header names the call that runs, or else the
+        // latest whose job runs, and offers what that call's own row does
+        // (Move to background, Stop).
+        let in_background = |item: &&&Item| {
+            matches!(
+                self.job_line(item),
+                Some(JobLine::Running { .. } | JobLine::Monitoring { .. })
+            )
+        };
+        let active = running.or_else(|| match open {
+            true => None,
+            false => calls.iter().rev().find(in_background).copied(),
+        });
+        let action = match open {
+            true => None,
+            false => {
+                active.and_then(|item| self.call_action(item, self.job_line(item).as_ref(), view))
+            }
+        };
         let view = view.downgrade();
         let summary = tool::summary(calls.iter().copied());
-        Disclosure {
-            id: ("group-toggle", id).into(),
-            open,
-            label: summary.clone().into(),
-            full_width: true,
-            content: h_flex()
-                .w_full()
-                .min_w_0()
-                .gap_1p5()
-                .text_color(theme.muted_foreground)
-                .child(Icon::new(chevron(open)).xsmall())
-                .child(div().flex_none().child(summary))
-                .when_some(running, |this, running| {
-                    this.child(
-                        h_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1()
-                            .child(self.spinner(running.id, cx))
-                            .child(div().min_w_0().truncate().child(
-                                running.text.lines().next().unwrap_or_default().to_string(),
-                            )),
-                    )
-                })
-                .when(running.is_none(), |this| this.child(div().flex_1()))
-                .when(failed > 0, |this| {
-                    this.child(
-                        h_flex()
-                            .flex_none()
-                            .gap_1()
-                            .text_color(theme.danger)
-                            .child(Icon::new(Lucide::CircleX).xsmall())
-                            .child(format!("{failed} failed")),
-                    )
-                })
-                .into_any_element(),
-            on_toggle: Rc::new(move |_, cx| {
-                view.update(cx, |this, cx| this.toggle_group(id, cx)).ok();
-            }),
-        }
-        .into_any_element()
+        let header =
+            Disclosure {
+                id: ("group-toggle", id).into(),
+                open,
+                label: summary.clone().into(),
+                full_width: true,
+                content: h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_1p5()
+                    .text_color(theme.muted_foreground)
+                    .child(Icon::new(chevron(open)).xsmall())
+                    .child(div().min_w_0().truncate().child(summary))
+                    .when_some(active, |this, active| {
+                        this.child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .when(active.status == Some(CallStatus::Running), |this| {
+                                    this.child(self.spinner(active.id, cx))
+                                })
+                                .child(div().min_w_0().truncate().child(
+                                    active.text.lines().next().unwrap_or_default().to_string(),
+                                )),
+                        )
+                    })
+                    .when(active.is_none(), |this| this.child(div().flex_1()))
+                    .when(failed > 0, |this| {
+                        this.child(
+                            h_flex()
+                                .flex_none()
+                                .gap_1()
+                                .text_color(theme.danger)
+                                .child(Icon::new(Lucide::CircleX).xsmall())
+                                .child(format!("{failed} failed")),
+                        )
+                    })
+                    .into_any_element(),
+                on_toggle: Rc::new(move |_, cx| {
+                    view.update(cx, |this, cx| this.toggle_group(id, cx)).ok();
+                }),
+            };
+        let Some(action) = action else {
+            return header.into_any_element();
+        };
+        h_flex()
+            .w_full()
+            .min_w_0()
+            .gap_1()
+            .child(div().flex_1().min_w_0().child(header))
+            .child(div().flex_none().child(action))
+            .into_any_element()
     }
 
     fn count(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {

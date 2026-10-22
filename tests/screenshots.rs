@@ -549,6 +549,53 @@ parse of the whole text.";
         feed
     }
 
+    /// Six calls in a row: four finished reads, a monitor that runs and a
+    /// command that runs, which can move. `now` is the time the rows are
+    /// read at. Gives the running command's item too.
+    pub fn many_calls(now: i64) -> (Feed, u64) {
+        use arko::remote::{JobKind, JobStart, MAIN_AGENT};
+
+        let feed = Feed::new("main");
+        feed.user(
+            "Find where the parser reads its input, watch the dev server and build it.",
+            Source::App,
+            Delivery::Turn,
+        );
+        feed.turn_started();
+        for path in ["src/parse.rs", "src/block.rs", "src/input.rs", "src/lib.rs"] {
+            let read = call(&feed, "read_file", &[("path", path.into())]);
+            result(&feed, read, "read_file", "1 | pub struct Parser {\n2 | }\n");
+        }
+        let (started, job) = (now - 8 * 60_000 - 10_000, Uuid::new_v4());
+        let id = call(
+            &feed,
+            "monitor_start",
+            &[
+                ("command", "npm run dev".into()),
+                ("pattern", "error".into()),
+            ],
+        );
+        feed.job_started(
+            JobStart::new(job, MAIN_AGENT, JobKind::Monitor, "npm run dev")
+                .made_by(id)
+                .started(started)
+                .monitoring("lines that match error", started + 30 * 60_000),
+        );
+        result(
+            &feed,
+            id,
+            "monitor_start",
+            &format!("Monitor {job} started. It watches `npm run dev`."),
+        );
+        call(
+            &feed,
+            "shell",
+            &[("command", "cargo build --release".into())],
+        );
+        let running = feed.subscribe().0.items.last().unwrap().id;
+        (feed, running)
+    }
+
     /// A turn whose agent waits on the model after a call's result.
     pub fn working_after_a_call() -> Feed {
         let feed = Feed::new("main");
@@ -809,6 +856,53 @@ fn transcript_monitors_dark() {
         "transcript-monitors-dark",
         &monitors_window(ThemeMode::Dark),
     );
+}
+
+/// The Quiet view's group of calls, folded, while a monitor and a command
+/// that can move run. Its header names the command and offers Move to
+/// background.
+fn group_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    settings.view = prefs::TranscriptView::Quiet;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let now = chrono::Utc::now().timestamp_millis();
+    let (feed, running) = feed::many_calls(now);
+    // The command started 12 s ago.
+    let shown_at = now + 12_000;
+    let window = app
+        .open_window_with(size(px(520.), px(180.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
+                    view.set_clock(move || shown_at, cx);
+                    view.set_movable(&[running], cx);
+                    view
+                })
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn transcript_group_light() {
+    goldens().assert("transcript-group-light", &group_window(ThemeMode::Light));
+}
+
+#[test]
+fn transcript_group_dark() {
+    goldens().assert("transcript-group-dark", &group_window(ThemeMode::Dark));
 }
 
 /// "Working…" below a call's result, while the agent waits on the model.
