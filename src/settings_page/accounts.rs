@@ -437,7 +437,7 @@ impl AccountsPage {
                 .description("How much the main agent’s model reasons. Default is xhigh, or the nearest its model takes.")
                 .keywords(["reasoning", "thinking"]),
                 SettingItem::new(
-                    "Workers’ model",
+                    "Default workers’ model",
                     SettingField::scrollable_dropdown(
                         self.model_options("Automatic".into(), chosen.worker_model.as_deref()),
                         |cx: &App| {
@@ -459,10 +459,10 @@ impl AccountsPage {
                 )
                 .description(
                     self.model_note(chosen.worker_model.as_deref()).unwrap_or_else(|| {
-                        "Automatic reuses the last session’s workers’ model when Model is Last used. Otherwise, workers use the main model.".into()
+                        "The model workers use when the main agent doesn’t choose one. A profile or the agent’s own choice wins. Automatic reuses the last session’s workers’ model when Model is Last used. Otherwise, workers use the main model.".into()
                     }),
                 )
-                .keywords(["workers", "worker model"]),
+                .keywords(["workers", "worker model", "default"]),
                 SettingItem::new(
                     "Workers’ effort",
                     SettingField::dropdown(

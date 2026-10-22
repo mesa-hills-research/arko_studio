@@ -766,21 +766,49 @@ fn choice<T: Copy + PartialEq + 'static>(
     set: fn(&mut prefs::Prefs, T),
     default: T,
 ) -> SettingItem {
-    let label = move |value: T| {
+    choice_of(
+        title,
         options
             .iter()
-            .find(|(option, _)| *option == value)
-            .map(|(_, label)| SharedString::from(*label))
-            .unwrap_or_default()
+            .map(|(option, label)| (*option, SharedString::from(*label)))
+            .collect(),
+        get,
+        set,
+        default,
+    )
+}
+
+/// A dropdown bound to a preference, with labels made when the page is.
+fn choice_of<T: Copy + PartialEq + 'static>(
+    title: &'static str,
+    options: Vec<(T, SharedString)>,
+    get: fn(&prefs::Prefs) -> T,
+    set: fn(&mut prefs::Prefs, T),
+    default: T,
+) -> SettingItem {
+    let options = std::rc::Rc::new(options);
+    let label = {
+        let options = options.clone();
+        move |value: T| {
+            options
+                .iter()
+                .find(|(option, _)| *option == value)
+                .map(|(_, label)| label.clone())
+                .unwrap_or_default()
+        }
     };
+    let choices = options
+        .iter()
+        .map(|(_, label)| (label.clone(), label.clone()))
+        .collect();
     SettingItem::new(
         title,
         SettingField::dropdown(
-            options
-                .iter()
-                .map(|(_, label)| (SharedString::from(*label), SharedString::from(*label)))
-                .collect(),
-            move |cx: &App| label(get(prefs::get(cx))),
+            choices,
+            {
+                let label = label.clone();
+                move |cx: &App| label(get(prefs::get(cx)))
+            },
             move |value: SharedString, cx: &mut App| {
                 if let Some((option, _)) = options.iter().find(|(_, label)| value == *label) {
                     let option = *option;

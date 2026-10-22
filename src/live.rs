@@ -685,8 +685,10 @@ impl LiveSession {
         if !self.reading.title.is_empty() {
             self.title = self.reading.title.clone().into();
         }
+        // (Before the engine's first status, the settings are the default's.)
         if !self.reading.models.main.is_empty() {
             self.model = arko::models::display_name(&self.reading.models.main).into();
+            crate::workers::note_nested(self.reading.settings.nested_workers);
         }
     }
 

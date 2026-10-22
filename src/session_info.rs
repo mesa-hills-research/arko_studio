@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use arko::details::{IndexFacts, IndexWatch, McpFacts, SessionFacts, SkillsFacts};
 use arko::remote::Reading;
-use arko::{ExtraRules, ProjectFiles};
+use arko::{ExtraRules, ModelChoice, ProjectFiles};
 use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::switch::Switch;
@@ -26,6 +26,8 @@ use crate::backend::Mode;
 use crate::live::LiveSession;
 use crate::session_view::{HomeFolder, shown_folder};
 use crate::status_bar::run;
+use crate::workers::{curly, models_about};
+use arko::workers;
 
 /// Why some settings can't change any more.
 pub const FIXED: &str = "Fixed once the conversation started.";
@@ -46,8 +48,22 @@ fn current(control: &str, settings: &arko::remote::LiveSettings) -> Option<Strin
         "project-workers" => switch(settings.worker_project_instructions),
         "extra-rules" => Some(settings.extra_rules.name().to_string()),
         "project-instructions" => Some(settings.project_instructions.name().to_string()),
+        "worker-models" => Some(settings.worker_models.name().to_string()),
+        "worker-depth" => Some(settings.worker_depth.to_string()),
         _ => None,
     }
+}
+
+/// A choice of who picks the workers' models as one word, the one its
+/// command takes with a capital, for a segment of the info's control. The
+/// segment's tooltip has Arko's label.
+fn short_choice(choice: ModelChoice) -> String {
+    let name = choice.name();
+    let mut letters = name.chars();
+    letters
+        .next()
+        .map(|first| first.to_uppercase().chain(letters).collect())
+        .unwrap_or_default()
 }
 
 /// A choice the user made that the session's status doesn't show yet.
@@ -740,6 +756,62 @@ impl Render for SessionInfo {
                 })
         };
 
+        let worker_models = {
+            let choose = ModelChoice::ALL
+                .map(|choice| choose("worker-models", choice.name(), choice.command()));
+            let current = ModelChoice::ALL
+                .into_iter()
+                .find(|choice| choice.name() == shown("worker-models"))
+                .unwrap_or(settings.worker_models);
+            ToggleGroup::new("worker-models")
+                .segmented()
+                .small()
+                .children(ModelChoice::ALL.map(|choice| {
+                    Toggle::new(SharedString::from(format!(
+                        "worker-models-{}",
+                        choice.name()
+                    )))
+                    .label(short_choice(choice))
+                    .tooltip(curly(choice.label()))
+                    .checked(choice == current)
+                }))
+                .on_click(move |checks, window, cx| {
+                    if let Some(ix) =
+                        clicked(checks, ModelChoice::ALL.map(|choice| choice == current))
+                    {
+                        choose[ix](window, cx)
+                    }
+                })
+        };
+        let worker_depth = {
+            let depths: [u32; workers::MAX_DEPTH as usize] =
+                std::array::from_fn(|ix| ix as u32 + 1);
+            let choose = depths.map(|depth| {
+                choose(
+                    "worker-depth",
+                    &depth.to_string(),
+                    workers::depth_command(depth),
+                )
+            });
+            let current = depths
+                .into_iter()
+                .find(|depth| depth.to_string() == shown("worker-depth"))
+                .unwrap_or(settings.worker_depth);
+            ToggleGroup::new("worker-depth")
+                .segmented()
+                .small()
+                .children(depths.map(|depth| {
+                    Toggle::new(SharedString::from(format!("worker-depth-{depth}")))
+                        .label(depth.to_string())
+                        .checked(depth == current)
+                }))
+                .on_click(move |checks, window, cx| {
+                    if let Some(ix) = clicked(checks, depths.map(|depth| depth == current)) {
+                        choose[ix](window, cx)
+                    }
+                })
+        };
+
         let mut body = v_flex().gap_1();
         // Where it works, and on what.
         body =
@@ -913,6 +985,45 @@ impl Render for SessionInfo {
                         }),
                     cx,
                 ));
+            if reading.models.has_workers {
+                let chosen = ModelChoice::ALL
+                    .into_iter()
+                    .find(|choice| choice.name() == shown("worker-models"))
+                    .unwrap_or(settings.worker_models);
+                let depth = shown("worker-depth")
+                    .parse()
+                    .unwrap_or(settings.worker_depth);
+                body = body
+                    .child(row(
+                        narrow,
+                        workers::MODELS_NAME,
+                        v_flex().gap_1().child(worker_models).child(
+                            div()
+                                .id("worker-models-about")
+                                .test_support()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(models_about(chosen)),
+                        ),
+                        cx,
+                    ))
+                    .child(row(
+                        narrow,
+                        workers::DEPTH_NAME,
+                        v_flex().gap_1().child(worker_depth).child(
+                            div()
+                                .id("worker-depth-about")
+                                .test_support()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(curly(&workers::depth_effect(
+                                    depth,
+                                    settings.nested_workers,
+                                ))),
+                        ),
+                        cx,
+                    ));
+            }
             // What the agents have besides their own tools.
             body = body.child(heading("Extensions", cx));
             body = match &facts {
@@ -1493,6 +1604,121 @@ mod view_tests {
         cx.executor().advance_clock(super::HOLD);
         cx.run_until_parked();
         assert_eq!(checked(cx), Some(false));
+    }
+
+    /// Who chooses the workers' models and how deep workers go send the
+    /// commands of the terminal, and show the choice at once. A session
+    /// with no workers lists neither.
+    #[gpui_kit::test]
+    fn the_worker_settings_send_the_terminals_commands(cx: &mut TestAppContext) {
+        use arko::{ModelChoice, workers};
+
+        start(cx);
+        let (window, workspace) = open(cx, 1300.);
+        let reading = |has_workers| Reading {
+            settings: LiveSettings {
+                worker_models: ModelChoice::Agent,
+                worker_depth: 2,
+                ..LiveSettings::default()
+            },
+            models: Models {
+                started: true,
+                has_workers,
+                ..Models::default()
+            },
+            ..Reading::default()
+        };
+        let alone = cx.new(|cx| LiveSession::for_tests("alone", cx));
+        alone.update(cx, |session, cx| {
+            session.set_status(reading(false), Activity::default(), cx)
+        });
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        session.update(cx, |session, cx| {
+            session.set_status(reading(true), Activity::default(), cx)
+        });
+        let title_bar = cx.read(|cx| workspace.read(cx).title_bar().clone());
+        let show = |cx: &mut TestAppContext, shown: &Entity<LiveSession>| {
+            cx.update_window(window, |_, window, cx| {
+                title_bar.update(cx, |bar, cx| {
+                    bar.set_live_session(Some(shown.clone()), window, cx);
+                    if !bar.is_info_open() {
+                        bar.toggle_info(cx);
+                    }
+                })
+            })
+            .unwrap();
+            cx.run_until_parked();
+        };
+        show(cx, &alone);
+        assert!(!shows(window, cx, "worker-models"));
+        assert!(!shows(window, cx, "worker-depth"));
+        show(cx, &session);
+        // The rows are past the first screenful of the info.
+        for _ in 0..40 {
+            let seen = cx
+                .update_window(window, |_, window, cx| {
+                    window.render_frame(cx);
+                    window
+                        .try_find("worker-depth-2")
+                        .is_some_and(|found| found.visible())
+                })
+                .unwrap();
+            if seen {
+                break;
+            }
+            act(cx, window, |window, cx| {
+                window.scroll(
+                    "session-info",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                        gpui_kit::px(0.),
+                        gpui_kit::px(-120.),
+                    )),
+                    cx,
+                )
+            });
+        }
+        let checked = |cx: &mut TestAppContext, id: &'static str| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find(id).and_then(|found| found.checked())
+            })
+            .unwrap()
+        };
+        assert_eq!(checked(cx, "worker-models-agent"), Some(true));
+        assert_eq!(checked(cx, "worker-models-profiles"), Some(false));
+        assert_eq!(checked(cx, "worker-depth-2"), Some(true));
+        act(cx, window, |window, cx| {
+            window.click("worker-models-profiles", cx)
+        });
+        act(cx, window, |window, cx| window.click("worker-depth-3", cx));
+        // The choice shows at once, and the one chosen already sends nothing.
+        assert_eq!(checked(cx, "worker-models-profiles"), Some(true));
+        assert_eq!(checked(cx, "worker-models-agent"), Some(false));
+        assert_eq!(checked(cx, "worker-depth-3"), Some(true));
+        act(cx, window, |window, cx| window.click("worker-depth-3", cx));
+        act(cx, window, |window, cx| window.click("worker-depth-1", cx));
+        assert_eq!(
+            sent(&session, cx),
+            [
+                "/worker-models profiles",
+                workers::depth_command(3).as_str(),
+                "/worker-depth 1"
+            ]
+        );
+        for command in sent(&session, cx) {
+            assert!(arko::commands::find(&command).is_some(), "{command}");
+        }
+        // The session's own status shows once it comes.
+        session.update(cx, |session, cx| {
+            let mut next = reading(true);
+            next.settings.worker_models = ModelChoice::Session;
+            next.settings.worker_depth = 4;
+            session.set_status(next, Activity::default(), cx)
+        });
+        cx.executor().advance_clock(super::HOLD);
+        cx.run_until_parked();
+        assert_eq!(checked(cx, "worker-models-session"), Some(true));
+        assert_eq!(checked(cx, "worker-depth-4"), Some(true));
     }
 
     /// Live settings change through the terminal's commands. Those fixed

@@ -233,6 +233,11 @@ pub struct NewSessions {
     /// it ends still wakes the agent, as `/monitor-wakes` takes it (`2h`,
     /// `always`, `off`). `None`: arko's 2 hours.
     pub monitor_wakes: Option<String>,
+    /// Who chooses the workers' models, as `/worker-models` takes it.
+    pub worker_models: arko::ModelChoice,
+    /// How many levels of workers the session allows, 1 to 4, as
+    /// `/worker-depth` takes it.
+    pub worker_depth: u32,
     /// The agents may change files outside the session's folder.
     pub outside_access: bool,
     /// The main agent ends its turns with a reply in text (else with
@@ -262,6 +267,8 @@ impl Default for NewSessions {
             workers_handover_at: None,
             background_after: None,
             monitor_wakes: None,
+            worker_models: arko::ModelChoice::default(),
+            worker_depth: arko::workers::DEFAULT_DEPTH,
             outside_access: false,
             text_replies: true,
             cc_compact: true,

@@ -410,6 +410,69 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     assert_eq!(typed[2].as_ref(), "off");
 }
 
+/// Sessions lists who chooses the workers' models and how deep workers go
+/// in Arko's words, shows the saved choice, and the choice made there is
+/// what the backend starts new sessions with.
+#[gpui_kit::test]
+fn the_worker_settings_are_chosen_and_passed_on(cx: &mut TestAppContext) {
+    let mut settings = prefs::Prefs::default();
+    settings.new_sessions.worker_models = arko::ModelChoice::Profiles;
+    let backend = start_with(cx, settings);
+    let (window, _, _) = settings_window(cx, 3, 900.);
+    // The group's items: handover size, workers' handover size, models for
+    // workers, worker depth.
+    let label = |cx: &mut TestAppContext, item: usize| {
+        let mut label = None;
+        act(cx, window, |window, _| {
+            label = window
+                .within("group-0")
+                .within(format!("item-{item}"))
+                .find("btn")
+                .label()
+                .map(str::to_string);
+        });
+        label
+    };
+    let started_with = || {
+        let mut options = arko::Options::default();
+        backend.defaults().apply(&mut options, Some(Mode::Agent));
+        (options.worker_models, options.worker_depth)
+    };
+    assert_eq!(label(cx, 2).as_deref(), Some("Profiles only"));
+    assert_eq!(label(cx, 3).as_deref(), Some("2"));
+    assert_eq!(started_with(), (Some(arko::ModelChoice::Profiles), Some(2)));
+    // Choosing from the menus: Arko's labels, in its order.
+    for (item, choice) in [(2, 2usize), (3, 3usize)] {
+        act(cx, window, |window, cx| {
+            window
+                .within("group-0")
+                .within(format!("item-{item}"))
+                .click("btn", cx)
+        });
+        act(cx, window, |window, cx| {
+            window.within("popup-menu").click(choice, cx)
+        });
+    }
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.worker_models),
+        arko::ModelChoice::Session
+    );
+    assert_eq!(cx.read(|cx| prefs::get(cx).new_sessions.worker_depth), 4);
+    assert_eq!(label(cx, 2).as_deref(), Some("Session’s worker model"));
+    assert_eq!(label(cx, 3).as_deref(), Some("4"));
+    assert_eq!(started_with(), (Some(arko::ModelChoice::Session), Some(4)));
+    // A choice made elsewhere shows at once.
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.new_sessions.worker_models = arko::ModelChoice::Agent;
+            prefs.new_sessions.worker_depth = 1;
+        })
+    });
+    act(cx, window, |_, _| {});
+    assert_eq!(label(cx, 2).as_deref(), Some("Main agent chooses"));
+    assert_eq!(label(cx, 3).as_deref(), Some("1"));
+}
+
 /// The chat instructions type as Settings › Input says, as it changes
 /// with Settings open.
 #[gpui_kit::test]

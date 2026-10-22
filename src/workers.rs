@@ -1,10 +1,45 @@
 //! Where a list shows each worker and how its figures read.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use arko::ModelChoice;
 use arko::remote::{WorkerState, WorkerSummary};
+use arko::workers::{MODELS_ABOUT, MODELS_APPLIES};
 
 /// A worker that ended stays among the others this long, then moves to the
 /// "Finished" group at the bottom of the list.
 pub const ENDED_SHOWS_FOR_MS: i64 = 5 * 60 * 1000;
+
+/// Whether the sessions say workers can start workers of their own yet
+/// (`LiveSettings::nested_workers`), as the last one to say. Until one has,
+/// they can't, which is how Arko 0.4 builds.
+static NESTED: AtomicBool = AtomicBool::new(false);
+
+/// Records what a session's status says about workers starting workers.
+pub fn note_nested(nested: bool) {
+    NESTED.store(nested, Ordering::Relaxed);
+}
+
+/// Whether workers can start workers of their own, so the worker depth
+/// setting does something.
+pub fn nested() -> bool {
+    NESTED.load(Ordering::Relaxed)
+}
+
+/// Arko's words in the app's typography: the apostrophes it types straight
+/// are typographic here.
+pub fn curly(text: &str) -> String {
+    text.replace('\'', "’")
+}
+
+/// What the "Models for workers" setting does and what `choice` means,
+/// in Arko's words.
+pub fn models_about(choice: ModelChoice) -> String {
+    curly(&format!(
+        "{MODELS_ABOUT} {} {MODELS_APPLIES}",
+        choice.about()
+    ))
+}
 
 /// How long the worker has worked, including runs before the session
 /// reopened. A worker waiting for its first run has no time yet.
@@ -123,6 +158,21 @@ mod tests {
         summary.ran_ms = started.zip(ended).map_or(0, |(s, e)| (e - s).max(0) as u64);
         summary.running_since = started.filter(|_| state == WorkerState::Running);
         summary
+    }
+
+    #[test]
+    fn the_models_setting_reads_in_arkos_words() {
+        for choice in ModelChoice::ALL {
+            let about = models_about(choice);
+            assert!(about.starts_with("Who picks a worker’s model. "), "{about}");
+            assert!(about.ends_with("A change applies to the next worker started."));
+            assert!(!about.contains('\''), "{about}");
+        }
+        assert!(
+            models_about(ModelChoice::Session)
+                .contains("Every worker runs the session’s worker model.")
+        );
+        assert_eq!(curly("Session's worker model"), "Session’s worker model");
     }
 
     #[test]
