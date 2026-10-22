@@ -16,7 +16,7 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -129,7 +129,7 @@ struct Style {
     build: fn(&Cell) -> AnyElement,
 }
 
-const STYLES: [Style; 9] = [
+const STYLES: [Style; 10] = [
     Style {
         letter: 'A',
         name: "Before, eased at 30 fps",
@@ -145,7 +145,7 @@ const STYLES: [Style; 9] = [
     Style {
         letter: 'C',
         name: "Arc that grows and shrinks",
-        cost: "24 sprites faded",
+        cost: "16 to 36 sprites faded",
         build: growing_arc,
     },
     Style {
@@ -183,6 +183,12 @@ const STYLES: [Style; 9] = [
         name: "Comet ring",
         cost: "12 sprites faded",
         build: comet_ring,
+    },
+    Style {
+        letter: 'J',
+        name: "Before, eased, slower",
+        cost: "1 sprite turned, at 0.6 times A's speed",
+        build: before_slowly,
     },
 ];
 
@@ -227,6 +233,17 @@ fn before(cell: &Cell) -> AnyElement {
         .into_any_element()
 }
 
+/// A at 0.6 times its speed, 1.33 s a turn. It follows the rate chosen, where A keeps its 30
+/// frames a second, so the slower turn can be seen at the display's rate.
+fn before_slowly(cell: &Cell) -> AnyElement {
+    let animation = cell.animation(800. / 0.6).with_easing(ease_in_out);
+    cell.sprite_icon(IconName::Loader)
+        .with_paint_animation(cell.id('J', 0), animation, |delta| {
+            PaintEffect::rotation(percentage(delta).into())
+        })
+        .into_any_element()
+}
+
 fn spokes_turning(cell: &Cell) -> AnyElement {
     cell.sprite_icon(IconName::Loader)
         .with_paint_animation(cell.id('B', 0), cell.animation(800.), |delta| {
@@ -235,35 +252,78 @@ fn spokes_turning(cell: &Cell) -> AnyElement {
         .into_any_element()
 }
 
-// ----- C: an arc that grows and shrinks while it turns -----
+// ----- C: an arc that grows round to 12 o'clock and shrinks back to it -----
 
-/// How much of the circle from `a` for `a_len` degrees, and from `b` for `b_len`, overlap.
-fn overlap(a: f32, a_len: f32, b: f32, b_len: f32) -> f32 {
-    [-360., 0., 360.]
-        .into_iter()
-        .map(|shift| {
-            let low = a.max(b + shift);
-            let high = (a + a_len).min(b + shift + b_len);
-            (high - low).max(0.)
-        })
-        .sum()
+/// How long a cycle of the growing arc takes at normal speed, in milliseconds.
+const ARC_CYCLE_MS: f32 = 1600.;
+
+/// How long the arc is where a cycle starts and ends, in degrees.
+const ARC_SHORTEST: f32 = 24.;
+
+/// How much faster than on average an end of the growing arc goes where it starts, and how much
+/// slower where it stops, as a share of its average speed.
+const ARC_SURGE: f32 = 0.5;
+
+/// The ends of the growing arc in degrees clockwise from 12 o'clock, `phase` of the way through
+/// a cycle, as the tail and the head. The head may be past 360, which is the same point as the
+/// head less 360.
+///
+/// A cycle starts with a short arc at 12 o'clock. In its first half the head runs round, quickly
+/// at first and slowing as it comes back to 12, where the arc is a whole ring. In its second half
+/// the tail follows from 12 round to 12, slowly at first and quickly as it gets there, while the
+/// head goes on by the shortest length. So the cycle ends with the same short arc it started
+/// with, and the end that moves goes at the speed the end that stopped had, where one takes over
+/// from the other.
+fn arc_ends(phase: f32) -> (f32, f32) {
+    if phase < 0.5 {
+        let t = phase * 2.;
+        let run = t + ARC_SURGE * t * (1. - t);
+        (0., ARC_SHORTEST + (360. - ARC_SHORTEST) * run)
+    } else {
+        let t = phase * 2. - 1.;
+        let run = t - ARC_SURGE * t * (1. - t);
+        (360. * run, 360. + ARC_SHORTEST * t)
+    }
 }
 
+/// How much of the segment from `from` to `to` degrees the arc from `tail` to `head` covers,
+/// from 0 to 1.
+fn covered(tail: f32, head: f32, from: f32, to: f32) -> f32 {
+    let part = |turn: f32| (head.min(to + turn) - tail.max(from + turn)).max(0.);
+    ((part(0.) + part(360.)) / (to - from)).min(1.)
+}
+
+/// How many segments the arc of a cell of `size` pixels is made of: about two pixels along the
+/// ring for each, which a pixel grid shows as well as finer ones. A cell of 24 pixels has 24, as
+/// it had before.
+fn arc_segments(size: f32) -> usize {
+    match size {
+        ..=12.5 => 16,
+        ..=16.5 => 20,
+        ..=24.5 => 24,
+        _ => 36,
+    }
+}
+
+/// The numbers of segments the arc has sprites for.
+const ARC_SEGMENTS: [usize; 4] = [16, 20, 24, 36];
+
 fn growing_arc(cell: &Cell) -> AnyElement {
-    let segments = cell.svgs.arc.len();
+    growing_arc_of(cell, arc_segments(cell.size))
+}
+
+fn growing_arc_of(cell: &Cell, segments: usize) -> AnyElement {
     let width = 360. / segments as f32;
     let mut square = cell.square();
-    for (k, data) in cell.svgs.arc.iter().enumerate() {
-        let from = k as f32 * width;
+    for (k, data) in cell.svgs.arc(segments).iter().enumerate() {
+        let (from, to) = (k as f32 * width, (k + 1) as f32 * width);
         square = square.child(fade(
             cell.layer(data),
             cell.id('C', k),
-            cell.animation(1400.),
+            cell.animation(ARC_CYCLE_MS),
             move |phase| {
-                // The tail goes round twice in a cycle. The head leaves it and falls back.
-                let tail = (720. * phase).rem_euclid(360.);
-                let length = 30. + 230. * (PI * phase).sin().powi(2);
-                (overlap(tail, length, from, width) / width).clamp(0., 1.)
+                let (tail, head) = arc_ends(phase);
+                covered(tail, head, from, to)
             },
         ));
     }
@@ -387,8 +447,9 @@ fn comet_ring(cell: &Cell) -> AnyElement {
 struct Svgs {
     /// The eight spokes of the kit's loader icon, one each, clockwise from the top.
     spokes: Vec<Vec<u8>>,
-    /// The segments of a ring, clockwise from the top.
-    arc: Vec<Vec<u8>>,
+    /// The segments of a ring, clockwise from the top, for each of the numbers of segments the
+    /// arc is made of.
+    arcs: Vec<(usize, Vec<Vec<u8>>)>,
     comet: Vec<Vec<u8>>,
     /// A ring whose strokes fade from nothing to solid, clockwise.
     tail: Vec<u8>,
@@ -419,6 +480,15 @@ fn ring_arc(from: f32, to: f32, opacity: f32) -> String {
 }
 
 impl Svgs {
+    /// The segments of the ring for an arc of `segments` of them.
+    fn arc(&self, segments: usize) -> &[Vec<u8>] {
+        self.arcs
+            .iter()
+            .find(|(n, _)| *n == segments)
+            .map(|(_, arc)| arc.as_slice())
+            .expect("a number of segments the arc has sprites for")
+    }
+
     fn new() -> Self {
         // The paths of the kit's loader icon, clockwise from the top.
         let loader = [
@@ -475,7 +545,7 @@ impl Svgs {
         .collect();
         Self {
             spokes,
-            arc: segments(24),
+            arcs: ARC_SEGMENTS.into_iter().map(|n| (n, segments(n))).collect(),
             comet: segments(12),
             tail: svg(&tail_body, 24),
             mark,
@@ -884,7 +954,7 @@ pub fn window_options(cx: &App) -> WindowOptions {
             title: Some("Spinner lab".into()),
             ..Default::default()
         }),
-        window_bounds: Some(WindowBounds::centered(size(px(1240.), px(720.)), cx)),
+        window_bounds: Some(WindowBounds::centered(size(px(1240.), px(740.)), cx)),
         ..Default::default()
     }
 }
@@ -917,13 +987,13 @@ mod tests {
             cx.set_reduce_motion(false);
         });
         let window = app
-            .open_window_with(size(px(1240.), px(720.)), 1., |options, cx| {
+            .open_window_with(size(px(1240.), px(740.)), 1., |options, cx| {
                 open(options, cx).map(|(window, _)| window)
             })
             .unwrap();
         let mut shots = Vec::new();
-        // 110 ms apart, which none of the styles repeats in.
-        for _ in 0..8 {
+        // 110 ms apart, which none of the styles repeats in, for a bit more than the longest cycle.
+        for _ in 0..16 {
             shots.push(app.capture(window).unwrap().image);
             app.advance_clock(Duration::from_millis(110));
         }
@@ -960,7 +1030,7 @@ mod tests {
         });
         let lab = Rc::new(RefCell::new(None));
         let window = app
-            .open_window_with(size(px(1240.), px(720.)), 1., |options, cx| {
+            .open_window_with(size(px(1240.), px(740.)), 1., |options, cx| {
                 let (window, view) = open(options, cx)?;
                 *lab.borrow_mut() = Some(view);
                 Ok(window)
@@ -994,10 +1064,264 @@ mod tests {
         assert!(first != moved, "the styles stay still after Play");
     }
 
+    /// The ends of the growing arc are continuous, start and end a cycle at 12 o'clock, and close
+    /// the ring there, where the head meets the tail.
+    #[test]
+    fn the_growing_arc_goes_round_from_12_o_clock_to_12_o_clock() {
+        assert_eq!(arc_ends(0.), (0., ARC_SHORTEST));
+        assert_eq!(arc_ends(0.5), (0., 360.));
+        let (tail, head) = arc_ends(1.);
+        assert_eq!((tail, head - 360.), (360., ARC_SHORTEST));
+
+        let steps = 2000;
+        let mut last = arc_ends(0.);
+        for step in 1..=steps {
+            let ends = arc_ends(step as f32 / steps as f32);
+            // 1600 ms are 2000 steps, so a step is 0.8 ms and the fastest end goes 675 degrees a
+            // second.
+            assert!(
+                (ends.0 - last.0).abs() < 1.,
+                "the tail jumps at step {step}"
+            );
+            assert!(
+                (ends.1 - last.1).abs() < 1.,
+                "the head jumps at step {step}"
+            );
+            assert!(ends.0 >= last.0 && ends.1 >= last.1, "an end goes back");
+            assert!(ends.1 - ends.0 >= ARC_SHORTEST - 0.01, "the arc is shorter");
+            last = ends;
+        }
+    }
+
+    /// A window with one cell of a style at `size` pixels, white on black.
+    struct One {
+        style: usize,
+        size: f32,
+        segments: Option<usize>,
+        svgs: Svgs,
+    }
+
+    impl Render for One {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let cell = Cell {
+                panel: "one",
+                size: self.size,
+                color: gpui_kit::hsla(0., 0., 1., 1.),
+                rate: Rate::Display,
+                speed: 1.,
+                svgs: &self.svgs,
+            };
+            let element = match self.segments {
+                Some(segments) => growing_arc_of(&cell, segments),
+                None => (STYLES[self.style].build)(&cell),
+            };
+            div()
+                .size_full()
+                .bg(gpui_kit::hsla(0., 0., 0., 1.))
+                .child(div().absolute().left(px(16.)).top(px(16.)).child(element))
+        }
+    }
+
+    /// `frames` frames of a window with one cell, `1/60` second apart, starting at the moment the
+    /// app's shared animation clock starts, as images.
+    fn frames_of(one: One, frames: usize) -> Vec<image::RgbaImage> {
+        let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+        app.update(|cx| {
+            init(cx);
+            cx.set_reduce_motion(false);
+        });
+        let side = one.size + 32.;
+        let window = app
+            .open_window_with(size(px(side), px(side)), 1., |options, cx| {
+                gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| one))
+                    .map(|(window, _)| window)
+            })
+            .unwrap();
+        app.run_until_parked();
+        let mut images = Vec::new();
+        for frame in 0..frames {
+            if frame > 0 {
+                app.advance_clock(Duration::from_micros(16_667));
+                app.update_window(window, |_, window, cx| {
+                    window.simulate_next_frame(cx);
+                })
+                .unwrap();
+                app.run_until_parked();
+            }
+            images.push(app.capture_screenshot(window).unwrap());
+        }
+        images
+    }
+
+    /// The ends of the arc a frame of the growing arc shows, in degrees clockwise from 12
+    /// o'clock, as the tail and the head, read from how much of each of its `segments` the
+    /// frame fills. `None` where the arc is a closed ring.
+    fn arc_in(image: &image::RgbaImage, segments: usize, size: f32) -> Option<(f32, f32)> {
+        let centre = 16. + size / 2.;
+        // The middle of the ring's stroke.
+        let radius = size * 9. / 24.;
+        let width = 360. / segments as f32;
+        let filled: Vec<f32> = (0..segments)
+            .map(|k| {
+                let samples = 8;
+                (0..samples)
+                    .map(|sample| {
+                        let degrees =
+                            (k as f32 + 0.2 + 0.6 * sample as f32 / (samples - 1) as f32) * width;
+                        let angle = degrees.to_radians();
+                        let x = (centre + radius * angle.sin()).round() as u32;
+                        let y = (centre - radius * angle.cos()).round() as u32;
+                        f32::from(image.get_pixel(x, y).0[0]) / 255.
+                    })
+                    .sum::<f32>()
+                    / samples as f32
+            })
+            .collect();
+        if filled.iter().all(|fill| *fill > 0.97) {
+            return None;
+        }
+        let lit = |k: usize| filled[k % segments] > 0.12;
+        // The first segment lit after one that is not, and the last before one that is not.
+        let first = (0..segments).find(|k| lit(*k) && !lit(k + segments - 1))?;
+        let last = (0..segments).find(|k| lit(*k) && !lit(k + 1))?;
+        let tail = (first + 1) as f32 * width - filled[first] * width;
+        let mut head = last as f32 * width + filled[last] * width;
+        if head < tail {
+            head += 360.;
+        }
+        Some((tail, head))
+    }
+
+    /// The growing arc, drawn headlessly for a cycle and a bit, starts at 12 o'clock with a short
+    /// arc, grows into a whole ring that closes at 12 o'clock, and shrinks away to the same short
+    /// arc where the cycle starts again, without a jump on the way.
+    #[test]
+    fn the_growing_arc_closes_at_12_o_clock() {
+        const FRAMES_A_CYCLE: usize = 96;
+        let size = 96.;
+        let segments = arc_segments(size);
+        let images = frames_of(
+            One {
+                style: 2,
+                size,
+                segments: None,
+                svgs: Svgs::new(),
+            },
+            FRAMES_A_CYCLE + 1,
+        );
+        let ends: Vec<Option<(f32, f32)>> = images
+            .iter()
+            .map(|image| arc_in(image, segments, size))
+            .collect();
+        // The circular difference of two angles, in degrees.
+        let apart = |a: f32, b: f32| (a - b + 180.).rem_euclid(360.) - 180.;
+
+        // The cycle starts with the short arc, from 12 o'clock.
+        let (tail, head) = ends[0].expect("an arc at the start of the cycle");
+        assert!(apart(tail, 0.).abs() < 1.5, "the arc starts at {tail}");
+        assert!((head - tail - ARC_SHORTEST).abs() < 2., "{tail} to {head}");
+
+        // It ends the same way, to within the pixels: the last frame is the first again.
+        let (last_tail, last_head) = ends[FRAMES_A_CYCLE].expect("an arc at the end of the cycle");
+        assert!(
+            apart(last_tail, tail).abs() < 1.5,
+            "the cycle ends with the arc starting at {last_tail}, where it started at {tail}"
+        );
+        assert!(
+            apart(last_head, head).abs() < 1.5,
+            "the cycle ends with the arc ending at {last_head}, where it ended at {head}"
+        );
+
+        // Halfway it is a closed ring.
+        assert_eq!(
+            ends[FRAMES_A_CYCLE / 2],
+            None,
+            "the ring is not closed halfway"
+        );
+        // And closed only around then.
+        let closed: Vec<usize> = (0..=FRAMES_A_CYCLE)
+            .filter(|ix| ends[*ix].is_none())
+            .collect();
+        assert!(
+            closed.iter().all(|ix| (44..=52).contains(ix)),
+            "closed in frames {closed:?}"
+        );
+
+        // The ends go on clockwise without a jump. An end moves at most 900 degrees a second,
+        // 15 degrees a frame, and the frames around the ring's closing (an end could not be read)
+        // count together.
+        let mut previous = (tail, head);
+        let mut gap_frames = 1;
+        for ends in &ends[1..] {
+            let Some((tail, head)) = *ends else {
+                gap_frames += 1;
+                continue;
+            };
+            let (tail_step, head_step) = (apart(tail, previous.0), apart(head, previous.1));
+            let most = 18. * gap_frames as f32;
+            assert!(
+                (-1.5..=most).contains(&tail_step) && (-1.5..=most).contains(&head_step),
+                "the arc jumps by {tail_step} and {head_step} degrees from {previous:?} to {tail} and {head}"
+            );
+            previous = (tail, head);
+            gap_frames = 1;
+        }
+    }
+
+    /// How far the growing arc made of other numbers of segments is from one made of 24, as it was drawn before it was sized, in each pixel of
+    /// the frames of a cycle, for the sizes of the app. The mean is over the pixels the arcs
+    /// touch, in levels of 255, and the most is the largest difference of one pixel.
+    ///
+    /// ```sh
+    /// cargo test --example spinner_lab how_much_the_arc_needs_its_segments -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn how_much_the_arc_needs_its_segments() {
+        for size in [12., 16., 24., 48.] {
+            let frames = |segments| {
+                frames_of(
+                    One {
+                        style: 2,
+                        size,
+                        segments: Some(segments),
+                        svgs: Svgs::new(),
+                    },
+                    97,
+                )
+            };
+            let exact = frames(24);
+            for segments in ARC_SEGMENTS {
+                let images = frames(segments);
+                let (mut total, mut touched, mut most) = (0., 0, 0);
+                for (a, b) in images.iter().zip(&exact) {
+                    for (pa, pb) in a.pixels().zip(b.pixels()) {
+                        let difference = pa.0[0].abs_diff(pb.0[0]);
+                        most = most.max(difference);
+                        if pa.0[0] > 0 || pb.0[0] > 0 {
+                            touched += 1;
+                            total += f64::from(difference);
+                        }
+                    }
+                }
+                println!(
+                    "{size} px, {segments} segments: mean difference {:.2}, most {most}{}",
+                    total / touched as f64,
+                    if segments == arc_segments(size) {
+                        "  (the lab's choice)"
+                    } else {
+                        ""
+                    }
+                );
+            }
+        }
+    }
+
     /// A window of `copies` cells of one style, in a view the window keeps.
     struct Copies {
         style: usize,
         copies: usize,
+        size: f32,
         svgs: Svgs,
     }
 
@@ -1011,7 +1335,7 @@ mod tests {
                 .children((0..self.copies).map(|copy| {
                     let cell = Cell {
                         panel: panels[copy % panels.len()],
-                        size: 16. + (copy / panels.len()) as f32 * 0.01,
+                        size: self.size + (copy / panels.len()) as f32 * 0.01,
                         color,
                         rate: Rate::Display,
                         speed: 1.,
@@ -1046,50 +1370,54 @@ mod tests {
             init(cx);
             cx.set_reduce_motion(false);
         });
-        let mut baseline = Duration::ZERO;
-        for style in std::iter::once(None).chain((0..STYLES.len()).map(Some)) {
-            let copies = if style.is_some() { COPIES } else { 1 };
-            let window = app
-                .open_window_with(size(px(800.), px(800.)), 1., |options, cx| {
-                    gpui_kit::open_window(options, cx, |_, cx| {
-                        let view = cx.new(|_| Copies {
-                            style: style.unwrap_or(3),
-                            copies,
-                            svgs: Svgs::new(),
-                        });
-                        cx.new(|_| Kept(view))
-                    })
-                    .map(|(window, _)| window)
-                })
-                .unwrap();
-            app.capture(window).unwrap();
-            let mut best = Duration::MAX;
-            for _ in 0..8 {
-                let start = cpu_time();
-                for _ in 0..FRAMES / 8 {
-                    app.advance_clock(Duration::from_micros(16_667));
-                    app.update_window(window, |_, window, cx| {
-                        window.simulate_next_frame(cx);
-                        window.draw(cx).clear(cx);
+        for cell_size in [12., 16., 24.] {
+            println!("cells of {cell_size} px");
+            let mut baseline = Duration::ZERO;
+            for style in std::iter::once(None).chain((0..STYLES.len()).map(Some)) {
+                let copies = if style.is_some() { COPIES } else { 1 };
+                let window = app
+                    .open_window_with(size(px(800.), px(800.)), 1., |options, cx| {
+                        gpui_kit::open_window(options, cx, |_, cx| {
+                            let view = cx.new(|_| Copies {
+                                style: style.unwrap_or(3),
+                                copies,
+                                size: cell_size,
+                                svgs: Svgs::new(),
+                            });
+                            cx.new(|_| Kept(view))
+                        })
+                        .map(|(window, _)| window)
                     })
                     .unwrap();
-                    app.run_until_parked();
+                app.capture(window).unwrap();
+                let mut best = Duration::MAX;
+                for _ in 0..8 {
+                    let start = cpu_time();
+                    for _ in 0..FRAMES / 8 {
+                        app.advance_clock(Duration::from_micros(16_667));
+                        app.update_window(window, |_, window, cx| {
+                            window.simulate_next_frame(cx);
+                            window.draw(cx).clear(cx);
+                        })
+                        .unwrap();
+                        app.run_until_parked();
+                    }
+                    best = best.min(cpu_time() - start);
                 }
-                best = best.min(cpu_time() - start);
-            }
-            let per_frame = best / (FRAMES / 8) as u32;
-            match style {
-                None => {
-                    baseline = per_frame;
-                    println!("a frame of the window with one style D cell: {per_frame:?}");
-                }
-                Some(ix) => {
-                    let per_cell =
-                        per_frame.saturating_sub(baseline).as_secs_f64() * 1e6 / COPIES as f64;
-                    println!(
-                        "{} {:<28} {:>7.1} us a frame for each cell ({})",
-                        STYLES[ix].letter, STYLES[ix].name, per_cell, STYLES[ix].cost
-                    );
+                let per_frame = best / (FRAMES / 8) as u32;
+                match style {
+                    None => {
+                        baseline = per_frame;
+                        println!("  a frame of the window with one style D cell: {per_frame:?}");
+                    }
+                    Some(ix) => {
+                        let per_cell =
+                            per_frame.saturating_sub(baseline).as_secs_f64() * 1e6 / COPIES as f64;
+                        println!(
+                            "  {} {:<28} {:>7.1} us a frame for each cell ({})",
+                            STYLES[ix].letter, STYLES[ix].name, per_cell, STYLES[ix].cost
+                        );
+                    }
                 }
             }
         }
