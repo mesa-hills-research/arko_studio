@@ -341,6 +341,18 @@ fn names(ids: &[String]) -> String {
     }
 }
 
+/// The Outside access popover's heading and what it says under it, with the
+/// session's folder as it shows (`None` before it has one).
+fn outside_words(folder: Option<&str>) -> (&'static str, String) {
+    let text = match folder {
+        Some(folder) => format!(
+            "The agents may create, change and delete files outside {folder} too, wherever your account can."
+        ),
+        None => "The agents may create, change and delete files outside the session’s folder too, wherever your account can.".to_string(),
+    };
+    ("Outside access", text)
+}
+
 /// A popover's heading and the sentences under it.
 fn heading(title: impl Into<SharedString>, text: impl Into<SharedString>, cx: &App) -> Div {
     v_flex()
@@ -409,19 +421,14 @@ impl StatusBar {
                     .accessibility_label("Outside access"),
             )
             .content(move |_, _, cx| {
-                let text = match &folder {
-                    Some(folder) => format!(
-                        "The agents may create, change and delete files outside {folder} too, wherever your account can."
-                    ),
-                    None => "The agents may create, change and delete files outside the session’s folder too, wherever your account can.".to_string(),
-                };
+                let (title, text) = outside_words(folder.as_deref());
                 let session = session.clone();
                 v_flex()
                     .id("outside-details")
                     .test_support()
                     .w(rems(18.))
                     .gap_3()
-                    .child(heading("Outside access is on", text, cx))
+                    .child(heading(title, text, cx))
                     .child(
                         h_flex().justify_end().child(
                             Button::new("outside-off")
@@ -820,7 +827,7 @@ impl RenderOnce for CostDetails {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{names, next_change};
+    use super::{names, next_change, outside_words};
     use arko::remote::{Activity, Reading};
     use std::time::Duration;
 
@@ -853,5 +860,16 @@ mod tests {
         assert_eq!(names(&ids(2)), "r1 and r2");
         assert_eq!(names(&ids(3)), "r1, r2 and r3");
         assert_eq!(names(&ids(7)), "r1, r2, r3, r4, r5 and 2 more");
+    }
+
+    /// The popover's heading is the button's name, and the sentence under
+    /// it says where the agents may reach.
+    #[test]
+    fn the_outside_popover_is_headed_by_its_buttons_name() {
+        let (title, text) = outside_words(Some("~/code/app"));
+        assert_eq!(title, "Outside access");
+        assert!(text.contains("outside ~/code/app too"), "{text}");
+        let (_, text) = outside_words(None);
+        assert!(text.contains("outside the session’s folder too"), "{text}");
     }
 }

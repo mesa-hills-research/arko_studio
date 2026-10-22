@@ -353,12 +353,7 @@ impl RenderOnce for WebPagePanel {
                 v_flex()
                     .flex_none()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_medium()
-                            .child("The web page is shared"),
-                    )
+                    .child(div().text_sm().font_medium().child("Web page"))
                     .when(self.explained, |this| {
                         this.child(
                             div()
