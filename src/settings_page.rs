@@ -676,7 +676,7 @@ impl SettingsPage {
                 SettingGroup::new().key(keys[4]).title("Transcript").items([
                     switch(
                         "Render Markdown",
-                        "Show replies formatted. Each message can still show its source.",
+                        "Show replies formatted. View › Show Markdown Source, or a reply’s menu, shows the source instead.",
                         |prefs| prefs.appearance.render_markdown,
                         |prefs, on| prefs.appearance.render_markdown = on,
                         defaults.render_markdown,

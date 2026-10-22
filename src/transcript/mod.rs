@@ -75,8 +75,28 @@ gpui_kit::actions!(
     ]
 );
 
+/// Whether every Markdown text shows as its source, which View › Show
+/// Markdown Source sets, in every window until the app closes. Each entry
+/// can still be turned the other way from its menu.
+#[derive(Default)]
+pub(crate) struct ShowSource(bool);
+
+impl Global for ShowSource {}
+
+/// Whether the session shows Markdown text as its source.
+pub fn show_source(cx: &App) -> bool {
+    cx.try_global::<ShowSource>().is_some_and(|show| show.0)
+}
+
+/// Turns the session's source view on or off, for every transcript. Each
+/// shows every entry that way, whatever its reader chose before.
+pub fn set_show_source(show: bool, cx: &mut App) {
+    cx.set_global(ShowSource(show));
+}
+
 /// Sets up what the transcripts share, before the first window.
 pub fn init(cx: &mut App) {
+    cx.set_global(ShowSource(false));
     menu::init(cx);
 }
 
@@ -247,8 +267,11 @@ struct EntryUi {
     /// The group of calls this entry starts (Quiet), opened or closed by the
     /// reader, apart from the entry's own details.
     group_open: Option<bool>,
-    /// The text shows as its Markdown source ("View source").
-    source: bool,
+    /// The reader turned the entry's source view the other way from the
+    /// session's ("View source", "View formatted"), so the text shows as
+    /// its Markdown source when the session's view doesn't, and the other
+    /// way round.
+    flipped: bool,
     /// Code blocks shown whole, by block index.
     uncapped: HashSet<usize>,
     /// An edit's diff, made when its details first open.
@@ -363,6 +386,10 @@ pub struct TranscriptView {
     settings: Settings,
     /// The window the transcript is in.
     window: WindowId,
+    /// Whether the session shows every Markdown text as its source
+    /// ([`ShowSource`]), which a reader's choice for one entry turns the
+    /// other way ([`EntryUi::flipped`]).
+    show_source: bool,
     /// The calls running that can move to the background, by item, as the
     /// session's status says.
     movable: HashSet<u64>,
@@ -440,6 +467,7 @@ pub struct TranscriptView {
     #[cfg(test)]
     frames: Vec<usize>,
     _prefs: Subscription,
+    _show_source: Subscription,
 }
 
 impl EventEmitter<TranscriptEvent> for TranscriptView {}
@@ -482,6 +510,12 @@ impl TranscriptView {
                 cx.notify();
             }
         });
+        let observe_show_source = cx.observe_global::<ShowSource>(|this, cx| {
+            let show = show_source(cx);
+            if show != this.show_source {
+                this.show_source_changed(show, cx);
+            }
+        });
         let this = Self {
             model: Model::new(filter),
             inbox,
@@ -493,6 +527,7 @@ impl TranscriptView {
             focus_handle: cx.focus_handle().tab_stop(true),
             settings,
             window: window.window_handle().window_id(),
+            show_source: show_source(cx),
             movable: HashSet::new(),
             hovered: None,
             hovered_rows: HashSet::new(),
@@ -526,6 +561,7 @@ impl TranscriptView {
             #[cfg(test)]
             frames: Vec::new(),
             _prefs: observe_prefs,
+            _show_source: observe_show_source,
         };
         // The history so far comes with the next frame.
         this
@@ -1200,6 +1236,7 @@ impl TranscriptView {
     fn refresh_rows(&mut self, cx: &mut Context<Self>) {
         self.working = self.working_after(cx);
         let render_markdown = self.settings.render_markdown;
+        let show_source = self.show_source;
         let ui = &self.ui;
         let blocks = |id: u64| {
             ui.get(&id)
@@ -1208,7 +1245,8 @@ impl TranscriptView {
         };
         let expanded = |id: u64| ui.get(&id).and_then(|ui| ui.expanded);
         let group_open = |id: u64| ui.get(&id).and_then(|ui| ui.group_open);
-        let source = |id: u64| !render_markdown || ui.get(&id).is_some_and(|ui| ui.source);
+        let source =
+            |id: u64| !render_markdown || (ui.get(&id).is_some_and(|ui| ui.flipped) != show_source);
         let rows = model::rows(
             &self.model,
             &Layout {
@@ -1533,9 +1571,24 @@ impl TranscriptView {
     }
 
     /// Whether the entry's text shows as its Markdown source because the
-    /// reader asked for it.
+    /// reader asked for it, for the entry or for the session. With Markdown
+    /// off the text shows as written, which is not the source view.
     fn shows_source(&self, id: u64) -> bool {
-        self.ui.get(&id).is_some_and(|ui| ui.source)
+        self.settings.render_markdown
+            && (self.ui.get(&id).is_some_and(|ui| ui.flipped) != self.show_source)
+    }
+
+    /// The session's view of Markdown text changed: every entry shows the
+    /// way the session says, whatever the reader chose for it before.
+    fn show_source_changed(&mut self, show: bool, cx: &mut Context<Self>) {
+        self.show_source = show;
+        for ui in self.ui.values_mut() {
+            ui.flipped = false;
+        }
+        self.refresh_rows(cx);
+        // A find covers what the rows show now.
+        self.find_changed_all(cx);
+        cx.notify();
     }
 
     fn toggle_source(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -1543,7 +1596,7 @@ impl TranscriptView {
             self.list.hold_place(ix);
         }
         let ui = self.ui.entry(id).or_default();
-        ui.source = !ui.source;
+        ui.flipped = !ui.flipped;
         self.refresh_rows(cx);
         self.find_changed(&[], [id], cx);
         cx.notify();

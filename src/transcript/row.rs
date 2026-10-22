@@ -509,7 +509,7 @@ impl TranscriptView {
             0.
         };
         let text = if source {
-            if ui.source {
+            if self.shows_source(id) {
                 m.mono.text_lines(&row.lines, column) * m.line_mono
             } else {
                 body.text_lines(&row.lines, column) * line
@@ -1194,7 +1194,7 @@ impl TranscriptView {
                 .trim_end()
                 .to_string();
             div()
-                .when(ui.source, |this| {
+                .when(self.shows_source(id), |this| {
                     this.code_font(theme).text_size(theme.mono_font_size)
                 })
                 .child(self.marked(("source", id), id, Place::Source(block), text, cx))

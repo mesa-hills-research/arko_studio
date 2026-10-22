@@ -444,6 +444,12 @@ fn scroll_to_key(
 /// Changes the preferences while the reader reads turn 30, and checks
 /// that turn 30 stays where it was.
 fn change_while_reading(cx: &mut TestAppContext, change: impl Fn(&mut prefs::Prefs)) {
+    change_something_while_reading(cx, |cx| prefs::update(cx, &change));
+}
+
+/// Runs `change` while the reader reads turn 30, and checks that turn 30
+/// stays where it was.
+fn change_something_while_reading(cx: &mut TestAppContext, change: impl Fn(&mut gpui_kit::App)) {
     start(cx);
     let feed = Feed::new("main");
     turns(&feed, 60, 4);
@@ -451,7 +457,7 @@ fn change_while_reading(cx: &mut TestAppContext, change: impl Fn(&mut prefs::Pre
     load_all(cx, window, &view);
     let reading = user_row(&feed, 30);
     let top = scroll_to_key(cx, window, &view, reading);
-    cx.update(|cx| prefs::update(cx, &change));
+    cx.update(change);
     settle(cx, window);
     assert_eq!(row_top(cx, window, reading), Some(top));
     assert!(!cx.read(|cx| view.read(cx).is_following(cx)));
@@ -470,6 +476,11 @@ fn the_messages_view_keeps_the_reader_at_their_turn(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn turning_markdown_off_while_scrolled_up_keeps_the_reader_in_place(cx: &mut TestAppContext) {
     change_while_reading(cx, |prefs| prefs.appearance.render_markdown = false);
+}
+
+#[gpui_kit::test]
+fn the_sessions_source_view_while_scrolled_up_keeps_the_reader_in_place(cx: &mut TestAppContext) {
+    change_something_while_reading(cx, |cx| super::set_show_source(true, cx));
 }
 
 #[gpui_kit::test]
@@ -705,7 +716,7 @@ fn a_replys_actions_stay_while_the_pointer_moves_onto_them_and_work(cx: &mut Tes
     })
     .unwrap();
     settle(cx, window);
-    assert!(cx.read(|cx| view.read(cx).ui[&reply].source));
+    assert!(cx.read(|cx| view.read(cx).shows_source(reply)));
     // Onto the next message: its Copy shows instead, and copies it.
     cx.update_window(window, |_, window, cx| {
         window.hover(super::row::element_id(RowKey::User(thanks)), cx)
@@ -868,7 +879,7 @@ fn an_earlier_replys_source_leaves_a_streaming_reply_alone(cx: &mut TestAppConte
     })
     .unwrap();
     settle(cx, window);
-    assert!(cx.read(|cx| view.read(cx).ui[&earlier].source));
+    assert!(cx.read(|cx| view.read(cx).shows_source(earlier)));
     assert_eq!((block_views(cx), streaming_rows(cx)), before);
     // The rest streams in, a few bytes at a time, as the blocks go on.
     for chunk in rest.as_bytes().chunks(4) {
@@ -886,8 +897,8 @@ fn an_earlier_replys_source_leaves_a_streaming_reply_alone(cx: &mut TestAppConte
     settle(cx, window);
     cx.read(|cx| {
         let view = view.read(cx);
-        assert!(view.ui[&earlier].source);
-        assert!(!view.ui[&streaming].source);
+        assert!(view.shows_source(earlier));
+        assert!(!view.shows_source(streaming));
     });
     assert!(
         keys(&view, cx)
@@ -2669,7 +2680,7 @@ fn the_menu_of_a_replys_text_offers_view_source(cx: &mut TestAppContext) {
     let (first, second) = (replies[0], replies[1]);
     let users = ids_of(&feed, Kind::User);
     let source =
-        |cx: &mut TestAppContext, reply: u64| cx.read(|cx| view.read(cx).ui[&reply].source);
+        |cx: &mut TestAppContext, reply: u64| cx.read(|cx| view.read(cx).shows_source(reply));
 
     let point = on_words(cx, window, block_of(second, false), 20.);
     right_click_at(cx, window, point);
@@ -2783,7 +2794,7 @@ fn view_source_in_the_menu_of_a_replys_text_works_in_the_window(cx: &mut TestApp
     right_click_at(cx, window, point);
     press_menu_item(cx, window, "View source");
     settle(cx, window);
-    assert!(cx.read(|cx| transcript.read(cx).ui[&reply].source));
+    assert!(cx.read(|cx| transcript.read(cx).shows_source(reply)));
     act(cx, window, |window, cx| {
         let sessions = crate::live::LiveSessions::all(cx);
         crate::quit::close(sessions, false, window, cx);
@@ -2791,6 +2802,239 @@ fn view_source_in_the_menu_of_a_replys_text_works_in_the_window(cx: &mut TestApp
     wait_until(cx, "the session to end", |cx| {
         cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
     });
+}
+
+/// The rows of each reply, as whether they show the source, in order.
+fn reply_sources(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> Vec<Vec<bool>> {
+    let rows = keys(view, cx);
+    cx.read(|cx| {
+        let view = view.read(cx);
+        view.model
+            .entries()
+            .iter()
+            .filter(|entry| entry.item.kind == Kind::Reply)
+            .map(|entry| {
+                rows.iter()
+                    .filter_map(|key| match key {
+                        RowKey::Block { id, source, .. } if *id == entry.item.id => Some(*source),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .collect()
+    })
+}
+
+/// Turning the session's source view on shows every reply as its source,
+/// and each reply's menu turns that one reply the other way. Turning the
+/// session's view on or off sets every reply again, those turned before
+/// included, and a reply that comes later shows the session's way.
+#[gpui_kit::test]
+fn the_sessions_source_view_sets_every_reply_and_each_reply_can_differ(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    for word in ["first", "second", "third"] {
+        feed.user(word, Source::App, Delivery::Turn);
+        feed.reply(&format!("The {word} **reply**."));
+    }
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 900.);
+    let replies = ids_of(&feed, Kind::Reply);
+    let sources = |cx: &mut TestAppContext| -> Vec<bool> {
+        reply_sources(cx, &view)
+            .into_iter()
+            .map(|rows| rows[0])
+            .collect()
+    };
+    let pick = |cx: &mut TestAppContext, reply: u64, label: &str| {
+        cx.update_window(window, |_, window, cx| {
+            window.click(("reply-menu", reply), cx)
+        })
+        .unwrap();
+        settle(cx, window);
+        cx.update_window(window, |_, window, cx| {
+            assert_eq!(
+                window.within("popup-menu").find(0usize).label(),
+                Some(label)
+            );
+            window.within("popup-menu").click(0usize, cx)
+        })
+        .unwrap();
+        settle(cx, window);
+    };
+    assert_eq!(sources(cx), [false, false, false]);
+    assert!(!cx.read(super::show_source));
+
+    cx.update(|cx| super::set_show_source(true, cx));
+    settle(cx, window);
+    assert_eq!(sources(cx), [true, true, true]);
+    // The menu of each says what it does against the session's view.
+    pick(cx, replies[0], "View formatted");
+    assert_eq!(sources(cx), [false, true, true]);
+    pick(cx, replies[0], "View source");
+    assert_eq!(sources(cx), [true, true, true]);
+    pick(cx, replies[1], "View formatted");
+    assert_eq!(sources(cx), [true, false, true]);
+
+    // Off sets all of them, the one turned before included.
+    cx.update(|cx| super::set_show_source(false, cx));
+    settle(cx, window);
+    assert_eq!(sources(cx), [false, false, false]);
+    pick(cx, replies[2], "View source");
+    assert_eq!(sources(cx), [false, false, true]);
+    // On sets all of them again.
+    cx.update(|cx| super::set_show_source(true, cx));
+    settle(cx, window);
+    assert_eq!(sources(cx), [true, true, true]);
+
+    // A reply that comes while it is on shows its source, and its menu
+    // brings the formatted text.
+    feed.user("fourth", Source::App, Delivery::Turn);
+    feed.reply("The fourth **reply**.");
+    settle(cx, window);
+    assert_eq!(sources(cx), [true, true, true, true]);
+    let fourth = ids_of(&feed, Kind::Reply)[3];
+    pick(cx, fourth, "View formatted");
+    assert_eq!(sources(cx), [true, true, true, false]);
+    cx.update(|cx| super::set_show_source(false, cx));
+    settle(cx, window);
+    assert_eq!(sources(cx), [false, false, false, false]);
+
+    // With Markdown off every reply shows as written, and the session's
+    // view and the replies' menus have nothing to change.
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.render_markdown = false));
+    settle(cx, window);
+    assert_eq!(sources(cx), [true, true, true, true]);
+    cx.read(|cx| {
+        let view = view.read(cx);
+        assert!(replies.iter().all(|reply| !view.shows_source(*reply)));
+    });
+    cx.update(|cx| super::set_show_source(true, cx));
+    settle(cx, window);
+    assert_eq!(sources(cx), [true, true, true, true]);
+    cx.read(|cx| {
+        let view = view.read(cx);
+        assert!(replies.iter().all(|reply| !view.shows_source(*reply)));
+    });
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.render_markdown = true));
+    settle(cx, window);
+    assert_eq!(sources(cx), [true, true, true, true]);
+}
+
+/// Every transcript follows the session's source view, in each window,
+/// and one made while it is on starts with it.
+#[gpui_kit::test]
+fn every_transcript_follows_the_sessions_source_view(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("One", Source::App, Delivery::Turn);
+    feed.reply("The **reply**.");
+    let (first, first_view) = open(cx, &feed, AgentFilter::Main, 400.);
+    cx.update(|cx| super::set_show_source(true, cx));
+    settle(cx, first);
+    assert_eq!(reply_sources(cx, &first_view), [[true]]);
+    let (second, second_view) = open(cx, &feed, AgentFilter::Main, 400.);
+    assert_eq!(reply_sources(cx, &second_view), [[true]]);
+    cx.update(|cx| super::set_show_source(false, cx));
+    settle(cx, first);
+    settle(cx, second);
+    assert_eq!(reply_sources(cx, &first_view), [[false]]);
+    assert_eq!(reply_sources(cx, &second_view), [[false]]);
+}
+
+/// The session's source view can change while a reply streams. The open
+/// block goes on growing in either view without a block view made again,
+/// the rows above it stay where they are, and the transcript stays at the
+/// end.
+#[gpui_kit::test]
+fn the_sessions_source_view_can_change_while_a_reply_streams(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Plan it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let answer = "Here is the plan.\n\n## Steps\n\n- one\n- two\n\nThat's all, **really**.\n";
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let user = ids_of(&feed, Kind::User)[0];
+    let mut streamed = String::new();
+    let mut stream = |cx: &mut TestAppContext, text: &str| {
+        for chunk in text.as_bytes().chunks(4) {
+            let chunk = std::str::from_utf8(chunk).unwrap();
+            say(&feed, "main", chunk);
+            streamed.push_str(chunk);
+            settle(cx, window);
+        }
+    };
+    let (first, rest) = answer.split_at(30);
+    stream(cx, first);
+    let streaming = cx.read(|cx| view.read(cx).model.entries()[1].item.id);
+    let block_views = |cx: &mut TestAppContext| -> Vec<_> {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            let doc = view.ui[&streaming].doc.as_ref().unwrap();
+            doc.blocks
+                .iter()
+                .filter_map(|block| block.view.as_ref().map(|view| view.entity_id()))
+                .collect()
+        })
+    };
+    // The rows of the streaming entry, as whether they show the source.
+    let rows = |cx: &mut TestAppContext| -> Vec<bool> {
+        keys(&view, cx)
+            .iter()
+            .filter_map(|key| match key {
+                RowKey::Block { id, source, .. } if *id == streaming => Some(*source),
+                _ => None,
+            })
+            .collect()
+    };
+    // The top of the user's message, which streaming below never moves.
+    let message_top = row_top(cx, window, RowKey::User(user));
+    let views = block_views(cx);
+    assert_eq!(views.len(), 3, "a paragraph, a heading, and a list begun");
+    assert_eq!(rows(cx), [false, false, false]);
+
+    // On in the middle of the stream: the blocks so far are source rows.
+    cx.update(|cx| super::set_show_source(true, cx));
+    settle(cx, window);
+    assert_eq!(rows(cx), [true, true, true]);
+    assert_eq!(row_top(cx, window, RowKey::User(user)), message_top);
+    let streamed_so_far = cx.read(|cx| view.read(cx).source_text(streaming));
+    assert_eq!(streamed_so_far.as_deref(), Some(first.trim()));
+    // The text streams on in the source view.
+    let (second, rest) = rest.split_at(16);
+    stream(cx, second);
+    assert_eq!(rows(cx).len(), block_views(cx).len());
+    assert!(rows(cx).iter().all(|source| *source));
+    assert_eq!(row_top(cx, window, RowKey::User(user)), message_top);
+    assert!(cx.read(|cx| view.read(cx).is_following(cx)));
+
+    // Off again, with more to come: the same block views, no longer made.
+    cx.update(|cx| super::set_show_source(false, cx));
+    settle(cx, window);
+    assert!(rows(cx).iter().all(|source| !*source));
+    assert!(block_views(cx).starts_with(&views));
+    stream(cx, rest);
+    assert!(block_views(cx).starts_with(&views));
+    assert_eq!(
+        rows(cx).len(),
+        4,
+        "a paragraph, a heading, a list, a paragraph"
+    );
+    assert_eq!(row_top(cx, window, RowKey::User(user)), message_top);
+    let streamed_text = cx.read(|cx| view.read(cx).source_text(streaming));
+    assert_eq!(streamed_text.as_deref(), Some(answer.trim()));
+
+    // The reply ends, in the session's view.
+    feed.reply(answer.trim());
+    settle(cx, window);
+    assert!(
+        keys(&view, cx)
+            .iter()
+            .any(|key| matches!(key, RowKey::Actions(id) if *id == streaming))
+    );
+    assert_eq!(reply_sources(cx, &view), [[false; 4]]);
+    cx.update(|cx| super::set_show_source(true, cx));
+    settle(cx, window);
+    assert_eq!(reply_sources(cx, &view), [[true; 4]]);
 }
 
 /// The menu finds the reply under the pointer at other zoom levels too.
@@ -2886,7 +3130,7 @@ fn the_menu_key_opens_the_menu_of_a_replys_text(cx: &mut TestAppContext) {
         settle(cx, window);
         assert!(menu_labels(cx, window).is_none(), "{key}");
     }
-    cx.read(|cx| assert!(!view.read(cx).ui[&reply].source));
+    cx.read(|cx| assert!(!view.read(cx).shows_source(reply)));
 }
 
 /// A selection from the user's message, across the reply and the next

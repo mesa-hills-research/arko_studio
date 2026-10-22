@@ -430,7 +430,7 @@ fn the_replys_menu_works_from_the_keyboard(cx: &mut TestAppContext) {
     rows.press(cx, "enter");
     assert!(!menu_open(cx));
     assert!(focused(cx, "reply-menu"));
-    assert!(cx.read(|cx| rows.view.read(cx).ui[&reply].source));
+    assert!(cx.read(|cx| rows.view.read(cx).shows_source(reply)));
     // The menu says what the next pick does.
     rows.press(cx, "enter");
     cx.update_window(rows.window, |_, window, _| {

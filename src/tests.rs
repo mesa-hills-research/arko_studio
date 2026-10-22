@@ -873,6 +873,65 @@ fn the_command_palette_runs_commands_in_the_window(cx: &mut TestAppContext) {
     assert!(cx.read(|cx| workspace.read(cx).settings().is_none()));
 }
 
+/// The View menu's Show Markdown Source, as the menus have it now: whether
+/// it is checked, and whether it is disabled.
+fn markdown_source_item(cx: &mut TestAppContext) -> (bool, bool) {
+    use gpui_kit::OwnedMenuItem;
+    use gpui_kit::component::GlobalState;
+
+    cx.read(|cx| {
+        let view = GlobalState::global(cx)
+            .app_menus()
+            .iter()
+            .find(|menu| menu.name == "View")
+            .expect("a View menu");
+        view.items
+            .iter()
+            .find_map(|item| match item {
+                OwnedMenuItem::Action {
+                    name,
+                    checked,
+                    disabled,
+                    ..
+                } if name == "Show Markdown Source" => Some((*checked, *disabled)),
+                _ => None,
+            })
+            .expect("Show Markdown Source in the View menu")
+    })
+}
+
+/// View › Show Markdown Source and the command palette's entry for it turn
+/// the session's source view on and off. The menu item is checked while it
+/// is on, and disabled while Settings has Markdown off, as there is nothing
+/// to show then.
+#[gpui_kit::test]
+fn show_markdown_source_is_in_the_view_menu_and_the_command_palette(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, _workspace) = open(cx, 1300.);
+    let on = |cx: &mut TestAppContext| cx.read(crate::transcript::show_source);
+    assert!(!on(cx));
+    assert_eq!(markdown_source_item(cx), (false, false));
+
+    run_from_palette(cx, window, "show markdown source");
+    assert!(on(cx));
+    assert_eq!(markdown_source_item(cx), (true, false));
+    // The menu item dispatches the same command.
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(menus::ToggleMarkdownSource), cx)
+    });
+    assert!(!on(cx));
+    assert_eq!(markdown_source_item(cx), (false, false));
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(menus::ToggleMarkdownSource), cx)
+    });
+    assert_eq!(markdown_source_item(cx), (true, false));
+
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.render_markdown = false));
+    assert_eq!(markdown_source_item(cx), (true, true));
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.render_markdown = true));
+    assert_eq!(markdown_source_item(cx), (true, false));
+}
+
 #[gpui_kit::test]
 fn the_command_palette_opens_settings_pages_and_sessions(cx: &mut TestAppContext) {
     start(cx);
