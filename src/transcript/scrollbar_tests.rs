@@ -11,8 +11,8 @@ use gpui_kit::{
 use super::tests::{call, item_ids, load_all, open, result, settle, start};
 use super::{AgentFilter, TranscriptView};
 
-const WIDTH: f32 = 800.;
-const HEIGHT: f32 = 600.;
+pub(super) const WIDTH: f32 = 800.;
+pub(super) const HEIGHT: f32 = 600.;
 /// The kit's shortest thumb.
 const MIN_THUMB: f32 = 48.;
 /// How far one turn of the wheel scrolls.
@@ -21,11 +21,11 @@ const WHEEL: f32 = 120.;
 /// The thumb's length and how far down the track it starts, as the kit
 /// draws them from the list's state.
 #[derive(Clone, Copy, Debug)]
-struct Thumb {
-    length: f32,
-    top: f32,
-    fraction: f32,
-    max: f32,
+pub(super) struct Thumb {
+    pub(super) length: f32,
+    pub(super) top: f32,
+    pub(super) fraction: f32,
+    pub(super) max: f32,
 }
 
 fn thumb(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> Thumb {
@@ -380,7 +380,7 @@ fn evenness(thumbs: &[Thumb], down: bool) -> Evenness {
 }
 
 /// The thumb as the kit draws it from `state`.
-fn thumb_of(state: &gpui_kit::ListState) -> Thumb {
+pub(super) fn thumb_of(state: &gpui_kit::ListState) -> Thumb {
     let track = f32::from(state.viewport_bounds().size.height);
     let max = f32::from(state.max_offset_for_scrollbar().y);
     let offset = -f32::from(state.scroll_px_offset_for_scrollbar().y);
