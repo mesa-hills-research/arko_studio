@@ -719,6 +719,31 @@ parse of the whole text.";
         feed
     }
 
+    /// A worker that started another, and the failure of that one and of
+    /// another worker of the main agent.
+    pub fn nested_failures() -> Feed {
+        let feed = Feed::new("main");
+        feed.user(
+            "Review the parser and count the tokens it makes.",
+            Source::App,
+            Delivery::Turn,
+        );
+        feed.turn_started();
+        feed.worker("r1", "Review the parser", WorkerChange::Started);
+        feed.worker_under("r2", "r1");
+        feed.worker("r2", "Count the tokens", WorkerChange::Started);
+        let mut info = arko::remote::WorkerInfo::new();
+        info.parent = Some("r1".into());
+        info.depth = 2;
+        feed.worker_info("r2", info);
+        feed.worker("r3", "Profile the renderer", WorkerChange::Started);
+        for id in ["r2", "r3"] {
+            let error = "the model gave no reply in 60 s";
+            feed.worker(id, "", WorkerChange::Failed { error });
+        }
+        feed
+    }
+
     /// Calls that moved to the background: one whose job runs, three whose
     /// jobs ended (finished, stopped, failed), and a command that still
     /// runs, which can move. `now` is the time the rows are read at. Gives
@@ -1034,6 +1059,54 @@ fn transcript_pending_note_dark() {
     goldens().assert(
         "transcript-pending-note-dark",
         &pending_note_window(ThemeMode::Dark),
+    );
+}
+
+/// The failures of a worker's worker and of a worker of the main agent in the
+/// main transcript, the first naming the worker that started it.
+fn nested_failures_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let feed = feed::nested_failures();
+    let window = app
+        .open_window_with(size(px(640.), px(240.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
+                    // The cards show what the workers did, as they were left.
+                    view.set_clock(|| WORKERS_NOW, cx);
+                    view
+                })
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn transcript_nested_failures_light() {
+    goldens().assert(
+        "transcript-nested-failures-light",
+        &nested_failures_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn transcript_nested_failures_dark() {
+    goldens().assert(
+        "transcript-nested-failures-dark",
+        &nested_failures_window(ThemeMode::Dark),
     );
 }
 

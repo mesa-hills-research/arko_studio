@@ -101,6 +101,10 @@ impl TranscriptView {
                     None => format!("Worker {worker}, {}", first_line(&item.text)),
                 }
             }
+            // A worker's notice says whose it is, as the row does.
+            RowKey::Notice(_) if !item.is_main() => {
+                format!("{}, {}", self.agent_label(item), first_line(&item.text))
+            }
             RowKey::Separator(_) | RowKey::Notice(_) | RowKey::Output(_) | RowKey::Turn(_) => {
                 first_line(&item.text)
             }

@@ -2206,6 +2206,53 @@ fn a_workers_worker_has_its_card_with_its_starter(cx: &mut TestAppContext) {
     assert!(!rows.contains(&RowKey::Worker(r1_card)), "{rows:?}");
 }
 
+/// A worker's failure in the main transcript names the worker that started
+/// it, as Arko's notices do, to the eye and to assistive technology. In its
+/// own transcript a worker doesn't say whose it is again.
+#[gpui_kit::test]
+fn a_failure_in_the_main_transcript_names_the_worker_that_started_it(cx: &mut TestAppContext) {
+    use arko::remote::WorkerInfo;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Split the work", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.worker("r1", "Review the files", WorkerChange::Started);
+    feed.worker("r3", "Count the words", WorkerChange::Started);
+    feed.worker_under("r2", "r1");
+    feed.worker("r2", "Count the files", WorkerChange::Started);
+    let mut info = WorkerInfo::new();
+    info.parent = Some("r1".into());
+    info.depth = 2;
+    feed.worker_info("r2", info);
+    for id in ["r2", "r3"] {
+        let error = "the model failed";
+        feed.worker(id, "", WorkerChange::Failed { error });
+    }
+    let labels = |cx: &mut TestAppContext, filter: AgentFilter| {
+        let (_, view) = open(cx, &feed, filter, 720.);
+        let notices: Vec<RowKey> = keys(&view, cx)
+            .into_iter()
+            .filter(|key| matches!(key, RowKey::Notice(_)))
+            .collect();
+        cx.read(|cx| {
+            let view = view.read(cx);
+            notices
+                .into_iter()
+                .map(|key| view.row_label(key).to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+    // A worker of the main agent is named alone.
+    let main = labels(cx, AgentFilter::Main);
+    assert_eq!(main.len(), 2, "{main:?}");
+    assert!(main[0].starts_with("r2 (under r1), failed ("), "{main:?}");
+    assert!(main[1].starts_with("r3, failed ("), "{main:?}");
+    let own = labels(cx, AgentFilter::Worker("r2".into()));
+    assert_eq!(own.len(), 1, "{own:?}");
+    assert!(own[0].starts_with("r2, failed ("), "{own:?}");
+}
+
 /// A worker's card says what it runs on once the session has recorded it,
 /// and the card stays one line tall.
 #[gpui_kit::test]

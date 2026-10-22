@@ -481,7 +481,7 @@ impl TranscriptView {
         // Inside its padding, past its icon.
         let mut width = column - rem - 0.75 * rem - 0.375 * rem;
         if !item.is_main() {
-            let agent = item.agent.chars().count() as f32;
+            let agent = self.agent_label(item).chars().count() as f32;
             width -= agent * m.mono.advance_at(0.75 * rem) + 0.375 * rem;
         }
         if self.offers_regenerate(RowKey::Notice(id)) {
@@ -1878,6 +1878,20 @@ impl TranscriptView {
         )
     }
 
+    /// What a worker's notice is labelled with: the worker's ID, and in the
+    /// main transcript the worker that started it, as Arko words it ("r2
+    /// (under r1)"). A worker's own transcript doesn't repeat who it is.
+    pub(super) fn agent_label(&self, item: &Item) -> String {
+        let parent = matches!(self.model.filter(), AgentFilter::Main)
+            .then(|| self.model.worker(&item.agent))
+            .flatten()
+            .and_then(|worker| worker.parent.as_deref());
+        match parent {
+            Some(parent) => format!("{} (under {parent})", item.agent),
+            None => item.agent.clone(),
+        }
+    }
+
     fn notice(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
         let theme = cx.theme();
         let Some(item) = self.item(id) else {
@@ -1906,7 +1920,7 @@ impl TranscriptView {
                         .text_xs()
                         .code_font(theme)
                         .text_color(theme.muted_foreground)
-                        .child(item.agent.clone()),
+                        .child(self.agent_label(item)),
                 )
             })
             .child(
