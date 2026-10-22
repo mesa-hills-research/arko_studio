@@ -195,7 +195,8 @@ impl Workspace {
         &self.sidebar
     }
 
-    #[cfg(test)]
+    /// The workers panel (tests and screenshots).
+    #[doc(hidden)]
     pub fn workers_panel(&self) -> &Entity<WorkersPanel> {
         &self.workers
     }
