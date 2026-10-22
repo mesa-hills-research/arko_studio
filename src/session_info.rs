@@ -85,7 +85,7 @@ pub fn handover_value(tokens: usize) -> String {
 }
 
 use arko::commands::{parse_background_after, parse_handover_size};
-use arko::monitors::{Wakes, parse_wakes};
+use arko::monitors::{self, Wakes, parse_wakes};
 
 /// How long monitors' warnings wake the agent, as a number the fields
 /// compare: its seconds, 0 for never, or `u64::MAX` for always.
@@ -130,7 +130,7 @@ pub fn field_command(field: Field, text: &str, current: u64) -> Result<Option<St
             format!("/handover-at workers {}", handover_value(value as usize))
         }
         Field::BackgroundAfter => format!("/background-after {}", background_value(value)),
-        Field::MonitorWakes => format!("/monitor-wakes {}", wakes_of(value).shown()),
+        Field::MonitorWakes => wakes_of(value).command(),
     }))
 }
 
@@ -824,7 +824,7 @@ impl Render for SessionInfo {
                 ))
                 .child(row(
                     narrow,
-                    "Monitor wakes",
+                    monitors::NAME,
                     v_flex()
                         .gap_1()
                         .child(h_flex().children(input(Field::MonitorWakes, self)))

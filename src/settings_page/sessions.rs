@@ -298,7 +298,7 @@ impl SessionsPage {
                 )
                 .keywords(["shell", "command", "timeout", "jobs"]),
                 self.monitor_wakes
-                    .item("Monitor wakes", "monitor-wakes")
+                    .item(arko::monitors::NAME, "monitor-wakes")
                 .description(
                     "A monitor’s warning before it ends wakes an idle agent for this long after your last message, so it can keep the monitor. 30m, 2h or 24h at most, always, or off.",
                 )
