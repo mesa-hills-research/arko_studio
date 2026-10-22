@@ -180,6 +180,11 @@ fn a_first_message_starts_a_session_and_its_reply_arrives(cx: &mut TestAppContex
     assert!(mock.was_sent("Count the pears."));
     // The transcript shows the message and its reply.
     app.wait_for_rows(cx, 2);
+    // The turn's end comes after its reply, and draws the transcript again.
+    wait_until(cx, "the turn to end", |cx| {
+        app.shown(cx)
+            .is_some_and(|session| cx.read(|cx| !session.read(cx).is_working()))
+    });
     // Typing in the composer draws the composer, not the transcript.
     let transcript = app.transcript(cx).unwrap();
     let draw = |cx: &mut TestAppContext| {
