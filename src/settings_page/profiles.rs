@@ -954,14 +954,18 @@ impl ProfileForm {
         let name = v_flex()
             .gap_1()
             .child(caption("Name", cx))
-            .child(Input::new(&self.name).small())
+            .child(Input::new(&self.name).small().aria_label("Name"))
             .when_some(self.name_problem(cx), |this, problem| {
                 this.child(note("profile-name-problem", problem, danger))
             });
         let description = v_flex()
             .gap_1()
             .child(caption("Description", cx))
-            .child(Input::new(&self.description).small())
+            .child(
+                Input::new(&self.description)
+                    .small()
+                    .aria_label("Description"),
+            )
             .when(description_length > MAX_DESCRIPTION, |this| {
                 let words =
                     format!("{description_length} characters, and the limit is {MAX_DESCRIPTION}.");
@@ -1016,7 +1020,7 @@ impl ProfileForm {
                     .id("profile-instructions")
                     .test_support()
                     .w_full()
-                    .child(Textarea::new(&self.instructions)),
+                    .child(Textarea::new(&self.instructions).aria_label("Instructions")),
             )
             .child(
                 h_flex()

@@ -99,6 +99,17 @@ fn a_profile_is_added_in_the_editor(cx: &mut TestAppContext) {
         assert!(window.has_active_dialog(cx))
     });
     let form = editor(cx, &page);
+    // A screen reader names the dropdowns with the field and its value.
+    act(cx, window, |window, _| {
+        assert_eq!(
+            window.find("profile-model").label(),
+            Some("Model, The session’s worker model")
+        );
+        assert_eq!(
+            window.find("profile-effort").label(),
+            Some("Effort, The session’s worker effort")
+        );
+    });
     // Nothing yet: Save says what is missing, and writes nothing.
     act(cx, window, |window, cx| window.click("profile-save", cx));
     assert!(shows(window, cx, "profile-error"));
