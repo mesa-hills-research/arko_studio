@@ -657,7 +657,7 @@ impl SettingsPage {
                     )
                     .description("Copies a .ttf or .otf file into Arko’s folder and lists it under both fonts."),
                 ),
-                SettingGroup::new().key(keys[3]).title("Zoom").item(
+                SettingGroup::new().key(keys[3]).item(
                     SettingItem::new(
                         "Zoom",
                         SettingField::dropdown(
@@ -696,7 +696,7 @@ impl SettingsPage {
                         defaults.expand_thinking,
                     ),
                 ]),
-                SettingGroup::new().key(keys[5]).title("Motion").item(
+                SettingGroup::new().key(keys[5]).item(
                     SettingItem::new(
                         "Motion",
                         SettingField::dropdown(
@@ -770,15 +770,20 @@ fn switch(
     set: fn(&mut prefs::Prefs, bool),
     default: bool,
 ) -> SettingItem {
-    SettingItem::new(
+    let item = SettingItem::new(
         title,
         SettingField::switch(
             move |cx: &App| get(prefs::get(cx)),
             move |on: bool, cx: &mut App| prefs::update(cx, |prefs| set(prefs, on)),
         )
         .default_value(default),
-    )
-    .description(description)
+    );
+    // A title that says it all needs no description.
+    if description.is_empty() {
+        item
+    } else {
+        item.description(description)
+    }
 }
 
 /// A dropdown bound to a preference with a few named values.
@@ -1019,7 +1024,7 @@ fn notifications_page(cx: &App) -> SettingPage {
             .keywords(["prompt cache", "expiry", "refresh", "timer"]),
             switch(
                 "Sound",
-                "Notifications make a sound.",
+                "",
                 |prefs| prefs.notifications.sound,
                 |prefs, on| prefs.notifications.sound = on,
                 defaults.sound,
@@ -1181,25 +1186,22 @@ fn advanced_page(
         ]),
     );
     groups.push(
-        SettingGroup::new()
-            .key(group_key("Reset", &()))
-            .title("Reset")
-            .item(
-                SettingItem::new(
-                    "Reset preferences…",
-                    SettingField::render(|_, _, _| {
-                        Button::new("reset-preferences")
-                            .outline()
-                            .small()
-                            .label("Reset…")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(ResetPreferences), cx)
-                            })
-                    }),
-                )
-                .description("Every setting in Arko Studio goes back to its default.")
-                .keywords(["defaults", "studio.json"]),
-            ),
+        SettingGroup::new().key(group_key("Reset", &())).item(
+            SettingItem::new(
+                "Reset preferences…",
+                SettingField::render(|_, _, _| {
+                    Button::new("reset-preferences")
+                        .outline()
+                        .small()
+                        .label("Reset…")
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(ResetPreferences), cx)
+                        })
+                }),
+            )
+            .description("Every setting in Arko Studio goes back to its default.")
+            .keywords(["defaults", "studio.json"]),
+        ),
     );
     SettingPage::new(PAGES[ADVANCED_PAGE])
         .icon(IconName::Settings2)
