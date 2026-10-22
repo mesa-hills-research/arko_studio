@@ -1103,15 +1103,11 @@ impl Workspace {
     fn render_main(&self) -> AnyElement {
         match &self.settings {
             Some(settings) => pane(settings),
-            // Not kept like the panes around it. A kept view inside another
-            // that draws again is reused now, so keeping it would save about
-            // half of a frame that a view outside it asks for (a spinner in
-            // the sidebar, the status bar's clock). But a kept view that
-            // isn't drawn adds nothing to the accessibility tree, so the
-            // composer, the find bar and the question card would drop out of
-            // what a screen reader sees in each of those frames. The
-            // transcript is kept.
-            None => self.session_view.clone().into_any_element(),
+            // Kept like the panes around it, so a frame drawn for another view
+            // (the sidebar's spinner, the status bar's clock) takes it from
+            // the frame before. A reused view keeps its nodes in what a
+            // screen reader sees.
+            None => pane(&self.session_view),
         }
     }
 }

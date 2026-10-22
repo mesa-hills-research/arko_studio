@@ -1088,3 +1088,49 @@ fn the_font_pickers_offer_only_what_the_settings_keep(cx: &mut TestAppContext) {
         assert!(window.try_find("font-picker-weight").is_none());
     });
 }
+
+/// Draws the window's frame, as the display asks for it.
+fn draw(cx: &mut TestAppContext, window: AnyWindowHandle) {
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+}
+
+/// A frame drawn for another view of the window (the status bar's clock, the
+/// sidebar's spinner) takes the session view from the frame before.
+#[gpui_kit::test]
+fn a_frame_for_another_view_leaves_the_session_view_as_it_was(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let (status, view) = cx.read(|cx| {
+        (
+            workspace.read(cx).status_bar().clone(),
+            workspace.read(cx).session_view().clone(),
+        )
+    });
+    for _ in 0..3 {
+        draw(cx, window);
+    }
+    let drawn = cx.read(|cx| view.read(cx).render_count());
+    for _ in 0..5 {
+        cx.update(|cx| status.update(cx, |_, cx| cx.notify()));
+        draw(cx, window);
+    }
+    assert_eq!(cx.read(|cx| view.read(cx).render_count()), drawn);
+}
+
+/// What the session view shows from the preferences, the send key in the
+/// Send button's tooltip among it, is drawn again when a preference changes.
+#[gpui_kit::test]
+fn the_session_view_draws_again_for_a_changed_preference(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    for _ in 0..3 {
+        draw(cx, window);
+    }
+    let drawn = cx.read(|cx| view.read(cx).render_count());
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.input.send_key = prefs::SendKey::ModEnter));
+    draw(cx, window);
+    assert!(cx.read(|cx| view.read(cx).render_count()) > drawn);
+}
