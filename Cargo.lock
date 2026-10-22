@@ -2802,7 +2802,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.7.1"
-source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=d95f0056c808cb6aa0cb56b99ae862efc0ca43ef#d95f0056c808cb6aa0cb56b99ae862efc0ca43ef"
+source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=e121d82b05373d9b78635b3991dcc0a2b0f44ab9#e121d82b05373d9b78635b3991dcc0a2b0f44ab9"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2844,7 +2844,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.7.1"
-source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=d95f0056c808cb6aa0cb56b99ae862efc0ca43ef#d95f0056c808cb6aa0cb56b99ae862efc0ca43ef"
+source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=e121d82b05373d9b78635b3991dcc0a2b0f44ab9#e121d82b05373d9b78635b3991dcc0a2b0f44ab9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2938,7 +2938,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.7.1"
-source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=d95f0056c808cb6aa0cb56b99ae862efc0ca43ef#d95f0056c808cb6aa0cb56b99ae862efc0ca43ef"
+source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=e121d82b05373d9b78635b3991dcc0a2b0f44ab9#e121d82b05373d9b78635b3991dcc0a2b0f44ab9"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2949,7 +2949,7 @@ dependencies = [
 [[package]]
 name = "gpui-kit"
 version = "0.7.1"
-source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=d95f0056c808cb6aa0cb56b99ae862efc0ca43ef#d95f0056c808cb6aa0cb56b99ae862efc0ca43ef"
+source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=e121d82b05373d9b78635b3991dcc0a2b0f44ab9#e121d82b05373d9b78635b3991dcc0a2b0f44ab9"
 dependencies = [
  "gpui-base",
  "gpui-component",
@@ -2963,7 +2963,7 @@ dependencies = [
 [[package]]
 name = "gpui-kit-assets"
 version = "0.7.1"
-source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=d95f0056c808cb6aa0cb56b99ae862efc0ca43ef#d95f0056c808cb6aa0cb56b99ae862efc0ca43ef"
+source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=e121d82b05373d9b78635b3991dcc0a2b0f44ab9#e121d82b05373d9b78635b3991dcc0a2b0f44ab9"
 dependencies = [
  "anyhow",
  "gpui-pre-reqwest",
@@ -2977,7 +2977,7 @@ dependencies = [
 [[package]]
 name = "gpui-kit-writing"
 version = "0.7.1"
-source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=d95f0056c808cb6aa0cb56b99ae862efc0ca43ef#d95f0056c808cb6aa0cb56b99ae862efc0ca43ef"
+source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=e121d82b05373d9b78635b3991dcc0a2b0f44ab9#e121d82b05373d9b78635b3991dcc0a2b0f44ab9"
 dependencies = [
  "anyhow",
  "gpui-base",
@@ -4819,9 +4819,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d81936d71d99c6de06d363112d4ec0381bc4f1c0a17b47bda107cab7d54478f2"
+checksum = "944dd63c4d522ba396d81e48b00109825d21e6aedd3da61e6856209ca75dbd17"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -4892,9 +4892,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-apple"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34c2eeec8586e58880331140acdbb177573939bb3d829ff14bc34c5d11ca4712"
+checksum = "b9d8be1f3a6833daedf9bb976a9a2f334c9536279bae3adf06dfb42d72190c16"
 dependencies = [
  "anyhow",
  "async-task",
@@ -4922,9 +4922,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-linux"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa55dc93a421eccd83229dfc5fbe590f20816a615b34b4d12fb23b80531245b0"
+checksum = "fd902d09608f67f18fe8720225749821d6408951feba7ba6bcd50eab1769076e"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -4967,9 +4967,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-macos"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a6add69c1851943642368e6620c65663bdbcd46849139ac68c953582c041c7a"
+checksum = "424a34f3e038e03e4bc5c84883962ed0a3ecb261891e7bc2b73e9caaf226aed7"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -5026,9 +5026,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-platform"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "710cf99536e0aea45ffe5197df3612becc27863c0c502c3f5b738f0f237ab67f"
+checksum = "f7093967579b8a8abebef9b3fe5c69b67e87c568bac20599659d08c7963db97b"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -5043,7 +5043,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-screenshot"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=007875d12ce2b30d93ca04659b0c4fb2632ae44a#007875d12ce2b30d93ca04659b0c4fb2632ae44a"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=b4286f31ddd9b45bd7657026fe378f1c753545b2#b4286f31ddd9b45bd7657026fe378f1c753545b2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5078,9 +5078,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-web"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8abdd2e08395c4f4e6017cef3abf4da441fad64069f86fb36fc9bcbda04b708"
+checksum = "1895229d08cb146d70a428fe12ac51414334dbfed90b64d47bd697147bae33b3"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -5107,9 +5107,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-wgpu"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7fd88a0e91b67f947c7f3eb03d23c784e398510322882007b53bff25b447e8f"
+checksum = "e3fba5b014af7bad9f76e7ada8bd670c5386aaf57293423bb202a5763fcb2ddd"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5135,9 +5135,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-windows"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69282aae4cbf608749404a3e37641e67744cd30b182ae97d9751f056e1d936ec"
+checksum = "a05e02db7ca6a1b2220ec42fd13a89bca1ea617533027c7d6f7c9fa04c8e7619"
 dependencies = [
  "accesskit",
  "accesskit_windows",
