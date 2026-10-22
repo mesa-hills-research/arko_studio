@@ -245,6 +245,12 @@ fn escape_stops_a_turn_and_send_comes_back(cx: &mut TestAppContext) {
         assert!(window.try_find("stop").is_some(), "Stop instead of Send");
         assert!(window.try_find("send").is_none());
     });
+    // What is written now joins the task.
+    let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
+    assert_eq!(
+        cx.read(|cx| view.read(cx).placeholder(cx)),
+        "Add to the task while Arko works"
+    );
     act(cx, app.window, |window, cx| window.press("escape", cx));
     wait_until(cx, "the turn to stop", |cx| {
         app.shown(cx)

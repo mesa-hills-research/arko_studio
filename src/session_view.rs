@@ -693,7 +693,7 @@ impl SessionView {
                 "Answer the question above".into()
             }
         } else if session.is_working() {
-            "Add to the task — Arko is working".into()
+            "Add to the task while Arko works".into()
         } else {
             "Message Arko".into()
         }
@@ -2671,13 +2671,9 @@ impl SessionView {
                 .bg(theme.secondary)
                 .text_color(theme.secondary_foreground)
                 .child(Icon::new(gpui_kit::assets::IconName::SquarePen).xsmall())
-                .child(div().flex_1().min_w_0().truncate().child(
-                    if crate::prefs::get(cx).input.keymap == crate::prefs::Keymap::Vim {
-                        "Editing message — Esc in normal mode cancels"
-                    } else {
-                        "Editing message — Esc cancels"
-                    },
-                ))
+                .child(div().flex_1().min_w_0().truncate().child(editing_words(
+                    crate::prefs::get(cx).input.keymap == crate::prefs::Keymap::Vim,
+                )))
                 .children(lost.map(|lost| {
                     div()
                         .id("edit-lost-images")
@@ -3080,6 +3076,16 @@ pub(crate) struct Export {
     pub starts_partway: bool,
 }
 
+/// What the strip above the composer says while it edits a message, and how
+/// Esc cancels (in Vim's normal mode, with its keys).
+fn editing_words(vim: bool) -> &'static str {
+    if vim {
+        "Editing message. Esc in normal mode cancels."
+    } else {
+        "Editing message. Esc cancels."
+    }
+}
+
 /// What the notification says of an export written to `path`.
 fn exported_words(path: &Path, starts_partway: bool) -> String {
     let tail = if starts_partway {
@@ -3123,8 +3129,8 @@ mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::{
-        FindStatus, exported_words, find_status_text, images_not_kept, mode_description,
-        recent_folders, shown_folder_from,
+        FindStatus, editing_words, exported_words, find_status_text, images_not_kept,
+        mode_description, recent_folders, shown_folder_from,
     };
     use crate::backend::Backend as _;
     use crate::backend::{FakeBackend, Mode, SessionEntry};
@@ -3137,6 +3143,15 @@ mod tests {
         assert_eq!(
             mode_description(Mode::Agent, true),
             "Agent works in a folder with tools and workers. Switching re-reads the conversation without its cache."
+        );
+    }
+
+    #[test]
+    fn the_editing_strip_says_how_esc_cancels() {
+        assert_eq!(editing_words(false), "Editing message. Esc cancels.");
+        assert_eq!(
+            editing_words(true),
+            "Editing message. Esc in normal mode cancels."
         );
     }
 
