@@ -4,10 +4,17 @@
 Run it from anywhere with `python3 assets/make-icons.py`. It needs Python 3
 and `rsvg-convert` (from librsvg) or `resvg` on the PATH, and uses no network.
 
+The mark has three levels of detail (the arch, stem and arrow, then the nodes,
+then the thin links and the gap in the top of the arch). A small icon cannot carry
+all of them, so each size band has its own drawing and none is scaled from another.
+
 Sources
-  assets/icon.svg        the full mark, used from 48 px up
-  assets/icon-small.svg  the simpler mark, used from 16 to 32 px
-  assets/icon-tile.svg   the mark on a rounded tile
+  assets/icon.svg                       the full mark, used from 48 px up
+  assets/icon-40.svg, icon-32.svg       vector drawings on a grid of their own size
+  assets/icon-24.svg, icon-22.svg       pixel drawings, one line of the file per row of pixels
+  assets/icon-candidates/icon-16-*.svg  three pixel drawings each for 16 px and 20 px,
+  assets/icon-candidates/icon-20-*.svg  chosen by SMALL_STYLE below
+  assets/icon-tile.svg                  the mark on a rounded tile
 
 Outputs
   assets/icon-1024.png                                  the tile at 1024 px
@@ -17,6 +24,7 @@ Outputs
 """
 
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -28,23 +36,42 @@ APP_ID = "com.mesahillsresearch.ArkoStudio"
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(ROOT, "assets")
+CANDIDATES = os.path.join(ASSETS, "icon-candidates")
 HICOLOR = os.path.join(ROOT, "packaging", "linux", "icons", "hicolor")
 
 FULL = os.path.join(ASSETS, "icon.svg")
-SMALL = os.path.join(ASSETS, "icon-small.svg")
 TILE = os.path.join(ASSETS, "icon-tile.svg")
 
-# The simpler mark is used up to this size, the full mark above it.
-SMALL_UP_TO = 32
+# The drawing used at 16 px and 20 px. "a" is the arch, stem and arrow only, "b" adds the
+# hollow node, and "c" cuts the same mark out of a rounded tile. Change the letter to
+# switch, or add icon-16-d.svg and icon-20-d.svg and name them here.
+SMALL_STYLE = "b"
+
 # Windows sizes. The 64 px entry and the larger ones are stored as PNG, the
 # smaller ones as the classic bitmap that every Windows version reads.
-ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
+ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
 ICO_PNG_FROM = 64
 LINUX_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512]
 
 
 def source(size):
-    return SMALL if size <= SMALL_UP_TO else FULL
+    """The SVG for a size. A drawing made for one size is rendered at exactly that size."""
+    if size in (16, 20):
+        return os.path.join(CANDIDATES, f"icon-{size}-{SMALL_STYLE}.svg")
+    own = os.path.join(ASSETS, f"icon-{size}.svg")
+    return own if os.path.exists(own) else FULL
+
+
+def check_grid(svg, size):
+    """A drawing made for one size must be drawn on a grid of that size."""
+    with open(svg, encoding="utf-8") as f:
+        head = f.read(600)
+    match = re.search(r'viewBox="0 0 (\d+) (\d+)"', head)
+    if match and match.group(1) == match.group(2) == str(size):
+        return
+    if os.path.basename(svg) == "icon.svg":
+        return
+    sys.exit(f"{svg} is not drawn on a {size} px grid.")
 
 
 def rasterizer():
@@ -57,6 +84,7 @@ def rasterizer():
 
 def render(svg, size, out):
     """Writes the SVG as a size x size PNG with a transparent background."""
+    check_grid(svg, size)
     name, path = rasterizer()
     if name == "rsvg-convert":
         cmd = [path, "-w", str(size), "-h", str(size), svg, "-o", out]
