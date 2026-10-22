@@ -75,24 +75,25 @@ regenerate it without the override before committing.
 ## App icon
 
 The artwork is in `assets/`. The mark has three levels of detail. The arch, the stem and the arrow
-come first, then the nodes, then the thin links and the gap in the top of the arch. A small icon
-can't hold all of them, so every size below 48 px has drawings of its own and none is scaled from
-another. Sizes from 48 px up use `icon.svg`, the full mark.
+come first, then the nodes, then the thin links and the gap in the top of the arch. Scaled down
+as it is, the thin parts turn to smudges below about 48 px. So every size below 48 px is drawn
+for its own size, and sizes from 48 px up use `icon.svg`, the full mark.
 
-Each of 16, 20, 22, 24, 32 and 40 px has three candidates in `assets/icon-candidates/`, named
-`icon-<size>-<letter>.svg`.
+`CHOICE` in `assets/make-icons.py` gives the drawing for 16, 20, 22, 24, 32 and 40 px as a letter.
+To switch a size, change its letter and run the script again.
 
 | Letter | Drawing |
 |---|---|
-| `a` | The arch, the stem and the arrow only |
-| `b` | Adds the nodes and the line through them, and at 32 and 40 px the links down to the bottom node |
-| `c` | The mark of `b` in near-black on a rounded tile |
+| `n` | The full mark scaled to the size, as before |
+| `d` | The full mark scaled to fill the canvas |
+| `e` | `d` with weight added around every shape |
+| `f` | `e` with its size, position and weight fitted to the pixel grid, then drawn at 8 times the size and averaged down |
+| `g` | Like `f`, but only the thin parts get heavier, the arrow shaft is a whole number of pixels thick and the nodes grow a little |
+| `a`, `b`, `c` | Hand drawn candidates in `assets/icon-candidates/`, named `icon-<size>-<letter>.svg`. These are the arch, stem and arrow only (`a`), with the nodes and the line through them (`b`), and the mark of `b` on a rounded tile (`c`) |
 
-`CHOICE` in `assets/make-icons.py` says which letter each size uses. To switch a size, change its
-letter and run the script again. Each drawing is made on a grid of its own size, so its strokes and
-gaps are whole pixels when it is shown at that size. Up to 24 px the drawings are pixel art with
-one line of the file per row of pixels. At 32 and 40 px they are vector shapes whose straight edges
-sit on whole pixels. `icon-tile.svg` puts the full mark on a rounded tile.
+The drawings `d` to `g` come from `icon.svg` by script, so a change to the mark reaches every size.
+`LOOK` in the script sets the weight for each size, and the numbers that fitting aligns to the
+pixel grid are next to it. `icon-tile.svg` puts the full mark on a rounded tile.
 
 After changing an SVG, run `python3 assets/make-icons.py`, which needs `rsvg-convert` or `resvg`,
 and commit the files it writes. These are `assets/icon.ico` (16, 20, 24, 32, 40, 48, 64, 128 and
