@@ -1854,6 +1854,64 @@ fn worker_cards_open_the_worker_and_its_own_transcript(cx: &mut TestAppContext) 
     assert_eq!(rows.len(), 4);
 }
 
+/// A worker's card says what it runs on once the session has recorded it,
+/// and the card stays one line tall.
+#[gpui_kit::test]
+fn a_worker_card_says_the_model_effort_and_profile(cx: &mut TestAppContext) {
+    use arko::remote::WorkerInfo;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Split the work", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.worker("r1", "Fix the parser", WorkerChange::Started);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let card = item_ids(&feed)
+        .iter()
+        .find(|(_, kind)| *kind == Kind::WorkerLine)
+        .unwrap()
+        .0;
+    let setup = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(("worker-setup", card)).is_some()
+        })
+        .unwrap()
+    };
+    let height = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, _| {
+            window.find(("worker-row", card)).bounds().size.height
+        })
+        .unwrap()
+    };
+    // Nothing is known of it yet.
+    assert!(!setup(cx));
+    let before = height(cx);
+    let mut info = WorkerInfo::new();
+    info.model = Some("gpt-6.1-sol".into());
+    info.effort = Some("high".into());
+    info.profile = Some("3d-judge".into());
+    feed.worker_info("r1", info);
+    settle(cx, window);
+    assert!(setup(cx));
+    assert_eq!(height(cx), before, "one line, as it was");
+    // The row's name for assistive technology says it too.
+    let label = cx.read(|cx| {
+        let view = view.read(cx);
+        let row = view
+            .rows
+            .iter()
+            .find(|row| row.key == RowKey::Worker(card))
+            .unwrap()
+            .key;
+        view.row_label(row)
+    });
+    assert_eq!(
+        label.as_ref(),
+        "Worker r1, Fix the parser, sol · high · 3d-judge"
+    );
+}
+
 #[gpui_kit::test]
 fn long_code_blocks_show_forty_lines_until_asked(cx: &mut TestAppContext) {
     start(cx);

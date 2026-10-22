@@ -201,6 +201,167 @@ fn ended_workers_stay_five_minutes_then_fold_into_finished(cx: &mut TestAppConte
     assert!(rows.contains(&worker("r2")) && rows.contains(&worker("r3")));
 }
 
+/// A worker as a session lists it: `id`, under `parent`, in `state`, that
+/// ended at `ended` if it did.
+fn summary(
+    id: &str,
+    parent: Option<&str>,
+    state: arko::remote::WorkerState,
+    ended: Option<i64>,
+) -> WorkerSummary {
+    let mut worker = WorkerSummary::new(id);
+    worker.title = format!("Task of {id}");
+    worker.state = state;
+    worker.parent = parent.map(str::to_string);
+    worker.depth = if parent.is_some() { 2 } else { 1 };
+    worker.started_at = Some(0);
+    worker.ended_at = ended;
+    worker
+}
+
+impl Panel {
+    /// Shows `workers` in the panel, as the session's own source would.
+    fn show(&self, cx: &mut TestAppContext, workers: Vec<WorkerSummary>) {
+        self.panel.update(cx, |panel, cx| {
+            let mut source = panel.source.clone();
+            source.workers = workers;
+            panel.set_source(source, cx);
+        });
+        self.draw(cx);
+    }
+
+    /// The bounds of row `row`'s line for the setup and the cost, if it has
+    /// one.
+    fn setup_bounds(
+        &self,
+        cx: &mut TestAppContext,
+        row: usize,
+    ) -> Option<gpui_kit::Bounds<gpui_kit::Pixels>> {
+        cx.update_window(self.window, |_, window, _| {
+            window
+                .within(("worker", row))
+                .try_find("worker-setup")
+                .map(|found| found.bounds())
+        })
+        .unwrap()
+    }
+
+    fn row_height(&self, cx: &mut TestAppContext, row: usize) -> gpui_kit::Pixels {
+        cx.update_window(self.window, |_, window, _| {
+            window.find(("worker", row)).bounds().size.height
+        })
+        .unwrap()
+    }
+}
+
+/// A worker's workers stand under it, indented, in the order of their
+/// families, however the session lists them.
+#[gpui_kit::test]
+fn a_workers_workers_stand_under_it_indented(cx: &mut TestAppContext) {
+    use arko::remote::WorkerState::Running;
+    let panel = open(cx);
+    let mut workers = vec![
+        summary("r1", None, Running, None),
+        summary("r4", None, Running, None),
+        summary("r2", Some("r1"), Running, None),
+        summary("r3", Some("r2"), Running, None),
+    ];
+    for worker in &mut workers {
+        worker.model = Some("gpt-6.1-sol".into());
+    }
+    panel.show(cx, workers);
+    assert_eq!(
+        panel.rows(cx),
+        [worker("r1"), worker("r2"), worker("r3"), worker("r4")]
+    );
+    let left = |cx: &mut TestAppContext, row| panel.setup_bounds(cx, row).unwrap().left();
+    let (r1, r2, r3, r4) = (left(cx, 0), left(cx, 1), left(cx, 2), left(cx, 3));
+    // A level in is a mark's width (1 rem), and a worker of the main agent
+    // is where it was.
+    assert!(r2 > r1 && r3 > r2, "{r1:?} {r2:?} {r3:?}");
+    assert_eq!(r2 - r1, r3 - r2);
+    assert_eq!(r4, r1);
+}
+
+/// A family moves to "Finished" together, with its first worker's place
+/// among the other families in the order they ended.
+#[gpui_kit::test]
+fn a_family_moves_to_finished_together_and_stays_together(cx: &mut TestAppContext) {
+    use arko::remote::WorkerState::{Finished, Running};
+    let panel = open(cx);
+    let now = *panel.now.borrow();
+    let long_ago = now - ENDED_SHOWS_FOR_MS - 10_000;
+    panel.show(
+        cx,
+        vec![
+            summary("r1", None, Finished, Some(long_ago - 60_000)),
+            summary("r2", Some("r1"), Finished, Some(long_ago - 90_000)),
+            summary("r3", None, Finished, Some(long_ago)),
+            summary("r4", Some("r3"), Finished, Some(long_ago - 1_000)),
+            summary("r5", None, Running, None),
+        ],
+    );
+    // Both families ended long ago: they fold together.
+    assert_eq!(panel.rows(cx), [worker("r5"), PanelRow::Finished(4)]);
+    panel.click(cx, "workers-finished");
+    // The family that ended last first, each family with its own workers
+    // under it.
+    assert_eq!(
+        panel.rows(cx),
+        [
+            worker("r5"),
+            PanelRow::Finished(4),
+            worker("r3"),
+            worker("r4"),
+            worker("r1"),
+            worker("r2"),
+        ]
+    );
+    // A worker that ended a minute ago keeps its whole family in the list.
+    panel.show(
+        cx,
+        vec![
+            summary("r1", None, Finished, Some(long_ago)),
+            summary("r2", Some("r1"), Finished, Some(now - 60_000)),
+        ],
+    );
+    assert_eq!(panel.rows(cx), [worker("r1"), worker("r2")]);
+}
+
+/// Each row says what its worker runs on and what it has cost, on a line of
+/// its own that every row has once one does, and the worker's view says it too.
+#[gpui_kit::test]
+fn a_row_says_the_workers_model_profile_and_cost(cx: &mut TestAppContext) {
+    use arko::remote::WorkerState::Running;
+    let panel = open(cx);
+    let mut plain = vec![
+        summary("r1", None, Running, None),
+        summary("r2", None, Running, None),
+    ];
+    // Without a model, a profile or a cost, the rows have no line for it.
+    panel.show(cx, plain.clone());
+    assert!(panel.setup_bounds(cx, 0).is_none());
+    let short = panel.row_height(cx, 0);
+    plain[0].model = Some("gpt-6.1-sol".into());
+    plain[0].effort = Some("high".into());
+    plain[0].profile = Some("3d-judge".into());
+    plain[0].cost_billed = 0.34;
+    panel.show(cx, plain);
+    // Every row has the line, so they stay as tall as one another.
+    assert!(panel.setup_bounds(cx, 0).is_some());
+    assert!(panel.setup_bounds(cx, 1).is_some());
+    assert!(panel.row_height(cx, 0) > short);
+    assert_eq!(panel.row_height(cx, 0), panel.row_height(cx, 1));
+    let now = *panel.now.borrow();
+    let facts = cx.read(|cx| panel.panel.read(cx).facts("r1", now));
+    assert_eq!(
+        facts,
+        "Running · sol · high · 3d-judge · 0 s · 0 calls · $0.34"
+    );
+    let facts = cx.read(|cx| panel.panel.read(cx).facts("r2", now));
+    assert_eq!(facts, "Running · 0 s · 0 calls");
+}
+
 #[gpui_kit::test]
 fn the_keyboard_moves_through_the_list_and_opens_a_worker(cx: &mut TestAppContext) {
     let panel = open(cx);

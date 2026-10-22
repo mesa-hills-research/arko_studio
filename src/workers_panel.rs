@@ -133,6 +133,8 @@ pub struct WorkersPanel {
     seen: HashSet<String>,
     /// Each worker's row, by its id.
     row_views: HashMap<String, Entity<WorkerRow>>,
+    /// Whether the rows have a line for the workers' setups and costs.
+    meta: bool,
     /// Whether the panel shows.
     shown: bool,
     scroll: ScrollHandle,
@@ -172,6 +174,7 @@ impl WorkersPanel {
             finished_open: false,
             seen: HashSet::new(),
             row_views: HashMap::new(),
+            meta: false,
             shown: false,
             scroll: ScrollHandle::new(),
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
@@ -269,47 +272,60 @@ impl WorkersPanel {
     }
 
     /// The list's rows at `now`: the current workers in the order they
-    /// started, then the "Finished" group.
+    /// started, each followed by the workers it started, then the "Finished"
+    /// group. A family moves to the group together.
     pub fn rows(&self, now: i64) -> Vec<PanelRow> {
-        let id = |worker: &WorkerSummary| PanelRow::Worker(worker.id.clone().into());
-        let mut rows: Vec<PanelRow> = self
-            .source
-            .workers
+        let workers = &self.source.workers;
+        let tree = workers::tree(workers);
+        let sections = self.sections(&tree, now);
+        let id = |index: usize| PanelRow::Worker(workers[index].id.clone().into());
+        let mut rows: Vec<PanelRow> = tree
             .iter()
-            .filter(|worker| self.section(worker, now) == Section::Current)
-            .map(id)
+            .filter(|placed| sections[placed.index] == Section::Current)
+            .map(|placed| id(placed.index))
             .collect();
-        let finished: Vec<&WorkerSummary> = self
-            .source
-            .workers
+        let finished: Vec<&workers::Placed> = tree
             .iter()
-            .filter(|worker| self.section(worker, now) == Section::Finished)
+            .filter(|placed| sections[placed.index] == Section::Finished)
             .collect();
         if !finished.is_empty() {
             rows.push(PanelRow::Finished(finished.len()));
             if self.finished_open {
-                // The latest to end first.
-                let mut finished = finished;
-                finished.sort_by_key(|worker| std::cmp::Reverse(worker.ended_at));
-                rows.extend(finished.into_iter().map(id));
+                // The family whose first worker ended last first, each family
+                // in its own order.
+                let mut roots: Vec<usize> = finished
+                    .iter()
+                    .filter(|placed| placed.root == placed.index)
+                    .map(|placed| placed.index)
+                    .collect();
+                roots.sort_by_key(|root| std::cmp::Reverse(workers[*root].ended_at));
+                for root in roots {
+                    rows.extend(
+                        finished
+                            .iter()
+                            .filter(|placed| placed.root == root)
+                            .map(|placed| id(placed.index)),
+                    );
+                }
             }
         }
         rows
     }
 
-    /// Where `worker` shows at `now`: a failure stays until opened.
-    fn section(&self, worker: &WorkerSummary, now: i64) -> Section {
-        workers::section(worker, now, self.seen.contains(&worker.id))
+    /// Where each worker shows at `now`: a failure stays until opened, and a
+    /// worker's workers stay with it.
+    fn sections(&self, tree: &[workers::Placed], now: i64) -> Vec<Section> {
+        workers::family_sections(&self.source.workers, tree, now, |id| self.seen.contains(id))
     }
 
     /// How many workers of the "Finished" group failed.
     pub fn finished_failures(&self, now: i64) -> usize {
-        self.source
-            .workers
-            .iter()
-            .filter(|worker| {
-                worker.state == WorkerState::Failed
-                    && self.section(worker, now) == Section::Finished
+        let tree = workers::tree(&self.source.workers);
+        let sections = self.sections(&tree, now);
+        tree.iter()
+            .filter(|placed| {
+                sections[placed.index] == Section::Finished
+                    && self.source.workers[placed.index].state == WorkerState::Failed
             })
             .count()
     }
@@ -610,7 +626,7 @@ impl WorkersPanel {
         }
         let focused = self.focus_handle.contains_focused(window, cx);
         let cursor = focused.then(|| self.cursor_index(&rows)).flatten();
-        let height = WorkerRow::height(window);
+        let height = WorkerRow::height(window, self.meta);
         let children: Vec<AnyElement> = rows
             .iter()
             .enumerate()
@@ -660,8 +676,9 @@ impl WorkersPanel {
             .into_any_element()
     }
 
-    /// What `worker`'s row shows at `now`.
-    fn row_facts(&self, worker: &WorkerSummary, now: i64) -> RowFacts {
+    /// What `worker`'s row shows at `now`, `level` workers down the list's
+    /// families, with a line for its setup and cost when `meta`.
+    fn row_facts(&self, worker: &WorkerSummary, level: usize, meta: bool, now: i64) -> RowFacts {
         RowFacts {
             id: worker.id.clone().into(),
             state: worker.state,
@@ -675,17 +692,34 @@ impl WorkersPanel {
                 .unwrap_or_else(|| workers::state_label(worker.state).to_string()),
             context: self.context_label(&worker.id),
             calls: worker.tool_calls,
+            level,
+            meta,
+            setup: workers::setup_label(worker),
+            cost: workers::cost_label(worker),
         }
+    }
+
+    /// Whether the rows have a line for the workers' setups and costs: they
+    /// all do once any worker has something to put in it, so the rows stay
+    /// as tall as one another.
+    fn has_meta(&self) -> bool {
+        self.source.workers.iter().any(|worker| {
+            workers::setup_label(worker).is_some() || workers::cost_label(worker).is_some()
+        })
     }
 
     /// Brings the workers' rows up to date: a row whose facts changed draws
     /// again, the others keep what they drew.
     fn sync_rows(&mut self, cx: &mut Context<Self>) {
         let now = self.now();
+        let meta = self.has_meta();
+        self.meta = meta;
+        let tree = workers::tree(&self.source.workers);
         let mut views = std::mem::take(&mut self.row_views);
         views.retain(|id, _| self.worker(id).is_some());
-        for worker in &self.source.workers {
-            let facts = self.row_facts(worker, now);
+        for placed in &tree {
+            let worker = &self.source.workers[placed.index];
+            let facts = self.row_facts(worker, placed.level, meta, now);
             match views.get(&worker.id) {
                 Some(view) => view.update(cx, |row, cx| row.set(facts, cx)),
                 None => {
@@ -742,12 +776,14 @@ impl WorkersPanel {
             .into_any_element()
     }
 
-    /// What a worker's view says of it: "Running · 4 m · 18 calls · 88k /
-    /// 200k".
+    /// What a worker's view says of it: "Running · sol · high · 4 m · 18
+    /// calls · 88k / 200k · $0.12".
     pub fn facts(&self, id: &str, now: i64) -> String {
         let mut facts: Vec<String> = Vec::new();
-        if let Some(worker) = self.worker(id) {
+        let worker = self.worker(id);
+        if let Some(worker) = worker {
             facts.push(workers::state_label(worker.state).to_string());
+            facts.extend(workers::setup_label(worker));
             if let Some(total) = workers::run_time_ms(worker, now) {
                 facts.push(workers::elapsed_label(total));
             }
@@ -757,6 +793,7 @@ impl WorkersPanel {
             });
         }
         facts.extend(self.context_label(id));
+        facts.extend(worker.and_then(workers::cost_label));
         facts.join(" · ")
     }
 
@@ -1036,6 +1073,15 @@ struct RowFacts {
     last: String,
     context: Option<String>,
     calls: u32,
+    /// How many workers' workers it is: it stands in that far.
+    level: usize,
+    /// Whether the row has a line under the others for its setup and cost,
+    /// as every row of the list does once one has something for it.
+    meta: bool,
+    /// Its model, effort and profile, as the terminal lists them.
+    setup: Option<String>,
+    /// What its model calls cost.
+    cost: Option<String>,
 }
 
 /// A worker's row, as a view of its own: it draws again only when what it
@@ -1069,9 +1115,13 @@ impl WorkerRow {
     }
 
     /// Its height: a cached view is laid out at a set size, not measured.
-    fn height(window: &Window) -> Pixels {
+    /// The line for the setup and cost is the figures' height again.
+    fn height(window: &Window, meta: bool) -> Pixels {
         let (title, figures) = Self::lines(window);
-        title + rems(0.125).to_pixels(window.rem_size()) + figures
+        let rem = window.rem_size();
+        let lines = if meta { figures * 2. } else { figures };
+        let gaps = if meta { rems(0.25) } else { rems(0.125) };
+        title + gaps.to_pixels(rem) + lines
     }
 }
 
@@ -1090,6 +1140,8 @@ impl Render for WorkerRow {
         v_flex()
             .size_full()
             .gap_0p5()
+            // A worker's workers stand in under it, a mark's width a level.
+            .pl(rems(facts.level as f32))
             .child(
                 h_flex()
                     .w_full()
@@ -1146,6 +1198,34 @@ impl Render for WorkerRow {
                             .child(calls(facts.calls, window)),
                     ),
             )
+            .when(facts.meta, |this| {
+                this.child(
+                    h_flex()
+                        .w_full()
+                        .h(figures_line)
+                        .min_w_0()
+                        .gap_1p5()
+                        .child(div().flex_none().w_4())
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_2()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(
+                                    div()
+                                        .id("worker-setup")
+                                        .test_support()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .children(facts.setup.clone()),
+                                )
+                                .children(facts.cost.clone().map(figures)),
+                        ),
+                )
+            })
     }
 }
 

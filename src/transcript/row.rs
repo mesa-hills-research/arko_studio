@@ -2058,6 +2058,8 @@ impl TranscriptView {
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| item.text.clone());
         let now = (self.clock)();
+        // Its model, effort and profile, once the session has recorded them.
+        let setup = summary.and_then(crate::workers::setup_label);
         let state: AnyElement = match summary.map(|summary| summary.state) {
             Some(WorkerState::Running) => {
                 let elapsed = summary
@@ -2108,6 +2110,19 @@ impl TranscriptView {
                             .text_left()
                             .child(self.marked_plain(id, Place::Text, title, cx)),
                     )
+                    // The title gives way first, and then the setup.
+                    .children(setup.map(|setup| {
+                        div()
+                            .id(("worker-setup", id))
+                            .test_support()
+                            .flex_shrink(1.)
+                            .min_w_0()
+                            .max_w(rems(14.))
+                            .truncate()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(setup)
+                    }))
                     .child(
                         div()
                             .flex_none()
