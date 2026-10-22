@@ -1134,3 +1134,96 @@ fn the_session_view_draws_again_for_a_changed_preference(cx: &mut TestAppContext
     draw(cx, window);
     assert!(cx.read(|cx| view.read(cx).render_count()) > drawn);
 }
+
+/// The session view of the workspace, and how many times it has been drawn.
+fn session_view_of(
+    cx: &mut TestAppContext,
+    workspace: &Entity<Workspace>,
+) -> Entity<crate::session_view::SessionView> {
+    cx.read(|cx| workspace.read(cx).session_view().clone())
+}
+
+fn times_drawn(cx: &mut TestAppContext, view: &Entity<crate::session_view::SessionView>) -> usize {
+    cx.read(|cx| view.read(cx).render_count())
+}
+
+/// A new theme reaches the kept session view.
+#[gpui_kit::test]
+fn the_session_view_draws_again_for_a_changed_theme(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let view = session_view_of(cx, &workspace);
+    for _ in 0..3 {
+        draw(cx, window);
+    }
+    let drawn = times_drawn(cx, &view);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.theme_mode = ThemeMode::Dark));
+    draw(cx, window);
+    assert!(times_drawn(cx, &view) > drawn);
+}
+
+/// The kept session view fits a window that changed size.
+#[gpui_kit::test]
+fn the_session_view_draws_again_when_the_window_is_resized(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let view = session_view_of(cx, &workspace);
+    for _ in 0..3 {
+        draw(cx, window);
+    }
+    let drawn = times_drawn(cx, &view);
+    cx.simulate_window_resize(window, size(px(900.), px(600.)));
+    draw(cx, window);
+    assert!(times_drawn(cx, &view) > drawn);
+}
+
+/// What is typed in the composer reaches the kept session view, which turns
+/// the Send button on.
+#[gpui_kit::test]
+fn the_session_view_draws_again_for_what_is_typed(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let view = session_view_of(cx, &workspace);
+    for _ in 0..3 {
+        draw(cx, window);
+    }
+    let drawn = times_drawn(cx, &view);
+    act(cx, window, |window, cx| {
+        window.input("Count the pears.", cx)
+    });
+    draw(cx, window);
+    assert!(times_drawn(cx, &view) > drawn);
+    let text = cx.read(|cx| view.read(cx).composer().read(cx).text(cx));
+    assert_eq!(text, "Count the pears.");
+}
+
+/// Leaving the Worker profiles page brings the session view back with its
+/// composer and the draft that was in it.
+#[gpui_kit::test]
+fn the_session_view_comes_back_from_the_worker_profiles_page(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let view = session_view_of(cx, &workspace);
+    act(cx, window, |window, cx| window.input("Half a thought", cx));
+    act(cx, window, |window, cx| window.press("secondary-,", cx));
+    let settings = cx.read(|cx| workspace.read(cx).settings().unwrap().clone());
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.show_page(crate::settings_page::PROFILES_PAGE, cx)
+        })
+    });
+    let drawn = times_drawn(cx, &view);
+    act(cx, window, |window, _| {
+        assert!(window.try_find("settings-page").is_some());
+        assert!(window.try_find("session-view").is_none());
+    });
+    act(cx, window, |window, cx| window.press("escape", cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("settings-page").is_none());
+        assert!(window.try_find("session-view").is_some());
+        assert!(window.try_find("composer").is_some());
+    });
+    assert!(times_drawn(cx, &view) > drawn);
+    let text = cx.read(|cx| view.read(cx).composer().read(cx).text(cx));
+    assert_eq!(text, "Half a thought");
+}
