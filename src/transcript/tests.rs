@@ -3484,7 +3484,7 @@ fn the_bubble_is_the_background_a_step_toward_the_text(cx: &mut TestAppContext) 
 }
 
 /// A note typed while the agent's reply streams waits below the reply,
-/// marked as not read yet, and the reply goes on in one piece. Once the
+/// marked "Pending", and the reply goes on in one piece. Once the
 /// agent reads it, it moves to where the agent read it, the keyboard's
 /// place on it goes with the old one, and what the agent says next comes
 /// below.
@@ -3524,7 +3524,7 @@ fn a_note_waits_below_the_streaming_reply_until_the_agent_reads_it(cx: &mut Test
     cx.update_window(window, |_, window, cx| {
         assert_eq!(
             window.find(note_row.clone()).label(),
-            Some("You, not read yet, Keep the old name.")
+            Some("You, pending, Keep the old name.")
         );
         // The keyboard on it: the last row.
         view.update(cx, |view, cx| view.focus_rows(window, cx));

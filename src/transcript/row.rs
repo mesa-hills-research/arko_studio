@@ -793,20 +793,18 @@ pub(super) fn capitalized(text: &str) -> String {
     }
 }
 
-/// The muted words on the first line of a user's message.
+/// The muted words on the first line of a user's message, for what its
+/// place doesn't already show. A note the agent hasn't read is "Pending", and
+/// once it has, it is a message like any other. A slash command reads as one
+/// by itself.
 fn user_tags(item: &Item) -> Vec<String> {
     let mut tags = Vec::new();
     match item.delivery {
-        Some(Delivery::Note) => {
-            tags.push("Note".into());
-            if item.pending {
-                tags.push("Not read yet".into());
-            }
-        }
+        Some(Delivery::Note) if item.pending => tags.push("Pending".into()),
         Some(Delivery::Answer) => tags.push("Answer".into()),
         Some(Delivery::Queued) => tags.push("Queued".into()),
-        Some(Delivery::Command) => tags.push("Command".into()),
-        // A turn, a refresh, and a delivery a later arko adds.
+        // A turn, a read note, a command, a refresh, and a delivery a later
+        // arko adds.
         _ => {}
     }
     if item.source == Some(Source::Web) {
@@ -2513,8 +2511,9 @@ mod tests {
     // shadow Rust's.
     use super::{
         OutputViewer, apply_diff_patch, code_lines, duration, edit_diff, longest_code, preview,
+        user_tags,
     };
-    use arko::remote::{Item, Kind};
+    use arko::remote::{Delivery, Item, Kind, Source};
     use gpui_kit::AppContext as _;
     use std::sync::Arc;
 
@@ -2597,5 +2596,29 @@ mod tests {
         assert_eq!(code_lines("```rust\nfn a() {}\nfn b() {}\n```\n"), 2);
         assert_eq!(code_lines("```rust\nfn a() {}\nfn b() {}"), 2);
         assert_eq!(code_lines("    indented\n    code\n"), 2);
+    }
+
+    #[test]
+    fn a_message_is_tagged_by_what_became_of_it() {
+        let tags = |delivery, pending, source| {
+            let mut item = Item::new(Kind::User, "Hello.");
+            item.delivery = delivery;
+            item.pending = pending;
+            item.source = source;
+            user_tags(&item)
+        };
+        // A note the agent hasn't read is "Pending" alone, and a message
+        // like any other once it has.
+        assert_eq!(tags(Some(Delivery::Note), true, None), ["Pending"]);
+        assert!(tags(Some(Delivery::Note), false, None).is_empty());
+        assert_eq!(tags(Some(Delivery::Answer), false, None), ["Answer"]);
+        assert_eq!(tags(Some(Delivery::Queued), false, None), ["Queued"]);
+        // A command shows its slash, and a turn is the usual.
+        assert!(tags(Some(Delivery::Command), false, None).is_empty());
+        assert!(tags(Some(Delivery::Turn), false, None).is_empty());
+        assert_eq!(
+            tags(Some(Delivery::Note), true, Some(Source::Web)),
+            ["Pending", "From the web page"]
+        );
     }
 }
