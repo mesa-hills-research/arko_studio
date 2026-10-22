@@ -1130,7 +1130,7 @@ fn clicked<const N: usize>(after: &[bool], before: [bool; N]) -> Option<usize> {
     (0..N).find(|ix| after.get(*ix).copied().unwrap_or(false) && !before[*ix])
 }
 
-/// The MCP servers, a line each ("files — 4 tools", "web — didn’t start
+/// The MCP servers, a line each ("files, 4 tools", "web, didn’t start
 /// (…)"), with the names of the server's tools for its tooltip.
 pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
     let mut lines: Vec<(String, Option<String>)> = mcp
@@ -1139,14 +1139,14 @@ pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
         .map(|server| match &server.tools {
             Ok(tools) => (
                 format!(
-                    "{} — {} tool{}",
+                    "{}, {} tool{}",
                     server.name,
                     tools.len(),
                     if tools.len() == 1 { "" } else { "s" }
                 ),
                 (!tools.is_empty()).then(|| tools.join(", ")),
             ),
-            Err(why) => (format!("{} — didn’t start ({why})", server.name), None),
+            Err(why) => (format!("{}, didn’t start ({why})", server.name), None),
         })
         .collect();
     lines.extend(mcp.notes.iter().map(|note| (note.clone(), None)));
@@ -1334,8 +1334,8 @@ mod tests {
         assert_eq!(
             mcp_lines(&mcp),
             [
-                ("files — 2 tools".into(), Some("read, write".into())),
-                ("web — didn’t start (no such program)".into(), None)
+                ("files, 2 tools".into(), Some("read, write".into())),
+                ("web, didn’t start (no such program)".into(), None)
             ]
         );
         assert_eq!(mcp_lines(&McpFacts::default()), [("None".into(), None)]);
