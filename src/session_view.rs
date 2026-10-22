@@ -2127,7 +2127,7 @@ impl SessionView {
                     div()
                         .text_xs()
                         .text_color(theme.muted_foreground)
-                        .child("The main agent keeps its model once the conversation has started."),
+                        .child(crate::session_info::MODEL_KEPT),
                 )
             })
             .when(workers_only && has_workers, |this| {
