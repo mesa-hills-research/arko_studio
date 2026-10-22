@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="32" height="32" viewBox="0 0 32 32">
+  <!-- 32 px, candidate A. The arch, the stem and the arrow only. One unit is one pixel and straight edges sit on whole pixels, so only the curves are smoothed. -->
+  <g fill="#D5642A">
+    <!-- the arch -->
+    <path d="M2.17 12A12 12 0 0 1 26 14H23A9 9 0 0 0 5.23 12Z"/>
+    <!-- the stem, open where the arrow passes -->
+    <path d="M23 18H26V30H23Z"/>
+    <!-- the bowl -->
+    <path d="M26 20.5A9.5 9.5 0 0 1 16 29.99V26.98A6.5 6.5 0 0 0 23 20.5Z"/>
+    <!-- the arrow -->
+    <path d="M15 15H27V13L31 16L27 19V17H15Z"/>
+  </g>
+</svg>

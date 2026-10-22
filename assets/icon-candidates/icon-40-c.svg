@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="40" height="40" viewBox="0 0 40 40">
+  <!-- 40 px, candidate C. The mark of candidate B in near-black on a rounded tile. One unit is one pixel and straight edges sit on whole pixels, so only the curves are smoothed. -->
+  <!-- the tile -->
+  <rect width="40" height="40" rx="9" fill="#D5642A"/>
+  <g fill="#1b1b1f">
+    <!-- the arch, stopping one pixel above the hollow node -->
+    <path d="M3 17A13 13 0 0 1 29 17H25A9 9 0 0 0 7 17Z"/>
+    <!-- the stem, open where the arrow passes -->
+    <path d="M25 17H29V19H25Z"/>
+    <path d="M25 23H29V36H25Z"/>
+    <!-- the bowl, stopping short of the bottom node -->
+    <path d="M29 25.5A10.5 10.5 0 0 1 17 35.89V31.82A6.5 6.5 0 0 0 25 25.5Z"/>
+    <!-- the arrow, with its line from the hollow node -->
+    <path d="M9 20H32V17L36 21L32 25V22H9Z"/>
+    <!-- the links down to the bottom node -->
+    <path fill="none" stroke="#1b1b1f" stroke-width="2" d="M7.11 22.9L13 33M19 21L13 33"/>
+    <!-- the right node and the bottom node -->
+    <circle cx="19" cy="21" r="3"/>
+    <circle cx="13" cy="33" r="3"/>
+    <!-- the hollow node -->
+    <path fill-rule="evenodd" d="M3 21a3 3 0 1 0 6 0a3 3 0 1 0 -6 0ZM4.7 21a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0Z"/>
+  </g>
+</svg>
