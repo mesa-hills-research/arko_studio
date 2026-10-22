@@ -6,11 +6,13 @@ repository root to install it for your user account.
 ```sh
 install -Dm755 target/release/arko-studio ~/.local/bin/arko-studio
 install -Dm644 packaging/linux/com.mesahillsresearch.ArkoStudio.desktop ~/.local/share/applications/com.mesahillsresearch.ArkoStudio.desktop
-install -Dm644 packaging/linux/com.mesahillsresearch.ArkoStudio.png ~/.local/share/icons/hicolor/256x256/apps/com.mesahillsresearch.ArkoStudio.png
+mkdir -p ~/.local/share/icons && cp -r packaging/linux/icons/hicolor ~/.local/share/icons/
 ```
 
 Make sure `~/.local/bin` is on the desktop session's `PATH`. The desktop entry starts
 `arko-studio` by name and uses `com.mesahillsresearch.ArkoStudio` to match the window and icon.
+The icon comes in sizes from 16 to 512 px, plus a scalable version. `assets/make-icons.py` makes
+them from the SVGs in `assets/`.
 
 The app needs a working Vulkan driver. Mesa's `mesa-vulkan-drivers` package supplies drivers for
 supported hardware and the software renderer used by screenshot tests.

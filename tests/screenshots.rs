@@ -333,7 +333,9 @@ fn settings_sessions_narrow_dark() {
 }
 
 /// The app's icon, the image the transcript's tool call shows.
-const PNG: &[u8] = include_bytes!("../packaging/linux/com.mesahillsresearch.ArkoStudio.png");
+const PNG: &[u8] = include_bytes!(
+    "../packaging/linux/icons/hicolor/256x256/apps/com.mesahillsresearch.ArkoStudio.png"
+);
 
 /// The transcript's feed, fed as a session feeds it.
 mod feed {

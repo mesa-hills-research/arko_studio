@@ -1410,7 +1410,9 @@ fn a_truncate_and_another_conversation_drop_rows(cx: &mut TestAppContext) {
 }
 
 /// The app's icon, a PNG.
-const PNG: &[u8] = include_bytes!("../../packaging/linux/com.mesahillsresearch.ArkoStudio.png");
+const PNG: &[u8] = include_bytes!(
+    "../../packaging/linux/icons/hicolor/256x256/apps/com.mesahillsresearch.ArkoStudio.png"
+);
 
 #[gpui_kit::test]
 fn images_show_as_thumbnails_that_open_the_viewer(cx: &mut TestAppContext) {
