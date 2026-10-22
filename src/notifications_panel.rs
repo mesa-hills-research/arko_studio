@@ -329,8 +329,8 @@ impl NotificationsPanel {
             .lines()
             .map(str::to_string)
             .collect::<Vec<_>>();
-        let (primary, muted, ring, hover) = (
-            theme.primary,
+        let (info, muted, ring, hover) = (
+            theme.info,
             theme.muted_foreground,
             theme.ring,
             theme.sidebar_accent,
@@ -369,7 +369,7 @@ impl NotificationsPanel {
                     .mt(rems(0.4))
                     .size_2()
                     .rounded_full()
-                    .when(unread, |this| this.bg(primary)),
+                    .when(unread, |this| this.bg(info)),
             )
             .child(
                 v_flex()

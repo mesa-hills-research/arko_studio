@@ -295,6 +295,15 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) {
         }
         let window = window_for(&session, cx);
         let shown = shown_in_front(&session, cx);
+        // A turn that ended or a question that came out of the user's sight
+        // gives the session news, for the sidebar's dot, whichever
+        // notifications Settings has on.
+        if matches!(event, LiveEvent::TurnEnded | LiveEvent::QuestionAsked)
+            && !shown
+            && let Some(id) = session.read(cx).id().cloned()
+        {
+            crate::notifications::mark_news(&id, cx);
+        }
         let (title, question) = {
             let live = session.read(cx);
             (

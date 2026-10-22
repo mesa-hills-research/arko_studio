@@ -58,6 +58,8 @@ mod key_tests;
 #[cfg(test)]
 mod sharing_tests;
 #[cfg(test)]
+mod sidebar_tests;
+#[cfg(test)]
 mod status_tests;
 #[cfg(test)]
 mod testing;
@@ -102,8 +104,8 @@ pub struct Startup {
     /// The user's themes, watched while the app runs.
     themes_folder: Option<ThemesFolder>,
     drafts: BTreeMap<String, String>,
-    /// The notifications of earlier runs.
-    notifications: Vec<notifications::Entry>,
+    /// The notifications of earlier runs, and the sessions with news.
+    notifications: notifications::Saved,
     /// Arko's folder, where the drafts, the notification history, the input
     /// history and the writing aids' vocabulary are kept. `None` keeps them
     /// in memory (tests).
@@ -161,7 +163,7 @@ impl Startup {
             logs: Some(PathBuf::from("/home/ada/.local/state").join(APP_ID)),
             themes_folder: None,
             drafts: BTreeMap::new(),
-            notifications: Vec::new(),
+            notifications: notifications::Saved::default(),
             arko: None,
         }
     }
@@ -193,8 +195,17 @@ impl Startup {
 
     /// Starts with these notifications in the history (tests and
     /// screenshots).
-    pub fn with_notifications(mut self, notifications: Vec<notifications::Entry>) -> Self {
-        self.notifications = notifications;
+    pub fn with_notifications(mut self, entries: Vec<notifications::Entry>) -> Self {
+        self.notifications.entries = entries;
+        self
+    }
+
+    /// Starts with news in these sessions, by id (tests and screenshots).
+    pub fn with_news(mut self, sessions: &[&str]) -> Self {
+        self.notifications.news = sessions
+            .iter()
+            .map(|session| (session.to_string(), 0))
+            .collect();
         self
     }
 }

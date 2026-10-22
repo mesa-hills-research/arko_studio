@@ -2688,6 +2688,72 @@ fn notifications_sheet_dark() {
     );
 }
 
+/// The sidebar with its marks together: a session that works and has news,
+/// one that asks a question and has news, a chat with news, a closed folder
+/// whose session has news, and one with no mark. `width` is the sidebar's,
+/// in rem.
+fn sidebar_marks(mode: ThemeMode, width: f32) -> Screenshot {
+    use arko_studio::live::{Indicator, LiveSessions};
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    settings.sidebar.width = width;
+    settings.sidebar.collapsed = vec!["/home/ada/src/gpui_kit".into()];
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_news(&[
+            "20261016-091200-a1b2",
+            "20261015-171000-c3d4",
+            "20261016-080000-a7b8",
+            "20261014-110500-e5f6",
+        ])
+        .with_fonts(fonts::bundled());
+    app.update(|cx| {
+        arko_studio::init(startup, cx);
+        let mark = |id: &str, working: bool, question: bool, cx: &mut gpui_kit::App| {
+            LiveSessions::set_indicator(&SessionId(id.into()), Indicator { working, question }, cx)
+        };
+        mark("20261016-091200-a1b2", true, false, cx);
+        mark("20261015-171000-c3d4", false, true, cx);
+    });
+    let window = app
+        .open_window_with(size(px(1300.), px(560.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, _)| window)
+        })
+        .unwrap();
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn sidebar_marks_light() {
+    goldens().assert("sidebar-marks-light", &sidebar_marks(ThemeMode::Light, 16.));
+}
+
+#[test]
+fn sidebar_marks_dark() {
+    goldens().assert("sidebar-marks-dark", &sidebar_marks(ThemeMode::Dark, 16.));
+}
+
+#[test]
+fn sidebar_marks_narrow_light() {
+    goldens().assert(
+        "sidebar-marks-narrow-light",
+        &sidebar_marks(ThemeMode::Light, 13.),
+    );
+}
+
+#[test]
+fn sidebar_marks_narrow_dark() {
+    goldens().assert(
+        "sidebar-marks-narrow-dark",
+        &sidebar_marks(ThemeMode::Dark, 13.),
+    );
+}
+
 /// A session's info, as its popover shows it.
 struct InfoCard {
     info: gpui_kit::Entity<arko_studio::session_info::SessionInfo>,

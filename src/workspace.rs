@@ -147,6 +147,15 @@ impl Workspace {
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     this.sidebar.update(cx, |sidebar, cx| sidebar.refresh(cx));
+                    // What happened in the session this window shows while
+                    // it was behind is in sight now.
+                    if let Some(id) = this
+                        .session
+                        .as_ref()
+                        .and_then(|session| session.read(cx).id().cloned())
+                    {
+                        crate::notifications::mark_session_read(&id, cx);
+                    }
                 }
             }),
             cx.subscribe_in(&sidebar, window, Self::on_sidebar_event),
@@ -867,6 +876,8 @@ impl Workspace {
                 if shows(self, id, cx) {
                     self.show(None, window, cx);
                 }
+                // Nothing of it is left to open, so what it told is read.
+                crate::notifications::mark_session_read(id, cx);
             }
             SidebarEvent::Branch(id) => self.branch_session(id.clone(), window, cx),
         }
