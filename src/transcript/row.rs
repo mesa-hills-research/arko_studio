@@ -17,6 +17,7 @@ use gpui_kit::component::{
     clipboard::Clipboard,
     diff_view::{Diff, DiffView},
     h_flex,
+    menu::{DropdownMenu as _, PopupMenuItem},
     shimmer::ShimmerText,
     tooltip::Tooltip,
     v_flex,
@@ -1070,11 +1071,12 @@ impl TranscriptView {
                                 .xsmall()
                                 .icon(IconName::Copy)
                                 .tooltip("Copy")
+                                .accessibility_label("Copy message")
                                 .text_color(muted)
                                 .tab_stop(shown)
                                 .on_click(move |_, _, cx| {
                                     copy_view
-                                        .update(cx, |this, cx| this.copy_entry(id, true, cx))
+                                        .update(cx, |this, cx| this.copy_entry(id, cx))
                                         .ok();
                                 }),
                         ),
@@ -1279,41 +1281,56 @@ impl TranscriptView {
             id: ("reply-actions", id).into(),
             shown: self.hovered == Some(id),
             build: Box::new(move |shown| {
-                let button = |name: &'static str, label: &'static str, action: ActionFn| {
-                    let view = view.clone();
-                    div().id((name, id)).test_support().child(
-                        Button::new("button")
-                            .ghost()
-                            .xsmall()
-                            .label(label)
-                            .text_color(muted)
-                            .tab_stop(shown)
-                            .on_click(move |_, _, cx| {
-                                view.update(cx, |this, cx| action(this, id, cx)).ok();
-                            }),
-                    )
-                };
+                let copy_view = view.clone();
+                let menu_view = view.clone();
                 h_flex()
                     .w_full()
                     .gap_1()
-                    .child(button("copy-reply", "Copy", |this, id, cx| {
-                        this.copy_entry(id, false, cx)
-                    }))
-                    .child(button(
-                        "copy-markdown",
-                        "Copy as Markdown",
-                        |this, id, cx| this.copy_entry(id, true, cx),
-                    ))
+                    .child(
+                        div().id(("copy-reply", id)).test_support().child(
+                            Button::new("button")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .tooltip("Copy")
+                                .accessibility_label("Copy message")
+                                .text_color(muted)
+                                .tab_stop(shown)
+                                .on_click(move |_, _, cx| {
+                                    copy_view
+                                        .update(cx, |this, cx| this.copy_entry(id, cx))
+                                        .ok();
+                                }),
+                        ),
+                    )
+                    // The source is of use only while Markdown shows
+                    // formatted, so the menu has nothing to offer otherwise.
                     .when(render_markdown, |this| {
-                        this.child(button(
-                            "view-source",
-                            if source {
-                                "View Formatted"
-                            } else {
-                                "View Source"
-                            },
-                            |this, id, cx| this.toggle_source(id, cx),
-                        ))
+                        this.child(
+                            div().id(("reply-menu", id)).test_support().child(
+                                Button::new("button")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(Lucide::Ellipsis))
+                                    .tooltip("More")
+                                    .accessibility_label("More actions")
+                                    .text_color(muted)
+                                    .tab_stop(shown)
+                                    .dropdown_menu(move |menu, _, _| {
+                                        let view = menu_view.clone();
+                                        menu.item(
+                                            PopupMenuItem::new(source_label(source)).on_click(
+                                                move |_, _, cx| {
+                                                    view.update(cx, |this, cx| {
+                                                        this.toggle_source(id, cx)
+                                                    })
+                                                    .ok();
+                                                },
+                                            ),
+                                        )
+                                    }),
+                            ),
+                        )
                     })
                     .when(regenerate, |this| {
                         // Alone at the right end, away from the others, so a
@@ -2345,8 +2362,16 @@ impl RenderOnce for Disclosure {
     }
 }
 
-/// What a hover action does to the entry `id`.
-type ActionFn = fn(&mut TranscriptView, u64, &mut Context<TranscriptView>);
+/// What the menu item that switches a reply between its formatted text and
+/// its Markdown source says, when the reply shows its source (`shown`) or
+/// not.
+pub(super) fn source_label(shown: bool) -> &'static str {
+    if shown {
+        "View formatted"
+    } else {
+        "View source"
+    }
+}
 
 /// Actions that show while the pointer is over their entry, or while one of
 /// them has the focus. Hidden, they take their space (nothing moves when
@@ -2369,6 +2394,7 @@ impl RenderOnce for HoverActions {
         let shown = self.shown || focus.contains_focused(window, cx);
         div()
             .id(self.id)
+            .test_support()
             .track_focus(&focus)
             .opacity(if shown { 1. } else { 0. })
             .child((self.build)(shown))

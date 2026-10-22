@@ -241,7 +241,7 @@ struct EntryUi {
     /// The group of calls this entry starts (Quiet), opened or closed by the
     /// reader, apart from the entry's own details.
     group_open: Option<bool>,
-    /// The text shows as its Markdown source ("View Source").
+    /// The text shows as its Markdown source ("View source").
     source: bool,
     /// Code blocks shown whole, by block index.
     uncapped: HashSet<usize>,
@@ -1610,21 +1610,9 @@ impl TranscriptView {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
-    /// The text of an entry: as Markdown, or as the reader sees it.
-    fn entry_text(&self, id: u64, markdown: bool, cx: &App) -> Option<String> {
-        let entry = self.model.entry(id)?;
-        if markdown {
-            return Some(entry.item.text.trim().to_string());
-        }
-        let doc = self.ui.get(&id)?.doc.as_ref()?;
-        Some(
-            doc.state
-                .read(cx)
-                .rendered_text()
-                .as_str()
-                .trim()
-                .to_string(),
-        )
+    /// The text of an entry as its author wrote it, the Markdown source.
+    fn source_text(&self, id: u64) -> Option<String> {
+        Some(self.model.entry(id)?.item.text.trim().to_string())
     }
 
     /// The image `id` of the session's store, ready to draw, while the
@@ -1680,8 +1668,10 @@ impl TranscriptView {
         }
     }
 
-    fn copy_entry(&mut self, id: u64, markdown: bool, cx: &mut Context<Self>) {
-        if let Some(text) = self.entry_text(id, markdown, cx) {
+    /// Copies the source of an entry's text, which is the text itself for
+    /// a message typed as plain text.
+    fn copy_entry(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(text) = self.source_text(id) {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }

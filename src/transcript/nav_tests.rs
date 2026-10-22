@@ -373,15 +373,14 @@ impl Rows {
 }
 
 /// From the keyboard, Up onto the reply's actions shows them, and Tab goes
-/// through Copy, Copy as Markdown and View Source to Regenerate, which
-/// Enter presses.
+/// through Copy and the menu to Regenerate, which Enter presses.
 #[gpui_kit::test]
 fn tab_reaches_regenerate_after_the_replys_other_actions(cx: &mut TestAppContext) {
     let rows = open(cx, ended_turn(true), 600.);
     rows.focus(cx);
     rows.press(cx, "up");
     assert!(matches!(rows.cursor(cx), Some(RowKey::Actions(_))));
-    for _ in 0..4 {
+    for _ in 0..3 {
         rows.tab(cx);
     }
     rows.press(cx, "enter");
@@ -389,6 +388,58 @@ fn tab_reaches_regenerate_after_the_replys_other_actions(cx: &mut TestAppContext
         rows.events.borrow().last(),
         Some(&TranscriptEvent::Regenerate)
     );
+}
+
+/// From the keyboard, Tab goes from Copy to the menu button, Enter opens its
+/// menu, the arrows and Enter pick View source, and Escape closes the menu
+/// with the focus back on the button.
+#[gpui_kit::test]
+fn the_replys_menu_works_from_the_keyboard(cx: &mut TestAppContext) {
+    let rows = open(cx, ended_turn(true), 600.);
+    rows.focus(cx);
+    rows.press(cx, "up");
+    let Some(RowKey::Actions(reply)) = rows.cursor(cx) else {
+        panic!("on the reply's actions: {:?}", rows.cursor(cx));
+    };
+    let focused = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(rows.window, |_, window, _| {
+            window.within((id, reply)).find("button").focused() == Some(true)
+        })
+        .unwrap()
+    };
+    let menu_open = |cx: &mut TestAppContext| {
+        cx.update_window(rows.window, |_, window, _| {
+            window.try_find("popup-menu").is_some()
+        })
+        .unwrap()
+    };
+    rows.tab(cx);
+    assert!(focused(cx, "copy-reply"));
+    rows.tab(cx);
+    assert!(focused(cx, "reply-menu"));
+    // Enter opens the menu, and Escape closes it, back on the button.
+    rows.press(cx, "enter");
+    assert!(menu_open(cx));
+    rows.press(cx, "escape");
+    assert!(!menu_open(cx));
+    assert!(focused(cx, "reply-menu"));
+    // Space opens it too. The arrows reach View source, and Enter picks it.
+    rows.press(cx, "space");
+    assert!(menu_open(cx));
+    rows.press(cx, "down");
+    rows.press(cx, "enter");
+    assert!(!menu_open(cx));
+    assert!(focused(cx, "reply-menu"));
+    assert!(cx.read(|cx| rows.view.read(cx).ui[&reply].source));
+    // The menu says what the next pick does.
+    rows.press(cx, "enter");
+    cx.update_window(rows.window, |_, window, _| {
+        assert_eq!(
+            window.within("popup-menu").find(0usize).label(),
+            Some("View formatted")
+        );
+    })
+    .unwrap();
 }
 
 /// A turn that ended without a reply: the keyboard on its last line shows

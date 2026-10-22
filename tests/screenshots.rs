@@ -1305,18 +1305,15 @@ fn transcript_narrow_dark() {
 }
 
 /// A session opened again on a turn that ended, in a window `width` wide,
-/// with the pointer on the row `hovered` (a row's name and its entry). The
-/// turn ended with a reply, or without one, stopped.
-fn ended_turn_window(
+/// drawn once. The turn ended with a reply, or without one, stopped.
+fn ended_turn_app(
     mode: ThemeMode,
     width: f32,
     replied: bool,
-    hovered: (&'static str, u64),
-) -> Screenshot {
+) -> (ScreenshotApp, gpui_kit::AnyWindowHandle) {
     use arko::remote::{Delivery, Feed, Item, Kind, Level, Source};
     use arko_studio::transcript::{AgentFilter, TranscriptView};
-    use gpui_kit::test::TestWindowExt as _;
-    use gpui_kit::{AppContext as _, Modifiers, MouseMoveEvent, PlatformInput, point};
+    use gpui_kit::AppContext as _;
 
     let mut app = ScreenshotApp::with_assets(Assets).unwrap();
     let mut settings = Prefs::default();
@@ -1361,6 +1358,22 @@ fn ended_turn_window(
         .unwrap();
     app.run_until_parked();
     let _ = app.capture(window).unwrap();
+    (app, window)
+}
+
+/// A session opened again on a turn that ended, in a window `width` wide,
+/// with the pointer on the row `hovered` (a row's name and its entry). The
+/// turn ended with a reply, or without one, stopped.
+fn ended_turn_window(
+    mode: ThemeMode,
+    width: f32,
+    replied: bool,
+    hovered: (&'static str, u64),
+) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{Modifiers, MouseMoveEvent, PlatformInput, point};
+
+    let (mut app, window) = ended_turn_app(mode, width, replied);
     // The pointer at the row's left, in the window's margin, away from its
     // buttons.
     app.update_window(window, |_, window, cx| {
@@ -1376,6 +1389,19 @@ fn ended_turn_window(
         );
     })
     .unwrap();
+    app.capture(window).unwrap()
+}
+
+/// The menu of the latest reply's "more" button, open.
+fn reply_menu_window(mode: ThemeMode, width: f32) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+
+    let (mut app, window) = ended_turn_app(mode, width, true);
+    app.update_window(window, |_, window, cx| {
+        window.click(("reply-menu", 2u64), cx)
+    })
+    .unwrap();
+    app.run_until_parked();
     app.capture(window).unwrap()
 }
 
@@ -1410,6 +1436,23 @@ fn transcript_regenerate_narrow_dark() {
     goldens().assert(
         "transcript-regenerate-narrow-dark",
         &ended_turn_window(ThemeMode::Dark, 460., true, ("actions", 2)),
+    );
+}
+
+/// The latest reply's "more" button pressed: its menu offers View source.
+#[test]
+fn transcript_reply_menu_light() {
+    goldens().assert(
+        "transcript-reply-menu-light",
+        &reply_menu_window(ThemeMode::Light, 1300.),
+    );
+}
+
+#[test]
+fn transcript_reply_menu_dark() {
+    goldens().assert(
+        "transcript-reply-menu-dark",
+        &reply_menu_window(ThemeMode::Dark, 1300.),
     );
 }
 
