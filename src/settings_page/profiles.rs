@@ -258,7 +258,8 @@ impl ProfilesPage {
                 .outline()
                 .small()
                 .icon(IconName::Plus)
-                .label("Add profile")
+                .label("Add")
+                .accessibility_label("Add a profile")
                 .on_click(move |_, window, cx| ProfilesPage::edit(&page, None, window, cx))
         });
         items.push(if list.is_empty() {

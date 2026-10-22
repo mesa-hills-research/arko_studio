@@ -84,7 +84,7 @@ fn fill(
     });
 }
 
-/// With no profiles the page says so and offers Add profile. A profile is
+/// With no profiles the page says so and offers Add. A profile is
 /// filled in with every field and saved, through the backend, and the page
 /// lists it.
 #[gpui_kit::test]
@@ -94,6 +94,10 @@ fn a_profile_is_added_in_the_editor(cx: &mut TestAppContext) {
     let page = page(cx, &settings);
     assert!(shows(window, cx, "add-profile"));
     assert!(!shows(window, cx, ("edit-profile", 0usize)));
+    // The button says "Add", and a screen reader says what it adds.
+    act(cx, window, |window, _| {
+        assert_eq!(window.find("add-profile").label(), Some("Add a profile"));
+    });
     act(cx, window, |window, cx| window.click("add-profile", cx));
     act(cx, window, |window, cx| {
         assert!(window.has_active_dialog(cx))
