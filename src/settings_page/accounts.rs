@@ -385,7 +385,7 @@ impl AccountsPage {
                     defaults.mode,
                 )
                 .description(
-                    "Agent works in a folder with tools and workers. Chat only talks, with no tools.",
+                    "Agent works in a folder with tools and workers. Chat has no tools.",
                 )
                 .keywords(["default mode", "chat", "agent"]),
                 SettingItem::new(

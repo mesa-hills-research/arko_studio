@@ -2961,7 +2961,7 @@ type PickMode = Rc<dyn Fn(Mode, &mut Window, &mut App)>;
 /// and for a `started` conversation what switching costs.
 pub fn mode_description(mode: Mode, started: bool) -> String {
     let what = match mode {
-        Mode::Chat => "Chat is conversation only, without tools.",
+        Mode::Chat => "Chat has no tools.",
         Mode::Agent => "Agent works in a folder with tools and workers.",
     };
     if started {
@@ -3128,10 +3128,7 @@ mod tests {
 
     #[test]
     fn the_mode_line_says_what_the_mode_does_and_what_switching_costs() {
-        assert_eq!(
-            mode_description(Mode::Chat, false),
-            "Chat is conversation only, without tools."
-        );
+        assert_eq!(mode_description(Mode::Chat, false), "Chat has no tools.");
         assert_eq!(
             mode_description(Mode::Agent, true),
             "Agent works in a folder with tools and workers. Switching re-reads the conversation without its cache."
