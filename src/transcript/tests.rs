@@ -899,6 +899,14 @@ fn rows_draw_without_making_their_ids_or_the_users_text_again(cx: &mut TestAppCo
     assert_eq!(text(cx), message.trim());
 }
 
+/// Lets the text of the rows finish fading in. It fades by the wall clock,
+/// which the test clock doesn't move, and asks for each frame of the display
+/// until it is done. On a machine that runs the test fast, that is many of the
+/// test clock's frames, which a count of draws would take for an animation.
+fn let_the_text_fade_in() {
+    std::thread::sleep(std::time::Duration::from_millis(700));
+}
+
 /// How many times the transcript draws in a second of the test clock, with a
 /// frame of a 60 Hz display every 1/60 second. The transcript is the root of
 /// the window here, so it draws with each draw of the window.
@@ -946,6 +954,7 @@ fn one_indicator_turns_at_a_time(cx: &mut TestAppContext) {
     // a second.
     think(&feed, "hmm");
     settle(cx, window);
+    let_the_text_fade_in();
     let draws = draws_in_a_second(cx, window, &view);
     assert!((10..=16).contains(&draws), "{draws} draws");
     let thinking = item_ids(&feed).last().unwrap().0;
