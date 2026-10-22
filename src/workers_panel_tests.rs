@@ -338,6 +338,42 @@ fn a_nested_row_says_whose_worker_it_is_to_a_screen_reader(cx: &mut TestAppConte
     assert_eq!(list, (Some(gpui_kit::Role::List), Some("Workers".into())));
 }
 
+/// The card of a worker's worker is in the worker's own view, and opens the
+/// worker in the panel.
+#[gpui_kit::test]
+fn the_card_of_a_workers_worker_opens_it_in_the_panel(cx: &mut TestAppContext) {
+    use arko::remote::{Kind, WorkerInfo};
+    let panel = open(cx);
+    let feed = Feed::new("main");
+    feed.turn_started();
+    feed.worker("r1", "Review the files", WorkerChange::Started);
+    feed.worker_under("r2", "r1");
+    feed.worker("r2", "Count the files", WorkerChange::Started);
+    let mut info = WorkerInfo::new();
+    info.parent = Some("r1".into());
+    info.depth = 2;
+    feed.worker_info("r2", info);
+    panel.panel.update(cx, |panel, cx| {
+        let key = cx.entity_id();
+        panel.set_source(source(&feed, key), cx);
+    });
+    panel.draw(cx);
+    assert_eq!(panel.rows(cx), [worker("r1"), worker("r2")]);
+    panel.click(cx, ("worker", 0usize));
+    assert_eq!(panel.open_worker(cx).as_deref(), Some("r1"));
+    // The card of r2 is among r1's lines, which are the lines of its lane.
+    let card = feed
+        .subscribe()
+        .0
+        .items
+        .iter()
+        .find(|item| item.kind == Kind::WorkerLine && item.agent == "r1")
+        .map(|item| item.id)
+        .expect("r2's card is in r1's lane");
+    panel.click(cx, ("worker-row", card));
+    assert_eq!(panel.open_worker(cx).as_deref(), Some("r2"));
+}
+
 /// A family's cost reaches the rows from the feed's own sums: the worker
 /// that started others says what they cost with it, and a worker of its own
 /// says whose it is, in its view.

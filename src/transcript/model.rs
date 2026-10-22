@@ -31,13 +31,14 @@ impl AgentFilter {
     /// Whether the transcript keeps `item` at all (a view may still hide
     /// it). The main transcript keeps the workers' calls and what went wrong
     /// for them, as the terminal does. What the user wrote to a worker is
-    /// that worker's own.
+    /// that worker's own, and so are the cards of the workers it started.
+    /// (The main transcript has only the cards of the main agent's workers.)
     fn keeps(&self, item: &Item) -> bool {
         match self {
             AgentFilter::Main => {
                 item.is_main() || matches!(item.kind, Kind::Call | Kind::Result | Kind::Notice)
             }
-            AgentFilter::Worker(id) => item.agent == id.as_ref() && item.kind != Kind::WorkerLine,
+            AgentFilter::Worker(id) => item.agent == id.as_ref(),
         }
     }
 }
@@ -1392,6 +1393,42 @@ mod tests {
             assert!(keys(&worker("r1"), view).contains(&RowKey::User(5)));
             assert!(!keys(&worker("r2"), view).contains(&RowKey::User(5)));
         }
+    }
+
+    /// The card of a worker's worker is in the transcript of the worker that
+    /// started it (its lane), and the main transcript has the cards of the
+    /// main agent's workers only.
+    #[test]
+    fn a_workers_transcript_keeps_the_cards_of_the_workers_it_started() {
+        let card = |id: u64, lane: &str, worker: &str| {
+            let mut card = item(id, Kind::WorkerLine, lane, "Count the files");
+            card.worker = Some(worker.into());
+            card
+        };
+        let items = vec![
+            item(1, Kind::User, "main", "go"),
+            card(2, "main", "r1"),
+            item(3, Kind::Text, "r1", "Looking."),
+            card(4, "r1", "r2"),
+            card(5, "r2", "r3"),
+        ];
+        let main = model(items.clone());
+        assert_eq!(ids(&main), [1, 2]);
+        let worker = |id: &str| {
+            let mut worker = Model::new(AgentFilter::Worker(id.to_string().into()));
+            let snapshot = Snapshot {
+                items: items.clone(),
+                ..Snapshot::default()
+            };
+            worker.load(snapshot, &mut Changes::default());
+            worker
+        };
+        assert_eq!(ids(&worker("r1")), [3, 4]);
+        assert_eq!(ids(&worker("r2")), [5]);
+        assert_eq!(
+            keys(&worker("r1"), View::Full),
+            [block(3), RowKey::Worker(4)]
+        );
     }
 
     #[test]

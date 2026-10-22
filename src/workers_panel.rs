@@ -353,7 +353,7 @@ impl WorkersPanel {
             });
             let movable = self.source.movable.clone();
             view.update(cx, |view, cx| view.set_movable(&movable, cx));
-            let events = cx.subscribe(&view, Self::on_transcript_event);
+            let events = cx.subscribe_in(&view, window, Self::on_transcript_event);
             self.transcripts.push(Shown {
                 id: id.clone(),
                 view,
@@ -369,14 +369,20 @@ impl WorkersPanel {
         cx.notify();
     }
 
-    /// Moves a worker's call to the background, or stops its job, as its
-    /// transcript's row asks.
+    /// Moves a worker's call to the background, stops its job or opens a
+    /// worker, as its transcript's row asks. The card of a worker it started
+    /// opens that worker's transcript.
     fn on_transcript_event(
         &mut self,
-        _: Entity<TranscriptView>,
+        _: &Entity<TranscriptView>,
         event: &TranscriptEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let TranscriptEvent::OpenWorker(id) = event {
+            self.enter_worker(id.clone(), window, cx);
+            return;
+        }
         let Some(session) = &self.session else {
             return;
         };

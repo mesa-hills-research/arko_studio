@@ -2171,6 +2171,41 @@ fn worker_cards_open_the_worker_and_its_own_transcript(cx: &mut TestAppContext) 
     assert_eq!(rows.len(), 4);
 }
 
+/// A worker's worker has its card in the transcript of the worker that
+/// started it and not in the main one.
+#[gpui_kit::test]
+fn a_workers_worker_has_its_card_with_its_starter(cx: &mut TestAppContext) {
+    use arko::remote::WorkerInfo;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Split the work", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.worker("r1", "Review the files", WorkerChange::Started);
+    feed.worker_under("r2", "r1");
+    feed.worker("r2", "Count the files", WorkerChange::Started);
+    let mut info = WorkerInfo::new();
+    info.parent = Some("r1".into());
+    info.depth = 2;
+    feed.worker_info("r2", info);
+    let cards: Vec<u64> = item_ids(&feed)
+        .into_iter()
+        .filter(|(_, kind)| *kind == Kind::WorkerLine)
+        .map(|(id, _)| id)
+        .collect();
+    let (r1_card, r2_card) = (cards[0], cards[1]);
+
+    let (_, main) = open(cx, &feed, AgentFilter::Main, 720.);
+    let rows = keys(&main, cx);
+    assert!(rows.contains(&RowKey::Worker(r1_card)), "{rows:?}");
+    assert!(!rows.contains(&RowKey::Worker(r2_card)), "{rows:?}");
+
+    let (_, starter) = open(cx, &feed, AgentFilter::Worker("r1".into()), 720.);
+    let rows = keys(&starter, cx);
+    assert!(rows.contains(&RowKey::Worker(r2_card)), "{rows:?}");
+    assert!(!rows.contains(&RowKey::Worker(r1_card)), "{rows:?}");
+}
+
 /// A worker's card says what it runs on once the session has recorded it,
 /// and the card stays one line tall.
 #[gpui_kit::test]
