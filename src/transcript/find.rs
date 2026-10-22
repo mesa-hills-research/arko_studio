@@ -703,8 +703,7 @@ impl TranscriptView {
                         vec![(Place::Unready, item.text.clone())]
                     });
                 };
-                let source = !self.settings.render_markdown
-                    || self.ui.get(&item.id).is_some_and(|ui| ui.source);
+                let source = !self.settings.render_markdown || self.shows_source(item.id);
                 if !source {
                     return Gathered::Rendered {
                         text: doc.state.read(cx).rendered_text(),

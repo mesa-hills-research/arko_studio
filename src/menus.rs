@@ -38,6 +38,7 @@ actions!(
         ViewFull,
         ViewQuiet,
         ViewMessages,
+        ToggleMarkdownSource,
         ZoomIn,
         ZoomOut,
         ResetZoom,
@@ -72,6 +73,9 @@ pub fn init(cx: &mut App) {
     });
     cx.on_action(|_: &MarkNotificationsRead, cx| crate::notifications::mark_all_read(cx));
     cx.on_action(|_: &ClearNotifications, cx| crate::notifications::clear(cx));
+    cx.on_action(|_: &ToggleMarkdownSource, cx| {
+        crate::transcript::set_show_source(!crate::transcript::show_source(cx), cx)
+    });
     cx.on_action(|_: &ZoomIn, cx| appearance::zoom(1, cx));
     cx.on_action(|_: &ZoomOut, cx| appearance::zoom(-1, cx));
     cx.on_action(|_: &ResetZoom, cx| appearance::zoom(0, cx));
@@ -100,6 +104,12 @@ pub fn init(cx: &mut App) {
         }
     })
     .detach();
+    cx.observe_global::<crate::transcript::ShowSource>(|cx| {
+        if menu_state(cx) != cx.global::<MenuState>().0 {
+            set_menus(cx);
+        }
+    })
+    .detach();
 }
 
 /// What the menus show of the app's state.
@@ -107,6 +117,10 @@ pub fn init(cx: &mut App) {
 pub(crate) struct MenuStateKey {
     sidebar_open: bool,
     view: prefs::TranscriptView,
+    /// Whether Markdown shows formatted (Settings), and whether the
+    /// session shows its source instead.
+    markdown: bool,
+    source: bool,
 }
 
 /// The state the menus were last built for. Title bars observe it to draw
@@ -120,6 +134,8 @@ fn menu_state(cx: &App) -> MenuStateKey {
     MenuStateKey {
         sidebar_open: prefs::get(cx).sidebar.open,
         view: prefs::get(cx).view,
+        markdown: prefs::get(cx).appearance.render_markdown,
+        source: crate::transcript::show_source(cx),
     }
 }
 
@@ -240,6 +256,15 @@ fn view_menu(state: MenuStateKey) -> Menu {
             state.view == prefs::TranscriptView::Messages,
         ),
         MenuItem::action("Next Transcript View", CycleView),
+        MenuItem::separator(),
+        // With Markdown off in Settings, every text shows as written already.
+        MenuItem::Action {
+            name: "Show Markdown Source".into(),
+            action: Box::new(ToggleMarkdownSource),
+            os_action: None,
+            checked: state.source,
+            disabled: !state.markdown,
+        },
         MenuItem::separator(),
         MenuItem::action("Zoom In", ZoomIn),
         MenuItem::action("Zoom Out", ZoomOut),
