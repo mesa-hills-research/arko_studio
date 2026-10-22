@@ -1830,18 +1830,8 @@ mod tests {
     fn a_worker_waits_on_the_model_while_it_runs() {
         let mut model = Model::new(AgentFilter::Worker("r1".into()));
         let mut changes = Changes::default();
-        let mut summary = WorkerSummary {
-            id: "r1".into(),
-            title: "Fuzz".into(),
-            state: WorkerState::Queued,
-            tool_calls: 0,
-            started_at: None,
-            ended_at: None,
-            last: None,
-            report: None,
-            ran_ms: 0,
-            running_since: None,
-        };
+        let mut summary = WorkerSummary::new("r1");
+        summary.title = "Fuzz".into();
         model.apply(Update::Worker(summary.clone()), &mut changes);
         assert_eq!(model.waiting(), Waiting::No);
         summary.state = WorkerState::Running;
@@ -2082,17 +2072,13 @@ mod tests {
         assert_eq!(model.busy_reason(), Some("Wait for the turn to end"));
         model.set_activity(Activity::default(), &mut changes);
         model.apply(
-            Update::Worker(WorkerSummary {
-                id: "r1".into(),
-                title: "Fix it".into(),
-                state: arko::remote::WorkerState::Running,
-                tool_calls: 0,
-                started_at: Some(0),
-                ended_at: None,
-                ran_ms: 0,
-                running_since: Some(0),
-                last: None,
-                report: None,
+            Update::Worker({
+                let mut summary = WorkerSummary::new("r1");
+                summary.title = "Fix it".into();
+                summary.state = arko::remote::WorkerState::Running;
+                summary.started_at = Some(0);
+                summary.running_since = Some(0);
+                summary
             }),
             &mut changes,
         );

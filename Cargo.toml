@@ -20,7 +20,7 @@ path = "src/main.rs"
 # crates.io and re-exports it, so GPUI is `gpui_kit::*` and needs no entry of its own.
 gpui-kit = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "d95f0056c808cb6aa0cb56b99ae862efc0ca43ef", features = ["fonts", "tree-sitter-languages", "writing"] }
 # Arko's engine, as a library: no terminal crates, the web page's server kept.
-arko = { package = "arko-tui", version = "0.3.1", default-features = false, features = ["remote"] }
+arko = { package = "arko-tui", version = "0.4.0", default-features = false, features = ["remote"] }
 anyhow = "1.0"
 # arko's Prompter trait is an async trait.
 async-trait = "0.1"
@@ -50,7 +50,7 @@ uuid = "1"
 # The same GPUI Kit with GPUI's test harness, for tests that click and type
 # into real windows on a fake clock.
 gpui-kit = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "d95f0056c808cb6aa0cb56b99ae862efc0ca43ef", features = ["test-support"] }
-arko = { package = "arko-tui", version = "0.3.1", default-features = false, features = ["remote", "testing"] }
+arko = { package = "arko-tui", version = "0.4.0", default-features = false, features = ["remote", "testing"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # The feed's events as arko gets them from the framework, for tests that
 # drive a feed the way a session does.

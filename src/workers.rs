@@ -114,18 +114,15 @@ mod tests {
         started: Option<i64>,
         ended: Option<i64>,
     ) -> WorkerSummary {
-        WorkerSummary {
-            id: id.into(),
-            title: format!("Task of {id}"),
-            state,
-            tool_calls: 3,
-            started_at: started,
-            ended_at: ended,
-            ran_ms: started.zip(ended).map_or(0, |(s, e)| (e - s).max(0) as u64),
-            running_since: started.filter(|_| state == WorkerState::Running),
-            last: None,
-            report: None,
-        }
+        let mut summary = WorkerSummary::new(id);
+        summary.title = format!("Task of {id}");
+        summary.state = state;
+        summary.tool_calls = 3;
+        summary.started_at = started;
+        summary.ended_at = ended;
+        summary.ran_ms = started.zip(ended).map_or(0, |(s, e)| (e - s).max(0) as u64);
+        summary.running_since = started.filter(|_| state == WorkerState::Running);
+        summary
     }
 
     #[test]

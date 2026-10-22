@@ -1350,19 +1350,18 @@ fn workers_window(mode: ThemeMode) -> Screenshot {
     app.update(|cx| arko_studio::init(startup, cx));
     const NOW: i64 = 1_760_000_000_000;
     const MINUTE: i64 = 60_000;
-    let worker =
-        |id: &str, title: &str, state, calls, started, ended, last: Option<&str>| WorkerSummary {
-            id: id.into(),
-            title: title.into(),
-            state,
-            tool_calls: calls,
-            started_at: started,
-            ended_at: ended,
-            ran_ms: started.zip(ended).map_or(0, |(s, e)| (e - s).max(0) as u64),
-            running_since: started.filter(|_| state == WorkerState::Running),
-            last: last.map(Into::into),
-            report: None,
-        };
+    let worker = |id: &str, title: &str, state, calls, started, ended, last: Option<&str>| {
+        let mut summary = WorkerSummary::new(id);
+        summary.title = title.into();
+        summary.state = state;
+        summary.tool_calls = calls;
+        summary.started_at = started;
+        summary.ended_at = ended;
+        summary.ran_ms = started.zip(ended).map_or(0, |(s, e)| (e - s).max(0) as u64);
+        summary.running_since = started.filter(|_| state == WorkerState::Running);
+        summary.last = last.map(Into::into);
+        summary
+    };
     let mut finished = worker(
         "r4",
         "Update the changelog",
