@@ -319,6 +319,8 @@ impl Workspace {
     /// Shows the session `id` in this window: the one running in this app,
     /// or it opens. The session shown before keeps running.
     pub fn open_session(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        // What was said of it while it was out of sight is seen now.
+        crate::notifications::mark_session_read(&id, cx);
         if self
             .session
             .as_ref()
@@ -455,6 +457,9 @@ impl Workspace {
         let id = session
             .as_ref()
             .and_then(|session| session.read(cx).id().cloned());
+        if let Some(id) = &id {
+            crate::notifications::mark_session_read(id, cx);
+        }
         self.session = session.clone();
         self.status_bar
             .update(cx, |bar, cx| bar.set_session(session.clone(), cx));

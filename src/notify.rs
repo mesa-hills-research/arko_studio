@@ -207,21 +207,33 @@ fn sound() {
     }
 }
 
+/// Where a notice shows, besides the history, which keeps every one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// Nowhere else: the user sees it in the window already (the sidebar
+    /// marks a turn that ended, the question's card asks).
+    History,
+    /// A card in the app.
+    InApp,
+    /// The OS's notification center (the app is in the background).
+    System,
+}
+
 /// What a session's event tells the user, when it does.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notice {
+    /// The session's title.
     pub title: String,
     pub body: String,
-    /// It goes to the OS's notification center (the app is in the
-    /// background), else it shows in the app.
-    pub system: bool,
+    pub delivery: Delivery,
 }
 
-/// What `event` from the session titled `title` tells the user: `focused`
-/// is whether the app has the focus, `shown` whether its active window
-/// shows the session. Questions come up in the app when no window in front
-/// shows them, turns that end only in the OS's notifications (the sidebar
-/// marks them).
+/// What `event` from the session titled `title` tells the user, when
+/// Settings › Notifications has it on: `focused` is whether the app has the
+/// focus, `shown` whether its active window shows the session. Questions
+/// come up in the app when no window in front shows them, turns that end
+/// only in the OS's notifications (the sidebar marks them). What is not
+/// shown is still kept in the history.
 pub fn notice(
     event: &LiveEvent,
     title: &str,
@@ -231,18 +243,26 @@ pub fn notice(
     settings: &prefs::Notifications,
 ) -> Option<Notice> {
     match event {
-        LiveEvent::TurnEnded if settings.turn_ended && !focused => Some(Notice {
+        LiveEvent::TurnEnded if settings.turn_ended => Some(Notice {
             title: title.to_string(),
             body: "Arko finished its turn.".to_string(),
-            system: true,
+            delivery: if focused {
+                Delivery::History
+            } else {
+                Delivery::System
+            },
         }),
-        LiveEvent::QuestionAsked if settings.question && !(focused && shown) => Some(Notice {
+        LiveEvent::QuestionAsked if settings.question => Some(Notice {
             title: title.to_string(),
             body: match question {
                 Some(text) => format!("Arko asks “{}”", first_line(text)),
                 None => "Arko asks you something.".to_string(),
             },
-            system: !focused,
+            delivery: match (focused, shown) {
+                (true, true) => Delivery::History,
+                (true, false) => Delivery::InApp,
+                (false, _) => Delivery::System,
+            },
         }),
         _ => None,
     }
@@ -292,7 +312,11 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) {
         ) else {
             return;
         };
-        let Some(window) = window else {
+        // Kept whether or not it shows: the user may want it later. Read
+        // already when they are looking at the session.
+        let id = session.read(cx).id().cloned();
+        crate::notifications::record(id.as_ref(), &notice.title, &notice.body, shown, cx);
+        let (Some(window), true) = (window, notice.delivery != Delivery::History) else {
             return;
         };
         let key = session.read(cx).key();
@@ -303,7 +327,7 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) {
                 let note = Notification::new()
                     .id1::<TurnNotice>(ElementId::Integer(key))
                     .on_click(move |_, window, cx| open(window, cx));
-                if notice.system {
+                if notice.delivery == Delivery::System {
                     // The OS shows the session's title, then what happened.
                     let note = note
                         .title(notice.title.clone())
@@ -341,7 +365,7 @@ pub fn open_in(session: &Entity<LiveSession>, window: &mut Window, cx: &mut App)
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{Notice, first_line, notice};
+    use super::{Delivery, Notice, first_line, notice};
     use crate::live::{LiveEvent, LiveSession};
     use crate::prefs::Notifications;
     use crate::tests::open;
@@ -355,13 +379,17 @@ mod tests {
     fn turns_that_end_notify_only_in_the_background() {
         let on = Notifications::default();
         let ended = |focused| notice(&LiveEvent::TurnEnded, "Fonts", None, focused, false, &on);
-        assert_eq!(ended(true), None, "the sidebar says it");
+        assert_eq!(
+            ended(true).map(|notice| notice.delivery),
+            Some(Delivery::History),
+            "the sidebar says it, the history keeps it"
+        );
         assert_eq!(
             ended(false),
             Some(Notice {
                 title: "Fonts".into(),
                 body: "Arko finished its turn.".into(),
-                system: true,
+                delivery: Delivery::System,
             })
         );
         let off = Notifications {
@@ -387,11 +415,15 @@ mod tests {
                 &on,
             )
         };
-        assert_eq!(asked(true, true), None, "the question card shows it");
+        assert_eq!(
+            asked(true, true).map(|notice| notice.delivery),
+            Some(Delivery::History),
+            "the question card shows it"
+        );
         let in_app = asked(true, false).unwrap();
-        assert!(!in_app.system);
+        assert_eq!(in_app.delivery, Delivery::InApp);
         assert_eq!(in_app.body, "Arko asks “Tabs or spaces?”");
-        assert!(asked(false, true).unwrap().system);
+        assert_eq!(asked(false, true).unwrap().delivery, Delivery::System);
         let off = Notifications {
             question: false,
             ..Notifications::default()
@@ -538,6 +570,91 @@ mod tests {
 
     /// A question in a session the window in front doesn't show comes up
     /// in the app.
+    /// What isn't shown is still kept: a turn that ends with the app in
+    /// front, where only the sidebar marks it, is unread in the history
+    /// until its session is opened. In sight, it is read at once, and what
+    /// Settings has off isn't kept.
+    #[gpui_kit::test]
+    fn what_is_not_shown_is_still_kept_in_the_history(cx: &mut TestAppContext) {
+        use crate::notifications::{entries, unread};
+
+        start(cx);
+        let (window, workspace) = open(cx, 1300.);
+        activate(window, cx);
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        session.update(cx, |session, cx| {
+            let reading = Reading {
+                title: "Fonts".into(),
+                ..Reading::default()
+            };
+            session.set_status(reading, Activity::default(), cx)
+        });
+        cx.update(|cx| super::watch(&session, cx));
+        turn(&session, cx, None);
+        assert!(cx.shown_system_notifications().is_empty());
+        cx.read(|cx| {
+            let kept = entries(cx);
+            assert_eq!(kept.len(), 1);
+            assert_eq!(kept[0].title, "Fonts");
+            assert_eq!(kept[0].message, "Arko finished its turn.");
+            assert_eq!(kept[0].session.as_deref(), Some("s1"));
+            assert!(!kept[0].read);
+            assert_eq!(unread(cx), 1);
+        });
+        // Showing the session reads what was said of it.
+        cx.update_window(window, |_, window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_session(session.clone(), window, cx)
+            })
+        })
+        .unwrap();
+        assert_eq!(cx.read(unread), 0);
+        // In sight, it is read as it comes.
+        turn(&session, cx, Some("Tabs or spaces?"));
+        cx.read(|cx| {
+            assert_eq!(entries(cx).len(), 3);
+            assert_eq!(unread(cx), 0);
+        });
+        // Off in Settings, nothing is kept.
+        cx.update(|cx| {
+            crate::prefs::update(cx, |prefs| {
+                prefs.notifications.turn_ended = false;
+                prefs.notifications.question = false;
+            })
+        });
+        turn(&session, cx, Some("Tabs or spaces?"));
+        assert_eq!(cx.read(|cx| entries(cx).len()), 3);
+    }
+
+    /// Opening a session from its card's link reads what was said of it.
+    #[gpui_kit::test]
+    fn opening_the_session_reads_what_was_said_of_it(cx: &mut TestAppContext) {
+        use crate::notifications::{entries, unread};
+        use gpui_kit::test::TestWindowExt as _;
+
+        let backend = Arc::new(crate::backend::FakeBackend::sample(
+            "/arko",
+            SystemTime::now(),
+        ));
+        cx.update(|cx| crate::init(crate::Startup::for_tests(backend.clone()), cx));
+        let (window, _) = open(cx, 1300.);
+        activate(window, cx);
+        let entry = crate::backend::Backend::sessions(backend.as_ref()).unwrap()[0].clone();
+        let session = cx.update(|cx| LiveSession::resume(&entry, cx));
+        turn(&session, cx, Some("Tabs or spaces?"));
+        cx.read(|cx| {
+            assert_eq!(entries(cx)[0].message, "Arko asks “Tabs or spaces?”");
+            assert_eq!(entries(cx)[0].session.as_deref(), Some(entry.id.as_str()));
+            // The question, and the turn that ended with it.
+            assert_eq!(unread(cx), 2);
+        });
+        let key = cx.read(|cx| session.read(cx).key());
+        crate::tests::act(cx, window, |window, cx| {
+            window.click(("open-session", key), cx)
+        });
+        assert_eq!(cx.read(unread), 0);
+    }
+
     #[gpui_kit::test]
     fn a_question_elsewhere_comes_up_in_the_app(cx: &mut TestAppContext) {
         start(cx);

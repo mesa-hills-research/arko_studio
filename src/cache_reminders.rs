@@ -120,7 +120,7 @@ pub struct ReminderClock(pub Clock);
 
 impl Global for ReminderClock {}
 
-fn now(cx: &App) -> i64 {
+pub(crate) fn now(cx: &App) -> i64 {
     match cx.try_global::<ReminderClock>() {
         Some(clock) => (clock.0)(),
         None => figures::now_ms(),
@@ -328,9 +328,6 @@ impl CacheReminders {
         asking: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some(window) = notify::window_for(session, cx) else {
-            return;
-        };
         let (title, cache) = {
             let live = session.read(cx);
             (live.title().to_string(), live.reading().cache.clone())
@@ -346,6 +343,22 @@ impl CacheReminders {
         };
         let key = self.key;
         let headline = headline(expires - now(cx));
+        // Kept in the history whether or not a window shows it (the one
+        // that comes back after a failed Refresh is the same reminder).
+        if !self.quiet {
+            let id = session.read(cx).id().cloned();
+            let seen = notify::shown_in_front(session, cx);
+            crate::notifications::record(
+                id.as_ref(),
+                &title,
+                &os_text(&headline, &choices),
+                seen,
+                cx,
+            );
+        }
+        let Some(window) = notify::window_for(session, cx) else {
+            return;
+        };
         let quiet = std::mem::take(&mut self.quiet);
         let system = !quiet && !notify::app_focused(cx);
         let this = cx.entity().downgrade();
@@ -409,11 +422,9 @@ impl CacheReminders {
             let refreshed = refreshing.await;
             this.update(cx, |this, cx| {
                 let message = match refreshed {
-                    Ok(arko::Refreshed::OutOfBand { cost, .. }) => Some(notify::session_note(
-                        &session,
+                    Ok(arko::Refreshed::OutOfBand { cost, .. }) => Some((
                         NotificationType::Info,
                         format!("Cache refreshed ({}).", figures::dollars(cost)),
-                        cx,
                     )),
                     // A short turn keeps it warm: the transcript shows it.
                     Ok(arko::Refreshed::Message) => None,
@@ -425,17 +436,20 @@ impl CacheReminders {
                             this.quiet = true;
                             this.check(cx);
                         }
-                        Some(notify::session_note(
-                            &session,
-                            NotificationType::Error,
-                            refresh_failed(&why),
-                            cx,
-                        ))
+                        Some((NotificationType::Error, refresh_failed(&why)))
                     }
                 };
-                if let (Some(message), Some(window)) = (message, window) {
+                let Some((kind, text)) = message else {
+                    return;
+                };
+                let id = session.read(cx).id().cloned();
+                let seen = notify::shown_in_front(&session, cx);
+                let title = session.read(cx).title().to_string();
+                crate::notifications::record(id.as_ref(), &title, &text, seen, cx);
+                if let Some(window) = window {
+                    let note = notify::session_note(&session, kind, text, cx);
                     window
-                        .update(cx, |_, window, cx| window.push_notification(message, cx))
+                        .update(cx, |_, window, cx| window.push_notification(note, cx))
                         .ok();
                 }
             })
@@ -874,6 +888,43 @@ mod tests {
             })
             .unwrap()
         }
+    }
+
+    /// Each reminder is kept in the history with its session's title and
+    /// what it said, the first with what the lapse costs and the last with
+    /// what each choice costs. The one that comes back after a failed
+    /// Refresh isn't kept again, and the failure is.
+    #[gpui_kit::test]
+    fn reminders_are_kept_in_the_history(cx: &mut TestAppContext) {
+        use crate::notifications::{entries, unread};
+
+        // 6 minutes left of an hour's.
+        let reminded = Reminded::new(cx, 60, 54 * 60_000);
+        reminded.advance(cx, 60_000);
+        reminded.advance(cx, 4 * 60_000);
+        let kept = cx.read(|cx| entries(cx).to_vec());
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].title, "Fonts");
+        assert_eq!(kept[0].session.as_deref(), Some("s1"));
+        assert_eq!(
+            kept[0].message,
+            "The prompt cache expires in 5 minutes\nLetting it expire re-caches ≈ $0.90"
+        );
+        assert_eq!(
+            kept[1].message,
+            "The prompt cache expires in a minute\nRefresh ≈ $0.04 · Letting it expire re-caches ≈ $0.90"
+        );
+        assert!(kept[0].at < kept[1].at);
+        assert_eq!(cx.read(unread), 2);
+        // Refresh fails (this session never opened): the reminder comes
+        // back, and the failure is the one new entry.
+        let key = cx.read(|cx| reminded.session.read(cx).key());
+        reminded.click(cx, ("refresh-cache", key));
+        reminded.advance(cx, 1_000);
+        let kept = cx.read(|cx| entries(cx).to_vec());
+        assert_eq!(kept.len(), 3);
+        assert!(kept[2].message.starts_with("The cache wasn’t refreshed."));
+        assert_eq!(kept[2].title, "Fonts");
     }
 
     /// A 5-minute cache: at its last minute a reminder comes that counts
