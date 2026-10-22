@@ -2417,6 +2417,7 @@ fn status_popovers_dark() {
 /// window.
 fn cache_reminder(mode: ThemeMode) -> Screenshot {
     use arko_studio::cache_reminders::{Countdown, ReminderClock, last_reminder};
+    use arko_studio::notify::SessionLink;
     use gpui_kit::AppContext as _;
     use gpui_kit::component::WindowExt as _;
 
@@ -2443,7 +2444,11 @@ fn cache_reminder(mode: ThemeMode) -> Screenshot {
             .update(cx, |_, window, cx| {
                 let countdown = cx.new(|cx| {
                     Countdown::new(
-                        "Split the engine out of main.rs".into(),
+                        SessionLink::new(
+                            1,
+                            "Split the engine out of main.rs",
+                            std::rc::Rc::new(|_, _| {}),
+                        ),
                         "Refresh ≈ $0.04 · Letting it expire re-caches ≈ $0.90".into(),
                         status::NOW + 42_000,
                         cx,
@@ -2464,6 +2469,91 @@ fn cache_reminder_light() {
 #[test]
 fn cache_reminder_dark() {
     goldens().assert("cache-reminder-dark", &cache_reminder(ThemeMode::Dark));
+}
+
+/// The first cache reminder, or (`long`) a question's card whose session's
+/// title is too long for it, each with the title as a link.
+fn notification_card(mode: ThemeMode, long: bool) -> Screenshot {
+    use arko_studio::cache_reminders::first_reminder;
+    use arko_studio::notify::{SessionLink, card};
+    use gpui_kit::AppContext as _;
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::component::notification::Notification;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(560.), px(200.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| gpui_kit::Empty))
+                .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.update(|cx| {
+        window
+            .update(cx, |_, window, cx| {
+                let opens: arko_studio::notify::Opens = std::rc::Rc::new(|_, _| {});
+                let note = if long {
+                    let link = SessionLink::new(
+                        2,
+                        "A session whose title runs on and on, well past the width of a card",
+                        opens,
+                    );
+                    Notification::new()
+                        .id1::<u8>(gpui_kit::ElementId::Integer(2))
+                        .content(move |_, _, cx| card(&link, "Arko asks “Tabs or spaces?”", cx))
+                } else {
+                    let link = SessionLink::new(1, "Split the engine out of main.rs", opens);
+                    first_reminder(
+                        1,
+                        link,
+                        "The prompt cache expires in 5 minutes".into(),
+                        "Letting it expire re-caches ≈ $0.90".into(),
+                    )
+                };
+                window.push_notification(note, cx);
+            })
+            .unwrap();
+    });
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn notification_card_light() {
+    goldens().assert(
+        "notification-card-light",
+        &notification_card(ThemeMode::Light, false),
+    );
+}
+
+#[test]
+fn notification_card_dark() {
+    goldens().assert(
+        "notification-card-dark",
+        &notification_card(ThemeMode::Dark, false),
+    );
+}
+
+#[test]
+fn notification_card_long_title_light() {
+    goldens().assert(
+        "notification-card-long-title-light",
+        &notification_card(ThemeMode::Light, true),
+    );
+}
+
+#[test]
+fn notification_card_long_title_dark() {
+    goldens().assert(
+        "notification-card-long-title-dark",
+        &notification_card(ThemeMode::Dark, true),
+    );
 }
 
 /// A session's info, as its popover shows it.

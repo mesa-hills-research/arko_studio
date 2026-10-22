@@ -5,13 +5,112 @@
 //! shows comes up in the app. A sound goes with them when the user wants
 //! one.
 
-use gpui_kit::component::WindowExt as _;
-use gpui_kit::component::notification::Notification;
+use std::rc::Rc;
+
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::notification::{Notification, NotificationType};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::live::{LiveEvent, LiveSession};
 use crate::prefs;
 use crate::workspace::Workspace;
+
+/// What a notification does to bring its session forward in the window.
+pub type Opens = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// Shows `session` in the window it is called with.
+pub fn opens(session: &Entity<LiveSession>) -> Opens {
+    let session = session.clone();
+    Rc::new(move |window, cx| open_in(&session, window, cx))
+}
+
+/// The session a card is about, as the card's first line: its title as a
+/// link that brings the session forward. A screen reader says "Open session
+/// Fonts".
+#[derive(Clone)]
+pub struct SessionLink {
+    key: u64,
+    title: SharedString,
+    opens: Opens,
+}
+
+impl SessionLink {
+    /// A link to the session with `key` and `title`, which runs `opens`.
+    pub fn new(key: u64, title: impl Into<SharedString>, opens: Opens) -> Self {
+        Self {
+            key,
+            title: title.into(),
+            opens,
+        }
+    }
+
+    /// What the link does.
+    pub fn opens(&self) -> Opens {
+        self.opens.clone()
+    }
+
+    /// The link for `session`.
+    pub fn of(session: &Entity<LiveSession>, cx: &App) -> Self {
+        let live = session.read(cx);
+        Self::new(live.key(), live.title().clone(), opens(session))
+    }
+
+    /// The link's button, which a click or Enter activates. A card that
+    /// closes on a click closes on the link's too.
+    pub fn button(&self) -> Button {
+        let opens = self.opens.clone();
+        Button::new(("open-session", self.key))
+            .link()
+            .small()
+            // A long title gives way to the card's width.
+            .flex_shrink(1.)
+            .min_w_0()
+            .child(div().min_w_0().truncate().child(self.title.clone()))
+            .accessibility_label(format!("Open session {}", self.title))
+            .on_click(move |_, window, cx| opens(window, cx))
+    }
+}
+
+/// A card's lines under the session's link: the first as it reads, the
+/// others smaller and muted. A line break in `text` starts a line.
+pub fn lines(text: &str, cx: &App) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
+    v_flex()
+        .gap_0p5()
+        .children(text.lines().enumerate().map(move |(index, line)| {
+            div()
+                .text_sm()
+                .when(index > 0, |this| this.text_xs().text_color(muted))
+                .child(line.to_string())
+        }))
+}
+
+/// A card about `session`: its link and `text`.
+pub fn card(link: &SessionLink, text: &str, cx: &App) -> AnyElement {
+    v_flex()
+        .min_w_0()
+        .gap_0p5()
+        .child(div().flex().min_w_0().child(link.button()))
+        .child(lines(text, cx))
+        .into_any_element()
+}
+
+/// An in-app notification about `session` that says `text` under the
+/// session's link, of the type `kind`.
+pub fn session_note(
+    session: &Entity<LiveSession>,
+    kind: NotificationType,
+    text: impl Into<String>,
+    cx: &App,
+) -> Notification {
+    let link = SessionLink::of(session, cx);
+    let text = text.into();
+    Notification::new()
+        .with_type(kind)
+        .content(move |_, _, cx| card(&link, &text, cx))
+}
 
 /// Every window's workspace.
 pub fn workspaces(cx: &App) -> Vec<(AnyWindowHandle, Entity<Workspace>)> {
@@ -197,18 +296,23 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) {
             return;
         };
         let key = session.read(cx).key();
-        let opens = session.clone();
+        let link = SessionLink::of(&session, cx);
+        let open = link.opens();
         window
             .update(cx, |_, window, cx| {
                 let note = Notification::new()
                     .id1::<TurnNotice>(ElementId::Integer(key))
-                    .title(notice.title.clone())
-                    .message(notice.body.clone())
-                    .on_click(move |_, window, cx| open_in(&opens, window, cx));
+                    .on_click(move |_, window, cx| open(window, cx));
                 if notice.system {
+                    // The OS shows the session's title, then what happened.
+                    let note = note
+                        .title(notice.title.clone())
+                        .message(notice.body.clone());
                     window.push_notification(note.system(), cx);
                     window.request_attention();
                 } else {
+                    let body = notice.body.clone();
+                    let note = note.content(move |_, _, cx| card(&link, &body, cx));
                     window.push_notification(note, cx);
                 }
             })
@@ -339,6 +443,13 @@ mod tests {
         let (window, _) = open(cx, 1300.);
         activate(window, cx);
         let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        session.update(cx, |session, cx| {
+            let reading = Reading {
+                title: "Fonts".into(),
+                ..Reading::default()
+            };
+            session.set_status(reading, Activity::default(), cx)
+        });
         cx.update(|cx| super::watch(&session, cx));
         turn(&session, cx, None);
         assert!(cx.shown_system_notifications().is_empty());
@@ -346,7 +457,83 @@ mod tests {
         turn(&session, cx, None);
         let shown = cx.shown_system_notifications();
         assert_eq!(shown.len(), 1);
+        // The OS shows the session's title, then what happened.
+        assert_eq!(shown[0].title.as_ref(), "Fonts");
         assert_eq!(shown[0].body.as_ref(), "Arko finished its turn.");
+    }
+
+    /// Clicking the OS notification of a session shows that session in the
+    /// window that posted it.
+    #[gpui_kit::test]
+    fn clicking_the_os_notification_shows_its_session(cx: &mut TestAppContext) {
+        let backend = Arc::new(crate::backend::FakeBackend::sample(
+            "/arko",
+            SystemTime::now(),
+        ));
+        cx.update(|cx| crate::init(crate::Startup::for_tests(backend.clone()), cx));
+        let (window, workspace) = open(cx, 1300.);
+        activate(window, cx);
+        let entry = crate::backend::Backend::sessions(backend.as_ref()).unwrap()[0].clone();
+        let session = cx.update(|cx| LiveSession::resume(&entry, cx));
+        VisualTestContext::from_window(window, cx).deactivate_window();
+        turn(&session, cx, None);
+        let shown = cx.shown_system_notifications();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].title.as_ref(), entry.title);
+        assert_eq!(crate::tests::open_title(&workspace, cx), None);
+        cx.simulate_system_notification_response(gpui_kit::SystemNotificationResponse {
+            tag: shown[0].tag.clone(),
+            action_id: None,
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            crate::tests::open_title(&workspace, cx),
+            Some(entry.title.clone())
+        );
+    }
+
+    /// A question in a session the window in front doesn't show comes up as
+    /// a card with the session's title as a link that shows the session.
+    #[gpui_kit::test]
+    fn a_card_names_its_session_in_a_link_that_shows_it(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+
+        let backend = Arc::new(crate::backend::FakeBackend::sample(
+            "/arko",
+            SystemTime::now(),
+        ));
+        cx.update(|cx| crate::init(crate::Startup::for_tests(backend.clone()), cx));
+        let (window, workspace) = open(cx, 1300.);
+        activate(window, cx);
+        let entry = crate::backend::Backend::sessions(backend.as_ref()).unwrap()[1].clone();
+        let session = cx.update(|cx| LiveSession::resume(&entry, cx));
+        turn(&session, cx, Some("Tabs or spaces?"));
+        let key = cx.read(|cx| session.read(cx).key());
+        let label = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.find(("open-session", key)).label().map(String::from)
+            })
+            .unwrap();
+        assert_eq!(label, Some(format!("Open session {}", entry.title)));
+        assert_eq!(crate::tests::open_title(&workspace, cx), None);
+        let cards = |cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| window.notifications(cx).len())
+                .unwrap()
+        };
+        let before = cards(cx);
+        crate::tests::act(cx, window, |window, cx| {
+            window.click(("open-session", key), cx)
+        });
+        assert_eq!(
+            crate::tests::open_title(&workspace, cx),
+            Some(entry.title.clone())
+        );
+        // The card has done its work.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(cards(cx), before - 1);
     }
 
     /// A question in a session the window in front doesn't show comes up
