@@ -2058,6 +2058,17 @@ fn workers_family_dark() {
 /// The same workers in the panel as a sheet from the right, in a window
 /// too narrow to dock it.
 fn workers_sheet_window(mode: ThemeMode) -> Screenshot {
+    workers_in_window(mode, size(px(640.), px(640.)))
+}
+
+/// The same workers in the panel docked beside the conversation, in a wide
+/// window.
+fn workers_docked_window(mode: ThemeMode) -> Screenshot {
+    workers_in_window(mode, size(px(1300.), px(700.)))
+}
+
+/// The workers of the family in the panel of a window of `window_size`.
+fn workers_in_window(mode: ThemeMode, window_size: gpui_kit::Size<gpui_kit::Pixels>) -> Screenshot {
     let mut app = ScreenshotApp::with_assets(Assets).unwrap();
     let mut settings = Prefs::default();
     settings.appearance.theme_mode = mode;
@@ -2069,7 +2080,7 @@ fn workers_sheet_window(mode: ThemeMode) -> Screenshot {
     app.update(|cx| arko_studio::init(startup, cx));
     let opened = std::cell::RefCell::new(None);
     let window = app
-        .open_window_with(size(px(640.), px(640.)), 1., |options, cx| {
+        .open_window_with(window_size, 1., |options, cx| {
             workspace::open_window(options, cx).map(|(window, workspace)| {
                 opened.replace(Some(workspace));
                 window
@@ -2104,6 +2115,22 @@ fn workers_sheet_light() {
 #[test]
 fn workers_sheet_dark() {
     goldens().assert("workers-sheet-dark", &workers_sheet_window(ThemeMode::Dark));
+}
+
+#[test]
+fn workers_docked_light() {
+    goldens().assert(
+        "workers-docked-light",
+        &workers_docked_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn workers_docked_dark() {
+    goldens().assert(
+        "workers-docked-dark",
+        &workers_docked_window(ThemeMode::Dark),
+    );
 }
 
 /// The dialog that asks before an edit in an agent session removes the
