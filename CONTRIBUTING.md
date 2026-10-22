@@ -97,10 +97,11 @@ pixel grid are next to it. `icon-tile.svg` puts the full mark on a rounded tile.
 
 After changing an SVG, run `python3 assets/make-icons.py`, which needs `rsvg-convert` or `resvg`,
 and commit the files it writes. These are `assets/icon.ico` (16, 20, 24, 32, 40, 48, 64, 128 and
-256 px), `assets/icon-1024.png` and the icons in `packaging/linux/icons`. Judge a small drawing at
-its own size. A viewer that scales it hides the edges it is made to keep, so enlarge it without
-smoothing to look closer. The screenshot tests use the 256 px icon as a sample image, so changing
-the artwork changes the transcript goldens too.
+256 px), `assets/icon-1024.png` and the icons in `packaging/linux/icons`. The binary embeds the
+128 px one as the X11 window icon (`src/chrome.rs`). Judge a small drawing at its own size. A viewer
+that scales it hides the edges it is made to keep, so enlarge it without smoothing to look closer.
+The screenshot tests use the 256 px icon as a sample image, so changing the artwork changes the
+transcript goldens too.
 
 ## Source layout
 

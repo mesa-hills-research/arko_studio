@@ -31,8 +31,9 @@ chrono = "0.4"
 ignore = "0.4"
 # Parse fragment boundaries before joining replies in an export.
 markdown = "1"
-# The pixels of images the app draws itself (GPUI's own version, no codecs).
-image = { version = "0.25", default-features = false }
+# The pixels of images the app draws itself, and the PNG of the window icon on Linux (GPUI's
+# own version, with the PNG codec it already uses).
+image = { version = "0.25", default-features = false, features = ["png"] }
 # The web page's QR code, drawn with whole device pixels a module (arko's QR crate).
 qrcodegen = "1.8"
 serde = { version = "1.0", features = ["derive"] }

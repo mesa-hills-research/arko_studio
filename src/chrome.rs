@@ -5,6 +5,27 @@ use gpui_kit::*;
 
 use crate::prefs::{self, WindowPlacement};
 
+/// The icon the window manager shows for a window on X11, the 128 px size
+/// of the installed icon. GPUI takes one image and the window manager
+/// scales it. Wayland has no window icon in GPUI, so a compositor takes it
+/// from the desktop entry that `app_id` names. Windows reads it from the
+/// executable (`build.rs`) and macOS from the app bundle.
+#[cfg(target_os = "linux")]
+fn window_icon() -> Option<std::sync::Arc<image::RgbaImage>> {
+    use std::sync::{Arc, OnceLock};
+
+    static ICON: OnceLock<Option<Arc<image::RgbaImage>>> = OnceLock::new();
+    ICON.get_or_init(|| {
+        let png = include_bytes!(
+            "../packaging/linux/icons/hicolor/128x128/apps/com.mesahillsresearch.ArkoStudio.png"
+        );
+        image::load_from_memory_with_format(png, image::ImageFormat::Png)
+            .ok()
+            .map(|icon| Arc::new(icon.to_rgba8()))
+    })
+    .clone()
+}
+
 /// The size a first window opens at, centred.
 const FIRST_SIZE: (f32, f32) = (1100., 720.);
 /// How far a new window sits from the last one, so both stay visible.
@@ -30,6 +51,10 @@ pub fn window_options(cx: &App) -> WindowOptions {
         window_decorations: Some(WindowDecorations::Client),
         // Matches packaging/linux/<APP_ID>.desktop, for the icon and window grouping.
         app_id: Some(crate::APP_ID.into()),
+        // A binary run from the build folder has no desktop entry to take the
+        // icon from, so X11 gets it with the window.
+        #[cfg(target_os = "linux")]
+        icon: window_icon(),
         ..TitleBar::window_options()
     }
 }
@@ -136,4 +161,37 @@ pub fn quit(cx: &mut App) {
             cx.quit();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::SystemTime;
+
+    use gpui_kit::TestAppContext;
+
+    use crate::Startup;
+    use crate::backend::FakeBackend;
+
+    /// A binary run from the build folder has no desktop entry, so on Linux
+    /// the window brings the icon itself. The other systems take it from
+    /// the executable or the app bundle.
+    #[gpui_kit::test]
+    fn a_window_brings_the_apps_icon_on_linux(cx: &mut TestAppContext) {
+        let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+        cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+        let icon = cx.read(|cx| super::window_options(cx).icon);
+        if !cfg!(target_os = "linux") {
+            assert!(icon.is_none());
+            return;
+        }
+        let icon = icon.expect("the window has an icon");
+        assert_eq!((icon.width(), icon.height()), (128, 128));
+        assert!(
+            icon.pixels().any(|pixel| pixel.0[3] == 255),
+            "the icon has opaque pixels"
+        );
+        let again = cx.read(|cx| super::window_options(cx).icon).unwrap();
+        assert!(Arc::ptr_eq(&icon, &again), "decoded once, not per window");
+    }
 }
