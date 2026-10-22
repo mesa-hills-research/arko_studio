@@ -295,6 +295,96 @@ fn a_workers_workers_stand_under_it_indented(cx: &mut TestAppContext) {
     assert_eq!(r4, r1);
 }
 
+/// A screen reader hears whose worker a row is, as Arko's notices say it,
+/// and the rows are a list of that name.
+#[gpui_kit::test]
+fn a_nested_row_says_whose_worker_it_is_to_a_screen_reader(cx: &mut TestAppContext) {
+    use arko::remote::WorkerState::{Failed, Running};
+    let panel = open(cx);
+    panel.show(
+        cx,
+        vec![
+            summary("r1", None, Running, None),
+            summary("r2", Some("r1"), Running, None),
+            summary("r3", Some("r2"), Failed, Some(0)),
+        ],
+    );
+    let named = |cx: &mut TestAppContext, row: usize| {
+        cx.update_window(panel.window, |_, window, _| {
+            let row = window.find(("worker", row));
+            (row.role(), row.label().map(str::to_string))
+        })
+        .unwrap()
+    };
+    let item = Some(gpui_kit::Role::ListItem);
+    assert_eq!(
+        named(cx, 0),
+        (item, Some("r1, Task of r1, Running".to_string()))
+    );
+    assert_eq!(
+        named(cx, 1),
+        (item, Some("r2 (under r1), Task of r2, Running".to_string()))
+    );
+    assert_eq!(
+        named(cx, 2),
+        (item, Some("r3 (under r2), Task of r3, Failed".to_string()))
+    );
+    let list = cx
+        .update_window(panel.window, |_, window, _| {
+            let list = window.find("workers-list");
+            (list.role(), list.label().map(str::to_string))
+        })
+        .unwrap();
+    assert_eq!(list, (Some(gpui_kit::Role::List), Some("Workers".into())));
+}
+
+/// A family's cost reaches the rows from the feed's own sums: the worker
+/// that started others says what they cost with it, and a worker of its own
+/// says whose it is, in its view.
+#[gpui_kit::test]
+fn a_family_roots_row_says_what_its_workers_cost_with_it(cx: &mut TestAppContext) {
+    use arko::remote::WorkerInfo;
+    let panel = open(cx);
+    let feed = Feed::new("main");
+    feed.turn_started();
+    for id in ["r1", "r2", "r3"] {
+        feed.worker(id, "Task", WorkerChange::Started);
+    }
+    let info = |parent: Option<&str>, cost: f64| {
+        let mut info = WorkerInfo::new();
+        info.parent = parent.map(str::to_string);
+        info.depth = if parent.is_some() { 2 } else { 1 };
+        info.costs = Some((cost, cost));
+        info
+    };
+    feed.worker_info("r1", info(None, 0.12));
+    feed.worker_info("r2", info(Some("r1"), 0.30));
+    feed.worker_info("r3", info(None, 0.05));
+    panel.show(cx, feed.subscribe().0.workers);
+    let now = *panel.now.borrow();
+    let facts =
+        |cx: &mut TestAppContext, id: &str| cx.read(|cx| panel.panel.read(cx).facts(id, now));
+    assert_eq!(
+        facts(cx, "r1"),
+        "Running · 0 s · 0 calls · $0.12 · $0.42 with its workers"
+    );
+    assert_eq!(
+        facts(cx, "r2"),
+        "Running · under r1 · 0 s · 0 calls · $0.30"
+    );
+    // Alone, a worker says only its own.
+    assert_eq!(facts(cx, "r3"), "Running · 0 s · 0 calls · $0.05");
+    // Calls a plan covered show at API prices.
+    let mut covered = info(Some("r1"), 0.);
+    covered.costs = Some((0., 0.9));
+    feed.worker_info("r2", covered);
+    panel.show(cx, feed.subscribe().0.workers);
+    assert_eq!(
+        facts(cx, "r1"),
+        "Running · 0 s · 0 calls · $0.12 · ≈ $1.02 with its workers"
+    );
+}
+
 /// A family moves to "Finished" together, with its first worker's place
 /// among the other families in the order they ended.
 #[gpui_kit::test]

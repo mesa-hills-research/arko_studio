@@ -1788,10 +1788,11 @@ fn workers_dark() {
 /// The clock of the workers' screenshots, in Unix milliseconds.
 const WORKERS_NOW: i64 = 1_760_000_000_000;
 
-/// A running worker with workers under it, one of them finished a moment
-/// ago, each row with its model, profile and cost, and a finished family in
-/// the collapsed group. The session lists them as they started, and the
-/// panel puts a worker's workers under it.
+/// A running worker with workers under it, three levels deep, one of them
+/// finished a moment ago, each row with its model, profile and cost, the
+/// workers that started others with what their family cost, and a finished
+/// family in the collapsed group. The session lists them as they started, and
+/// the panel puts a worker's workers under it.
 fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
     use arko::remote::{AgentStatus, WorkerState, WorkerSummary};
     use arko_studio::workers_panel::PanelSource;
@@ -1802,7 +1803,12 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
         summary.title = title.into();
         summary.state = state;
         summary.parent = parent.map(str::to_string);
-        summary.depth = if parent.is_some() { 2 } else { 1 };
+        // r7 is the one at the third level.
+        summary.depth = match (parent, id) {
+            (None, _) => 1,
+            (Some(_), "r7") => 3,
+            (Some(_), _) => 2,
+        };
         summary.started_at = Some(WORKERS_NOW - started * MINUTE);
         summary.ended_at = ended;
         summary.ran_ms = ended.map_or(0, |ended| (ended - (WORKERS_NOW - started * MINUTE)) as u64);
@@ -1821,6 +1827,7 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
     parser.model = Some("claude-opus-5-5".into());
     parser.effort = Some("high".into());
     parser.cost_billed = 0.84;
+    parser.cost_list = 0.84;
     parser.tool_calls = 31;
     parser.last = Some("edit src/parser/mod.rs".into());
     let mut renderer = worker(
@@ -1847,6 +1854,7 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
     tests.model = Some("claude-haiku-5-5".into());
     tests.profile = Some("quick-reader".into());
     tests.cost_billed = 0.02;
+    tests.cost_list = 0.02;
     tests.tool_calls = 9;
     tests.last = Some("$ cargo test -p parse".into());
     let mut keys = worker(
@@ -1860,6 +1868,7 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
     keys.model = Some("claude-haiku-5-5".into());
     keys.profile = Some("quick-reader".into());
     keys.cost_billed = 0.01;
+    keys.cost_list = 0.01;
     keys.tool_calls = 11;
     keys.report = Some("Renamed 14 keys and updated the docs.".into());
     let mut changelog = worker(
@@ -1873,6 +1882,7 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
     changelog.model = Some("gpt-6.1-sol".into());
     changelog.profile = Some("3d-judge".into());
     changelog.cost_billed = 0.4;
+    changelog.cost_list = 0.4;
     let mut notes = worker(
         "r6",
         Some("r5"),
@@ -1882,6 +1892,28 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
         Some(WORKERS_NOW - 35 * MINUTE),
     );
     notes.model = Some("claude-haiku-5-5".into());
+    let mut lexer = worker(
+        "r7",
+        Some("r3"),
+        "Check the lexer edge cases",
+        WorkerState::Running,
+        2,
+        None,
+    );
+    lexer.model = Some("claude-haiku-5-5".into());
+    lexer.cost_billed = 0.03;
+    lexer.cost_list = 0.03;
+    lexer.tool_calls = 5;
+    lexer.last = Some("read src/parser/lexer.rs:40-90".into());
+    // What each worker that started others cost with them, as the session
+    // adds it up. The others have their own.
+    let families = [("r1", 0.9), ("r3", 0.05), ("r5", 0.4)];
+    let mut all = vec![parser, renderer, tests, keys, changelog, notes, lexer];
+    for worker in &mut all {
+        let family = families.iter().find(|(id, _)| *id == worker.id);
+        worker.family_cost_billed = family.map_or(worker.cost_billed, |(_, cost)| *cost);
+        worker.family_cost_list = family.map_or(worker.cost_list, |(_, cost)| *cost);
+    }
     let agent = |id: &str, tokens, window| AgentStatus {
         id: id.into(),
         context_tokens: Some(tokens),
@@ -1890,7 +1922,7 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
         compacts: false,
     };
     PanelSource {
-        workers: vec![parser, renderer, tests, keys, changelog, notes],
+        workers: all,
         agents: vec![
             agent("r1", 88_000, 200_000),
             agent("r2", 152_000, 1_000_000),

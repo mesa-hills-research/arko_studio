@@ -640,6 +640,8 @@ impl WorkersPanel {
         v_flex()
             .id("workers-list")
             .test_support()
+            .role(Role::List)
+            .aria_label(SharedString::from("Workers"))
             .flex_1()
             .min_h_0()
             .p_1()
@@ -664,7 +666,10 @@ impl WorkersPanel {
             return div().into_any_element();
         };
         let open = id.clone();
+        let label = self.worker(id).map(workers::row_label).unwrap_or_default();
         row_base(("worker", index), selected, cx)
+            .role(Role::ListItem)
+            .aria_label(SharedString::from(label))
             .child(
                 view.clone()
                     .cached(StyleRefinement::default().w_full().h(height)),
@@ -694,7 +699,7 @@ impl WorkersPanel {
             level,
             meta,
             setup: workers::setup_label(worker),
-            cost: workers::cost_label(worker),
+            cost: workers::costs_label(worker),
         }
     }
 
@@ -703,7 +708,7 @@ impl WorkersPanel {
     /// as tall as one another.
     fn has_meta(&self) -> bool {
         self.source.workers.iter().any(|worker| {
-            workers::setup_label(worker).is_some() || workers::cost_label(worker).is_some()
+            workers::setup_label(worker).is_some() || workers::costs_label(worker).is_some()
         })
     }
 
@@ -775,13 +780,19 @@ impl WorkersPanel {
             .into_any_element()
     }
 
-    /// What a worker's view says of it: "Running · sol · high · 4 m · 18
-    /// calls · 88k / 200k · $0.12".
+    /// What a worker's view says of it: "Running · under r1 · sol · high · 4 m
+    /// · 18 calls · 88k / 200k · $0.12 · $0.42 with its workers".
     pub fn facts(&self, id: &str, now: i64) -> String {
         let mut facts: Vec<String> = Vec::new();
         let worker = self.worker(id);
         if let Some(worker) = worker {
             facts.push(workers::state_label(worker.state).to_string());
+            facts.extend(
+                worker
+                    .parent
+                    .as_ref()
+                    .map(|parent| format!("under {parent}")),
+            );
             facts.extend(workers::setup_label(worker));
             if let Some(total) = workers::run_time_ms(worker, now) {
                 facts.push(workers::elapsed_label(total));
@@ -792,7 +803,7 @@ impl WorkersPanel {
             });
         }
         facts.extend(self.context_label(id));
-        facts.extend(worker.and_then(workers::cost_label));
+        facts.extend(worker.and_then(workers::costs_label));
         facts.join(" · ")
     }
 

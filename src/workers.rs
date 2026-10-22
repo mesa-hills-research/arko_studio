@@ -112,6 +112,48 @@ pub fn cost_label(worker: &WorkerSummary) -> Option<String> {
     }
 }
 
+/// What a worker and the workers under it cost, as Arko words it: "$0.42 with
+/// its workers", or "≈ $0.42 with its workers" where a plan covered calls. It
+/// shows once they cost more than the worker alone, so a worker with none
+/// under it (or none that cost anything) has no such figure.
+pub fn family_cost_label(worker: &WorkerSummary) -> Option<String> {
+    let (billed, list) = (worker.family_cost_billed, worker.family_cost_list);
+    if list < worker.cost_list + 0.005 {
+        return None;
+    }
+    let figure = if list > billed + 0.005 {
+        format!("≈ {}", crate::figures::dollars(list))
+    } else {
+        crate::figures::dollars(billed)
+    };
+    Some(format!("{figure} with its workers"))
+}
+
+/// The figures of a worker's row: what it cost, then what it cost with its
+/// workers.
+pub fn costs_label(worker: &WorkerSummary) -> Option<String> {
+    let parts: Vec<String> = [cost_label(worker), family_cost_label(worker)]
+        .into_iter()
+        .flatten()
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// A worker's row as a screen reader names it: the worker, whose it is when
+/// another worker started it (as Arko's notices say it), its task and its
+/// state, such as "r3 (under r1), Fix the tokenizer tests, Running".
+pub fn row_label(worker: &WorkerSummary) -> String {
+    let mut label = worker.id.clone();
+    if let Some(parent) = &worker.parent {
+        label.push_str(&format!(" (under {parent})"));
+    }
+    if !worker.title.is_empty() {
+        label.push_str(&format!(", {}", worker.title));
+    }
+    label.push_str(&format!(", {}", state_label(worker.state)));
+    label
+}
+
 /// Where a worker stands in a list that keeps a worker's workers under it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Placed {
@@ -396,6 +438,47 @@ mod tests {
         assert_eq!(cost_label(&worker).as_deref(), Some("≈ $0.12"));
         worker.cost_billed = 0.34;
         assert_eq!(cost_label(&worker).as_deref(), Some("$0.34"));
+    }
+
+    /// A family's cost reads as Arko words it, once it is more than the
+    /// worker's own.
+    #[test]
+    fn a_family_cost_reads_as_arkos_cards_do() {
+        let mut worker = worker("r1", WorkerState::Running, Some(0), None);
+        assert_eq!(family_cost_label(&worker), None);
+        worker.cost_billed = 0.12;
+        worker.cost_list = 0.12;
+        worker.family_cost_billed = 0.12;
+        worker.family_cost_list = 0.12;
+        assert_eq!(
+            family_cost_label(&worker),
+            None,
+            "nothing more than its own"
+        );
+        worker.family_cost_billed = 0.42;
+        worker.family_cost_list = 0.42;
+        assert_eq!(
+            family_cost_label(&worker).as_deref(),
+            Some("$0.42 with its workers")
+        );
+        assert_eq!(
+            costs_label(&worker).as_deref(),
+            Some("$0.12 · $0.42 with its workers")
+        );
+        // Calls a plan covered cost nothing billed, and show at API prices.
+        worker.family_cost_billed = 0.12;
+        worker.family_cost_list = 0.9;
+        assert_eq!(
+            family_cost_label(&worker).as_deref(),
+            Some("≈ $0.90 with its workers")
+        );
+        // A worker that cost nothing itself still shows what its workers did.
+        worker.cost_billed = 0.;
+        worker.cost_list = 0.;
+        assert_eq!(
+            costs_label(&worker).as_deref(),
+            Some("≈ $0.90 with its workers")
+        );
     }
 
     fn child(id: &str, parent: &str) -> WorkerSummary {
