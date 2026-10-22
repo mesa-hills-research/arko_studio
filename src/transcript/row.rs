@@ -248,6 +248,7 @@ pub(super) fn render(
     });
     // To assistive technology, a list item it can move through: the one
     // the keyboard is on is the one in focus.
+    let announced = this.row_announced(row.key);
     let label = this.row_label(row.key);
     let expanded = this.row_expanded(row.key);
     // The reading column: centred and at most ~46 rem wide, with the side
@@ -255,10 +256,13 @@ pub(super) fn render(
     let element = div()
         .id(element_id(row.key))
         .test_support()
-        .role(Role::ListItem)
-        .aria_label(label)
-        .when_some(expanded, |this, expanded| this.aria_expanded(expanded))
-        .when(cursor, |this| this.aria_active_descendant())
+        // (A row with no role is left out of what assistive technology sees.)
+        .when(announced, |this| {
+            this.role(Role::ListItem)
+                .aria_label(label)
+                .when_some(expanded, |this, expanded| this.aria_expanded(expanded))
+                .when(cursor, |this| this.aria_active_descendant())
+        })
         .w_full()
         .pt(rems(gap))
         .flex()

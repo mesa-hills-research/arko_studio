@@ -1051,6 +1051,70 @@ fn working_shows_while_the_agent_waits_on_the_model(cx: &mut TestAppContext) {
     assert_eq!(working_row(&view, cx), None);
 }
 
+/// The role and label a row of `view` gives assistive technology: the
+/// transcript is announced as a log is, so a row with a role is heard when
+/// it appears and one without is left out.
+fn announced_as(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    key: RowKey,
+) -> (Option<gpui_kit::Role>, Option<String>) {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let row = window.find(super::row::element_id(key));
+        (row.role(), row.label().map(str::to_string))
+    })
+    .unwrap()
+}
+
+/// A screen reader hears "Working…" once for a turn, when it follows what
+/// the user said, and not each time the agent waits on the model after its
+/// own output, which would repeat it after every call's result. The rows
+/// of the calls and the text are heard as they come.
+#[gpui_kit::test]
+fn working_is_announced_once_for_a_turn(cx: &mut TestAppContext) {
+    use gpui_kit::Role;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Build it.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let message = ids_of(&feed, Kind::User)[0];
+    assert_eq!(working_row(&view, cx), Some(RowKey::Working(message)));
+    assert_eq!(
+        announced_as(cx, window, RowKey::Working(message)),
+        (Some(Role::ListItem), Some("Working".into()))
+    );
+
+    // After a call's result, and after text that stopped, it waits again.
+    let read = call(&feed, "main", "read_file", &[("path", "a.rs".into())]);
+    result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
+    settle(cx, window);
+    let after_call = *ids_of(&feed, Kind::Call).last().unwrap();
+    assert_eq!(working_row(&view, cx), Some(RowKey::Working(after_call)));
+    assert_eq!(
+        announced_as(cx, window, RowKey::Working(after_call)).0,
+        None
+    );
+    assert_eq!(
+        announced_as(cx, window, RowKey::Call(after_call)),
+        (Some(Role::ListItem), Some("read a.rs".into())),
+    );
+
+    // An answer to a question starts the agent again, and that is said.
+    let question = feed.question("Release or debug?");
+    settle(cx, window);
+    feed.answered(question, "Release.", Source::App);
+    settle(cx, window);
+    let answer = *ids_of(&feed, Kind::User).last().unwrap();
+    assert_eq!(working_row(&view, cx), Some(RowKey::Working(answer)));
+    assert_eq!(
+        announced_as(cx, window, RowKey::Working(answer)).0,
+        Some(Role::ListItem)
+    );
+}
+
 /// A worker's own view says "Working…" while the worker runs and waits on
 /// the model, and not while it waits for a place.
 #[gpui_kit::test]

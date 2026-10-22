@@ -101,6 +101,24 @@ impl TranscriptView {
         label.into()
     }
 
+    /// Whether assistive technology hears row `key` appear, as it hears
+    /// what comes into a log. "Working…" is said once for a turn, when it
+    /// follows what started it (the user's message or answer, or nothing
+    /// yet), and not again each time the agent waits on the model after
+    /// its own output, which would repeat after every call's result.
+    pub(super) fn row_announced(&self, key: RowKey) -> bool {
+        let RowKey::Working(after) = key else {
+            return true;
+        };
+        after == 0
+            || self.model.entry(after).is_some_and(|entry| {
+                matches!(
+                    entry.item.kind,
+                    Kind::User | Kind::Question | Kind::Conversation | Kind::Turn
+                )
+            })
+    }
+
     /// Whether row `key` is open, for a row that opens and closes.
     pub(super) fn row_expanded(&self, key: RowKey) -> Option<bool> {
         let expanded = |id: u64| self.ui.get(&id).and_then(|ui| ui.expanded);
