@@ -14,6 +14,7 @@ pub(crate) enum Tool {
     List,
     Search,
     Workers,
+    Monitor,
     Web,
     Mcp,
     Skill,
@@ -42,6 +43,7 @@ impl Tool {
             "index_search" | "index_status" | "index_create" | "index_manage" => Tool::Search,
             "start_agent" | "message_agent" | "wait_for_agents" | "list_agents" | "stop_agent"
             | "run_workflow_agent" => Tool::Workers,
+            "monitor_start" | "monitor_control" => Tool::Monitor,
             "load_skill" => Tool::Skill,
             name => match name
                 .strip_prefix("mcp__")
@@ -95,6 +97,9 @@ impl Tool {
                 Tool::Workers
             }
             "skill" => Tool::Skill,
+            "monitor" if second.starts_with('$') || ["list", "rearm", "stop"].contains(&second) => {
+                Tool::Monitor
+            }
             "index" => Tool::Search,
             "handover" => Tool::Other,
             "background" | "terminal" => Tool::Shell,
@@ -118,6 +123,7 @@ impl Tool {
             Tool::List => IconName::FolderTree,
             Tool::Search => IconName::Search,
             Tool::Workers => IconName::Bot,
+            Tool::Monitor => IconName::Activity,
             Tool::Web => IconName::Globe,
             Tool::Mcp => IconName::Plug,
             Tool::Skill => IconName::BookOpen,
@@ -135,6 +141,7 @@ impl Tool {
             Tool::List => ("listed", "folder", "folders"),
             Tool::Search => ("searched", "time", "times"),
             Tool::Workers => ("used workers", "time", "times"),
+            Tool::Monitor => ("used monitors", "time", "times"),
             Tool::Web => ("made", "web request", "web requests"),
             Tool::Mcp => ("made", "MCP call", "MCP calls"),
             Tool::Skill => ("loaded", "skill", "skills"),
@@ -207,6 +214,9 @@ mod tests {
             ("start worker (worktree) “Fix the parser”", Tool::Workers),
             ("message r1 “use plan B”", Tool::Workers),
             ("index search “where are retries”", Tool::Search),
+            ("monitor $ npm run dev", Tool::Monitor),
+            ("monitor rearm", Tool::Monitor),
+            ("monitor-disk.sh", Tool::Shell),
             ("fetch: fetch {\"url\":\"https://a.b\"}", Tool::Web),
             ("cargo test -p arko", Tool::Shell),
             ("(in crates/kit) cargo build", Tool::Shell),
@@ -228,6 +238,10 @@ mod tests {
         assert_eq!(named("edit a.rs", "edit_file"), Tool::Edit);
         assert_eq!(named("x", "mcp__github__create_issue"), Tool::Mcp);
         assert_eq!(named("x", "mcp__browser__navigate"), Tool::Web);
+        assert_eq!(
+            named("monitor $ npm run dev", "monitor_start"),
+            Tool::Monitor
+        );
         assert_eq!(named("x", "something_new"), Tool::Other);
     }
 

@@ -2405,7 +2405,7 @@ fn a_call_in_the_background_follows_its_job(cx: &mut TestAppContext) {
     feed.job_ended(calls[1].1, JobState::Stopped, None);
     feed.job_ended(calls[2].1, JobState::Failed, Some("exit 1".into()));
     settle(cx, window);
-    let Some(JobLine::Ended {
+    let Some(JobLine::Outcome {
         text,
         failed: false,
     }) = line(cx, 0)
@@ -2418,14 +2418,14 @@ fn a_call_in_the_background_follows_its_job(cx: &mut TestAppContext) {
     );
     assert_eq!(
         line(cx, 1),
-        Some(JobLine::Ended {
+        Some(JobLine::Outcome {
             text: "Stopped".into(),
             failed: false,
         })
     );
     assert_eq!(
         line(cx, 2),
-        Some(JobLine::Ended {
+        Some(JobLine::Outcome {
             text: "Failed in the background".into(),
             failed: true,
         })
@@ -2475,6 +2475,216 @@ fn a_command_started_in_the_background_can_be_stopped(cx: &mut TestAppContext) {
     settle(cx, window);
     assert_eq!(line(cx), None);
     assert!(!drawn(cx, window, ("stop-job", item)));
+}
+
+/// A monitor's call, as Arko feeds it: the call, the monitor's start, then
+/// the call's result. Gives the call's ID.
+fn monitor_call(feed: &Feed, job: Uuid, started: i64, ends_at: i64) -> Uuid {
+    use arko::remote::{JobKind, JobStart, MAIN_AGENT};
+
+    let call = call(
+        feed,
+        "main",
+        "monitor_start",
+        &[
+            ("command", "npm run dev".into()),
+            ("pattern", "ERROR".into()),
+        ],
+    );
+    feed.job_started(
+        JobStart::new(job, MAIN_AGENT, JobKind::Monitor, "npm run dev")
+            .made_by(call)
+            .started(started)
+            .monitoring("lines that match ERROR", ends_at),
+    );
+    result(
+        feed,
+        "main",
+        call,
+        "monitor_start",
+        &format!("Monitor {job} started. It watches `npm run dev` for lines that match `ERROR`."),
+    );
+    call
+}
+
+/// A call that started a monitor shows it while it runs, with its alerts,
+/// when it ends and Stop, and follows its alerts and rearms. Once it ends,
+/// the row says how, in the words of the call's own line: after its time,
+/// stopped, or with the failure mark when its command failed or Arko
+/// stopped.
+#[gpui_kit::test]
+fn a_monitors_call_follows_the_monitor(cx: &mut TestAppContext) {
+    use super::row::{JobLine, monitoring};
+    use arko::remote::JobState;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Watch the server", Source::App, Delivery::Turn);
+    // They started 30 minutes ago (by the feed's clock, which times their
+    // ends), and the rows are read 8 minutes after.
+    let started = chrono::Utc::now().timestamp_millis() - 30 * 60_000 - 5_000;
+    let ends_at = started + 30 * 60_000;
+    let jobs: Vec<Uuid> = (0..4)
+        .map(|_| {
+            let job = Uuid::new_v4();
+            monitor_call(&feed, job, started, ends_at);
+            job
+        })
+        .collect();
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let now = hand_clock(&view, cx);
+    now.set(started + 8 * 60_000 + 10_000);
+    let items = ids_of(&feed, Kind::Call);
+    let line = |cx: &mut TestAppContext, ix: usize| {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            view.job_line(&view.model.entry(items[ix]).unwrap().item)
+        })
+    };
+    let job = |ix: usize| -> gpui_kit::SharedString { jobs[ix].to_string().into() };
+    assert_eq!(
+        line(cx, 0),
+        Some(JobLine::Monitoring {
+            job: job(0),
+            alerts: 0,
+            ends_at: Some(ends_at),
+        })
+    );
+    assert!(drawn(cx, window, ("stop-job", items[0])));
+
+    // It alerted three times: 21 min 50 s are left, which read as 22.
+    feed.job_changed(jobs[0], 3, ends_at);
+    settle(cx, window);
+    assert_eq!(
+        line(cx, 0),
+        Some(JobLine::Monitoring {
+            job: job(0),
+            alerts: 3,
+            ends_at: Some(ends_at),
+        })
+    );
+    assert_eq!(
+        cx.read(|cx| view.read(cx).job_text(items[0])).as_deref(),
+        Some("Monitoring · 3 alerts · ends in 22 min")
+    );
+    // The row draws again as that turns to 21 minutes, 20 s from now.
+    assert_eq!(
+        cx.read(|cx| view.read(cx).tick_every),
+        std::time::Duration::from_millis(20_050)
+    );
+    now.set(now.get() + 20_050);
+    assert_eq!(
+        cx.read(|cx| view.read(cx).job_text(items[0])).as_deref(),
+        Some("Monitoring · 3 alerts · ends in 21 min")
+    );
+    assert_eq!(
+        monitoring(0, Some(30 * 60_000)),
+        "Monitoring · ends in 30 min"
+    );
+    assert_eq!(
+        monitoring(1, Some(59_000)),
+        "Monitoring · 1 alert · ends in less than a minute"
+    );
+    assert_eq!(super::row::monitoring_changes_in(59_000), None);
+    // A rearm moves its end.
+    feed.job_changed(jobs[1], 0, ends_at + 10 * 60_000);
+    settle(cx, window);
+    assert!(
+        matches!(line(cx, 1), Some(JobLine::Monitoring { ends_at: Some(at), .. }) if at == ends_at + 10 * 60_000)
+    );
+    let (events, _subscription) = events_of(&view, cx);
+    cx.update_window(window, |_, window, cx| {
+        window.click(("stop-job", items[0]), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(*events.borrow(), [TranscriptEvent::StopJob(job(0))]);
+
+    // They end: one after its time, one stopped, one whose command failed,
+    // and one that Arko's end stopped.
+    feed.job_changed(jobs[0], 4, ends_at);
+    feed.job_ended(jobs[0], JobState::Expired, None);
+    feed.job_ended(jobs[1], JobState::Stopped, None);
+    feed.job_ended(jobs[2], JobState::Failed, Some("exit 1".into()));
+    feed.job_ended(jobs[3], JobState::Interrupted, None);
+    settle(cx, window);
+    let ended = [
+        ("Ended after 30 min · 4 alerts", false),
+        ("Stopped", false),
+        ("Its command exited (exit 1)", true),
+        ("Interrupted", true),
+    ];
+    for (ix, (text, failed)) in ended.into_iter().enumerate() {
+        assert_eq!(
+            line(cx, ix),
+            Some(JobLine::Outcome {
+                text: text.into(),
+                failed,
+            })
+        );
+        // The call's own line, which the feed keeps, says the same.
+        let outcome = cx.read(|cx| {
+            let view = view.read(cx);
+            view.model.entry(items[ix]).unwrap().item.outcome.clone()
+        });
+        assert_eq!(
+            outcome.map(|outcome| super::row::capitalized(&outcome)),
+            Some(text.to_string())
+        );
+        assert!(!drawn(cx, window, ("stop-job", items[ix])));
+    }
+    assert!(cx.read(|cx| view.read(cx).ticker.is_none()));
+}
+
+/// A monitor's call whose monitor the transcript has no summary of says
+/// what its call's line says, without Stop.
+#[gpui_kit::test]
+fn a_monitors_call_without_its_summary_says_its_line(cx: &mut TestAppContext) {
+    use super::row::JobLine;
+    use arko::remote::JobState;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Watch the server", Source::App, Delivery::Turn);
+    let job = Uuid::new_v4();
+    let call = call(
+        &feed,
+        "main",
+        "monitor_start",
+        &[("command", "npm run dev".into())],
+    );
+    result(
+        &feed,
+        "main",
+        call,
+        "monitor_start",
+        &format!("Monitor {job} started. It watches `npm run dev`."),
+    );
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let item = ids_of(&feed, Kind::Call)[0];
+    let line = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            view.job_line(&view.model.entry(item).unwrap().item)
+        })
+    };
+    assert_eq!(
+        line(cx),
+        Some(JobLine::Outcome {
+            text: "Monitoring".into(),
+            failed: false,
+        })
+    );
+    assert!(!drawn(cx, window, ("stop-job", item)));
+    feed.job_ended(job, JobState::Stopped, None);
+    settle(cx, window);
+    assert_eq!(
+        line(cx),
+        Some(JobLine::Outcome {
+            text: "Stopped".into(),
+            failed: false,
+        })
+    );
 }
 
 /// A window with a sibling of the transcript, as the composer is.

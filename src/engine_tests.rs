@@ -795,6 +795,77 @@ fn a_running_command_moves_to_the_background_from_its_row(cx: &mut TestAppContex
     app.close_all(cx);
 }
 
+/// A monitor the agent starts shows on its call's row while it runs, with
+/// Stop, and closing the session names it by what it watches. Stop on the
+/// row stops it, and the row says so.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_monitor_shows_on_its_calls_row_and_stops_from_it(cx: &mut TestAppContext) {
+    let mock = Mock::start(|index, _| {
+        if index == 0 {
+            let call = arko::testing::tool_call(
+                "w1",
+                "monitor_start",
+                serde_json::json!({ "command": "sleep 600", "pattern": "ERROR" }),
+            );
+            Box::pin(async move { call })
+        } else {
+            answer("Watching it.", Duration::ZERO)
+        }
+    });
+    let app = start(cx, &mock);
+    app.send(cx, "Watch the server.");
+    app.wait_for_text(cx, "Watching it.");
+    let session = app.shown(cx).unwrap();
+    wait_until(cx, "the monitor in the status", |cx| {
+        cx.read(|cx| !session.read(cx).reading().jobs.is_empty())
+    });
+    // The quit dialog names it by what it runs.
+    let work = cx.read(|cx| session.read(cx).running_work());
+    assert_eq!(work.jobs.len(), 1);
+    assert_eq!(work.jobs[0].command, "monitor · sleep 600");
+    let call = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let feed = session.read(cx).feed().cloned().unwrap();
+            let items = feed.subscribe().0.items;
+            items
+                .into_iter()
+                .find(|item| item.tool.as_deref() == Some("monitor_start"))
+                .unwrap()
+        })
+    };
+    let item = call(cx).id;
+    assert_eq!(call(cx).outcome.as_deref(), Some("monitoring"));
+    let drawn = |cx: &mut TestAppContext, id: (&'static str, u64)| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    wait_until(cx, "Stop", |cx| drawn(cx, ("stop-job", item)));
+    let transcript = app.transcript(cx).unwrap();
+    let said = |cx: &mut TestAppContext| cx.read(|cx| transcript.read(cx).job_text(item));
+    assert_eq!(said(cx).as_deref(), Some("Monitoring · ends in 30 min"));
+    act(cx, app.window, |window, cx| {
+        window.dispatch_action(Box::new(menus::CloseSession), cx)
+    });
+    act(cx, app.window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        assert!(window.try_find("quit-work").is_some());
+        window.within("dialog").click("cancel", cx);
+    });
+    act(cx, app.window, |window, cx| {
+        window.click(("stop-job", item), cx)
+    });
+    wait_until(cx, "the monitor to stop", |cx| {
+        call(cx).outcome.as_deref() == Some("stopped")
+    });
+    wait_until(cx, "Stop to go", |cx| !drawn(cx, ("stop-job", item)));
+    assert_eq!(said(cx).as_deref(), Some("Stopped"));
+    app.close_all(cx);
+}
+
 /// A session running a background job, listed in the sidebar.
 fn a_session_with_a_job(cx: &mut TestAppContext) -> (Mock, App, Entity<LiveSession>, SessionId) {
     let mock = Mock::start(|index, _| {

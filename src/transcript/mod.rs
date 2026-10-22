@@ -1363,8 +1363,8 @@ impl TranscriptView {
     }
 
     /// How long until the rows' times change: a second while a call or a
-    /// worker runs, else until the minute of a background job's time turns,
-    /// or `None` when nothing runs.
+    /// worker runs, else until the minute of a background job's time turns
+    /// or a monitor's "ends in" changes, or `None` when nothing runs.
     fn next_tick(&self) -> Option<Duration> {
         let second = Duration::from_secs(1);
         let workers = self
@@ -1390,11 +1390,22 @@ impl TranscriptView {
             if !job.state.is_running() {
                 continue;
             }
-            let ran = (now - job.started_at).max(0);
-            if ran < 60_000 {
-                return Some(second);
-            }
-            let turn = Duration::from_millis((60_000 - ran % 60_000) as u64 + 50);
+            let turn = if job.kind == arko::remote::JobKind::Monitor {
+                // A monitor's row says when it ends, in minutes.
+                let Some(turn) = job
+                    .expires_at
+                    .and_then(|at| row::monitoring_changes_in(at - now))
+                else {
+                    continue;
+                };
+                turn
+            } else {
+                let ran = (now - job.started_at).max(0);
+                if ran < 60_000 {
+                    return Some(second);
+                }
+                Duration::from_millis((60_000 - ran % 60_000) as u64 + 50)
+            };
             next = Some(next.map_or(turn, |next| next.min(turn)));
         }
         next
