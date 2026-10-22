@@ -621,7 +621,7 @@ impl WorkersPanel {
                 .p_3()
                 .text_sm()
                 .text_color(theme.muted_foreground)
-                .child("No workers in this session")
+                .child("No workers")
                 .into_any_element();
         }
         let focused = self.focus_handle.contains_focused(window, cx);
