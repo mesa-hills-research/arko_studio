@@ -2626,6 +2626,269 @@ fn copy_in_the_menu_of_selected_text_copies_the_whole_selection(cx: &mut TestApp
     assert_eq!(clipboard_text(cx), whole.trim());
 }
 
+/// A point on the words of the row `key`: one line at the bottom of its row,
+/// `x` into the reading column's text.
+fn on_words(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    key: RowKey,
+    x: f32,
+) -> Point<Pixels> {
+    cx.update_window(window, |_, window, _| {
+        let row = window.find(super::row::element_id(key)).bounds();
+        let column = row.size.width.min(px(736.));
+        let text = row.left() + (row.size.width - column) / 2. + px(16.);
+        gpui_kit::point(text + px(x), row.bottom() - px(6.))
+    })
+    .unwrap()
+}
+
+fn block_of(id: u64, source: bool) -> RowKey {
+    RowKey::Block {
+        id,
+        generation: 0,
+        block: 0,
+        source,
+    }
+}
+
+/// A right-click on a reply's text offers Copy, Select All and View source,
+/// which switches that reply, and no other, to its source. The menu reads
+/// View formatted then, and has no Select All, as plain text has none. The
+/// text of a message and of a reply shown as written have no such item.
+#[gpui_kit::test]
+fn the_menu_of_a_replys_text_offers_view_source(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("One", Source::App, Delivery::Turn);
+    feed.reply("The first **reply**.");
+    feed.user("Two", Source::App, Delivery::Turn);
+    feed.reply("The second **reply**.");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let replies = ids_of(&feed, Kind::Reply);
+    let (first, second) = (replies[0], replies[1]);
+    let users = ids_of(&feed, Kind::User);
+    let source =
+        |cx: &mut TestAppContext, reply: u64| cx.read(|cx| view.read(cx).ui[&reply].source);
+
+    let point = on_words(cx, window, block_of(second, false), 20.);
+    right_click_at(cx, window, point);
+    let labels = menu_labels(cx, window).expect("the menu opened");
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|label| !label.is_empty())
+            .collect::<Vec<_>>(),
+        ["Copy", "Select All", "View source"]
+    );
+    press_menu_item(cx, window, "View source");
+    settle(cx, window);
+    assert!(menu_labels(cx, window).is_none(), "the menu closed");
+    assert!(source(cx, second));
+    assert!(!source(cx, first));
+
+    // As source, the text is plain: Copy, and View formatted.
+    let point = on_words(cx, window, block_of(second, true), 20.);
+    right_click_at(cx, window, point);
+    let labels = menu_labels(cx, window).expect("the menu opened");
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|label| !label.is_empty())
+            .collect::<Vec<_>>(),
+        ["Copy", "View formatted"]
+    );
+    press_menu_item(cx, window, "View formatted");
+    settle(cx, window);
+    assert!(!source(cx, second));
+
+    // A user's message has Copy alone.
+    let point = cx
+        .update_window(window, |_, window, _| {
+            window.find(("user-message", users[1])).bounds().center()
+        })
+        .unwrap();
+    right_click_at(cx, window, point);
+    let labels = menu_labels(cx, window).expect("the menu opened");
+    assert!(
+        !labels.iter().any(|label| label.starts_with("View")),
+        "{labels:?}"
+    );
+    cx.update_window(window, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    settle(cx, window);
+
+    // With Markdown off there is no source to switch to.
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.render_markdown = false));
+    settle(cx, window);
+    let point = on_words(cx, window, block_of(second, true), 20.);
+    right_click_at(cx, window, point);
+    let labels = menu_labels(cx, window).expect("the menu opened");
+    assert!(
+        !labels.iter().any(|label| label.starts_with("View")),
+        "{labels:?}"
+    );
+}
+
+/// In the whole window, on a real session, View source in the menu of a
+/// reply's text switches that reply.
+#[gpui_kit::test]
+fn view_source_in_the_menu_of_a_replys_text_works_in_the_window(cx: &mut TestAppContext) {
+    use crate::backend::ArkoBackend;
+    use crate::testing::{Mock, reply, wait_until};
+    use crate::tests::{act, open};
+
+    let mock = Mock::start(|_, _| reply("a1", "Seven **pears**."));
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("arko");
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    cx.executor().allow_parking();
+    let backend = Arc::new(ArkoBackend::new(&root).with_configure(mock.configure()));
+    cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
+    let (window, workspace) = open(cx, 1300.);
+    let session = cx.read(|cx| workspace.read(cx).session_view().clone());
+    cx.update(|cx| session.update(cx, |view, cx| view.set_draft_folder(work.clone(), cx)));
+    act(cx, window, |window, cx| {
+        window.input("Count the pears.", cx)
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    wait_until(cx, "the reply in the transcript", |cx| {
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.read(|cx| {
+            session.read(cx).transcript(cx).is_some_and(|transcript| {
+                let transcript = transcript.read(cx);
+                transcript.row_count() >= 2
+                    && transcript.busy_reason().is_none()
+                    && transcript
+                        .model
+                        .entries()
+                        .iter()
+                        .any(|entry| entry.item.kind == Kind::Reply)
+            })
+        })
+    });
+    let transcript = cx.read(|cx| session.read(cx).transcript(cx).cloned().unwrap());
+    let reply = cx.read(|cx| {
+        let view = transcript.read(cx);
+        view.model
+            .entries()
+            .iter()
+            .find(|entry| entry.item.kind == Kind::Reply)
+            .map(|entry| entry.item.id)
+            .unwrap()
+    });
+    let point = on_words(cx, window, block_of(reply, false), 20.);
+    right_click_at(cx, window, point);
+    press_menu_item(cx, window, "View source");
+    settle(cx, window);
+    assert!(cx.read(|cx| transcript.read(cx).ui[&reply].source));
+    act(cx, window, |window, cx| {
+        let sessions = crate::live::LiveSessions::all(cx);
+        crate::quit::close(sessions, false, window, cx);
+    });
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| crate::live::LiveSessions::all(cx).is_empty())
+    });
+}
+
+/// The menu finds the reply under the pointer at other zoom levels too.
+#[gpui_kit::test]
+fn the_menu_of_a_replys_text_finds_the_reply_when_zoomed(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("One", Source::App, Delivery::Turn);
+    feed.reply("The first **reply**.");
+    feed.user("Two", Source::App, Delivery::Turn);
+    feed.reply("The second **reply**.");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 900.);
+    let second = ids_of(&feed, Kind::Reply)[1];
+    let first_row = RowKey::User(ids_of(&feed, Kind::User)[0]);
+    let mut rems = Vec::new();
+    for steps in [1, 1, -4] {
+        cx.update(|cx| crate::appearance::zoom(steps, cx));
+        settle(cx, window);
+        // The first row starts where the list's space above it ends, to the
+        // half pixel, at any zoom.
+        let rem = cx
+            .update_window(window, |_, window, _| window.rem_size())
+            .unwrap();
+        rems.push(rem);
+        let top = row_top(cx, window, first_row).unwrap();
+        let at = |y: f32| gpui_kit::point(px(100.), px(top + y));
+        cx.read(|cx| {
+            let list = &view.read(cx).list;
+            assert_eq!(list.row_at(at(0.5), rem), Some(0));
+            assert_eq!(list.row_at(at(-0.5), rem), None);
+        });
+        let point = on_words(cx, window, block_of(second, false), 20.);
+        right_click_at(cx, window, point);
+        let labels = menu_labels(cx, window).expect("the menu opened");
+        assert!(labels.contains(&"View source".to_string()), "{labels:?}");
+        cx.update_window(window, |_, window, cx| window.press("escape", cx))
+            .unwrap();
+        settle(cx, window);
+    }
+    assert!(rems.windows(2).all(|pair| pair[0] != pair[1]), "{rems:?}");
+}
+
+/// The Menu key and Shift+F10 open the same menu from a reply's text that has
+/// the keyboard focus, and Escape closes it.
+#[gpui_kit::test]
+fn the_menu_key_opens_the_menu_of_a_replys_text(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("One", Source::App, Delivery::Turn);
+    feed.reply("The first **reply**.");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let reply = ids_of(&feed, Kind::Reply)[0];
+    // A click puts the focus in the text.
+    let point = on_words(cx, window, block_of(reply, false), 20.);
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                button: gpui_kit::MouseButton::Left,
+                position: point,
+                modifiers: gpui_kit::Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
+                button: gpui_kit::MouseButton::Left,
+                position: point,
+                modifiers: gpui_kit::Modifiers::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    settle(cx, window);
+    for key in ["shift-f10", "menu"] {
+        cx.update_window(window, |_, window, cx| window.press(key, cx))
+            .unwrap();
+        settle(cx, window);
+        let labels = menu_labels(cx, window).unwrap_or_else(|| panic!("{key} opened the menu"));
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|label| !label.is_empty())
+                .collect::<Vec<_>>(),
+            ["Copy", "Select All", "View source"],
+            "{key}"
+        );
+        cx.update_window(window, |_, window, cx| window.press("escape", cx))
+            .unwrap();
+        settle(cx, window);
+        assert!(menu_labels(cx, window).is_none(), "{key}");
+    }
+    cx.read(|cx| assert!(!view.read(cx).ui[&reply].source));
+}
+
 /// A selection from the user's message, across the reply and the next
 /// message, into a second reply holds while the messages it starts in
 /// scroll out of the list and back. Its ends stay where they were, the

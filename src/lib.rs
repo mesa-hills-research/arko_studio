@@ -217,6 +217,7 @@ pub fn init(startup: Startup, cx: &mut App) {
     // theme, the same on every platform, as the app's other menus are.
     ContextMenuStyle::set_app_default(ContextMenuStyle::Drawn, cx);
     composer::init(cx);
+    transcript::init(cx);
     cx.set_app_identity(APP_ID, APP_NAME);
     // Windows and Linux quit with the last window. macOS keeps the app
     // running, as Mac apps do, until Quit.

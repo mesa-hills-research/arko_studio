@@ -20,6 +20,7 @@ mod height;
 mod height_tests;
 mod inbox;
 mod list;
+mod menu;
 mod model;
 mod nav;
 mod row;
@@ -73,6 +74,11 @@ gpui_kit::actions!(
         ScrollToLatest,
     ]
 );
+
+/// Sets up what the transcripts share, before the first window.
+pub fn init(cx: &mut App) {
+    menu::init(cx);
+}
 
 /// How much of a screen Page Up and Page Down scroll: a few lines stay in
 /// sight.
@@ -355,6 +361,8 @@ pub struct TranscriptView {
     list: list::RowList,
     focus_handle: FocusHandle,
     settings: Settings,
+    /// The window the transcript is in.
+    window: WindowId,
     /// The calls running that can move to the background, by item, as the
     /// session's status says.
     movable: HashSet<u64>,
@@ -444,8 +452,14 @@ impl Focusable for TranscriptView {
 
 impl TranscriptView {
     /// The transcript of `feed`'s session, as `filter` says whose.
-    pub fn new(feed: &Feed, filter: AgentFilter, _: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        feed: &Feed,
+        filter: AgentFilter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         warm_up_languages(cx);
+        menu::register(cx.weak_entity(), cx);
         let inbox = inbox::Inbox::subscribe(feed, cx);
         let settings = Settings::of(prefs::get(cx));
         let observe_prefs = cx.observe_global::<prefs::PrefsStore>(|this, cx| {
@@ -478,6 +492,7 @@ impl TranscriptView {
             // A Tab stop, so the keyboard reaches the transcript to scroll it.
             focus_handle: cx.focus_handle().tab_stop(true),
             settings,
+            window: window.window_handle().window_id(),
             movable: HashSet::new(),
             hovered: None,
             hovered_rows: HashSet::new(),
@@ -1515,6 +1530,12 @@ impl TranscriptView {
         self.ui.entry(first).or_default().group_open = Some(!open);
         self.refresh_rows(cx);
         cx.notify();
+    }
+
+    /// Whether the entry's text shows as its Markdown source because the
+    /// reader asked for it.
+    fn shows_source(&self, id: u64) -> bool {
+        self.ui.get(&id).is_some_and(|ui| ui.source)
     }
 
     fn toggle_source(&mut self, id: u64, cx: &mut Context<Self>) {

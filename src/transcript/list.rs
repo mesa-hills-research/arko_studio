@@ -18,6 +18,8 @@ use gpui_kit::*;
 
 /// Rows laid out past the screen's edges, for smooth scrolling.
 const OVERDRAW: Pixels = px(400.);
+/// The space, in rem, above the first row and below the last.
+const PADDING: f32 = 0.5;
 const JUMP_BUTTON_TRANSITION: Duration = Duration::from_millis(200);
 
 /// The list's state: which rows, their measured heights, and where the
@@ -117,6 +119,18 @@ impl RowList {
         rows
     }
 
+    /// The row on screen at `position` in the window, as last laid out, in
+    /// a window whose rem is `rem` wide. The list's bounds for a row leave
+    /// out the space above the first one.
+    pub fn row_at(&self, position: Point<Pixels>, rem: Pixels) -> Option<usize> {
+        let position = position - point(px(0.), rem * PADDING);
+        self.on_screen().into_iter().find(|&ix| {
+            self.state
+                .bounds_for_item(ix)
+                .is_some_and(|bounds| bounds.contains(&position))
+        })
+    }
+
     /// Whether row `ix` is wholly on screen, as last laid out.
     pub fn shows_whole(&self, ix: usize) -> bool {
         let viewport = self.state.viewport_bounds();
@@ -183,7 +197,7 @@ pub(super) fn render(
         Some(estimate) => rows.estimate_item_heights(estimate),
         None => rows,
     };
-    let rows = rows.size_full().min_h_0().py_2();
+    let rows = rows.size_full().min_h_0().py(rems(PADDING));
     div()
         .id(id)
         .relative()

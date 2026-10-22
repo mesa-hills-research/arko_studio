@@ -1270,7 +1270,7 @@ impl TranscriptView {
     /// showing them moves nothing.
     fn actions(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
         let theme = cx.theme();
-        let source = self.ui.get(&id).is_some_and(|ui| ui.source);
+        let source = self.shows_source(id);
         let render_markdown = self.settings.render_markdown;
         let muted = theme.muted_foreground;
         let view = view.downgrade();
