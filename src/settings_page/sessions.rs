@@ -11,7 +11,7 @@ use super::fields::{self, TextKind, TextSetting};
 use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
-use crate::workers::{curly, models_about};
+use crate::workers::{curly, depth_about, models_about};
 use arko::ModelChoice;
 use arko::commands::MIN_HANDOVER_SIZE;
 use arko::monitors::Wakes;
@@ -255,11 +255,7 @@ impl SessionsPage {
                 new.background_after,
                 new.monitor_wakes.clone(),
             ),
-            (
-                new.worker_models,
-                new.worker_depth,
-                crate::workers::nested(),
-            ),
+            (new.worker_models, new.worker_depth),
             (
                 new.outside_access,
                 new.text_replies,
@@ -320,7 +316,7 @@ impl SessionsPage {
                     |prefs, depth| prefs.new_sessions.worker_depth = depth,
                     defaults.worker_depth,
                 )
-                .description(curly(workers::depth_about(crate::workers::nested())))
+                .description(depth_about())
                 .keywords(["workers", "nested", "levels", "worker-depth"]),
                 self.background_after
                     .item("Background after", "background-after")

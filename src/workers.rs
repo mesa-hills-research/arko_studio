@@ -1,7 +1,5 @@
 //! Where a list shows each worker and how its figures read.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use arko::ModelChoice;
 use arko::remote::{WorkerState, WorkerSummary};
 use arko::workers::{MODELS_ABOUT, MODELS_APPLIES};
@@ -10,26 +8,20 @@ use arko::workers::{MODELS_ABOUT, MODELS_APPLIES};
 /// "Finished" group at the bottom of the list.
 pub const ENDED_SHOWS_FOR_MS: i64 = 5 * 60 * 1000;
 
-/// Whether the sessions say workers can start workers of their own yet
-/// (`LiveSettings::nested_workers`), as the last one to say. Until one has,
-/// they can't, which is how Arko 0.4 builds.
-static NESTED: AtomicBool = AtomicBool::new(false);
-
-/// Records what a session's status says about workers starting workers.
-pub fn note_nested(nested: bool) {
-    NESTED.store(nested, Ordering::Relaxed);
-}
-
-/// Whether workers can start workers of their own, so the worker depth
-/// setting does something.
-pub fn nested() -> bool {
-    NESTED.load(Ordering::Relaxed)
-}
-
 /// Arko's words in the app's typography: the apostrophes it types straight
 /// are typographic here.
 pub fn curly(text: &str) -> String {
     text.replace('\'', "’")
+}
+
+/// What the "Worker depth" setting does, in Arko's words.
+pub fn depth_about() -> String {
+    curly(arko::workers::depth_about())
+}
+
+/// What a worker depth of `depth` allows now, in Arko's words.
+pub fn depth_effect(depth: u32) -> String {
+    curly(&arko::workers::depth_effect(depth))
 }
 
 /// What the "Models for workers" setting does and what `choice` means,
@@ -305,9 +297,32 @@ mod tests {
         }
         assert!(
             models_about(ModelChoice::Session)
-                .contains("Every worker runs the session’s worker model.")
+                .contains("Every worker runs the session’s worker model, and none starts workers.")
         );
         assert_eq!(curly("Session's worker model"), "Session’s worker model");
+    }
+
+    /// The depth setting says what it does as soon as it is set, with no
+    /// word about taking effect later, and nothing is left in Arko's straight
+    /// apostrophes.
+    #[test]
+    fn the_depth_setting_reads_in_arkos_words() {
+        let about = depth_about();
+        assert!(about.starts_with("How many levels of workers there can be, from 1 to 4."));
+        assert!(
+            about.contains("a worker can start workers of its own"),
+            "{about}"
+        );
+        assert_eq!(depth_effect(1), "Only the main agent starts workers.");
+        let three = depth_effect(3);
+        assert_eq!(
+            three,
+            "Workers can go 3 levels deep. A worker can start workers of its own when the agent that starts it says so, down to level 3."
+        );
+        for text in [about, depth_effect(2), three, depth_effect(1)] {
+            assert!(!text.contains('\''), "{text}");
+            assert!(!text.contains("takes effect"), "{text}");
+        }
     }
 
     #[test]

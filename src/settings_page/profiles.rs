@@ -831,7 +831,7 @@ fn note(id: &'static str, text: impl Into<SharedString>, color: Hsla) -> impl In
 /// What the editor says under its fields.
 const FAST_ABOUT: &str = "For models that have it. On a model other than the session’s worker model, a worker is fast only when this is on.";
 const CACHE_ABOUT: &str = "For Claude models on an API key that take a choice.";
-const NESTED_ABOUT: &str = "It takes effect once workers can start workers of their own.";
+const NESTED_ABOUT: &str = "Down to the session’s worker depth.";
 const INSTRUCTIONS_ABOUT: &str =
     "Every worker started with this profile gets these, after the project’s instructions.";
 
@@ -1010,9 +1010,7 @@ impl ProfileForm {
                 |p, on| p.nested = on,
                 cx,
             ))
-            .when(!crate::workers::nested(), |this| {
-                this.child(note("profile-nested-about", NESTED_ABOUT, muted))
-            });
+            .child(note("profile-nested-about", NESTED_ABOUT, muted));
         let instructions = v_flex()
             .gap_1()
             .child(caption("Instructions", cx))

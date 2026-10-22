@@ -26,7 +26,7 @@ use crate::backend::Mode;
 use crate::live::LiveSession;
 use crate::session_view::{HomeFolder, shown_folder};
 use crate::status_bar::run;
-use crate::workers::{curly, models_about};
+use crate::workers::{curly, depth_effect, models_about};
 use arko::workers;
 
 /// Why some settings can't change any more.
@@ -1027,10 +1027,7 @@ impl Render for SessionInfo {
                                 .test_support()
                                 .text_xs()
                                 .text_color(muted)
-                                .child(curly(&workers::depth_effect(
-                                    depth,
-                                    settings.nested_workers,
-                                ))),
+                                .child(depth_effect(depth)),
                         ),
                         cx,
                     ));
