@@ -13,6 +13,8 @@ gpui_kit::assets::icon_assets!(pub ExtraIcons, [Paperclip, Maximize2, Minimize2,
 gpui_kit::assets::icon_assets!(pub TranscriptIcons, [FilePen, FolderTree, Plug, Wrench, Activity, MessageCircleQuestionMark, SquarePen, GitBranch, RotateCcw]);
 // The status bar's cache timer.
 gpui_kit::assets::icon_assets!(pub StatusIcons, [Timer]);
+// The worker profiles page and its editor.
+gpui_kit::assets::icon_assets!(pub ProfileIcons, [UserCog, Trash]);
 
 /// The icons the app draws, for `Application::with_assets`.
 pub struct Assets;
@@ -28,6 +30,9 @@ impl AssetSource for Assets {
         if let Some(bytes) = StatusIcons.load(path)? {
             return Ok(Some(bytes));
         }
+        if let Some(bytes) = ProfileIcons.load(path)? {
+            return Ok(Some(bytes));
+        }
         gpui_kit::assets::Assets.load(path)
     }
 
@@ -36,6 +41,7 @@ impl AssetSource for Assets {
         paths.extend(ExtraIcons.list(path)?);
         paths.extend(TranscriptIcons.list(path)?);
         paths.extend(StatusIcons.list(path)?);
+        paths.extend(ProfileIcons.list(path)?);
         paths.sort();
         paths.dedup();
         Ok(paths)
@@ -60,6 +66,9 @@ mod tests {
             IconName::RotateCcw,
             // A monitor's calls.
             IconName::Activity,
+            // The worker profiles page.
+            IconName::UserCog,
+            IconName::Trash,
         ] {
             assert!(
                 Assets.load(&icon.path()).unwrap().is_some(),

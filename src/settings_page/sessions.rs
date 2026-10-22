@@ -270,7 +270,7 @@ impl SessionsPage {
             ),
             errors.each_ref().map(|error| error.as_deref()),
         );
-        SettingPage::new(super::PAGES[3])
+        SettingPage::new(super::PAGES[super::SESSIONS_PAGE])
             .icon(IconName::FolderOpen)
             .description(
                 "What new sessions start with. Click an open session’s title to change its settings in Session info.",

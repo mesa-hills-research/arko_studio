@@ -17,6 +17,7 @@ pub use arko::Holder;
 mod accounts;
 mod defaults;
 pub mod extensions;
+pub mod profiles;
 
 pub use accounts::{Accounts, key_named};
 pub use defaults::{SessionDefaults, web_page_bind};
@@ -361,6 +362,23 @@ pub trait Backend: Send + Sync + 'static {
     /// Forgets the answer about the MCP servers of the project in `folder`:
     /// its next session asks again.
     fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String>;
+
+    /// The worker profiles: the user's and those of the projects in
+    /// `folders`.
+    fn profiles(&self, folders: &[PathBuf]) -> profiles::Profiles;
+
+    /// Saves the user's worker profile `profile`, which was called
+    /// `replacing` before an edit (`None` for a new one). `Ok` has the file
+    /// written, `Err` why not.
+    fn save_profile(
+        &self,
+        profile: &arko::profiles::Profile,
+        replacing: Option<&str>,
+    ) -> Result<PathBuf, String>;
+
+    /// Deletes the user's worker profile `name`. `Ok` has the file removed,
+    /// `Err` why not.
+    fn delete_profile(&self, name: &str) -> Result<PathBuf, String>;
 }
 
 /// The accounts as the app last read them. Observers hear when a reading
@@ -633,6 +651,22 @@ impl Backend for ArkoBackend {
     fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String> {
         arko::extensions::forget_project_mcp_approval(&self.root, folder).map(|_| ())
     }
+
+    fn profiles(&self, folders: &[PathBuf]) -> profiles::Profiles {
+        profiles::read(&self.root, folders)
+    }
+
+    fn save_profile(
+        &self,
+        profile: &arko::profiles::Profile,
+        replacing: Option<&str>,
+    ) -> Result<PathBuf, String> {
+        profiles::save(&self.root, profile, replacing)
+    }
+
+    fn delete_profile(&self, name: &str) -> Result<PathBuf, String> {
+        profiles::delete(&self.root, name)
+    }
 }
 
 /// What adding or removing a key did, in sentences: what was done and
@@ -677,6 +711,7 @@ struct FakeState {
     /// How many times the accounts were read.
     accounts_read: usize,
     extensions: extensions::Extensions,
+    profiles: profiles::Profiles,
 }
 
 impl FakeBackend {
@@ -694,6 +729,7 @@ impl FakeBackend {
                 accounts: Accounts::sample(Path::new("/home/ada"), &root),
                 accounts_read: 0,
                 extensions: extensions::Extensions::sample(Path::new("/home/ada"), &root),
+                profiles: profiles::Profiles::default(),
             }),
             defaults: Mutex::new(SessionDefaults::default()),
         }
@@ -792,6 +828,12 @@ impl FakeBackend {
             default: model,
             note: None,
         };
+        self
+    }
+
+    /// Starts with the worker profiles `profiles`.
+    pub fn with_profiles(self, profiles: profiles::Profiles) -> Self {
+        self.with_state(|state| state.profiles = profiles);
         self
     }
 
@@ -1061,9 +1103,64 @@ impl Backend for FakeBackend {
         });
         Ok(())
     }
+
+    fn profiles(&self, _: &[PathBuf]) -> profiles::Profiles {
+        self.with_state(|state| state.profiles.clone())
+    }
+
+    fn save_profile(
+        &self,
+        profile: &arko::profiles::Profile,
+        replacing: Option<&str>,
+    ) -> Result<PathBuf, String> {
+        let folder = self.root.join("profiles");
+        self.with_state(|state| {
+            let user = &mut state.profiles.user;
+            profiles::check(profile, replacing, |name| user.get(name).is_some())?;
+            let file = folder.join(arko::profiles::Profile::file_name(&profile.name));
+            let mut saved = profile.clone();
+            // As arko saves it for the user.
+            saved.made_by = None;
+            let entry = profiles::Entry {
+                note: saved.model_problem(),
+                profile: saved,
+                file: file.clone(),
+            };
+            let old = replacing.unwrap_or(&profile.name);
+            match user.entries.iter().position(|had| had.profile.name == old) {
+                Some(at) => user.entries[at] = entry,
+                None => user.entries.push(entry),
+            }
+            user.entries
+                .sort_by(|a, b| a.profile.name.cmp(&b.profile.name));
+            Ok(file)
+        })
+    }
+
+    fn delete_profile(&self, name: &str) -> Result<PathBuf, String> {
+        self.with_state(|state| {
+            let user = &mut state.profiles.user;
+            let at = user
+                .entries
+                .iter()
+                .position(|entry| entry.profile.name == name)
+                .ok_or_else(|| format!("There is no profile `{name}` for every project."))?;
+            Ok(user.entries.remove(at).file)
+        })
+    }
 }
 
 impl FakeBackend {
+    /// The worker profiles as they are now.
+    pub fn saved_profiles(&self) -> profiles::Profiles {
+        self.with_state(|state| state.profiles.clone())
+    }
+
+    /// Sets what the worker profiles read as, as if a file changed.
+    pub fn set_profiles(&self, profiles: profiles::Profiles) {
+        self.with_state(|state| state.profiles = profiles);
+    }
+
     /// The keys added, by provider.
     pub fn added_keys(&self) -> Vec<(String, String)> {
         self.with_state(|state| state.keys.clone())

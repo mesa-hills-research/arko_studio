@@ -11,7 +11,10 @@ use gpui_kit::{
     WindowOptions, px, size,
 };
 
-use super::SettingsPage;
+use super::{
+    ACCOUNTS_PAGE, ADVANCED_PAGE, APPEARANCE_PAGE, EXTENSIONS_PAGE, INPUT_PAGE, NOTIFICATIONS_PAGE,
+    SESSIONS_PAGE, SettingsPage, WEB_PAGE_PAGE,
+};
 use crate::Startup;
 use crate::backend::account_words::LoginState;
 use crate::backend::{Backend as _, FakeBackend, Mode, ModelChoice, ModelChoices, ModelGroup};
@@ -30,7 +33,7 @@ fn start_with(cx: &mut TestAppContext, settings: prefs::Prefs) -> Arc<FakeBacken
 }
 
 /// The app on `backend`, with `settings`, as [`start_with`].
-fn start_on(
+pub(super) fn start_on(
     cx: &mut TestAppContext,
     backend: FakeBackend,
     mut settings: prefs::Prefs,
@@ -43,7 +46,7 @@ fn start_on(
 
 /// A window `height` tall on Settings' page `page`. A dialog opened in a
 /// window much taller than the test screen can't be clicked.
-fn settings_window(
+pub(super) fn settings_window(
     cx: &mut TestAppContext,
     page: usize,
     height: f32,
@@ -159,7 +162,7 @@ fn a_key_added_in_settings_makes_its_models_usable(cx: &mut TestAppContext) {
         })
         .with_groups_following_keys();
     start_on(cx, backend, prefs::Prefs::default());
-    let (window, _, _) = settings_window(cx, 2, 1400.);
+    let (window, _, _) = settings_window(cx, ACCOUNTS_PAGE, 1400.);
     act(cx, window, |window, cx| window.press("escape", cx));
     // Whether the composer's model list says the OpenRouter models need
     // their key.
@@ -191,7 +194,7 @@ fn a_key_added_in_settings_makes_its_models_usable(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn api_keys_are_added_and_removed_through_the_backend(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
-    let (window, _, _) = settings_window(cx, 2, 1400.);
+    let (window, _, _) = settings_window(cx, ACCOUNTS_PAGE, 1400.);
     act(cx, window, |window, _| {
         assert!(window.try_find("key-openrouter").is_some());
         // The OpenAI key comes from the environment: only Replace.
@@ -246,7 +249,7 @@ fn api_keys_are_added_and_removed_through_the_backend(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn enter_in_the_key_field_saves_the_key(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
-    let (window, _, _) = settings_window(cx, 2, 1400.);
+    let (window, _, _) = settings_window(cx, ACCOUNTS_PAGE, 1400.);
     act(cx, window, |window, cx| window.click("key-openrouter", cx));
     act(cx, window, |window, cx| window.press("enter", cx));
     act(cx, window, |window, cx| {
@@ -274,7 +277,7 @@ fn enter_in_the_key_field_saves_the_key(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn logins_are_checked_and_chosen(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
-    let (window, _, settings) = settings_window(cx, 2, 2400.);
+    let (window, _, settings) = settings_window(cx, ACCOUNTS_PAGE, 2400.);
     let read = backend.accounts_read();
     act(cx, window, |window, cx| {
         window.click("check-claude-code", cx)
@@ -314,7 +317,7 @@ fn rest(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
-    let (window, _, settings) = settings_window(cx, 3, 2400.);
+    let (window, _, settings) = settings_window(cx, SESSIONS_PAGE, 2400.);
     let page = cx.read(|cx| settings.read(cx).sessions().clone());
     act(cx, window, |window, cx| window.click("handover-at", cx));
     act(cx, window, |window, cx| window.input("5k", cx));
@@ -418,7 +421,7 @@ fn the_worker_settings_are_chosen_and_passed_on(cx: &mut TestAppContext) {
     let mut settings = prefs::Prefs::default();
     settings.new_sessions.worker_models = arko::ModelChoice::Profiles;
     let backend = start_with(cx, settings);
-    let (window, _, _) = settings_window(cx, 3, 900.);
+    let (window, _, _) = settings_window(cx, SESSIONS_PAGE, 900.);
     // The group's items: handover size, workers' handover size, models for
     // workers, worker depth.
     let label = |cx: &mut TestAppContext, item: usize| {
@@ -478,7 +481,7 @@ fn the_worker_settings_are_chosen_and_passed_on(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_chat_instructions_follow_the_input_settings(cx: &mut TestAppContext) {
     start_with(cx, prefs::Prefs::default());
-    let (_, _, settings) = settings_window(cx, 3, 900.);
+    let (_, _, settings) = settings_window(cx, SESSIONS_PAGE, 900.);
     let page = cx.read(|cx| settings.read(cx).sessions().clone());
     let typing = |cx: &mut TestAppContext| cx.read(|cx| page.read(cx).instructions_input(cx));
     assert_eq!(
@@ -574,7 +577,7 @@ fn the_fonts_settings_lists_are_read_a_moment_after_the_start(cx: &mut TestAppCo
 #[gpui_kit::test]
 fn only_the_code_font_offers_monospace_only(cx: &mut TestAppContext) {
     start_with(cx, prefs::Prefs::default());
-    let (window, _, settings) = settings_window(cx, 0, 1200.);
+    let (window, _, settings) = settings_window(cx, APPEARANCE_PAGE, 1200.);
     assert!(cx.read(|cx| settings.read(cx).font_pickers().is_some()));
     act(cx, window, |window, _| {
         // A second checkbox, the interface font's, would make the ID
@@ -640,7 +643,7 @@ fn a_model_that_needs_a_key_opens_its_row(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_web_page_address_and_port_are_checked_and_used(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
-    let (window, _, settings) = settings_window(cx, 5, 2400.);
+    let (window, _, settings) = settings_window(cx, WEB_PAGE_PAGE, 2400.);
     let page = cx.read(|cx| settings.read(cx).web_page().clone());
     act(cx, window, |window, cx| {
         window.click("web-page-address", cx)
@@ -684,7 +687,7 @@ fn the_web_page_address_and_port_are_checked_and_used(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_sessions_updates_leave_settings_as_drawn(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
-    let (window, _, settings) = settings_window(cx, 5, 900.);
+    let (window, _, settings) = settings_window(cx, WEB_PAGE_PAGE, 900.);
     let entry = backend.sessions().unwrap().remove(0);
     let session = cx.update(|cx| crate::live::LiveSession::resume(&entry, cx));
     let builds = |cx: &mut TestAppContext| cx.read(|cx| settings.read(cx).builds);
@@ -708,7 +711,7 @@ fn a_sessions_updates_leave_settings_as_drawn(cx: &mut TestAppContext) {
 fn a_projects_mcp_answer_is_forgotten(cx: &mut TestAppContext) {
     use crate::backend::extensions::Approval;
     start_with(cx, prefs::Prefs::default());
-    let (window, _, settings) = settings_window(cx, 6, 2400.);
+    let (window, _, settings) = settings_window(cx, EXTENSIONS_PAGE, 2400.);
     let page = cx.read(|cx| settings.read(cx).extensions().clone());
     let approval = |cx: &mut TestAppContext| {
         cx.read(|cx| page.read(cx).extensions().unwrap().projects[0].approval)
@@ -729,7 +732,7 @@ fn a_projects_mcp_answer_is_forgotten(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn mcp_config_files_are_added_and_removed(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
-    let (window, _, settings) = settings_window(cx, 7, 2400.);
+    let (window, _, settings) = settings_window(cx, ADVANCED_PAGE, 2400.);
     let extensions = cx.read(|cx| settings.read(cx).extensions().clone());
     let listed = |cx: &mut TestAppContext| {
         cx.read(|cx| {
@@ -763,7 +766,7 @@ fn mcp_config_files_are_added_and_removed(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn only_mcp_config_files_are_added(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
-    let (window, _, settings) = settings_window(cx, 7, 2400.);
+    let (window, _, settings) = settings_window(cx, ADVANCED_PAGE, 2400.);
     let temp = tempfile::tempdir().unwrap();
     let good = temp.path().join("servers.json");
     let notes = temp.path().join("notes.txt");
@@ -792,7 +795,7 @@ fn advanced_resets_keep_the_mcp_config_files(cx: &mut TestAppContext) {
     let mut settings = prefs::Prefs::default();
     settings.advanced.mcp_config = vec![std::path::PathBuf::from("/home/ada/mcp/work.json")];
     start_with(cx, settings);
-    let (window, _, _) = settings_window(cx, 7, 900.);
+    let (window, _, _) = settings_window(cx, ADVANCED_PAGE, 900.);
     act(cx, window, |window, _| {
         assert!(window.try_find(("remove-mcp-config", 0usize)).is_some());
         assert!(window.try_find("reset").is_none(), "nothing else to reset");
@@ -805,7 +808,7 @@ fn advanced_resets_keep_the_mcp_config_files(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_resize_leaves_the_pages_as_they_are(cx: &mut TestAppContext) {
     start_with(cx, prefs::Prefs::default());
-    let (window, _, settings) = settings_window(cx, 0, 900.);
+    let (window, _, settings) = settings_window(cx, APPEARANCE_PAGE, 900.);
     let builds = |cx: &mut TestAppContext| cx.read(|cx| settings.read(cx).builds);
     // A frame as the platform asks for one: only what changed draws again.
     let frame = |cx: &mut TestAppContext| {
@@ -842,7 +845,7 @@ fn a_resize_leaves_the_pages_as_they_are(cx: &mut TestAppContext) {
 fn the_choices_stay_inside_their_rows(cx: &mut TestAppContext) {
     use gpui_kit::{ElementId, Window, base::test_support::snapshots};
     start_with(cx, prefs::Prefs::default());
-    let (window, _, settings) = settings_window(cx, 1, 1200.);
+    let (window, _, settings) = settings_window(cx, INPUT_PAGE, 1200.);
     let show = |cx: &mut TestAppContext, page: usize| {
         cx.update(|cx| settings.update(cx, |settings, cx| settings.show_page(page, cx)));
         act(cx, window, |_, _| {});
@@ -865,7 +868,7 @@ fn the_choices_stay_inside_their_rows(cx: &mut TestAppContext) {
     let mut checked = [0; 3];
     for width in (460..=1300).step_by(40) {
         cx.simulate_window_resize(window, size(px(width as f32), px(1200.)));
-        show(cx, 1);
+        show(cx, INPUT_PAGE);
         // The paste number field ends where the rows end, in either layout.
         let mut inset = px(0.);
         act(cx, window, |window, _| {
@@ -873,7 +876,10 @@ fn the_choices_stay_inside_their_rows(cx: &mut TestAppContext) {
             let edge = window.within("group-2").find("increment").bounds().right();
             inset = page.right() - edge;
         });
-        for (ix, page) in [1, 2, 3].into_iter().enumerate() {
+        for (ix, page) in [INPUT_PAGE, ACCOUNTS_PAGE, SESSIONS_PAGE]
+            .into_iter()
+            .enumerate()
+        {
             show(cx, page);
             act(cx, window, |window, _| {
                 let edge = window.find("settings-page").bounds().right() - inset;
@@ -898,7 +904,7 @@ fn a_group_shows_a_preference_changed_elsewhere(cx: &mut TestAppContext) {
     start_with(cx, prefs::Prefs::default());
     // Notifications: When a turn ends, When a question arrives, Cache
     // reminders, Sound.
-    let (window, _, _) = settings_window(cx, 4, 900.);
+    let (window, _, _) = settings_window(cx, NOTIFICATIONS_PAGE, 900.);
     let sound = |cx: &mut TestAppContext| {
         let mut checked = None;
         act(cx, window, |window, _| {

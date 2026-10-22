@@ -334,7 +334,7 @@ impl AccountsPage {
         );
         // What reaches the models comes first: a model that needs a key
         // opens the page there.
-        SettingPage::new(super::PAGES[2])
+        SettingPage::new(super::PAGES[super::ACCOUNTS_PAGE])
             .icon(IconName::Bot)
             .groups([
                 self.keys_group(this)
@@ -737,7 +737,7 @@ impl AccountsPage {
 /// Each model of `models` as the model lists show it, by its name: "Opus
 /// 5.5 · Anthropic API", "(can't be used yet)" when its group needs
 /// something. Made once per reading, since naming a model takes a while.
-fn model_labels(models: &ModelChoices) -> Vec<(SharedString, SharedString)> {
+pub(super) fn model_labels(models: &ModelChoices) -> Vec<(SharedString, SharedString)> {
     let mut labels = Vec::new();
     for group in &models.groups {
         let way = group.name.split(',').next().unwrap_or(&group.name).trim();
@@ -764,7 +764,7 @@ fn key_keywords(key: &arko::accounts::Key) -> Vec<SharedString> {
 
 /// The efforts to choose from for `model`, `first` standing for the
 /// default, with `chosen` kept even when the model doesn't take it.
-fn effort_options(
+pub(super) fn effort_options(
     first: &str,
     model: Option<&str>,
     chosen: Option<&str>,

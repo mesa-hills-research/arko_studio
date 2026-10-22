@@ -177,7 +177,7 @@ impl WebPageSettings {
                 })
                 .collect()
         };
-        SettingPage::new(super::PAGES[5]).icon(IconName::Globe).groups([
+        SettingPage::new(super::PAGES[super::WEB_PAGE_PAGE]).icon(IconName::Globe).groups([
             SettingGroup::new()
                 .key(super::group_key("Sharing", &sharing))
                 .title("Sharing")

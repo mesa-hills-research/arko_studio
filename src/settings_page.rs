@@ -26,11 +26,13 @@ use crate::{fonts, menus, paths};
 mod accounts;
 mod extensions;
 mod fields;
+mod profiles;
 mod sessions;
 mod web;
 
 pub use accounts::AccountsPage;
 pub use extensions::ExtensionsPage;
+pub use profiles::ProfilesPage;
 pub use sessions::SessionsPage;
 pub use web::WebPageSettings;
 
@@ -40,16 +42,28 @@ actions!(settings_page, [CloseSettings]);
 pub const CONTEXT: &str = "SettingsPage";
 
 /// The pages, in their order in the page list.
-pub const PAGES: [&str; 8] = [
+pub const PAGES: [&str; 9] = [
     "Appearance",
     "Input",
     "Models & accounts",
+    "Worker profiles",
     "Sessions",
     "Notifications",
     "Web page",
     "Extensions",
     "Advanced",
 ];
+
+/// Where each page is in [`PAGES`].
+pub const APPEARANCE_PAGE: usize = 0;
+pub const INPUT_PAGE: usize = 1;
+pub const ACCOUNTS_PAGE: usize = 2;
+pub const PROFILES_PAGE: usize = 3;
+pub const SESSIONS_PAGE: usize = 4;
+pub const NOTIFICATIONS_PAGE: usize = 5;
+pub const WEB_PAGE_PAGE: usize = 6;
+pub const EXTENSIONS_PAGE: usize = 7;
+pub const ADVANCED_PAGE: usize = 8;
 
 /// Asks the window to go back from Settings.
 pub struct CloseRequested;
@@ -67,6 +81,7 @@ pub struct SettingsPage {
     fonts_version: u64,
     _font_pickers: Vec<Subscription>,
     accounts: Entity<AccountsPage>,
+    profiles: Entity<ProfilesPage>,
     sessions: Entity<SessionsPage>,
     web_page: Entity<WebPageSettings>,
     extensions: Entity<ExtensionsPage>,
@@ -138,6 +153,7 @@ fn shown_prefs(prefs: &prefs::Prefs) -> prefs::Prefs {
 impl SettingsPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let accounts = cx.new(AccountsPage::new);
+        let profiles = cx.new(|cx| ProfilesPage::new(window, cx));
         let sessions = cx.new(|cx| SessionsPage::new(window, cx));
         let web_page = cx.new(|cx| WebPageSettings::new(window, cx));
         let extensions = cx.new(ExtensionsPage::new);
@@ -149,6 +165,7 @@ impl SettingsPage {
                 this.accounts_revision += 1;
                 cx.notify()
             }),
+            cx.observe(&profiles, |_, _, cx| cx.notify()),
             cx.observe(&sessions, |_, _, cx| cx.notify()),
             cx.observe(&web_page, |_, _, cx| cx.notify()),
             cx.observe(&extensions, |this, _, cx| {
@@ -176,6 +193,7 @@ impl SettingsPage {
             fonts_version: 0,
             _font_pickers: Vec::new(),
             accounts,
+            profiles,
             sessions,
             web_page,
             extensions,
@@ -279,6 +297,10 @@ impl SettingsPage {
 
     pub fn accounts(&self) -> &Entity<AccountsPage> {
         &self.accounts
+    }
+
+    pub fn profiles(&self) -> &Entity<ProfilesPage> {
+        &self.profiles
     }
 
     pub fn sessions(&self) -> &Entity<SessionsPage> {
@@ -466,6 +488,7 @@ impl SettingsPage {
             self.accounts
                 .read(cx)
                 .page(&self.accounts, self.accounts_revision, cx),
+            self.profiles.read(cx).page(&self.profiles),
             self.sessions.read(cx).page(cx),
             notifications_page(cx),
             self.web_page.read(cx).page(cx),
@@ -532,7 +555,7 @@ impl SettingsPage {
                 (label.clone(), label)
             })
             .collect();
-        SettingPage::new(PAGES[0])
+        SettingPage::new(PAGES[APPEARANCE_PAGE])
             .icon(IconName::Palette)
             .groups([
                 SettingGroup::new().key(keys[0]).title("Theme").items([
@@ -856,7 +879,7 @@ fn input_page(cx: &App) -> SettingPage {
     } else {
         "Ctrl+"
     };
-    SettingPage::new(PAGES[1])
+    SettingPage::new(PAGES[INPUT_PAGE])
         .icon(IconName::ALargeSmall)
         .groups([
             SettingGroup::new()
@@ -967,7 +990,7 @@ fn input_page(cx: &App) -> SettingPage {
 fn notifications_page(cx: &App) -> SettingPage {
     let defaults = prefs::Notifications::default();
     let shown = &prefs::get(cx).notifications;
-    SettingPage::new(PAGES[4])
+    SettingPage::new(PAGES[NOTIFICATIONS_PAGE])
         .icon(IconName::Bell)
         .group(SettingGroup::new().key(group_key("", shown)).items([
             switch(
@@ -1178,7 +1201,7 @@ fn advanced_page(
                 .keywords(["defaults", "studio.json"]),
             ),
     );
-    SettingPage::new(PAGES[7])
+    SettingPage::new(PAGES[ADVANCED_PAGE])
         .icon(IconName::Settings2)
         .groups(groups)
 }
@@ -1252,11 +1275,37 @@ impl Render for SettingsPage {
 
 #[cfg(test)]
 mod interaction;
+#[cfg(test)]
+mod profiles_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{group_key, parse_zoom, zoom_label};
+    use super::{
+        ACCOUNTS_PAGE, ADVANCED_PAGE, APPEARANCE_PAGE, EXTENSIONS_PAGE, INPUT_PAGE,
+        NOTIFICATIONS_PAGE, PAGES, PROFILES_PAGE, SESSIONS_PAGE, WEB_PAGE_PAGE, group_key,
+        parse_zoom, zoom_label,
+    };
     use crate::prefs;
+
+    /// Each page is where its constant says, and the list has no other.
+    #[test]
+    fn the_page_constants_name_their_pages() {
+        let pages = [
+            (APPEARANCE_PAGE, "Appearance"),
+            (INPUT_PAGE, "Input"),
+            (ACCOUNTS_PAGE, "Models & accounts"),
+            (PROFILES_PAGE, "Worker profiles"),
+            (SESSIONS_PAGE, "Sessions"),
+            (NOTIFICATIONS_PAGE, "Notifications"),
+            (WEB_PAGE_PAGE, "Web page"),
+            (EXTENSIONS_PAGE, "Extensions"),
+            (ADVANCED_PAGE, "Advanced"),
+        ];
+        assert_eq!(pages.len(), PAGES.len());
+        for (ix, name) in pages {
+            assert_eq!(PAGES[ix], name);
+        }
+    }
 
     #[test]
     fn a_groups_key_changes_with_what_it_shows_and_its_title() {

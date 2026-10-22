@@ -10,6 +10,10 @@ use std::time::SystemTime;
 
 use arko_studio::backend::{Backend as _, FakeBackend, SessionEntry, SessionId};
 use arko_studio::prefs::{self, Motion, Prefs, ThemeMode};
+use arko_studio::settings_page::{
+    ACCOUNTS_PAGE, ADVANCED_PAGE, APPEARANCE_PAGE, EXTENSIONS_PAGE, INPUT_PAGE, NOTIFICATIONS_PAGE,
+    SESSIONS_PAGE, WEB_PAGE_PAGE,
+};
 use arko_studio::{Startup, assets::Assets, fonts, workspace};
 use gpui_kit::{px, size};
 use gpui_screenshot::{Goldens, Screenshot, ScreenshotApp, Tolerance};
@@ -174,7 +178,7 @@ fn settings_window(mode: ThemeMode, width: f32, page: usize) -> Screenshot {
 fn settings_appearance_light() {
     goldens().assert(
         "settings-appearance-light",
-        &settings_window(ThemeMode::Light, 1300., 0),
+        &settings_window(ThemeMode::Light, 1300., APPEARANCE_PAGE),
     );
 }
 
@@ -182,7 +186,7 @@ fn settings_appearance_light() {
 fn settings_appearance_dark() {
     goldens().assert(
         "settings-appearance-dark",
-        &settings_window(ThemeMode::Dark, 1300., 0),
+        &settings_window(ThemeMode::Dark, 1300., APPEARANCE_PAGE),
     );
 }
 
@@ -190,7 +194,7 @@ fn settings_appearance_dark() {
 fn settings_input_light() {
     goldens().assert(
         "settings-input-light",
-        &settings_window(ThemeMode::Light, 1300., 1),
+        &settings_window(ThemeMode::Light, 1300., INPUT_PAGE),
     );
 }
 
@@ -198,7 +202,7 @@ fn settings_input_light() {
 fn settings_input_dark() {
     goldens().assert(
         "settings-input-dark",
-        &settings_window(ThemeMode::Dark, 1300., 1),
+        &settings_window(ThemeMode::Dark, 1300., INPUT_PAGE),
     );
 }
 
@@ -207,7 +211,7 @@ fn settings_input_dark() {
 fn settings_input_medium_light() {
     goldens().assert(
         "settings-input-medium-light",
-        &settings_window(ThemeMode::Light, 980., 1),
+        &settings_window(ThemeMode::Light, 980., INPUT_PAGE),
     );
 }
 
@@ -215,7 +219,7 @@ fn settings_input_medium_light() {
 fn settings_input_medium_dark() {
     goldens().assert(
         "settings-input-medium-dark",
-        &settings_window(ThemeMode::Dark, 980., 1),
+        &settings_window(ThemeMode::Dark, 980., INPUT_PAGE),
     );
 }
 
@@ -223,7 +227,7 @@ fn settings_input_medium_dark() {
 fn settings_accounts_light() {
     goldens().assert(
         "settings-accounts-light",
-        &settings_window(ThemeMode::Light, 1300., 2),
+        &settings_window(ThemeMode::Light, 1300., ACCOUNTS_PAGE),
     );
 }
 
@@ -231,7 +235,7 @@ fn settings_accounts_light() {
 fn settings_accounts_dark() {
     goldens().assert(
         "settings-accounts-dark",
-        &settings_window(ThemeMode::Dark, 1300., 2),
+        &settings_window(ThemeMode::Dark, 1300., ACCOUNTS_PAGE),
     );
 }
 
@@ -239,7 +243,7 @@ fn settings_accounts_dark() {
 fn settings_sessions_light() {
     goldens().assert(
         "settings-sessions-light",
-        &settings_window(ThemeMode::Light, 1300., 3),
+        &settings_window(ThemeMode::Light, 1300., SESSIONS_PAGE),
     );
 }
 
@@ -247,7 +251,7 @@ fn settings_sessions_light() {
 fn settings_sessions_dark() {
     goldens().assert(
         "settings-sessions-dark",
-        &settings_window(ThemeMode::Dark, 1300., 3),
+        &settings_window(ThemeMode::Dark, 1300., SESSIONS_PAGE),
     );
 }
 
@@ -255,7 +259,7 @@ fn settings_sessions_dark() {
 fn settings_notifications_light() {
     goldens().assert(
         "settings-notifications-light",
-        &settings_window(ThemeMode::Light, 1300., 4),
+        &settings_window(ThemeMode::Light, 1300., NOTIFICATIONS_PAGE),
     );
 }
 
@@ -263,7 +267,7 @@ fn settings_notifications_light() {
 fn settings_notifications_dark() {
     goldens().assert(
         "settings-notifications-dark",
-        &settings_window(ThemeMode::Dark, 1300., 4),
+        &settings_window(ThemeMode::Dark, 1300., NOTIFICATIONS_PAGE),
     );
 }
 
@@ -271,7 +275,7 @@ fn settings_notifications_dark() {
 fn settings_web_page_light() {
     goldens().assert(
         "settings-web-page-light",
-        &settings_window(ThemeMode::Light, 1300., 5),
+        &settings_window(ThemeMode::Light, 1300., WEB_PAGE_PAGE),
     );
 }
 
@@ -279,7 +283,7 @@ fn settings_web_page_light() {
 fn settings_web_page_dark() {
     goldens().assert(
         "settings-web-page-dark",
-        &settings_window(ThemeMode::Dark, 1300., 5),
+        &settings_window(ThemeMode::Dark, 1300., WEB_PAGE_PAGE),
     );
 }
 
@@ -287,7 +291,7 @@ fn settings_web_page_dark() {
 fn settings_extensions_light() {
     goldens().assert(
         "settings-extensions-light",
-        &settings_window(ThemeMode::Light, 1300., 6),
+        &settings_window(ThemeMode::Light, 1300., EXTENSIONS_PAGE),
     );
 }
 
@@ -295,7 +299,7 @@ fn settings_extensions_light() {
 fn settings_extensions_dark() {
     goldens().assert(
         "settings-extensions-dark",
-        &settings_window(ThemeMode::Dark, 1300., 6),
+        &settings_window(ThemeMode::Dark, 1300., EXTENSIONS_PAGE),
     );
 }
 
@@ -303,7 +307,7 @@ fn settings_extensions_dark() {
 fn settings_advanced_light() {
     goldens().assert(
         "settings-advanced-light",
-        &settings_window(ThemeMode::Light, 1300., 7),
+        &settings_window(ThemeMode::Light, 1300., ADVANCED_PAGE),
     );
 }
 
@@ -311,7 +315,7 @@ fn settings_advanced_light() {
 fn settings_advanced_dark() {
     goldens().assert(
         "settings-advanced-dark",
-        &settings_window(ThemeMode::Dark, 1300., 7),
+        &settings_window(ThemeMode::Dark, 1300., ADVANCED_PAGE),
     );
 }
 
@@ -320,7 +324,7 @@ fn settings_advanced_dark() {
 fn settings_sessions_narrow_light() {
     goldens().assert(
         "settings-sessions-narrow-light",
-        &settings_window(ThemeMode::Light, 460., 3),
+        &settings_window(ThemeMode::Light, 460., SESSIONS_PAGE),
     );
 }
 
@@ -328,7 +332,7 @@ fn settings_sessions_narrow_light() {
 fn settings_sessions_narrow_dark() {
     goldens().assert(
         "settings-sessions-narrow-dark",
-        &settings_window(ThemeMode::Dark, 460., 3),
+        &settings_window(ThemeMode::Dark, 460., SESSIONS_PAGE),
     );
 }
 

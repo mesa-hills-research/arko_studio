@@ -179,7 +179,7 @@ impl ExtensionsPage {
                 )
                 .items(skills),
         );
-        SettingPage::new(super::PAGES[6])
+        SettingPage::new(super::PAGES[super::EXTENSIONS_PAGE])
             .icon(IconName::Frame)
             .resettable(false)
             .groups(groups)
