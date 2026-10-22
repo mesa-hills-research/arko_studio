@@ -155,10 +155,7 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
             Kind::WorkerLine => {
                 section(&mut out, "Arko");
                 let worker = item.worker.as_deref().unwrap_or("A worker");
-                out.push_str(&format!(
-                    "\n*{worker} started — {}*\n",
-                    one_line(&item.text)
-                ));
+                out.push_str(&format!("\n*{worker} started. {}*\n", one_line(&item.text)));
             }
             Kind::Conversation => {
                 out.push_str(&format!("\n---\n\n*{}*\n", one_line(&item.text)));
@@ -639,7 +636,7 @@ Thanks.
             ],
         );
         assert_eq!(text.matches("*[Image · diagram.png]*").count(), 2);
-        assert!(text.contains("*r1 started — Check the parser*"));
+        assert!(text.contains("*r1 started. Check the parser*"));
         assert!(text.contains("> **Error**\n>\n> The folder is missing."));
         assert!(text.contains("> **Note**\n>\n> Try again."));
     }
