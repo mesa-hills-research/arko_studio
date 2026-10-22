@@ -1005,6 +1005,42 @@ mod tests {
         assert_eq!(prefs.sidebar, SidebarPrefs::default());
     }
 
+    /// The worker defaults are Arko's own until chosen, read back as saved,
+    /// and a choice this version doesn't know keeps only its own default.
+    #[test]
+    fn the_worker_defaults_start_as_arkos_and_read_back() {
+        let new = Prefs::default().new_sessions;
+        assert_eq!(new.worker_models, arko::ModelChoice::Agent);
+        assert_eq!(new.worker_depth, arko::workers::DEFAULT_DEPTH);
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("studio.json");
+        // A file from before they were there.
+        std::fs::write(&path, r#"{ "new_sessions": { "handover_at": 300000 } }"#).unwrap();
+        let prefs = Prefs::load(&path);
+        assert_eq!(prefs.new_sessions.handover_at, Some(300_000));
+        assert_eq!(prefs.new_sessions.worker_models, arko::ModelChoice::Agent);
+        assert_eq!(prefs.new_sessions.worker_depth, 2);
+        std::fs::write(
+            &path,
+            r#"{ "new_sessions": { "worker_models": "profiles", "worker_depth": 3 } }"#,
+        )
+        .unwrap();
+        let prefs = Prefs::load(&path);
+        assert_eq!(
+            prefs.new_sessions.worker_models,
+            arko::ModelChoice::Profiles
+        );
+        assert_eq!(prefs.new_sessions.worker_depth, 3);
+        std::fs::write(
+            &path,
+            r#"{ "new_sessions": { "worker_models": "everyone", "worker_depth": 3 } }"#,
+        )
+        .unwrap();
+        let prefs = Prefs::load(&path);
+        assert_eq!(prefs.new_sessions.worker_models, arko::ModelChoice::Agent);
+        assert_eq!(prefs.new_sessions.worker_depth, 3);
+    }
+
     /// A file that isn't JSON gives the defaults, and is kept beside, since
     /// the next save replaces it.
     #[test]
