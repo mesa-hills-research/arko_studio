@@ -1027,12 +1027,7 @@ impl Render for SessionInfo {
             // What the agents have besides their own tools.
             body = body.child(heading("Extensions", cx));
             body = match &facts {
-                None => body.child(
-                    div()
-                        .text_xs()
-                        .text_color(muted)
-                        .child("Reading the session’s details…"),
-                ),
+                None => body.child(div().text_xs().text_color(muted).child("Reading…")),
                 Some(facts) => body
                     .child(row(
                         narrow,
