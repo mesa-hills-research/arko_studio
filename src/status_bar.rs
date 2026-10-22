@@ -462,7 +462,7 @@ impl StatusBar {
                     .xsmall()
                     .icon(IconName::Globe)
                     .when(!narrow, |this| this.label("Web page shared"))
-                    .when(narrow, |this| this.tooltip("The web page is shared"))
+                    .when(narrow, |this| this.tooltip("Web page shared"))
                     .accessibility_label("Web page shared"),
             )
             .content(move |_, _, cx| {
@@ -711,7 +711,7 @@ impl RenderOnce for CostDetails {
             None => div()
                 .text_xs()
                 .text_color(muted)
-                .child("Reading the costs…")
+                .child("Reading…")
                 .into_any_element(),
             Some(report) => {
                 let billed = report.billed();
@@ -724,10 +724,7 @@ impl RenderOnce for CostDetails {
                 let mut lines = vec![
                     div()
                         .text_sm()
-                        .child(format!(
-                            "{} billed in this session",
-                            figures::dollars(billed)
-                        ))
+                        .child(format!("{} billed", figures::dollars(billed)))
                         .into_any_element(),
                 ];
                 if let Some(plan) = plan {
