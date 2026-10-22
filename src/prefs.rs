@@ -229,6 +229,10 @@ pub struct NewSessions {
     /// After how many seconds a shell command still running moves to the
     /// background, 0 for never. `None`: arko's 10 minutes.
     pub background_after: Option<u64>,
+    /// How long after the user's last message a monitor's warning before
+    /// it ends still wakes the agent, as `/monitor-wakes` takes it (`2h`,
+    /// `always`, `off`). `None`: arko's 2 hours.
+    pub monitor_wakes: Option<String>,
     /// The agents may change files outside the session's folder.
     pub outside_access: bool,
     /// The main agent ends its turns with a reply in text (else with
@@ -257,6 +261,7 @@ impl Default for NewSessions {
             handover_at: None,
             workers_handover_at: None,
             background_after: None,
+            monitor_wakes: None,
             outside_access: false,
             text_replies: true,
             cc_compact: true,
