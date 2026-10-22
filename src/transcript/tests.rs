@@ -1174,6 +1174,53 @@ fn the_new_count_counts_what_the_view_shows(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| view.read(cx).new_while_away), 2);
 }
 
+/// Rows that arrive while the reader is scrolled up count as new wherever
+/// they are placed, also above the notes that wait at the end for the agent
+/// to read them.
+#[gpui_kit::test]
+fn the_new_count_includes_rows_above_the_notes_waiting_at_the_end(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    turns(&feed, 30, 1);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 300.);
+    load_all(cx, window, &view);
+    scroll_to_key(cx, window, &view, user_row(&feed, 10));
+    let new = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).new_while_away);
+    feed.user("Next", Source::App, Delivery::Turn);
+    feed.turn_started();
+    settle(cx, window);
+    assert_eq!(new(cx), 1, "the message");
+
+    // Two notes wait below what the agent does.
+    for (seq, text) in [(1, "Use tabs."), (2, "And the tests.")] {
+        feed.note(text, Source::App, seq, Vec::new());
+        settle(cx, window);
+        assert_eq!(new(cx), 1 + seq as usize, "the note {seq}");
+    }
+    let rows = keys(&view, cx);
+    assert!(
+        matches!(rows[rows.len() - 2..], [RowKey::User(_), RowKey::User(_)]),
+        "{rows:?}"
+    );
+
+    // What the agent does goes above the notes, and counts.
+    for (n, count) in [(0, 4), (1, 5)] {
+        let id = call(
+            &feed,
+            "main",
+            "read_file",
+            &[("path", format!("src/new{n}.rs").into())],
+        );
+        result(&feed, "main", id, "read_file", "1 | fn a() {}\n");
+        settle(cx, window);
+        assert_eq!(new(cx), count, "the call {n}");
+    }
+    // Back to the latest: the count clears.
+    view.update(cx, |view, cx| view.scroll_to_end(cx));
+    settle(cx, window);
+    assert_eq!(new(cx), 0);
+}
+
 #[gpui_kit::test]
 fn a_long_transcript_shows_its_end_first_and_the_rest_a_chunk_a_frame(cx: &mut TestAppContext) {
     start(cx);

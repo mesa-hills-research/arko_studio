@@ -366,6 +366,9 @@ pub struct TranscriptView {
     hover_grace: Option<Task<()>>,
     /// Entries that came while the reader was scrolled up.
     new_while_away: usize,
+    /// How many of the rows come before "Working…" and the notes waiting at
+    /// the end: the rows that arrive go in at its end.
+    core_rows: usize,
     /// The oldest entry ready to show, while older ones wait to be made
     /// ready ([`FIRST_ENTRIES`]).
     loaded_from: Option<u64>,
@@ -480,6 +483,7 @@ impl TranscriptView {
             hovered_rows: HashSet::new(),
             hover_grace: None,
             new_while_away: 0,
+            core_rows: 0,
             loaded_from: None,
             scroll_to: None,
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
@@ -764,6 +768,7 @@ impl TranscriptView {
             self.rows.clear();
             self.list.reset(0);
             self.new_while_away = 0;
+            self.core_rows = 0;
         } else {
             for id in &changes.removed {
                 self.ui.remove(id);
@@ -1211,23 +1216,44 @@ impl TranscriptView {
                 self.list.remeasure_row(new_ix);
             }
         }
-        // What came after the last row while the reader was away ("Working…"
-        // gives way to it).
+        // What came after the rows the reader has, while they were away. It
+        // goes in before "Working…" and the notes waiting at the end, which
+        // aren't what came ("Working…" gives way to it).
         let working = |row: &Row| matches!(row.key, RowKey::Working(_));
-        if scrolled_up
-            && let Some((range, count)) = changes.last()
-            && range.end == old.len()
-            && old[range.clone()].iter().all(working)
-            && old.len() > range.len()
-        {
-            let mut entries: Vec<u64> = rows[rows.len() - count..]
-                .iter()
-                .filter(|row| !working(row))
-                .map(|row| row.key.entry())
-                .collect();
+        let aside = |row: &Row| {
+            working(row)
+                || matches!(row.key, RowKey::User(id)
+                    if self.model.entry(id).is_some_and(|entry| entry.item.pending))
+        };
+        let core_rows = rows
+            .iter()
+            .rposition(|row| !aside(row))
+            .map_or(0, |ix| ix + 1);
+        if scrolled_up && self.core_rows > 0 {
+            let mut entries: Vec<u64> = Vec::new();
+            let mut inserted = 0;
+            for (range, count) in &changes {
+                // The rows before it in the new list: those kept, and what
+                // the changes before it put in.
+                let from = kept
+                    .iter()
+                    .take_while(|(old, _)| *old < range.start)
+                    .count()
+                    + inserted;
+                inserted += count;
+                if range.start >= self.core_rows {
+                    entries.extend(
+                        rows[from..from + count]
+                            .iter()
+                            .filter(|row| !working(row))
+                            .map(|row| row.key.entry()),
+                    );
+                }
+            }
             entries.dedup();
             self.new_while_away += entries.len();
         }
+        self.core_rows = core_rows;
         self.rows = rows;
         // A row gone from under the pointer never says that the pointer
         // left it.
