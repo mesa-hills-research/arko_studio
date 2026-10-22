@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="40" height="40" viewBox="0 0 40 40">
+  <!-- 40 px. One unit is one pixel. Straight edges sit on whole pixels, so only the curves are smoothed. -->
+  <g fill="#D5642A">
+    <!-- the arch, stopping one pixel above the hollow node -->
+    <path d="M2 17A15 15 0 0 1 32 17H28A11 11 0 0 0 6 17Z"/>
+    <!-- the stem, open where the arrow passes -->
+    <path d="M28 17H32V19H28Z"/>
+    <path d="M28 23H32V37H28Z"/>
+    <!-- the bowl, stopping short of the bottom node -->
+    <path d="M32 25A12 12 0 0 1 18 36.83V32.75A8 8 0 0 0 28 25Z"/>
+    <!-- the arrow, with its line from the hollow node -->
+    <path d="M7 20H35V17L39 21L35 25V22H7Z"/>
+    <!-- the links down to the bottom node -->
+    <path fill="none" stroke="#D5642A" stroke-width="2" d="M5.34 22.74L14 34M21 21L14 34"/>
+    <!-- the right node and the bottom node -->
+    <circle cx="21" cy="21" r="3"/>
+    <circle cx="14" cy="34" r="3"/>
+    <!-- the hollow node -->
+    <path fill-rule="evenodd" d="M1 21a3 3 0 1 0 6 0a3 3 0 1 0 -6 0ZM2.7 21a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0Z"/>
+  </g>
+</svg>
