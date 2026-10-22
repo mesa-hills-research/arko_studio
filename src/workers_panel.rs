@@ -21,7 +21,6 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
-    spinner::Spinner,
     tooltip::Tooltip,
     v_flex,
 };
@@ -1036,7 +1035,7 @@ fn state_mark(state: WorkerState, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let dot = |color: Hsla| div().size_2().rounded_full().bg(color);
     let mark: AnyElement = match state {
-        WorkerState::Running => Spinner::new()
+        WorkerState::Running => crate::spinner::spinner()
             .xsmall()
             .color(theme.muted_foreground)
             .into_any_element(),

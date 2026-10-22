@@ -39,6 +39,7 @@ pub mod session_view;
 pub mod settings_page;
 pub mod shortcuts;
 pub mod sidebar;
+pub mod spinner;
 pub mod status_bar;
 pub mod theme_picker;
 pub mod title_bar;

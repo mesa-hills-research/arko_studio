@@ -186,8 +186,8 @@ const STYLES: [Style; 10] = [
     },
     Style {
         letter: 'J',
-        name: "Before, eased, slower",
-        cost: "1 sprite turned, at 0.6 times A's speed",
+        name: "Before, eased, slower (the app's)",
+        cost: "1 sprite turned, a turn in the app's 1.2 s",
         build: before_slowly,
     },
 ];
@@ -233,10 +233,13 @@ fn before(cell: &Cell) -> AnyElement {
         .into_any_element()
 }
 
-/// A at 0.6 times its speed, 1.33 s a turn. It follows the rate chosen, where A keeps its 30
-/// frames a second, so the slower turn can be seen at the display's rate.
+/// A at the speed the app's spinner turns at, a turn in `arko_studio::spinner::TURN`. It follows
+/// the rate chosen, where A keeps its 30 frames a second, so the slower turn can be seen at the
+/// display's rate.
 fn before_slowly(cell: &Cell) -> AnyElement {
-    let animation = cell.animation(800. / 0.6).with_easing(ease_in_out);
+    let animation = cell
+        .animation(arko_studio::spinner::TURN.as_secs_f32() * 1000.)
+        .with_easing(ease_in_out);
     cell.sprite_icon(IconName::Loader)
         .with_paint_animation(cell.id('J', 0), animation, |delta| {
             PaintEffect::rotation(percentage(delta).into())

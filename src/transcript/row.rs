@@ -19,7 +19,6 @@ use gpui_kit::component::{
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
     shimmer::ShimmerText,
-    spinner::Spinner,
     tooltip::Tooltip,
     v_flex,
 };
@@ -599,7 +598,7 @@ fn spinner(id: impl Into<ElementId>, turns: bool, cx: &App) -> AnyElement {
     }
     div()
         .id(id)
-        .child(Spinner::new().xsmall())
+        .child(crate::spinner::spinner().xsmall())
         .into_any_element()
 }
 

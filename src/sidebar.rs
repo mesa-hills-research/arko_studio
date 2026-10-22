@@ -1009,7 +1009,7 @@ impl Sidebar {
                                         .test_support()
                                         .flex_none()
                                         .child(
-                                            gpui_kit::component::spinner::Spinner::new()
+                                            crate::spinner::spinner()
                                                 .xsmall()
                                                 .color(theme.muted_foreground),
                                         )
