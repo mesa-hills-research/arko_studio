@@ -26,6 +26,14 @@ pub fn depth_effect(depth: u32, choice: ModelChoice) -> String {
     curly(&arko::workers::depth_effect(depth, choice))
 }
 
+/// What the "Worker retry cap" setting does, with it `on` or off, in Arko's
+/// words.
+pub fn retry_cap_about(on: bool) -> String {
+    curly(&arko::workers::retry_cap_about(
+        on.then_some(arko::workers::DEFAULT_RETRY_CAP),
+    ))
+}
+
 /// What the "Message copies" setting does, with it `on` or off, in Arko's
 /// words.
 pub fn copies_about(on: bool) -> String {

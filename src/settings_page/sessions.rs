@@ -11,7 +11,7 @@ use super::fields::{self, TextKind, TextSetting};
 use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
-use crate::workers::{copies_about, curly, depth_about, models_about};
+use crate::workers::{copies_about, curly, depth_about, models_about, retry_cap_about};
 use arko::ModelChoice;
 use arko::commands::MIN_HANDOVER_SIZE;
 use arko::monitors::Wakes;
@@ -255,7 +255,12 @@ impl SessionsPage {
                 new.background_after,
                 new.monitor_wakes.clone(),
             ),
-            (new.worker_models, new.worker_depth, new.message_copies),
+            (
+                new.worker_models,
+                new.worker_depth,
+                new.worker_retry_cap,
+                new.message_copies,
+            ),
             (
                 new.outside_access,
                 new.text_replies,
@@ -318,6 +323,15 @@ impl SessionsPage {
                 )
                 .description(depth_about())
                 .keywords(["workers", "nested", "levels", "worker-depth"]),
+                super::switch(
+                    workers::RETRY_CAP_NAME,
+                    "",
+                    |prefs| prefs.new_sessions.worker_retry_cap,
+                    |prefs, on| prefs.new_sessions.worker_retry_cap = on,
+                    defaults.worker_retry_cap,
+                )
+                .description(retry_cap_about(new.worker_retry_cap))
+                .keywords(["workers", "retry", "failed requests", "worker-retry-cap"]),
                 super::switch(
                     workers::COPIES_NAME,
                     "",

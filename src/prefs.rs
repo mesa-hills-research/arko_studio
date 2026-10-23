@@ -241,6 +241,9 @@ pub struct NewSessions {
     /// How many levels of workers the session allows, 1 to 4, as
     /// `/worker-depth` takes it.
     pub worker_depth: u32,
+    /// A worker fails after a number of failed model requests in a row,
+    /// which Arko sets to its default, as `/worker-retry-cap on` does.
+    pub worker_retry_cap: bool,
     /// The agent that started a worker gets a copy of the messages the user
     /// sends the worker, as `/message-copies` takes it.
     pub message_copies: bool,
@@ -275,6 +278,7 @@ impl Default for NewSessions {
             monitor_wakes: None,
             worker_models: arko::ModelChoice::default(),
             worker_depth: arko::workers::DEFAULT_DEPTH,
+            worker_retry_cap: false,
             message_copies: false,
             outside_access: false,
             text_replies: true,
