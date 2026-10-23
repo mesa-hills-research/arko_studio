@@ -3096,6 +3096,7 @@ fn session_info(mode: ThemeMode) -> Screenshot {
                 always: false,
                 builtin,
                 replaces_builtin: None,
+                path: None,
             })
             .collect(),
             folders: Vec::new(),

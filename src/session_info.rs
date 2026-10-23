@@ -1578,6 +1578,7 @@ mod tests {
             always: false,
             builtin,
             replaces_builtin: replaces.then(|| home.join(".claude/skills").join(name)),
+            path: None,
         };
         let facts = |skills, builtin_off: &[&str]| {
             Ok(SkillsFacts {
