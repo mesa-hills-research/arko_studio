@@ -1314,7 +1314,7 @@ fn a_message_to_a_worker_reaches_it_and_shows_in_its_transcript_only(cx: &mut Te
     // Only r1's conversation has it, as the user's.
     let read = bodies("r1").pop().unwrap();
     assert!(
-        read.contains("The user sent you a message directly:\\n  Use tabs."),
+        read.contains("The user sent you a message directly.") && read.contains(":\\n  Use tabs."),
         "{read}"
     );
     for body in bodies("r2") {

@@ -691,7 +691,7 @@ impl TranscriptView {
             || outcome == "stopped"
             || outcome == "interrupted"
             || (monitor
-                && ["monitoring", "ended", "stopped", "its command exited"]
+                && ["monitoring", "ended", "stopped", "command exited"]
                     .iter()
                     .any(|start| outcome.starts_with(start)));
         shown.then(|| JobLine::Outcome {
@@ -724,7 +724,7 @@ impl TranscriptView {
 
 /// How a monitor that ended did, as Arko words it on its call's line, and
 /// whether it failed: "Ended after 30 min · 4 alerts", "Stopped · 2
-/// alerts", "Its command exited (exit 1)".
+/// alerts", "Command exited (exit 1)".
 pub(super) fn monitor_ended(job: &JobSummary) -> (String, bool) {
     let alerts = match job.alerts.unwrap_or(0) {
         0 => String::new(),
@@ -739,11 +739,11 @@ pub(super) fn monitor_ended(job: &JobSummary) -> (String, bool) {
             },
             false,
         ),
-        JobState::Finished => (format!("Its command exited{alerts}"), false),
+        JobState::Finished => (format!("Command exited{alerts}"), false),
         JobState::Failed => (
             match &job.outcome {
-                Some(how) => format!("Its command exited ({how}){alerts}"),
-                None => format!("Its command exited{alerts}"),
+                Some(how) => format!("Command exited ({how}){alerts}"),
+                None => format!("Command exited{alerts}"),
             },
             true,
         ),

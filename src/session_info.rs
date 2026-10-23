@@ -1341,9 +1341,12 @@ mod tests {
                 name: "docs-style".into(),
                 description: String::new(),
                 always: false,
+                builtin: false,
+                replaces_builtin: None,
             }],
             folders: Vec::new(),
             own_folder: PathBuf::new(),
+            builtin_off: Vec::new(),
         };
         assert_eq!(skills_line(&Ok(skills)), "1 (docs-style)");
         assert_eq!(indexes_text(&[]), None);

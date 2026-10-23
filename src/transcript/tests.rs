@@ -3924,7 +3924,7 @@ fn a_monitors_call_follows_the_monitor(cx: &mut TestAppContext) {
     let ended = [
         ("Ended after 30 min · 4 alerts", false),
         ("Stopped", false),
-        ("Its command exited (exit 1)", true),
+        ("Command exited (exit 1)", true),
         ("Interrupted", true),
     ];
     for (ix, (text, failed)) in ended.into_iter().enumerate() {

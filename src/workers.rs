@@ -352,7 +352,7 @@ mod tests {
         let three = depth_effect(3);
         assert_eq!(
             three,
-            "Workers can go 3 levels deep. A worker can start workers of its own when the agent that starts it says so, down to level 3."
+            "Workers can go 3 levels deep, and a worker can start workers of its own when the agent that starts it says so."
         );
         for text in [about, depth_effect(2), three, depth_effect(1)] {
             assert!(!text.contains('\''), "{text}");

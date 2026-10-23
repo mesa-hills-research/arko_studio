@@ -3065,10 +3065,13 @@ fn session_info(mode: ThemeMode) -> Screenshot {
                     name: name.into(),
                     description: String::new(),
                     always: false,
+                    builtin: false,
+                    replaces_builtin: None,
                 })
                 .collect(),
             folders: Vec::new(),
             own_folder: PathBuf::new(),
+            builtin_off: Vec::new(),
         }),
         indexes: [
             ("arko", IndexKind::Code, "voyage-code-4", IndexWatch::Here),

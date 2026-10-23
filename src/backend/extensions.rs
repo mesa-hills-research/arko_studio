@@ -91,6 +91,7 @@ impl Extensions {
                         path: home.join(".claude/skills").join(name),
                         auto_load: false,
                         skipped: None,
+                        builtin: false,
                     })
                     .collect(),
             }],
