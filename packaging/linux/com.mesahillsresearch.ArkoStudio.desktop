@@ -4,5 +4,5 @@ Name=Arko Studio
 Exec=arko-studio
 Icon=com.mesahillsresearch.ArkoStudio
 Terminal=false
-Categories=Development;Utility;
+Categories=Development;
 StartupWMClass=com.mesahillsresearch.ArkoStudio
