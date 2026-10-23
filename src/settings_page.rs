@@ -1080,7 +1080,7 @@ fn advanced_page(
                     None,
                 )
                 .description(
-                    "What new sessions run commands in. PowerShell is PowerShell 7 where it’s installed, else Windows PowerShell. Without ARKO_SHELL, cmd.exe.",
+                    "What new sessions run commands in. PowerShell is PowerShell 7 where it’s installed, else Windows PowerShell. Without ARKO_SHELL, PowerShell.",
                 )
                 .keywords(["cmd", "powershell", "pwsh", "ARKO_SHELL"]),
             ),

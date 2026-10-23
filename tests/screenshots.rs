@@ -3077,17 +3077,30 @@ fn session_info(mode: ThemeMode) -> Screenshot {
         },
         skills: Ok(SkillsFacts {
             skills: [
-                ("release-notes", false),
-                ("docs-style", false),
-                ("user-facing-prose", true),
+                (
+                    "release-notes",
+                    "Write the release notes of a version from its commits.",
+                    Some("/home/ada/src/arko/.agents/skills/release-notes"),
+                ),
+                (
+                    "docs-style",
+                    "Rules for the project docs.",
+                    Some("/home/ada/.claude/skills/docs-style"),
+                ),
+                (
+                    "user-facing-prose",
+                    "How to write any text a person reads, such as UI text, messages, docs and commit messages.",
+                    None,
+                ),
             ]
             .into_iter()
-            .map(|(name, builtin)| SkillFacts {
+            .map(|(name, description, path)| SkillFacts {
                 name: name.into(),
-                description: String::new(),
+                description: description.into(),
                 always: false,
-                builtin,
+                builtin: path.is_none(),
                 replaces_builtin: None,
+                path: path.map(PathBuf::from),
             })
             .collect(),
             folders: Vec::new(),
@@ -3129,7 +3142,7 @@ fn session_info(mode: ThemeMode) -> Screenshot {
         .collect()),
     };
     let window = app
-        .open_window_with(size(px(560.), px(1700.)), 1., |options, cx| {
+        .open_window_with(size(px(560.), px(1800.)), 1., |options, cx| {
             gpui_kit::open_window(options, cx, |window, cx| {
                 let info = cx.new(|cx| {
                     let mut info = SessionInfo::new(window, cx);

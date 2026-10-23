@@ -1663,3 +1663,42 @@ fn frames_while_another_session_works(cx: &mut TestAppContext) {
     );
     app.close_all(cx);
 }
+
+/// The drop that ends a resize must still reach the window's text selection.
+/// Otherwise the selection goes on following the pointer over the transcript.
+#[gpui_kit::test]
+fn resizing_the_sidebar_leaves_no_selection_following_the_pointer(cx: &mut TestAppContext) {
+    use gpui_kit::{Modifiers, MouseMoveEvent, PlatformInput, Point, px};
+
+    let mock = Mock::start(|_, _| answer("Seven pears, ripe and green.", Duration::ZERO));
+    let app = start(cx, &mock);
+    app.send(cx, "Count the pears.");
+    app.wait_for_text(cx, "Seven pears");
+    app.wait_for_rows(cx, 2);
+    act(cx, app.window, |window, cx| {
+        let from = window.find("sidebar-resize").bounds().center();
+        window.drag(from, Point::new(px(320.), from.y), cx);
+    });
+    // The pointer crosses the transcript with the button up.
+    act(cx, app.window, |window, cx| {
+        let view = window.find("session-view").bounds();
+        let mut y = view.top();
+        while y < view.bottom() {
+            let mut x = view.left();
+            while x < view.right() {
+                window.dispatch_event(
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position: Point::new(x, y),
+                        pressed_button: None,
+                        modifiers: Modifiers::default(),
+                    }),
+                    cx,
+                );
+                x += px(12.);
+            }
+            y += px(12.);
+        }
+        assert!(!gpui_kit::base::TextSelection::has_selection(window, cx));
+    });
+    app.close_all(cx);
+}

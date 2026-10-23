@@ -69,6 +69,7 @@ fn current(control: &str, settings: &arko::remote::LiveSettings) -> Option<Strin
         "worker-models" => Some(settings.worker_models.name().to_string()),
         "worker-depth" => Some(settings.worker_depth.to_string()),
         "message-copies" => switch(settings.message_copies),
+        "worker-retry-cap" => switch(settings.worker_retry_cap.is_some()),
         _ => None,
     }
 }
@@ -436,10 +437,36 @@ impl SessionInfo {
         }));
     }
 
-    /// Removes the kept note `id` from the session folder `dir`, off the UI
-    /// thread, and shows the notes the folder holds then. Why it couldn't
-    /// is told in a notification.
-    fn remove_note(this: &Entity<Self>, dir: PathBuf, id: u32, window: &mut Window, cx: &mut App) {
+    /// Removes the kept note `id`. A running session removes it itself, so
+    /// its agents are told, and the note leaves the list at once. Otherwise
+    /// it goes from the session folder `dir`, off the UI thread, and the list
+    /// shows the notes the folder holds then. Why it couldn't is told in a
+    /// notification.
+    fn remove_note(
+        this: &Entity<Self>,
+        dir: Option<PathBuf>,
+        id: u32,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let running = this
+            .read(cx)
+            .session
+            .clone()
+            .filter(|session| session.read(cx).is_running());
+        if let Some(session) = running {
+            run(&session, &format!("/notes remove {id}"), window, cx);
+            this.update(cx, |this, cx| {
+                if let Some(Ok(notes)) = this.facts.as_mut().map(|facts| &mut facts.notes) {
+                    notes.retain(|note| note.id != id);
+                }
+                cx.notify();
+            });
+            return;
+        }
+        let Some(dir) = dir else {
+            return;
+        };
         let removing = cx.background_spawn(async move {
             let notes = KeptNotes::new(&dir);
             (notes.remove(id), notes.list())
@@ -1049,6 +1076,12 @@ impl Render for SessionInfo {
                     .parse()
                     .unwrap_or(settings.worker_depth);
                 let copies = shown("message-copies") == "on";
+                // On, the session's own cap, or the one `on` sets.
+                let cap = (shown("worker-retry-cap") == "on").then(|| {
+                    settings
+                        .worker_retry_cap
+                        .unwrap_or(workers::DEFAULT_RETRY_CAP)
+                });
                 body = body
                     .child(row(
                         narrow,
@@ -1074,6 +1107,28 @@ impl Render for SessionInfo {
                                 .text_color(muted)
                                 .child(depth_effect(depth, chosen)),
                         ),
+                        cx,
+                    ))
+                    .child(row(
+                        narrow,
+                        workers::RETRY_CAP_NAME,
+                        v_flex()
+                            .gap_1()
+                            .child(h_flex().child(switch(
+                                "worker-retry-cap",
+                                workers::RETRY_CAP_NAME,
+                                false,
+                                workers::retry_cap_command(true),
+                                workers::retry_cap_command(false),
+                            )))
+                            .child(
+                                div()
+                                    .id("worker-retry-cap-about")
+                                    .test_support()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(curly(&workers::retry_cap_about(cap))),
+                            ),
                         cx,
                     ))
                     .child(row(
@@ -1129,9 +1184,68 @@ impl Render for SessionInfo {
                         narrow,
                         "Skills",
                         v_flex().children(
-                            skills_lines(&facts.skills)
+                            skills_lines(&facts.skills, cx.global::<HomeFolder>().0.as_deref())
                                 .into_iter()
-                                .map(|line| div().text_sm().child(line)),
+                                .enumerate()
+                                .map(|(ix, (name, description, from, path))| {
+                                    // A line of one part, why the skills
+                                    // couldn't be read or those left out,
+                                    // wraps.
+                                    let alone = [&name, &description, &from]
+                                        .iter()
+                                        .filter(|part| !part.is_empty())
+                                        .count()
+                                        == 1;
+                                    let fit = move |part: Div| {
+                                        if alone {
+                                            part.flex_1().min_w_0()
+                                        } else {
+                                            part.flex_none()
+                                        }
+                                    };
+                                    h_flex()
+                                        .gap_2()
+                                        .text_sm()
+                                        .when(!name.is_empty(), |this| {
+                                            this.child(fit(div()).child(name))
+                                        })
+                                        .when(!description.is_empty(), |this| {
+                                            this.child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .child(description),
+                                            )
+                                        })
+                                        .when(!from.is_empty(), |this| {
+                                            this.child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(muted)
+                                                    // A long folder loses its
+                                                    // leading folders first.
+                                                    .when(!alone, |this| {
+                                                        this.min_w_0()
+                                                            .max_w(relative(0.4))
+                                                            .overflow_hidden()
+                                                            .whitespace_nowrap()
+                                                            .text_ellipsis_start()
+                                                    })
+                                                    .map(fit)
+                                                    .child(from)
+                                                    .id(("skill-folder", ix))
+                                                    .when_some(path, |this, path| {
+                                                        this.tooltip(move |window, cx| {
+                                                            gpui_kit::component::tooltip::Tooltip::new(
+                                                                path.clone(),
+                                                            )
+                                                            .build(window, cx)
+                                                        })
+                                                    }),
+                                            )
+                                        })
+                                }),
                         ),
                         cx,
                     ))
@@ -1188,9 +1302,7 @@ impl Render for SessionInfo {
                                     .label("Remove")
                                     .accessibility_label(format!("Remove kept note {id}"))
                                     .on_click(move |_, window, cx| {
-                                        if let Some(dir) = dir.clone() {
-                                            SessionInfo::remove_note(&info, dir, id, window, cx)
-                                        }
+                                        SessionInfo::remove_note(&info, dir.clone(), id, window, cx)
                                     }),
                             )
                     }))
@@ -1283,43 +1395,66 @@ pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
     lines
 }
 
-/// The skills as lines: the folders' skills, the built-in ones that stay,
-/// and the built-in ones left out, in Arko's words.
-pub fn skills_lines(skills: &Result<SkillsFacts, String>) -> Vec<String> {
+/// The skills as Arko's `/skills` lists them, a line each by name: the
+/// skill's name, its description on one line, and in muted text where it
+/// comes from (`built in`, or the folder it's in under `home` as `~`) and
+/// whether it's always loaded, then for its tooltip where it is. The
+/// built-in skills left out are a muted line of their own.
+pub fn skills_lines(
+    skills: &Result<SkillsFacts, String>,
+    home: Option<&Path>,
+) -> Vec<(String, String, String, Option<String>)> {
     let skills = match skills {
-        Err(why) => return vec![format!("Couldn’t be read ({why})")],
+        Err(why) => {
+            return vec![(
+                format!("Couldn’t be read ({why})"),
+                String::new(),
+                String::new(),
+                None,
+            )];
+        }
         Ok(skills) => skills,
     };
-    let own: Vec<String> = skills
+    let mut lines: Vec<(String, String, String, Option<String>)> = skills
         .skills
         .iter()
-        .filter(|skill| !skill.builtin)
-        .map(|skill| match skill.replaces_builtin {
-            Some(_) => format!("{} (replaces the built-in skill)", skill.name),
-            None => skill.name.clone(),
+        .map(|skill| {
+            let path = skill.path.as_deref().filter(|_| !skill.builtin);
+            let mut from = match path {
+                _ if skill.builtin => "built in".to_string(),
+                // A skill's own folder or file is named as the skill, so the
+                // folder it's in is what says where it comes from.
+                Some(path) => {
+                    let named = path.file_stem().is_some_and(|stem| *stem == *skill.name);
+                    shown_folder(path.parent().filter(|_| named).unwrap_or(path), home)
+                }
+                None => String::new(),
+            };
+            if skill.always {
+                if !from.is_empty() {
+                    from.push_str(", ");
+                }
+                from.push_str("always loaded");
+            }
+            let description = skill.description.split_whitespace().collect::<Vec<_>>();
+            let full = path.map(|path| shown_folder(path, home));
+            (skill.name.clone(), description.join(" "), from, full)
         })
         .collect();
-    let builtin: Vec<&str> = skills
-        .skills
-        .iter()
-        .filter(|skill| skill.builtin)
-        .map(|skill| skill.name.as_str())
-        .collect();
-    let mut lines = Vec::new();
-    if !own.is_empty() {
-        lines.push(own.join(", "));
-    }
-    if !builtin.is_empty() {
-        lines.push(format!("{} (built in)", builtin.join(", ")));
-    }
+    lines.sort();
     if !skills.builtin_off.is_empty() {
-        lines.push(format!(
-            "Built-in skills left out ({})",
-            skills.builtin_off.join(", ")
+        lines.push((
+            String::new(),
+            String::new(),
+            format!(
+                "Built-in skills left out ({})",
+                skills.builtin_off.join(", ")
+            ),
+            None,
         ));
     }
     if lines.is_empty() {
-        lines.push("None".to_string());
+        lines.push(("None".to_string(), String::new(), String::new(), None));
     }
     lines
 }
@@ -1373,13 +1508,13 @@ mod tests {
     // shadow Rust's.
     use super::{
         Field, MODEL_KEPT, background_value, clicked, field_command, handover_value, index_text,
-        indexes_text, mcp_lines, skills_lines,
+        indexes_text, mcp_lines, shown_folder, skills_lines,
     };
     use arko::details::{
         IndexEmbeddings, IndexFacts, IndexKind, IndexWatch, McpFacts, McpServerFacts, SkillFacts,
         SkillsFacts,
     };
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// The info and the mode popover say it with the same words.
     #[test]
@@ -1491,12 +1626,14 @@ mod tests {
             ]
         );
         assert_eq!(mcp_lines(&McpFacts::default()), [("None".into(), None)]);
+        let home = Path::new("/home/ada");
         let skill = |name: &str, builtin: bool, replaces: bool| SkillFacts {
             name: name.into(),
-            description: String::new(),
+            description: format!("What {name}\n  is for."),
             always: false,
             builtin,
-            replaces_builtin: replaces.then(|| PathBuf::from("/home/ada/.claude/skills/docs")),
+            replaces_builtin: replaces.then(|| home.join(".claude/skills").join(name)),
+            path: (!builtin).then(|| home.join(".claude/skills").join(name)),
         };
         let facts = |skills, builtin_off: &[&str]| {
             Ok(SkillsFacts {
@@ -1506,47 +1643,78 @@ mod tests {
                 builtin_off: builtin_off.iter().map(|name| name.to_string()).collect(),
             })
         };
+        let line = |name: &str, description: &str, from: &str| {
+            (
+                name.to_string(),
+                description.to_string(),
+                from.to_string(),
+                None::<String>,
+            )
+        };
         assert_eq!(
-            skills_lines(&facts(vec![skill("docs-style", false, false)], &[])),
-            ["docs-style"]
+            skills_lines(&facts(Vec::new(), &[]), Some(home)),
+            [line("None", "", "")]
         );
-        assert_eq!(skills_lines(&facts(Vec::new(), &[])), ["None"]);
         assert_eq!(
-            skills_lines(&Err("no folder".into())),
-            ["Couldn’t be read (no folder)"]
+            skills_lines(&Err("no folder".into()), Some(home)),
+            [line("Couldn’t be read (no folder)", "", "")]
         );
-        // The built-in skills that stay, the folder skill replacing one,
-        // and those left out, in separate lines.
+        // A line each by name, the description on one line, then where it
+        // comes from, its folder or built in. The built-in skills left out
+        // come last.
+        let always = SkillFacts {
+            always: true,
+            ..skill("house-rules", false, false)
+        };
+        // A skill's own folder is named as it, so the line names the folder
+        // that holds it, and the tooltip where the skill is. One renamed for
+        // an earlier skill of its name keeps its whole path.
+        let renamed = SkillFacts {
+            path: Some(home.join(".agents/skills/pdf")),
+            ..skill("pdf-2", false, false)
+        };
+        let skills = shown_folder(&home.join(".claude/skills"), Some(home));
+        let folder = |name: &str, from: &str| {
+            let path = shown_folder(&home.join(".claude/skills").join(name), Some(home));
+            (
+                name.to_string(),
+                format!("What {name} is for."),
+                from.to_string(),
+                Some(path),
+            )
+        };
+        let pdf = shown_folder(&home.join(".agents/skills/pdf"), Some(home));
         assert_eq!(
-            skills_lines(&facts(
-                vec![
-                    skill("release-notes", false, false),
-                    skill("repo-docs-style", false, true),
-                    skill("user-facing-prose", true, false),
-                ],
-                &[]
-            )),
+            skills_lines(
+                &facts(
+                    vec![
+                        skill("user-facing-prose", true, false),
+                        skill("repo-docs-style", false, true),
+                        skill("release-notes", false, false),
+                        always,
+                        renamed,
+                    ],
+                    &["ponytail"]
+                ),
+                Some(home)
+            ),
             [
-                "release-notes, repo-docs-style (replaces the built-in skill)",
-                "user-facing-prose (built in)"
+                folder("house-rules", &format!("{skills}, always loaded")),
+                (
+                    "pdf-2".to_string(),
+                    "What pdf-2 is for.".to_string(),
+                    pdf.clone(),
+                    Some(pdf),
+                ),
+                folder("release-notes", &skills),
+                folder("repo-docs-style", &skills),
+                line(
+                    "user-facing-prose",
+                    "What user-facing-prose is for.",
+                    "built in"
+                ),
+                line("", "", "Built-in skills left out (ponytail)"),
             ]
-        );
-        assert_eq!(
-            skills_lines(&facts(
-                vec![skill("user-facing-prose", true, false)],
-                &["repo-docs-style"]
-            )),
-            [
-                "user-facing-prose (built in)",
-                "Built-in skills left out (repo-docs-style)"
-            ]
-        );
-        assert_eq!(
-            skills_lines(&facts(
-                Vec::new(),
-                &["repo-docs-style", "user-facing-prose"]
-            )),
-            ["Built-in skills left out (repo-docs-style, user-facing-prose)"]
         );
         assert_eq!(indexes_text(&[]), None);
     }
@@ -1616,6 +1784,7 @@ mod view_tests {
         cx: &mut TestAppContext,
         dir: &std::path::Path,
         notes: Result<Vec<arko::kept_notes::Note>, String>,
+        session: Option<Entity<LiveSession>>,
     ) -> (AnyWindowHandle, Entity<super::SessionInfo>) {
         use arko::details::{HandoverFacts, McpFacts, ModelFacts, SessionFacts};
         use gpui_kit::{Bounds, WindowBounds, WindowOptions, px, size};
@@ -1689,6 +1858,8 @@ mod view_tests {
                 let opened = gpui_kit::open_window(options, cx, |window, cx| {
                     let info = cx.new(|cx| {
                         let mut info = super::SessionInfo::new(window, cx);
+                        // The session's facts are the preview's.
+                        info.set_session(session, window, cx);
                         info.set_preview(preview, facts, window, cx);
                         info
                     });
@@ -1712,7 +1883,7 @@ mod view_tests {
         start(cx);
         let temp = tempfile::tempdir().unwrap();
         let kept = KeptNotes::new(temp.path());
-        let (window, _) = info_with_notes(cx, temp.path(), kept.list());
+        let (window, _) = info_with_notes(cx, temp.path(), kept.list(), None);
         let present = |cx: &mut TestAppContext, id: usize| {
             cx.update_window(window, |_, window, cx| {
                 window.render_frame(cx);
@@ -1724,7 +1895,7 @@ mod view_tests {
         kept.add("Tear the build box down.", Audience::Lead)
             .unwrap();
         kept.add("Use --locked.", Audience::AllWorkers).unwrap();
-        let (window, _) = info_with_notes(cx, temp.path(), kept.list());
+        let (window, _) = info_with_notes(cx, temp.path(), kept.list(), None);
         let words = cx
             .update_window(window, |_, window, cx| {
                 window.render_frame(cx);
@@ -1745,9 +1916,36 @@ mod view_tests {
         });
         // A file that can't be read says so, in Arko's words.
         std::fs::write(temp.path().join("kept-notes.json"), "not json").unwrap();
-        let (window, _) = info_with_notes(cx, temp.path(), kept.list());
+        let (window, _) = info_with_notes(cx, temp.path(), kept.list(), None);
         act(cx, window, |window, _| {
             assert!(window.try_find("kept-notes-error").is_some());
+        });
+    }
+
+    /// A running session removes a kept note itself, so that its agents are
+    /// told. Remove sends it `/notes remove N`, and the note leaves the list.
+    #[gpui_kit::test]
+    fn a_running_session_is_sent_the_command_to_remove_a_kept_note(cx: &mut TestAppContext) {
+        use arko::kept_notes::{Audience, KeptNotes};
+
+        start(cx);
+        let temp = tempfile::tempdir().unwrap();
+        let kept = KeptNotes::new(temp.path());
+        kept.add("Tear the build box down.", Audience::Lead)
+            .unwrap();
+        kept.add("Use --locked.", Audience::AllWorkers).unwrap();
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        let (window, _) = info_with_notes(cx, temp.path(), kept.list(), Some(session.clone()));
+        act(cx, window, |window, cx| {
+            window.click(("remove-note", 1usize), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(sent(&session, cx), ["/notes remove 1"]);
+        // The file is the session's to change.
+        assert_eq!(kept.list().unwrap().len(), 2);
+        act(cx, window, |window, _| {
+            assert!(window.try_find(("kept-note", 1usize)).is_none());
+            assert!(window.try_find(("kept-note", 2usize)).is_some());
         });
     }
 
@@ -2047,9 +2245,9 @@ mod view_tests {
         assert!(!tooltip_on(cx, false, "extra-rules-fixed"));
     }
 
-    /// Who chooses the workers' models and how deep workers go send the
-    /// commands of the terminal, and show the choice at once. A session
-    /// with no workers lists neither.
+    /// Who chooses the workers' models, how deep workers go, the retry cap
+    /// and message copies send the commands of the terminal, and show the
+    /// choice at once. A session with no workers lists none of them.
     #[gpui_kit::test]
     fn the_worker_settings_send_the_terminals_commands(cx: &mut TestAppContext) {
         use arko::{ModelChoice, workers};
@@ -2060,6 +2258,7 @@ mod view_tests {
             settings: LiveSettings {
                 worker_models: ModelChoice::Agent,
                 worker_depth: 2,
+                worker_retry_cap: Some(5),
                 message_copies: true,
                 ..LiveSettings::default()
             },
@@ -2095,6 +2294,7 @@ mod view_tests {
         assert!(!shows(window, cx, "worker-models"));
         assert!(!shows(window, cx, "worker-depth"));
         assert!(!shows(window, cx, "message-copies"));
+        assert!(!shows(window, cx, "worker-retry-cap"));
         show(cx, &session);
         // The rows are past the first screenful of the info.
         for _ in 0..40 {
@@ -2131,6 +2331,7 @@ mod view_tests {
         assert_eq!(checked(cx, "worker-models-profiles"), Some(false));
         assert_eq!(checked(cx, "worker-depth-2"), Some(true));
         assert_eq!(checked(cx, "message-copies"), Some(true));
+        assert_eq!(checked(cx, "worker-retry-cap"), Some(true));
         act(cx, window, |window, cx| {
             window.click("worker-models-profiles", cx)
         });
@@ -2144,13 +2345,19 @@ mod view_tests {
         // Message copies are a switch.
         act(cx, window, |window, cx| window.click("message-copies", cx));
         assert_eq!(checked(cx, "message-copies"), Some(false));
+        // So is the retry cap, which applies to the running workers at once.
+        act(cx, window, |window, cx| {
+            window.click("worker-retry-cap", cx)
+        });
+        assert_eq!(checked(cx, "worker-retry-cap"), Some(false));
         assert_eq!(
             sent(&session, cx),
             [
                 "/worker-models profiles",
                 workers::depth_command(3).as_str(),
                 "/worker-depth 1",
-                workers::copies_command(false).as_str()
+                workers::copies_command(false).as_str(),
+                "/worker-retry-cap off",
             ]
         );
         for command in sent(&session, cx) {
@@ -2162,6 +2369,7 @@ mod view_tests {
             next.settings.worker_models = ModelChoice::Session;
             next.settings.worker_depth = 4;
             next.settings.message_copies = false;
+            next.settings.worker_retry_cap = None;
             session.set_status(next, Activity::default(), cx)
         });
         cx.executor().advance_clock(super::HOLD);
@@ -2169,6 +2377,7 @@ mod view_tests {
         assert_eq!(checked(cx, "worker-models-session"), Some(true));
         assert_eq!(checked(cx, "worker-depth-4"), Some(true));
         assert_eq!(checked(cx, "message-copies"), Some(false));
+        assert_eq!(checked(cx, "worker-retry-cap"), Some(false));
     }
 
     /// Live settings change through the terminal's commands. Those fixed

@@ -67,8 +67,8 @@ pub struct BuiltinSkill {
     pub name: String,
     pub description: String,
     pub auto_load: bool,
-    /// The folders holding a skill of its name, in the order Arko reads them.
-    /// An empty list means nothing replaces it.
+    /// The skills of its name, where each is (its folder or file), in the
+    /// order Arko reads them. An empty list means nothing replaces it.
     pub replaced_by: Vec<PathBuf>,
 }
 
@@ -120,7 +120,10 @@ impl Extensions {
                     name: "repo-docs-style".into(),
                     description: "Rules for repository documentation, such as READMEs and docs pages. Load it before creating or editing project docs.".into(),
                     auto_load: false,
-                    replaced_by: vec![home.join(".claude/skills")],
+                    replaced_by: vec![
+                        home.join(".claude/skills/repo-docs-style"),
+                        home.join("src/arko/.agents/skills/repo-docs-style"),
+                    ],
                 },
                 BuiltinSkill {
                     name: "ponytail".into(),
@@ -204,7 +207,7 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
                     .find(|other| {
                         !other.builtin && other.skipped.is_none() && other.name == skill.name
                     })
-                    .and_then(|other| other.path.parent())
+                    .map(|other| other.path.as_path())
             } else {
                 None
             };
@@ -214,10 +217,10 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
                 .find(|seen| seen.name == skill.name)
             {
                 Some(seen) => {
-                    if let Some(folder) = replacing
-                        && !seen.replaced_by.iter().any(|known| known == folder)
+                    if let Some(path) = replacing
+                        && !seen.replaced_by.iter().any(|known| known == path)
                     {
-                        seen.replaced_by.push(folder.to_path_buf());
+                        seen.replaced_by.push(path.to_path_buf());
                     }
                 }
                 None => found.builtin.push(BuiltinSkill {
@@ -413,8 +416,9 @@ mod tests {
         // The user's own skill folders (a home folder may hold skills of these names) can
         // replace a built-in too, so the test looks only at the project's folder.
         let ours = project.join(".skills");
-        assert!(!found.builtin[0].replaced_by.contains(&ours));
-        assert!(found.builtin[1].replaced_by.contains(&ours));
+        let replacing = ours.join("repo-docs-style");
+        assert!(!found.builtin[0].replaced_by.contains(&replacing));
+        assert!(found.builtin[1].replaced_by.contains(&replacing));
         // The folders hold only the folders' own skills, with a path.
         assert!(
             found

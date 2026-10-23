@@ -670,6 +670,48 @@ fn ids_of(feed: &Feed, kind: Kind) -> Vec<u64> {
         .collect()
 }
 
+/// Claude Code's message about a request that failed mid-response shows
+/// once, as a warning notice of its own, and neither the reply nor the
+/// error after it repeats it.
+#[gpui_kit::test]
+fn a_failed_requests_message_shows_once_as_a_warning(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let note = "API Error: Connection lost mid-response. The response above may be incomplete.";
+    feed.turn_started();
+    say(&feed, "main", "The answer is");
+    feed.event(
+        &event("main", AgentEvent::ServiceWarning { text: note.into() }),
+        None,
+    );
+    feed.event(
+        &event(
+            "main",
+            AgentEvent::ErrorEncountered {
+                error_message: note.into(),
+                requires_approval_to_retry: true,
+                tool_call_id: None,
+                error_kind: None,
+            },
+        ),
+        None,
+    );
+    settle(cx, window);
+    let shown: Vec<(Kind, Option<Level>)> = cx.read(|cx| {
+        view.read(cx)
+            .model
+            .entries()
+            .iter()
+            .filter(|entry| entry.item.text.contains("Connection lost"))
+            .map(|entry| (entry.item.kind, entry.item.level))
+            .collect()
+    });
+    assert_eq!(shown, [(Kind::Notice, Some(Level::Warn))]);
+    let notice = ids_of(&feed, Kind::Notice)[0];
+    assert!(keys(&view, cx).contains(&RowKey::Notice(notice)));
+}
+
 #[gpui_kit::test]
 fn a_replys_actions_stay_while_the_pointer_moves_onto_them_and_work(cx: &mut TestAppContext) {
     start(cx);
@@ -764,6 +806,9 @@ fn copy_gives_the_replys_markdown_source(cx: &mut TestAppContext) {
     assert_eq!(copy(cx).as_deref(), Some(text));
     cx.update(|cx| cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("other".into())));
     view.update(cx, |view, cx| view.toggle_source(reply, cx));
+    // Copy takes a click again once its check mark is gone.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
     settle(cx, window);
     assert_eq!(copy(cx).as_deref(), Some(text));
     // The names a screen reader says, and nothing more on the buttons.
@@ -2441,9 +2486,8 @@ fn markdown_off_and_view_source_show_the_text_as_written(cx: &mut TestAppContext
     settle(cx, window);
     assert_eq!(sources(cx), [true, true]);
     // Copy gives the text as written, whether it shows formatted or not.
-    view.update(cx, |view, cx| view.copy_entry(reply, cx));
     assert_eq!(
-        cx.read_from_clipboard().and_then(|item| item.text()),
+        cx.read(|cx| view.read(cx).source_text(reply)),
         Some("**Bold** move.\n\n- a\n- b".to_string())
     );
 }
