@@ -404,12 +404,25 @@ mod tests {
             .collect();
         assert_eq!(names, ["user-facing-prose", "repo-docs-style"]);
         assert!(!found.builtin[0].description.is_empty());
-        assert!(found.builtin[0].replaced_by.is_empty());
-        assert_eq!(found.builtin[1].replaced_by, [project.join(".skills")]);
-        // The folders hold only the folder's own skill, with a path.
-        assert_eq!(found.skills.len(), 1);
-        assert!(found.skills[0].skills.iter().all(|skill| !skill.builtin));
-        assert_eq!(found.skills[0].skills[0].name, "repo-docs-style");
+        // The user's own skill folders (a home folder may hold skills of these names) can
+        // replace a built-in too, so the test looks only at the project's folder.
+        let ours = project.join(".skills");
+        assert!(!found.builtin[0].replaced_by.contains(&ours));
+        assert!(found.builtin[1].replaced_by.contains(&ours));
+        // The folders hold only the folders' own skills, with a path.
+        assert!(
+            found
+                .skills
+                .iter()
+                .all(|folder| folder.skills.iter().all(|skill| !skill.builtin))
+        );
+        let folder = found
+            .skills
+            .iter()
+            .find(|folder| folder.path == ours)
+            .unwrap();
+        assert_eq!(folder.skills.len(), 1);
+        assert_eq!(folder.skills[0].name, "repo-docs-style");
     }
 
     /// The names a saved choice may hold are the ones Arko has built in.
