@@ -11,7 +11,7 @@ use super::fields::{self, TextKind, TextSetting};
 use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
-use crate::workers::{curly, depth_about, models_about};
+use crate::workers::{copies_about, curly, depth_about, models_about};
 use arko::ModelChoice;
 use arko::commands::MIN_HANDOVER_SIZE;
 use arko::monitors::Wakes;
@@ -255,7 +255,7 @@ impl SessionsPage {
                 new.background_after,
                 new.monitor_wakes.clone(),
             ),
-            (new.worker_models, new.worker_depth),
+            (new.worker_models, new.worker_depth, new.message_copies),
             (
                 new.outside_access,
                 new.text_replies,
@@ -318,6 +318,15 @@ impl SessionsPage {
                 )
                 .description(depth_about())
                 .keywords(["workers", "nested", "levels", "worker-depth"]),
+                super::switch(
+                    workers::COPIES_NAME,
+                    "",
+                    |prefs| prefs.new_sessions.message_copies,
+                    |prefs, on| prefs.new_sessions.message_copies = on,
+                    defaults.message_copies,
+                )
+                .description(copies_about(new.message_copies))
+                .keywords(["workers", "messages", "copy", "message-copies"]),
                 self.background_after
                     .item("Background after", "background-after")
                 .description(

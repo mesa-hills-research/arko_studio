@@ -44,8 +44,9 @@ agent can save profiles too, and asks you first when it saves one for a project 
 project. See [Arko's documentation](https://github.com/mesa-hills-research/arko) for the file
 format.
 
-**Settings › Sessions** sets who chooses the workers' models, and how many levels of workers a new
-session allows, along with the other defaults for new sessions.
+**Settings › Sessions** sets who chooses the workers' models, how many levels of workers a new
+session allows, and whether the agent that started a worker gets a copy of your messages to it
+(**Message copies**, off by default), along with the other defaults for new sessions.
 
 **Settings › Extensions** lists the MCP servers and skills sessions get. Arko's built-in skills
 have a switch for all of them and one for each. A session opened or resumed after a change gets it,

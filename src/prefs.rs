@@ -241,6 +241,9 @@ pub struct NewSessions {
     /// How many levels of workers the session allows, 1 to 4, as
     /// `/worker-depth` takes it.
     pub worker_depth: u32,
+    /// The agent that started a worker gets a copy of the messages the user
+    /// sends the worker, as `/message-copies` takes it.
+    pub message_copies: bool,
     /// The agents may change files outside the session's folder.
     pub outside_access: bool,
     /// The main agent ends its turns with a reply in text (else with
@@ -272,6 +275,7 @@ impl Default for NewSessions {
             monitor_wakes: None,
             worker_models: arko::ModelChoice::default(),
             worker_depth: arko::workers::DEFAULT_DEPTH,
+            message_copies: false,
             outside_access: false,
             text_replies: true,
             cc_compact: true,

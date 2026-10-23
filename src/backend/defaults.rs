@@ -34,6 +34,9 @@ pub struct SessionDefaults {
     pub worker_models: arko::ModelChoice,
     /// How many levels of workers, when it is a depth a session can have.
     pub worker_depth: Option<u32>,
+    /// Whether the agent that started a worker gets a copy of the user's
+    /// messages to it.
+    pub message_copies: bool,
     pub outside_access: bool,
     pub text_replies: bool,
     pub cc_compact: bool,
@@ -90,6 +93,7 @@ impl SessionDefaults {
                 .and_then(|wakes| arko::monitors::parse_wakes(wakes).ok()),
             worker_models: new.worker_models,
             worker_depth: arko::workers::check_depth(new.worker_depth).ok(),
+            message_copies: new.message_copies,
             outside_access: new.outside_access,
             text_replies: new.text_replies,
             cc_compact: new.cc_compact,
@@ -163,6 +167,7 @@ impl SessionDefaults {
         options.monitor_wakes = self.monitor_wakes;
         options.worker_models = Some(self.worker_models);
         options.worker_depth = self.worker_depth;
+        options.message_copies = Some(self.message_copies);
         if cfg!(windows) {
             options.shell = self.shell;
         }
@@ -309,6 +314,24 @@ mod tests {
         assert_eq!(options.worker_project_instructions, Some(false));
         assert_eq!(options.chat_instructions, None, "an agent has no chat's");
         assert_eq!(options.mcp_config, [PathBuf::from("/home/ada/mcp.json")]);
+    }
+
+    /// A new session starts with message copies off unless the preference
+    /// turns them on, and a resumed session keeps its own.
+    #[test]
+    fn message_copies_are_off_in_a_new_session_unless_chosen() {
+        let mut prefs = Prefs::default();
+        let mut options = new_options();
+        SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent));
+        assert_eq!(options.message_copies, Some(false));
+        prefs.new_sessions.message_copies = true;
+        let defaults = SessionDefaults::from_prefs(&prefs);
+        let mut options = new_options();
+        defaults.apply(&mut options, Some(Mode::Agent));
+        assert_eq!(options.message_copies, Some(true));
+        let mut options = new_options();
+        defaults.apply(&mut options, None);
+        assert_eq!(options.message_copies, None);
     }
 
     /// The model chosen in the composer wins over the default.
