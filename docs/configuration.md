@@ -28,7 +28,8 @@ Arko Studio adds these files inside the shared folder.
 ## Settings
 
 **Settings** controls appearance, input and defaults for new sessions. Click an open session's
-title to change its live settings in **Session info**.
+title to change its live settings in **Session info**, such as whether the agent that started a
+worker gets a copy of your messages to it.
 
 **Settings › Models & accounts** shows discovered credentials and lets you add or replace keys.
 Keys saved there go in the Arko folder's `.env` file. ChatGPT and Claude Code use their existing
@@ -45,6 +46,11 @@ format.
 
 **Settings › Sessions** sets who chooses the workers' models, and how many levels of workers a new
 session allows, along with the other defaults for new sessions.
+
+**Settings › Extensions** lists the MCP servers and skills sessions get. Arko's built-in skills
+have a switch for all of them and one for each. A session opened or resumed after a change gets it,
+and a session already open keeps its skills. A switch you haven't used leaves its part to Arko's
+`ARKO_BUILTIN_SKILLS` and `ARKO_BUILTIN_SKILLS_OFF` settings.
 
 **Settings › Notifications** chooses which events notify and whether a sound plays. Each one names
 its session, and clicking it shows that session. Every notification that is on is also kept in a

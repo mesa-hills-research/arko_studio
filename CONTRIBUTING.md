@@ -108,7 +108,7 @@ transcript goldens too.
 | Path | What it holds |
 |---|---|
 | `src/main.rs`, `src/lib.rs` | Logging, startup and app globals |
-| `src/backend.rs`, `src/backend/` | Session storage, credentials, defaults and worker profiles |
+| `src/backend.rs`, `src/backend/` | Session storage, credentials, defaults, extensions and worker profiles |
 | `src/live.rs` | Running sessions and engine events |
 | `src/workspace.rs` | Window panes, sheets, resizing and actions |
 | `src/sidebar.rs` | Session grouping, filtering, renaming and deleting |
