@@ -1906,7 +1906,7 @@ impl TranscriptView {
         let regenerate = self.end_line_regenerate(RowKey::Notice(id), view, cx);
         let (icon, color, text_color) = match item.level {
             Some(Level::Error) => (Lucide::CircleX, theme.danger, theme.foreground),
-            Some(Level::Warn) => (Lucide::TriangleAlert, theme.warning, theme.foreground),
+            Some(Level::Warn) => (Lucide::TriangleAlert, theme.warning, theme.warning),
             _ => (Lucide::Info, theme.muted_foreground, theme.muted_foreground),
         };
         h_flex()

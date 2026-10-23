@@ -670,6 +670,48 @@ fn ids_of(feed: &Feed, kind: Kind) -> Vec<u64> {
         .collect()
 }
 
+/// Claude Code's message about a request that failed mid-response shows
+/// once, as a warning notice of its own, and neither the reply nor the
+/// error after it repeats it.
+#[gpui_kit::test]
+fn a_failed_requests_message_shows_once_as_a_warning(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let note = "API Error: Connection lost mid-response. The response above may be incomplete.";
+    feed.turn_started();
+    say(&feed, "main", "The answer is");
+    feed.event(
+        &event("main", AgentEvent::ServiceWarning { text: note.into() }),
+        None,
+    );
+    feed.event(
+        &event(
+            "main",
+            AgentEvent::ErrorEncountered {
+                error_message: note.into(),
+                requires_approval_to_retry: true,
+                tool_call_id: None,
+                error_kind: None,
+            },
+        ),
+        None,
+    );
+    settle(cx, window);
+    let shown: Vec<(Kind, Option<Level>)> = cx.read(|cx| {
+        view.read(cx)
+            .model
+            .entries()
+            .iter()
+            .filter(|entry| entry.item.text.contains("Connection lost"))
+            .map(|entry| (entry.item.kind, entry.item.level))
+            .collect()
+    });
+    assert_eq!(shown, [(Kind::Notice, Some(Level::Warn))]);
+    let notice = ids_of(&feed, Kind::Notice)[0];
+    assert!(keys(&view, cx).contains(&RowKey::Notice(notice)));
+}
+
 #[gpui_kit::test]
 fn a_replys_actions_stay_while_the_pointer_moves_onto_them_and_work(cx: &mut TestAppContext) {
     start(cx);
