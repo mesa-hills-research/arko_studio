@@ -379,6 +379,12 @@ pub trait Backend: Send + Sync + 'static {
     /// Deletes the user's worker profile `name`. `Ok` has the file removed,
     /// `Err` why not.
     fn delete_profile(&self, name: &str) -> Result<PathBuf, String>;
+
+    /// Saves where worker profiles are kept, for every project.
+    fn set_profile_preferences(
+        &self,
+        preferences: arko::profiles::Preferences,
+    ) -> Result<(), String>;
 }
 
 /// The accounts as the app last read them. Observers hear when a reading
@@ -666,6 +672,13 @@ impl Backend for ArkoBackend {
 
     fn delete_profile(&self, name: &str) -> Result<PathBuf, String> {
         profiles::delete(&self.root, name)
+    }
+
+    fn set_profile_preferences(
+        &self,
+        preferences: arko::profiles::Preferences,
+    ) -> Result<(), String> {
+        profiles::set_preferences(&self.root, preferences)
     }
 }
 
@@ -1147,6 +1160,14 @@ impl Backend for FakeBackend {
                 .ok_or_else(|| format!("There is no profile `{name}` for every project."))?;
             Ok(user.entries.remove(at).file)
         })
+    }
+
+    fn set_profile_preferences(
+        &self,
+        preferences: arko::profiles::Preferences,
+    ) -> Result<(), String> {
+        self.with_state(|state| state.profiles.preferences = preferences);
+        Ok(())
     }
 }
 

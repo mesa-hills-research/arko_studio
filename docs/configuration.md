@@ -39,10 +39,13 @@ credential discovery.
 **Settings › Worker profiles** lists the profiles the main agent starts workers with. A profile is
 a Markdown file in the `profiles` folder of the Arko folder, with a model, an effort and
 instructions, so Arko in the terminal reads the same ones. Add, edit, duplicate and delete your
-profiles there. The page also lists each recent project's `.agents/profiles`, read only. The main
-agent can save profiles too, and asks you first when it saves one for a project or for every
-project. See [Arko's documentation](https://github.com/mesa-hills-research/arko) for the file
-format.
+profiles there. The page also lists each recent project's and repository's `.agents/profiles`, read
+only. Two switches choose where profiles are kept. One keeps a project's new profiles folder out of
+git, and the other makes a project in a subfolder of a git repository read the repository root's
+profiles too. The main agent can save profiles too, for the project unless it says otherwise. It
+asks you first when git would track the folder, when the project isn't in a git repository, or when
+the profile is for every project. See
+[Arko's documentation](https://github.com/mesa-hills-research/arko) for the file format.
 
 **Settings › Sessions** sets who chooses the workers' models, how many levels of workers a new
 session allows, and whether the agent that started a worker gets a copy of your messages to it

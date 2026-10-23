@@ -530,7 +530,7 @@ fn profile_models() -> arko_studio::backend::ModelChoices {
     }
 }
 
-/// The user's profiles and a project's, read only.
+/// The user's profiles, a project's and a repository's, read only.
 fn profiles_with_project() -> arko_studio::backend::profiles::Profiles {
     use arko::profiles::Profile;
     use arko_studio::backend::profiles::{Entry, List, Project, Unreadable};
@@ -553,6 +553,19 @@ fn profiles_with_project() -> arko_studio::backend::profiles::Profiles {
                 file: "/home/ada/src/arko/.agents/profiles/torn.md".into(),
                 reason: "it has no description".into(),
             }],
+        },
+    });
+    let mut triage = Profile::new("triage", "Sorts new issues by area");
+    triage.model = Some("haiku".into());
+    profiles.repositories.push(Project {
+        folder: "/home/ada/src/mesa".into(),
+        list: List {
+            entries: vec![Entry {
+                file: "/home/ada/src/mesa/.agents/profiles/triage.md".into(),
+                note: triage.model_problem(),
+                profile: triage,
+            }],
+            unreadable: Vec::new(),
         },
     });
     profiles

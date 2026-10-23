@@ -1,5 +1,6 @@
 //! Worker profiles as Settings lists and changes them: the user's, in Arko's
-//! folder, and each recent project's, read only. The files are Arko's
+//! folder, and each recent project's and repository's, read only, with the
+//! choices about where profiles are kept. The files are Arko's
 //! (`arko::profiles` reads, checks and writes them), so the terminal app and
 //! the sessions see what Settings saves.
 
@@ -42,7 +43,7 @@ impl List {
     }
 }
 
-/// A project's own profiles.
+/// A project's own profiles, or those in a repository's root.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
     pub folder: PathBuf,
@@ -56,50 +57,81 @@ pub struct Profiles {
     pub user: List,
     /// The projects that have some.
     pub projects: Vec<Project>,
+    /// The roots of the git repositories that hold some, which the projects
+    /// in their subfolders read after their own. Each shows once. None while
+    /// Arko is told not to read them.
+    pub repositories: Vec<Project>,
+    /// Where profiles are kept, as the user chose for every project.
+    pub preferences: profiles::Preferences,
 }
 
 /// Reads the user's profiles and those of the projects in `folders`, without
 /// a session. It reads files: call it off the UI thread.
 pub fn read(root: &Path, folders: &[PathBuf]) -> Profiles {
-    let user = list_of(profiles::list(&Roots::new(root)), Place::User);
+    let user = list_of(&profiles::list(&Roots::new(root)), Place::User);
     let mut projects: Vec<Project> = Vec::new();
+    let mut repositories: Vec<Project> = Vec::new();
     for folder in folders {
         if projects.iter().any(|project| &project.folder == folder) {
             continue;
         }
-        let listed = profiles::list(&Roots::new(root).workspace(folder));
-        let list = list_of(listed, Place::Project);
+        let roots = Roots::new(root).workspace(folder);
+        let listed = profiles::list(&roots);
+        let list = list_of(&listed, Place::Project);
         if !list.is_empty() {
             projects.push(Project {
                 folder: folder.clone(),
                 list,
             });
         }
+        // The repository's root, two folders above its `.agents/profiles`.
+        let repository = roots
+            .folder(Place::Repository)
+            .and_then(|profiles| profiles.ancestors().nth(2).map(Path::to_path_buf));
+        if let Some(top) = repository
+            && !repositories.iter().any(|known| known.folder == top)
+        {
+            let list = list_of(&listed, Place::Repository);
+            if !list.is_empty() {
+                repositories.push(Project { folder: top, list });
+            }
+        }
     }
-    Profiles { user, projects }
+    Profiles {
+        user,
+        projects,
+        repositories,
+        preferences: profiles::Preferences::load(root),
+    }
+}
+
+/// Saves where worker profiles are kept, for every project. Arko reads the
+/// choice each time, so the next worker started follows it.
+pub fn set_preferences(root: &Path, preferences: profiles::Preferences) -> Result<(), String> {
+    preferences.save(root)
 }
 
 /// What `listed` has from `place`. (A project's profile always wins over the
 /// user's of the same name, so it is never among the hidden.)
-fn list_of(listed: profiles::Profiles, place: Place) -> List {
+fn list_of(listed: &profiles::Profiles, place: Place) -> List {
     List {
         entries: listed
             .active
-            .into_iter()
+            .iter()
             .filter(|found| found.place == place)
             .map(|found| Entry {
-                profile: found.profile,
-                file: found.file,
-                note: found.note,
+                profile: found.profile.clone(),
+                file: found.file.clone(),
+                note: found.note.clone(),
             })
             .collect(),
         unreadable: listed
             .unreadable
-            .into_iter()
+            .iter()
             .filter(|problem| problem.place == place)
             .map(|problem| Unreadable {
-                file: problem.file,
-                reason: problem.reason,
+                file: problem.file.clone(),
+                reason: problem.reason.clone(),
             })
             .collect(),
     }
@@ -131,7 +163,7 @@ pub fn check(
 pub fn save(root: &Path, profile: &Profile, replacing: Option<&str>) -> Result<PathBuf, String> {
     let roots = Roots::new(root);
     // A file that can't be read keeps its name too.
-    let current = list_of(profiles::list(&roots), Place::User);
+    let current = list_of(&profiles::list(&roots), Place::User);
     let taken = |name: &str| {
         current.get(name).is_some()
             || current
@@ -224,6 +256,8 @@ impl Profiles {
                 unreadable: Vec::new(),
             },
             projects: Vec::new(),
+            repositories: Vec::new(),
+            preferences: profiles::Preferences::default(),
         }
     }
 }
@@ -282,6 +316,36 @@ mod tests {
         assert_eq!(theirs.list.entries[0].profile.name, "lint");
         assert_eq!(theirs.list.unreadable.len(), 1);
         assert!(theirs.list.unreadable[0].file.ends_with("broken.md"));
+    }
+
+    /// The profiles in a repository's root list once, however many of its
+    /// folders are recent projects, and not while Arko is told not to read
+    /// them. The choices read back as saved.
+    #[test]
+    fn a_repositorys_profiles_list_once_and_follow_the_choice() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let repository = temp.path().join("repo");
+        std::fs::create_dir_all(repository.join(".git")).unwrap();
+        write(
+            &repository.join(".agents/profiles/lint.md"),
+            "---\ndescription: Runs the linter\n---\nRun it.",
+        );
+        let (app, docs) = (repository.join("app"), repository.join("docs"));
+        let listed = read(&root, &[app.clone(), docs]);
+        assert!(listed.projects.is_empty());
+        assert_eq!(listed.repositories.len(), 1);
+        assert_eq!(listed.repositories[0].folder, repository);
+        assert_eq!(listed.repositories[0].list.entries[0].profile.name, "lint");
+        assert_eq!(listed.preferences, profiles::Preferences::default());
+        let off = profiles::Preferences {
+            keep_out_of_git: false,
+            repo_root: false,
+        };
+        set_preferences(&root, off).unwrap();
+        let listed = read(&root, &[app]);
+        assert!(listed.repositories.is_empty());
+        assert_eq!(listed.preferences, off);
     }
 
     #[test]
