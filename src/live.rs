@@ -171,7 +171,8 @@ pub struct WorkerEnd {
     pub parent: Option<String>,
     /// Whether it failed, else it finished with a report.
     pub failed: bool,
-    /// The first line of its report, or why it failed.
+    /// The first line of its report, or why it failed (its whole error is
+    /// read here, its first line is shown).
     pub detail: Option<String>,
 }
 
@@ -184,7 +185,8 @@ impl WorkerEnd {
             _ => return None,
         };
         let detail = if failed {
-            worker.last.as_deref()
+            // The error is whole, `last` is cut short.
+            worker.error.as_deref().or(worker.last.as_deref())
         } else {
             worker
                 .report
@@ -307,6 +309,9 @@ struct Drained {
     reading: Option<Arc<Reading>>,
     activity: Option<Activity>,
     workers: Vec<WorkerSummary>,
+    /// The IDs of the workers that ended, which the feed tells once, after
+    /// the summary of the end.
+    ended: Vec<String>,
     quit_asks: Vec<arko::QuitAsk>,
 }
 
@@ -315,6 +320,7 @@ impl Drained {
         self.reading.is_none()
             && self.activity.is_none()
             && self.workers.is_empty()
+            && self.ended.is_empty()
             && self.quit_asks.is_empty()
     }
 }
@@ -616,14 +622,16 @@ impl LiveSession {
                 while let Some(batch) = batches.next().await {
                     let mut activity = None;
                     let mut workers = Vec::new();
+                    let mut ended = Vec::new();
                     for update in batch {
                         match update {
                             Update::Activity => activity = Some(feed.activity()),
                             Update::Worker(worker) => workers.push(worker),
+                            Update::WorkerEnded { id, .. } => ended.push(id),
                             _ => {}
                         }
                     }
-                    if activity.is_none() && workers.is_empty() {
+                    if activity.is_none() && workers.is_empty() && ended.is_empty() {
                         continue;
                     }
                     {
@@ -632,6 +640,7 @@ impl LiveSession {
                             drained.activity = activity;
                         }
                         drained.workers.extend(workers);
+                        drained.ended.extend(ended);
                     }
                     wake.notify_one();
                 }
@@ -707,19 +716,20 @@ impl LiveSession {
             }
         }
         for worker in drained.workers {
-            // A worker that was going on and ended, not one the session
-            // already had ended (as it opened, or when it is told again).
-            let ended = self
-                .workers
-                .iter()
-                .find(|known| known.id == worker.id)
-                .filter(|known| known.state.is_active() && !worker.state.is_active())
-                .and_then(|_| WorkerEnd::of(&worker));
             match self.workers.iter_mut().find(|known| known.id == worker.id) {
                 Some(known) => *known = worker,
                 None => self.workers.push(worker),
             }
-            if let Some(end) = ended {
+        }
+        // The feed tells of an end once, when it happens, and not of the
+        // workers that had ended when the session opened.
+        for id in drained.ended {
+            let end = self
+                .workers
+                .iter()
+                .find(|worker| worker.id == id)
+                .and_then(WorkerEnd::of);
+            if let Some(end) = end {
                 cx.emit(LiveEvent::WorkerEnded(end));
             }
         }
@@ -890,12 +900,19 @@ impl LiveSession {
         );
     }
 
-    /// Takes `workers` as if the feed had sent their summaries (tests).
+    /// Takes `workers` as if the feed had sent their summaries, then the
+    /// end of those in `ended` (tests).
     #[cfg(test)]
-    pub fn set_workers(&mut self, workers: Vec<WorkerSummary>, cx: &mut Context<Self>) {
+    pub fn set_workers(
+        &mut self,
+        workers: Vec<WorkerSummary>,
+        ended: &[&str],
+        cx: &mut Context<Self>,
+    ) {
         self.apply(
             Drained {
                 workers,
+                ended: ended.iter().map(|id| id.to_string()).collect(),
                 ..Drained::default()
             },
             cx,
@@ -1537,6 +1554,57 @@ mod tests {
             "Turn 1960"
         );
         assert!(!cx.read(|cx| session.read(cx).is_working()));
+    }
+
+    /// The feed tells of a worker's end once, when it happens, with the
+    /// worker's whole error. A worker that had ended when the session opened
+    /// is no news.
+    #[gpui_kit::test]
+    fn a_workers_end_is_told_once_with_its_whole_error(cx: &mut TestAppContext) {
+        use arko::remote::WorkerChange;
+
+        cx.executor().allow_parking();
+        cx.update(super::init);
+        let feed = arko::remote::Feed::new("main");
+        feed.turn_started();
+        feed.worker("r0", "Review", WorkerChange::Started);
+        feed.worker("r0", "", WorkerChange::Finished { report: "Old." });
+        feed.worker("r1", "Count", WorkerChange::Started);
+        let (_status, statuses) =
+            tokio::sync::watch::channel(std::sync::Arc::new(arko::remote::Reading::default()));
+        let (_quit, quit_asks) = tokio::sync::mpsc::unbounded_channel();
+        let session = cx.new(|cx| {
+            let mut session = LiveSession::blank(cx);
+            session.drain(feed.clone(), statuses, quit_asks, cx);
+            session
+        });
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let heard = heard.clone();
+            cx.subscribe(&session, move |_, event: &LiveEvent, _| {
+                heard.borrow_mut().push(event.clone())
+            })
+            .detach();
+        });
+        let frame = |cx: &mut TestAppContext| {
+            cx.run_until_parked();
+            cx.executor().advance_clock(super::FRAME);
+            cx.run_until_parked();
+        };
+        frame(cx);
+        assert_eq!(*heard.borrow(), []);
+        let error = "the model failed after 3 tries\nThe last was a 429, wait a minute.";
+        feed.worker("r1", "", WorkerChange::Failed { error });
+        frame(cx);
+        assert_eq!(
+            *heard.borrow(),
+            [LiveEvent::WorkerEnded(super::WorkerEnd {
+                id: "r1".into(),
+                parent: None,
+                failed: true,
+                detail: Some(error.into()),
+            })]
+        );
     }
 
     #[test]

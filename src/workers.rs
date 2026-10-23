@@ -309,14 +309,29 @@ pub fn state_label(state: WorkerState) -> &'static str {
     }
 }
 
+/// Why a worker failed, whole, when it did and Arko says.
+pub fn failure(worker: &WorkerSummary) -> Option<&str> {
+    (worker.state == WorkerState::Failed)
+        .then_some(worker.error.as_deref())
+        .flatten()
+        .map(str::trim)
+        .filter(|error| !error.is_empty())
+}
+
 /// What a worker did last, in a line: its report's first line once it
-/// finished, else its latest call or why it stopped.
+/// finished, the first line of its error once it failed (the summary's
+/// `last` cuts the error short), else its latest call or why it stopped.
 pub fn last_line(worker: &WorkerSummary) -> Option<String> {
+    fn first(text: &str) -> Option<&str> {
+        text.lines().find(|line| !line.trim().is_empty())
+    }
     let report = (worker.state == WorkerState::Finished)
         .then_some(worker.report.as_deref())
         .flatten()
-        .and_then(|report| report.lines().find(|line| !line.trim().is_empty()));
+        .and_then(first);
+    let error = failure(worker).and_then(first);
     report
+        .or(error)
         .or(worker.last.as_deref())
         .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty())
@@ -753,5 +768,29 @@ mod tests {
         assert_eq!(last_line(&running), None);
         running.last = Some("$ cargo test".into());
         assert_eq!(last_line(&running).as_deref(), Some("$ cargo test"));
+    }
+
+    /// A worker that failed shows the first line of its whole error, not
+    /// the summary's `last`, which Arko cuts short.
+    #[test]
+    fn the_last_line_of_a_failed_worker_is_its_error() {
+        let mut failed = worker("r1", WorkerState::Failed, Some(0), Some(1));
+        failed.last = Some("the model failed after 3 tr".into());
+        assert_eq!(
+            last_line(&failed).as_deref(),
+            Some("the model failed after 3 tr")
+        );
+        failed.error = Some("\nthe model failed after 3 tries\nThe last was a 429.".into());
+        assert_eq!(
+            last_line(&failed).as_deref(),
+            Some("the model failed after 3 tries")
+        );
+        assert_eq!(
+            failure(&failed),
+            Some("the model failed after 3 tries\nThe last was a 429.")
+        );
+        // An error left over from a run that went on isn't shown.
+        failed.state = WorkerState::Running;
+        assert_eq!(failure(&failed), None);
     }
 }
