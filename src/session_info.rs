@@ -1193,7 +1193,20 @@ impl Render for SessionInfo {
                                         })
                                         .when(!from.is_empty(), |this| {
                                             this.child(
-                                                fit(div()).text_xs().text_color(muted).child(from),
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(muted)
+                                                    // A long folder loses its
+                                                    // leading folders first.
+                                                    .when(!alone, |this| {
+                                                        this.min_w_0()
+                                                            .max_w(relative(0.4))
+                                                            .overflow_hidden()
+                                                            .whitespace_nowrap()
+                                                            .text_ellipsis_start()
+                                                    })
+                                                    .map(fit)
+                                                    .child(from),
                                             )
                                         })
                                 }),
@@ -1371,11 +1384,10 @@ pub fn skills_lines(
         .skills
         .iter()
         .map(|skill| {
-            // TODO: an ordinary skill's folder, once arko's SkillFacts has it.
-            let mut from = match (&skill.replaces_builtin, skill.builtin) {
-                (_, true) => "built in".to_string(),
-                (Some(path), _) => shown_folder(path, home),
-                (None, false) => String::new(),
+            let mut from = match &skill.path {
+                _ if skill.builtin => "built in".to_string(),
+                Some(path) => shown_folder(path, home),
+                None => String::new(),
             };
             if skill.always {
                 if !from.is_empty() {
@@ -1578,7 +1590,7 @@ mod tests {
             always: false,
             builtin,
             replaces_builtin: replaces.then(|| home.join(".claude/skills").join(name)),
-            path: None,
+            path: (!builtin).then(|| home.join(".claude/skills").join(name)),
         };
         let facts = |skills, builtin_off: &[&str]| {
             Ok(SkillsFacts {
@@ -1600,12 +1612,13 @@ mod tests {
             [line("Couldn’t be read (no folder)", "", "")]
         );
         // A line each by name, the description on one line, then where it
-        // comes from. The built-in skills left out come last.
+        // comes from, its folder or built in. The built-in skills left out
+        // come last.
         let always = SkillFacts {
-            description: String::new(),
             always: true,
             ..skill("house-rules", false, false)
         };
+        let folder = |name: &str| shown_folder(&home.join(".claude/skills").join(name), Some(home));
         assert_eq!(
             skills_lines(
                 &facts(
@@ -1620,12 +1633,20 @@ mod tests {
                 Some(home)
             ),
             [
-                line("house-rules", "", "always loaded"),
-                line("release-notes", "What release-notes is for.", ""),
+                line(
+                    "house-rules",
+                    "What house-rules is for.",
+                    &format!("{}, always loaded", folder("house-rules"))
+                ),
+                line(
+                    "release-notes",
+                    "What release-notes is for.",
+                    &folder("release-notes")
+                ),
                 line(
                     "repo-docs-style",
                     "What repo-docs-style is for.",
-                    &shown_folder(&home.join(".claude/skills/repo-docs-style"), Some(home))
+                    &folder("repo-docs-style")
                 ),
                 line(
                     "user-facing-prose",

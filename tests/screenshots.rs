@@ -3080,23 +3080,27 @@ fn session_info(mode: ThemeMode) -> Screenshot {
                 (
                     "release-notes",
                     "Write the release notes of a version from its commits.",
-                    false,
+                    Some("/home/ada/src/arko/.agents/skills/release-notes"),
                 ),
-                ("docs-style", "Rules for the project docs.", false),
+                (
+                    "docs-style",
+                    "Rules for the project docs.",
+                    Some("/home/ada/.claude/skills/docs-style"),
+                ),
                 (
                     "user-facing-prose",
                     "How to write any text a person reads, such as UI text, messages, docs and commit messages.",
-                    true,
+                    None,
                 ),
             ]
             .into_iter()
-            .map(|(name, description, builtin)| SkillFacts {
+            .map(|(name, description, path)| SkillFacts {
                 name: name.into(),
                 description: description.into(),
                 always: false,
-                builtin,
+                builtin: path.is_none(),
                 replaces_builtin: None,
-                path: None,
+                path: path.map(PathBuf::from),
             })
             .collect(),
             folders: Vec::new(),
