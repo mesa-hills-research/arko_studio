@@ -2994,6 +2994,7 @@ fn session_info(mode: ThemeMode) -> Screenshot {
     reading.settings.text_replies = true;
     reading.settings.extra_rules = arko::ExtraRules::Small;
     reading.settings.worker_project_instructions = true;
+    reading.settings.message_copies = true;
     reading.models.started = true;
     reading.models.has_workers = true;
     let preview = Preview {
@@ -3092,7 +3093,7 @@ fn session_info(mode: ThemeMode) -> Screenshot {
         .collect(),
     };
     let window = app
-        .open_window_with(size(px(560.), px(1450.)), 1., |options, cx| {
+        .open_window_with(size(px(560.), px(1700.)), 1., |options, cx| {
             gpui_kit::open_window(options, cx, |window, cx| {
                 let info = cx.new(|cx| {
                     let mut info = SessionInfo::new(window, cx);

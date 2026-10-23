@@ -24,6 +24,12 @@ pub fn depth_effect(depth: u32) -> String {
     curly(&arko::workers::depth_effect(depth))
 }
 
+/// What the "Message copies" setting does, with it `on` or off, in Arko's
+/// words.
+pub fn copies_about(on: bool) -> String {
+    curly(arko::workers::copies_about(on))
+}
+
 /// What the "Models for workers" setting does and what `choice` means,
 /// in Arko's words.
 pub fn models_about(choice: ModelChoice) -> String {
@@ -358,6 +364,21 @@ mod tests {
             assert!(!text.contains('\''), "{text}");
             assert!(!text.contains("takes effect"), "{text}");
         }
+    }
+
+    /// The message copies setting says what it does with it on or off, in
+    /// Arko's words with the app's apostrophes.
+    #[test]
+    fn the_message_copies_setting_reads_in_arkos_words() {
+        use arko::workers::{COPIES_NAME, copies_command};
+        assert_eq!(COPIES_NAME, "Message copies");
+        assert!(copies_about(true).starts_with("The agent that started a worker gets a copy"));
+        assert!(copies_about(false).contains("doesn’t see the messages you send"));
+        for on in [true, false] {
+            assert!(!copies_about(on).contains('\''));
+            assert!(arko::commands::find(&copies_command(on)).is_some());
+        }
+        assert_eq!(copies_command(false), "/message-copies off");
     }
 
     #[test]

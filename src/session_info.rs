@@ -26,7 +26,7 @@ use crate::backend::Mode;
 use crate::live::LiveSession;
 use crate::session_view::{HomeFolder, shown_folder};
 use crate::status_bar::run;
-use crate::workers::{curly, depth_effect, models_about};
+use crate::workers::{copies_about, curly, depth_effect, models_about};
 use arko::workers;
 
 /// Why some settings can't change any more.
@@ -66,6 +66,7 @@ fn current(control: &str, settings: &arko::remote::LiveSettings) -> Option<Strin
         "project-instructions" => Some(settings.project_instructions.name().to_string()),
         "worker-models" => Some(settings.worker_models.name().to_string()),
         "worker-depth" => Some(settings.worker_depth.to_string()),
+        "message-copies" => switch(settings.message_copies),
         _ => None,
     }
 }
@@ -1004,6 +1005,7 @@ impl Render for SessionInfo {
                 let depth = shown("worker-depth")
                     .parse()
                     .unwrap_or(settings.worker_depth);
+                let copies = shown("message-copies") == "on";
                 body = body
                     .child(row(
                         narrow,
@@ -1029,6 +1031,28 @@ impl Render for SessionInfo {
                                 .text_color(muted)
                                 .child(depth_effect(depth)),
                         ),
+                        cx,
+                    ))
+                    .child(row(
+                        narrow,
+                        workers::COPIES_NAME,
+                        v_flex()
+                            .gap_1()
+                            .child(h_flex().child(switch(
+                                "message-copies",
+                                workers::COPIES_NAME,
+                                false,
+                                workers::copies_command(true),
+                                workers::copies_command(false),
+                            )))
+                            .child(
+                                div()
+                                    .id("message-copies-about")
+                                    .test_support()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(copies_about(copies)),
+                            ),
                         cx,
                     ));
             }
@@ -1798,6 +1822,7 @@ mod view_tests {
             settings: LiveSettings {
                 worker_models: ModelChoice::Agent,
                 worker_depth: 2,
+                message_copies: true,
                 ..LiveSettings::default()
             },
             models: Models {
@@ -1831,6 +1856,7 @@ mod view_tests {
         show(cx, &alone);
         assert!(!shows(window, cx, "worker-models"));
         assert!(!shows(window, cx, "worker-depth"));
+        assert!(!shows(window, cx, "message-copies"));
         show(cx, &session);
         // The rows are past the first screenful of the info.
         for _ in 0..40 {
@@ -1838,7 +1864,7 @@ mod view_tests {
                 .update_window(window, |_, window, cx| {
                     window.render_frame(cx);
                     window
-                        .try_find("worker-depth-2")
+                        .try_find("message-copies")
                         .is_some_and(|found| found.visible())
                 })
                 .unwrap();
@@ -1866,6 +1892,7 @@ mod view_tests {
         assert_eq!(checked(cx, "worker-models-agent"), Some(true));
         assert_eq!(checked(cx, "worker-models-profiles"), Some(false));
         assert_eq!(checked(cx, "worker-depth-2"), Some(true));
+        assert_eq!(checked(cx, "message-copies"), Some(true));
         act(cx, window, |window, cx| {
             window.click("worker-models-profiles", cx)
         });
@@ -1876,12 +1903,16 @@ mod view_tests {
         assert_eq!(checked(cx, "worker-depth-3"), Some(true));
         act(cx, window, |window, cx| window.click("worker-depth-3", cx));
         act(cx, window, |window, cx| window.click("worker-depth-1", cx));
+        // Message copies are a switch.
+        act(cx, window, |window, cx| window.click("message-copies", cx));
+        assert_eq!(checked(cx, "message-copies"), Some(false));
         assert_eq!(
             sent(&session, cx),
             [
                 "/worker-models profiles",
                 workers::depth_command(3).as_str(),
-                "/worker-depth 1"
+                "/worker-depth 1",
+                workers::copies_command(false).as_str()
             ]
         );
         for command in sent(&session, cx) {
@@ -1892,12 +1923,14 @@ mod view_tests {
             let mut next = reading(true);
             next.settings.worker_models = ModelChoice::Session;
             next.settings.worker_depth = 4;
+            next.settings.message_copies = false;
             session.set_status(next, Activity::default(), cx)
         });
         cx.executor().advance_clock(super::HOLD);
         cx.run_until_parked();
         assert_eq!(checked(cx, "worker-models-session"), Some(true));
         assert_eq!(checked(cx, "worker-depth-4"), Some(true));
+        assert_eq!(checked(cx, "message-copies"), Some(false));
     }
 
     /// Live settings change through the terminal's commands. Those fixed
