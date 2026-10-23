@@ -462,6 +462,8 @@ pub struct TranscriptView {
     /// Blocks whose text grew since the last frame, by entry and index. The
     /// list counts their new height before it draws them again.
     grown: Vec<(u64, usize)>,
+    /// The entries whose text grows as it streams in, until it stops.
+    streaming: HashSet<u64>,
     /// Whether the list's scrollbar counts estimated heights for the rows
     /// it hasn't drawn (always, but for measurements).
     estimates: bool,
@@ -559,6 +561,7 @@ impl TranscriptView {
             drawn_runs: RefCell::default(),
             metrics: None,
             grown: Vec::new(),
+            streaming: HashSet::new(),
             estimates: true,
             #[cfg(test)]
             frames: Vec::new(),
@@ -859,6 +862,7 @@ impl TranscriptView {
                 self.remeasure_entry(*id);
             }
         }
+        self.finish_streams(cx);
         self.tick_while_running(cx);
         if changes.reset {
             self.find_changed_all(cx);
@@ -872,6 +876,29 @@ impl TranscriptView {
             self.find_changed(&changes.removed, changed, cx);
         }
         cx.notify();
+    }
+
+    /// Marks finished the texts that stopped streaming in, so a table row
+    /// they cut off shows.
+    fn finish_streams(&mut self, cx: &mut Context<Self>) {
+        let model = &self.model;
+        let stopped: Vec<u64> = self
+            .streaming
+            .iter()
+            .copied()
+            .filter(|id| {
+                model
+                    .position(*id)
+                    .ok()
+                    .is_none_or(|ix| !model.is_streaming(ix))
+            })
+            .collect();
+        for id in stopped {
+            self.streaming.remove(&id);
+            if let Some(doc) = self.ui.get(&id).and_then(|ui| ui.doc.as_ref()) {
+                doc.state.update(cx, |state, cx| state.finish(cx));
+            }
+        }
     }
 
     /// Makes the next older entries ready to show, if some wait. Returns
@@ -989,6 +1016,7 @@ impl TranscriptView {
             let delta = delta.to_string();
             doc.text.push_str(&delta);
             doc.state.update(cx, |state, cx| state.push_str(&delta, cx));
+            self.streaming.insert(id);
         } else if text.trim() == doc.text.trim() {
             // The feed ends a streamed reply with its text trimmed: the
             // document keeps its blocks (and the reader's selection).

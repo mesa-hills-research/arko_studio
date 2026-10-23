@@ -16,6 +16,7 @@ use gpui_kit::{
 };
 
 use super::TranscriptView;
+use super::height::BlockFacts;
 use super::height_tests::real;
 use super::model::RowKey;
 use super::scrollbar_tests::{HEIGHT, Thumb, WIDTH, thumb_of};
@@ -58,6 +59,11 @@ impl Scene {
     /// A transcript of `turns` questions and short answers and a question
     /// the reply to which is about to stream, drawn at its end.
     fn new(turns: usize, view: View) -> Self {
+        Self::sized(turns, view, WIDTH)
+    }
+
+    /// [`Self::new`] in a window `width` wide.
+    fn sized(turns: usize, view: View, width: f32) -> Self {
         let mut cx = real::app();
         cx.update(|cx| prefs::update(cx, |prefs| prefs.view = view));
         let feed = Feed::new("main");
@@ -73,7 +79,7 @@ impl Scene {
         }
         feed.user("Show me", Source::App, Delivery::Turn);
         feed.turn_started();
-        let (window, view) = real::open(&mut cx, &feed, (WIDTH, HEIGHT), true);
+        let (window, view) = real::open(&mut cx, &feed, (width, HEIGHT), true);
         cx.update(|cx| view.update(cx, |view, cx| view.scroll_to_end(cx)));
         real::settle(&mut cx, window);
         let anchor = cx.update(|cx| {
@@ -622,4 +628,111 @@ fn dragging_the_thumb_down_while_a_block_streams_moves_the_view_down() {
             "{block:?}: the drag was too short to tell"
         );
     }
+}
+
+/// A table of the kind a model writes, wide enough for its cells to wrap
+/// in a narrow window, and the text before it.
+fn table_reply() -> String {
+    let mut text = String::from(
+        "Here are the options.\n\n| Option | What it does | When to use it |\n|---|---|---|\n",
+    );
+    for (option, what, when) in [
+        (
+            "`--release`",
+            "Builds with optimizations, which takes longer and runs faster",
+            "Benchmarks and anything you ship",
+        ),
+        ("`--locked`", "Fails if the lock file would change", "CI"),
+        (
+            "`--offline`",
+            "Uses only crates already downloaded, and fails on anything it would have to fetch from the network",
+            "On a plane",
+        ),
+        (
+            "`-p NAME`",
+            "Builds one package of the workspace",
+            "When the workspace is large and you only touched one crate of it",
+        ),
+        (
+            "`-j N`",
+            "Runs at most N jobs at once",
+            "When the machine is shared with other builds that need memory",
+        ),
+    ] {
+        text.push_str(&format!("| {option} | {what} | {when} |\n"));
+    }
+    text
+}
+
+impl Scene {
+    /// Where the reply's table starts on the screen and how tall it is, if
+    /// it shows.
+    fn table(&mut self) -> Option<(f32, f32)> {
+        self.cx.update(|cx| {
+            let view = self.view.read(cx);
+            let state = view.list.handle();
+            let viewport = state.viewport_bounds();
+            view.rows.iter().enumerate().find_map(|(ix, row)| {
+                let RowKey::Block { id, block, .. } = row.key else {
+                    return None;
+                };
+                let doc = view.ui.get(&id)?.doc.as_ref()?;
+                matches!(doc.blocks.get(block)?.facts, BlockFacts::Table(_))
+                    .then(|| state.bounds_for_item(ix))
+                    .flatten()
+                    .map(|bounds| {
+                        (
+                            f32::from(bounds.top() - viewport.top()),
+                            f32::from(bounds.size.height),
+                        )
+                    })
+            })
+        })
+    }
+}
+
+/// At the end, a table that streams in a few characters at a time grows a
+/// whole row at a time and never moves down the screen, also where its
+/// cells wrap and its columns widen as rows come.
+#[test]
+fn at_the_end_a_streaming_table_never_moves_down() {
+    for width in [WIDTH, 560.] {
+        let mut scene = Scene::sized(30, View::Full, width);
+        let text: Vec<char> = table_reply().chars().collect();
+        let mut tops = Vec::new();
+        for chunk in text.chunks(4) {
+            scene.delta(&chunk.iter().collect::<String>());
+            let frame = scene.frames.last().unwrap();
+            assert!(scene.is_pinned(frame), "at {width}: not at the end");
+            tops.extend(scene.table().map(|(top, _)| top));
+        }
+        assert!(tops.len() > 100, "at {width}: the table showed late");
+        for pair in tops.windows(2) {
+            assert!(
+                pair[1] <= pair[0],
+                "at {width}: the table moved down from {} to {}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+}
+
+/// A table row the turn ended in the middle of shows then.
+#[test]
+fn a_table_row_cut_off_by_the_end_of_the_turn_shows() {
+    let mut scene = Scene::new(30, View::Full);
+    for delta in [
+        "Options:\n\n",
+        "| Option | What it does |\n|---|---|\n",
+        "| `-p` | One package |\n",
+        "| `-j N` | Runs at",
+    ] {
+        scene.delta(delta);
+    }
+    let (_, cut) = scene.table().expect("the table shows");
+    scene.feed.turn_ended("3 s · $0.01", None);
+    scene.frame();
+    let (_, ended) = scene.table().expect("the table shows");
+    assert!(ended > cut, "the last row didn't show: {cut} then {ended}");
 }
