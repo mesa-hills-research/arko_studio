@@ -33,8 +33,10 @@ worker gets a copy of your messages to it.
 
 **Settings › Models & accounts** shows discovered credentials and lets you add or replace keys.
 Keys saved there go in the Arko folder's `.env` file. ChatGPT and Claude Code use their existing
-logins. See [Arko's documentation](https://github.com/mesa-hills-research/arko) for providers and
-credential discovery.
+logins. You can add several ChatGPT logins (each a Codex `auth.json`). Arko uses them in order, and
+the next one takes over when the one before it reaches its limit. Make first and Remove change the
+order and the list. See [Arko's documentation](https://github.com/mesa-hills-research/arko) for
+providers and credential discovery.
 
 **Settings › Worker profiles** lists the profiles the main agent starts workers with. A profile is
 a Markdown file in the `profiles` folder of the Arko folder, with a model, an effort and

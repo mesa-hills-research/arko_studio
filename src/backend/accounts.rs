@@ -1,4 +1,4 @@
-//! The API keys, the ChatGPT login and Claude Code, as Settings › Models &
+//! The API keys, the ChatGPT logins and Claude Code, as Settings › Models &
 //! accounts shows them, read without a session.
 
 use std::path::{Path, PathBuf};
@@ -18,7 +18,9 @@ pub struct Accounts {
     /// Every API key arko takes, in its keys menu's order: Anthropic,
     /// OpenAI, Gemini, OpenRouter, Voyage.
     pub keys: Vec<KeyState>,
-    pub chatgpt: ChatGptLogin,
+    /// The ChatGPT logins in the order Arko uses them, which is one, Codex's
+    /// own, while none is set.
+    pub chatgpt: Vec<ChatGptLogin>,
     pub claude_code: ClaudeCodeStatus,
     /// The 1-hour cache as `ARKO_CACHE_1H` sets it, in the environment or
     /// a `.env` file. `None` where it isn't set.
@@ -33,7 +35,7 @@ impl Accounts {
         let keys = key_states_in(root);
         Self {
             keys,
-            chatgpt: arko::accounts::chatgpt_login_in(root),
+            chatgpt: arko::accounts::chatgpt_logins_in(root),
             claude_code: arko::accounts::claude_code(),
             cache_1h: arko::Env::for_folder_in(None, true, Some(root))
                 .var(CACHE_1H_VARIABLE)
@@ -77,11 +79,11 @@ impl Accounts {
                 state("openrouter", None, None),
                 state("voyage", None, None),
             ],
-            chatgpt: ChatGptLogin {
+            chatgpt: vec![ChatGptLogin {
                 path: Some(home.join(".codex/auth.json")),
                 source: LoginSource::Default,
                 state: LoginState::Missing,
-            },
+            }],
             claude_code: ClaudeCodeStatus {
                 path: Some(claude.clone()),
                 on_path: true,
@@ -171,26 +173,30 @@ pub fn login_set_first() -> Option<String> {
     })
 }
 
-/// What choosing a ChatGPT login did, when `first` (from
-/// [`login_set_first`]) sets one ahead of Arko's folder in later runs.
+/// What changing the ChatGPT logins did, when `first` (from
+/// [`login_set_first`]) sets a list ahead of Arko's folder in later runs.
 pub fn login_chosen_words(first: Option<&str>) -> String {
     match first {
         None => {
-            "Arko uses this ChatGPT login from now on, in new sessions and in arko in the terminal."
+            "Arko uses the ChatGPT logins in this order from now on, in new sessions and in arko in the terminal."
                 .to_string()
         }
         Some(source) => format!(
-            "Arko uses this ChatGPT login until Arko Studio quits. After that, {CODEX_AUTH_VARIABLE} {source} comes first again, so change it there to replace it for good."
+            "Arko uses the ChatGPT logins in this order until Arko Studio quits. After that, {CODEX_AUTH_VARIABLE} {source} comes first again, so change it there to change them for good."
         ),
     }
 }
 
-/// What removing a chosen login did, including a setting that still wins.
-pub fn login_cleared_words(login: &ChatGptLogin) -> String {
-    if login.source == LoginSource::Default {
+/// What removing a login did, from the logins left, which go back to
+/// Codex's own when the last chosen one is gone.
+pub fn login_removed_words(left: &[ChatGptLogin], first: Option<&str>) -> String {
+    if left
+        .first()
+        .is_some_and(|login| login.source == LoginSource::Default)
+    {
         "Arko uses Codex’s own login for new sessions. Sign in with “codex login” if needed.".into()
     } else {
-        "The chosen login was removed. ARKO_CODEX_AUTH is still set elsewhere, so remove it there to use Codex’s own login.".into()
+        login_chosen_words(first)
     }
 }
 
@@ -271,6 +277,21 @@ mod tests {
             words.contains("ARKO_CODEX_AUTH from the environment comes first again"),
             "{words}"
         );
+    }
+
+    /// Removing the last chosen login goes back to Codex's own, and a list
+    /// that remains says it is used in order.
+    #[test]
+    fn a_removed_login_says_what_is_used_now() {
+        let login = |source| ChatGptLogin {
+            path: Some("/home/ada/.codex/auth.json".into()),
+            source,
+            state: LoginState::Ready,
+        };
+        let words = login_removed_words(&[login(LoginSource::Default)], None);
+        assert!(words.starts_with("Arko uses Codex’s own login"), "{words}");
+        let words = login_removed_words(&[login(LoginSource::Entered)], None);
+        assert!(words.contains("in this order from now on"), "{words}");
     }
 
     #[test]

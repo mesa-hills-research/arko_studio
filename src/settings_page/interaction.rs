@@ -272,8 +272,9 @@ fn enter_in_the_key_field_saves_the_key(cx: &mut TestAppContext) {
     });
 }
 
-/// Check again reads Claude Code again, and a chosen auth.json becomes the
-/// ChatGPT login.
+/// Check again reads Claude Code again. A chosen auth.json joins the ChatGPT
+/// logins, which the page lists in order with Make first and Remove, and the
+/// last one removed goes back to Codex's own.
 #[gpui_kit::test]
 fn logins_are_checked_and_chosen(cx: &mut TestAppContext) {
     let backend = start_with(cx, prefs::Prefs::default());
@@ -284,24 +285,75 @@ fn logins_are_checked_and_chosen(cx: &mut TestAppContext) {
     });
     assert_eq!(backend.accounts_read(), read + 1);
     let page = cx.read(|cx| settings.read(cx).accounts().clone());
+    let logins = |cx: &mut TestAppContext| -> Vec<(String, LoginState)> {
+        cx.read(|cx| {
+            let accounts = page.read(cx).accounts().unwrap();
+            accounts
+                .chatgpt
+                .iter()
+                .map(|login| {
+                    let path = login.path.as_ref().unwrap();
+                    (path.display().to_string(), login.state.clone())
+                })
+                .collect()
+        })
+    };
     act(cx, window, |window, cx| {
-        super::accounts::use_login(&page, "/home/ada/notes.txt".into(), window, cx)
+        super::accounts::add_login(&page, "/home/ada/notes.txt".into(), window, cx)
     });
     act(cx, window, |window, cx| {
         assert_eq!(window.notifications(cx).len(), 1, "says why not");
-        super::accounts::use_login(&page, "/home/ada/.codex/auth.json".into(), window, cx)
+        super::accounts::add_login(&page, "/home/ada/.codex/auth.json".into(), window, cx)
     });
-    let state = cx.read(|cx| page.read(cx).accounts().unwrap().chatgpt.state.clone());
-    assert_eq!(state, LoginState::Ready);
-    act(cx, window, |window, cx| window.click("clear-login", cx));
-    let login = cx.read(|cx| page.read(cx).accounts().unwrap().chatgpt.clone());
+    act(cx, window, |window, cx| {
+        super::accounts::add_login(&page, "/home/ada/.codex-2/auth.json".into(), window, cx)
+    });
+    let ready = LoginState::Ready;
     assert_eq!(
-        login.source,
-        crate::backend::account_words::LoginSource::Default
+        logins(cx),
+        [
+            ("/home/ada/.codex/auth.json".to_string(), ready.clone()),
+            ("/home/ada/.codex-2/auth.json".to_string(), ready.clone()),
+        ]
     );
-    assert_eq!(login.state, LoginState::Missing);
+    // The second takes over first, and the one before it goes second.
+    act(cx, window, |window, cx| {
+        window.click(("first-login", 1usize), cx)
+    });
+    assert_eq!(logins(cx)[0].0, "/home/ada/.codex-2/auth.json");
     act(cx, window, |window, _| {
-        assert!(window.try_find("clear-login").is_none());
+        assert!(window.try_find(("first-login", 0usize)).is_none());
+    });
+    // Removing the last chosen one goes back to Codex's own.
+    act(cx, window, |window, cx| {
+        window.click(("remove-login", 0usize), cx)
+    });
+    act(cx, window, |window, cx| {
+        window.click(("remove-login", 0usize), cx)
+    });
+    assert_eq!(
+        logins(cx),
+        [(
+            "/home/ada/.codex/auth.json".to_string(),
+            LoginState::Missing
+        )]
+    );
+    let source = cx.read(|cx| page.read(cx).accounts().unwrap().chatgpt[0].source);
+    assert_eq!(source, crate::backend::account_words::LoginSource::Default);
+    act(cx, window, |window, _| {
+        assert!(window.try_find(("remove-login", 0usize)).is_none());
+    });
+}
+
+/// With no ChatGPT login at all the page still offers Add and no Remove.
+#[gpui_kit::test]
+fn the_accounts_page_copes_with_no_chatgpt_login(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    backend.set_chatgpt_logins(Vec::new());
+    let (window, _, _) = settings_window(cx, ACCOUNTS_PAGE, 2400.);
+    act(cx, window, |window, _| {
+        assert!(window.try_find("choose-login").is_some());
+        assert!(window.try_find(("remove-login", 0usize)).is_none());
     });
 }
 

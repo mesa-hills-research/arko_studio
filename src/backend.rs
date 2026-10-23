@@ -335,12 +335,21 @@ pub trait Backend: Send + Sync + 'static {
     /// was done, `Err` why not.
     fn add_key(&self, provider: &str, value: &str) -> Result<String, String>;
 
-    /// Uses the Codex auth file at `path` for the ChatGPT login. `Ok` says
-    /// for how long, `Err` why not.
+    /// Uses the Codex auth file at `path` as the only ChatGPT login. `Ok`
+    /// says for how long, `Err` why not.
     fn set_chatgpt_login(&self, path: &Path) -> Result<String, String>;
 
-    /// Removes the chosen login so Codex's own can be used again.
-    fn clear_chatgpt_login(&self) -> Result<String, String>;
+    /// Adds the Codex auth file at `path` after the ChatGPT logins in use.
+    /// `Ok` says for how long, `Err` why not.
+    fn add_chatgpt_login(&self, path: &Path) -> Result<String, String>;
+
+    /// Takes the login at `path` out of the ChatGPT logins. The last one
+    /// goes back to Codex's own. `Ok` says what happens now, `Err` why not.
+    fn remove_chatgpt_login(&self, path: &Path) -> Result<String, String>;
+
+    /// Puts the login at `path` first among the ChatGPT logins. `Ok` says
+    /// for how long, `Err` why not.
+    fn first_chatgpt_login(&self, path: &Path) -> Result<String, String>;
 
     /// Starts the sessions started from now on with `defaults`, the
     /// preferences as they are now. It doesn't block.
@@ -632,9 +641,22 @@ impl Backend for ArkoBackend {
         Ok(accounts::login_chosen_words(first.as_deref()))
     }
 
-    fn clear_chatgpt_login(&self) -> Result<String, String> {
-        let login = arko::accounts::clear_chatgpt_login(&self.root)?;
-        Ok(accounts::login_cleared_words(&login))
+    fn add_chatgpt_login(&self, path: &Path) -> Result<String, String> {
+        let first = accounts::login_set_first();
+        arko::accounts::add_chatgpt_login(&self.root, path)?;
+        Ok(accounts::login_chosen_words(first.as_deref()))
+    }
+
+    fn remove_chatgpt_login(&self, path: &Path) -> Result<String, String> {
+        let first = accounts::login_set_first();
+        let left = arko::accounts::remove_chatgpt_login(&self.root, path)?;
+        Ok(accounts::login_removed_words(&left, first.as_deref()))
+    }
+
+    fn first_chatgpt_login(&self, path: &Path) -> Result<String, String> {
+        let first = accounts::login_set_first();
+        arko::accounts::first_chatgpt_login(&self.root, path)?;
+        Ok(accounts::login_chosen_words(first.as_deref()))
     }
 
     fn set_defaults(&self, defaults: SessionDefaults) {
@@ -1045,22 +1067,68 @@ impl Backend for FakeBackend {
     }
 
     fn set_chatgpt_login(&self, path: &Path) -> Result<String, String> {
-        if path.file_name().is_none_or(|name| name != "auth.json") {
-            return Err(format!(
-                "Could not use {} because it holds no ChatGPT login.",
-                path.display()
-            ));
-        }
-        self.with_state(|state| state.accounts.chatgpt = accounts::chosen_login(path.into()));
+        login_file(path)?;
+        self.with_state(|state| state.accounts.chatgpt = vec![accounts::chosen_login(path.into())]);
         Ok(accounts::login_chosen_words(None))
     }
 
-    fn clear_chatgpt_login(&self) -> Result<String, String> {
+    fn add_chatgpt_login(&self, path: &Path) -> Result<String, String> {
+        login_file(path)?;
         self.with_state(|state| {
-            state.accounts.chatgpt.source = account_words::LoginSource::Default;
-            state.accounts.chatgpt.path = None;
-            state.accounts.chatgpt.state = account_words::LoginState::Missing;
-            Ok(accounts::login_cleared_words(&state.accounts.chatgpt))
+            let logins = &mut state.accounts.chatgpt;
+            // As Arko does, Codex's own login stays first when it holds one,
+            // and is left out when it doesn't.
+            let kept = |login: &account_words::ChatGptLogin| {
+                login.source != account_words::LoginSource::Default
+                    || login.state == account_words::LoginState::Ready
+            };
+            if logins
+                .iter()
+                .any(|login| kept(login) && login.path.as_deref() == Some(path))
+            {
+                return Err(format!("{} is in the list already.", path.display()));
+            }
+            logins.retain(kept);
+            logins.push(accounts::chosen_login(path.into()));
+            Ok(accounts::login_chosen_words(None))
+        })
+    }
+
+    fn remove_chatgpt_login(&self, path: &Path) -> Result<String, String> {
+        self.with_state(|state| {
+            let logins = &mut state.accounts.chatgpt;
+            let at = logins
+                .iter()
+                .position(|login| login.path.as_deref() == Some(path))
+                .ok_or_else(|| format!("{} isn't in the list.", path.display()))?;
+            if logins[at].source == account_words::LoginSource::Default {
+                return Err(format!(
+                    "{} is Codex's own login, which Arko uses while no other is set.",
+                    path.display()
+                ));
+            }
+            logins.remove(at);
+            if logins.is_empty() {
+                logins.push(account_words::ChatGptLogin {
+                    path: Some(PathBuf::from("/home/ada/.codex/auth.json")),
+                    source: account_words::LoginSource::Default,
+                    state: account_words::LoginState::Missing,
+                });
+            }
+            Ok(accounts::login_removed_words(logins, None))
+        })
+    }
+
+    fn first_chatgpt_login(&self, path: &Path) -> Result<String, String> {
+        self.with_state(|state| {
+            let logins = &mut state.accounts.chatgpt;
+            let at = logins
+                .iter()
+                .position(|login| login.path.as_deref() == Some(path))
+                .ok_or_else(|| format!("{} isn't in the list.", path.display()))?;
+            let login = logins.remove(at);
+            logins.insert(0, login);
+            Ok(accounts::login_chosen_words(None))
         })
     }
 
@@ -1171,10 +1239,26 @@ impl Backend for FakeBackend {
     }
 }
 
+/// Whether the fake takes the file as a ChatGPT login: Codex's `auth.json`.
+fn login_file(path: &Path) -> Result<(), String> {
+    if path.file_name().is_none_or(|name| name != "auth.json") {
+        return Err(format!(
+            "Could not use {} because it holds no ChatGPT login.",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 impl FakeBackend {
     /// The worker profiles as they are now.
     pub fn saved_profiles(&self) -> profiles::Profiles {
         self.with_state(|state| state.profiles.clone())
+    }
+
+    /// Sets the ChatGPT logins the accounts read as.
+    pub fn set_chatgpt_logins(&self, logins: Vec<account_words::ChatGptLogin>) {
+        self.with_state(|state| state.accounts.chatgpt = logins);
     }
 
     /// Sets what the worker profiles read as, as if a file changed.
