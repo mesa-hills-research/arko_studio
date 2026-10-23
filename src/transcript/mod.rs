@@ -1752,14 +1752,6 @@ impl TranscriptView {
             window.open_image_viewer(items, selected, cx);
         }
     }
-
-    /// Copies the source of an entry's text, which is the text itself for
-    /// a message typed as plain text.
-    fn copy_entry(&mut self, id: u64, cx: &mut Context<Self>) {
-        if let Some(text) = self.source_text(id) {
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
-        }
-    }
 }
 
 /// Prepares the code languages answers use most, off the UI thread, once

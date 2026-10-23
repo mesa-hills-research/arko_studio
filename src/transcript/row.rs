@@ -1066,18 +1066,17 @@ impl TranscriptView {
                     })
                     .child(
                         div().id(("copy-user", id)).test_support().child(
-                            Button::new("button")
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Copy)
+                            Clipboard::new("button")
                                 .tooltip("Copy")
                                 .accessibility_label("Copy message")
                                 .text_color(muted)
                                 .tab_stop(shown)
-                                .on_click(move |_, _, cx| {
+                                .value_fn(move |_, cx| {
                                     copy_view
-                                        .update(cx, |this, cx| this.copy_entry(id, cx))
-                                        .ok();
+                                        .upgrade()
+                                        .and_then(|view| view.read(cx).source_text(id))
+                                        .unwrap_or_default()
+                                        .into()
                                 }),
                         ),
                     )
@@ -1288,18 +1287,17 @@ impl TranscriptView {
                     .gap_1()
                     .child(
                         div().id(("copy-reply", id)).test_support().child(
-                            Button::new("button")
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Copy)
+                            Clipboard::new("button")
                                 .tooltip("Copy")
                                 .accessibility_label("Copy message")
                                 .text_color(muted)
                                 .tab_stop(shown)
-                                .on_click(move |_, _, cx| {
+                                .value_fn(move |_, cx| {
                                     copy_view
-                                        .update(cx, |this, cx| this.copy_entry(id, cx))
-                                        .ok();
+                                        .upgrade()
+                                        .and_then(|view| view.read(cx).source_text(id))
+                                        .unwrap_or_default()
+                                        .into()
                                 }),
                         ),
                     )

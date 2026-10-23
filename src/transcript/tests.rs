@@ -764,6 +764,9 @@ fn copy_gives_the_replys_markdown_source(cx: &mut TestAppContext) {
     assert_eq!(copy(cx).as_deref(), Some(text));
     cx.update(|cx| cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("other".into())));
     view.update(cx, |view, cx| view.toggle_source(reply, cx));
+    // Copy takes a click again once its check mark is gone.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
     settle(cx, window);
     assert_eq!(copy(cx).as_deref(), Some(text));
     // The names a screen reader says, and nothing more on the buttons.
@@ -2441,9 +2444,8 @@ fn markdown_off_and_view_source_show_the_text_as_written(cx: &mut TestAppContext
     settle(cx, window);
     assert_eq!(sources(cx), [true, true]);
     // Copy gives the text as written, whether it shows formatted or not.
-    view.update(cx, |view, cx| view.copy_entry(reply, cx));
     assert_eq!(
-        cx.read_from_clipboard().and_then(|item| item.text()),
+        cx.read(|cx| view.read(cx).source_text(reply)),
         Some("**Bold** move.\n\n- a\n- b".to_string())
     );
 }
