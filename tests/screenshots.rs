@@ -3007,6 +3007,8 @@ fn session_info(mode: ThemeMode) -> Screenshot {
     reading.settings.handover_at = 950_000;
     reading.settings.workers_handover_at = 200_000;
     reading.settings.background_after = 600;
+    // Auto, with an hour's prompt cache.
+    reading.settings.monitor_wakes_within = Some(3_240);
     reading.settings.text_replies = true;
     reading.settings.extra_rules = arko::ExtraRules::Small;
     reading.settings.worker_project_instructions = true;

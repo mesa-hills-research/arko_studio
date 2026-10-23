@@ -21,7 +21,7 @@ path = "src/main.rs"
 # its own.
 gpui-kit = { package = "mhr-gpui-kit", version = "=0.7.2", features = ["fonts", "tree-sitter-languages", "writing"] }
 # Arko's engine, as a library: no terminal crates, the web page's server kept.
-arko = { package = "arko-tui", version = "0.9.0", default-features = false, features = ["remote"] }
+arko = { package = "arko-tui", version = "0.10.0", default-features = false, features = ["remote"] }
 anyhow = "1.0"
 # arko's Prompter trait is an async trait.
 async-trait = "0.1"
@@ -52,7 +52,7 @@ uuid = "1"
 # The same GPUI Kit with GPUI's test harness, for tests that click and type
 # into real windows on a fake clock.
 gpui-kit = { package = "mhr-gpui-kit", version = "=0.7.2", features = ["test-support"] }
-arko = { package = "arko-tui", version = "0.9.0", default-features = false, features = ["remote", "testing"] }
+arko = { package = "arko-tui", version = "0.10.0", default-features = false, features = ["remote", "testing"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # The feed's events as arko gets them from the framework, for tests that
 # drive a feed the way a session does.

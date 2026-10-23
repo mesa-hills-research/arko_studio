@@ -132,14 +132,15 @@ use arko::commands::{parse_background_after, parse_handover_size};
 use arko::monitors::{self, Wakes, parse_wakes};
 
 /// How long monitors' warnings wake the agent, as a number the fields
-/// compare: its seconds, 0 for never, or `u64::MAX` for always.
+/// compare: its seconds (a day at most), 0 for never, `u64::MAX` for always,
+/// or one less for auto.
 fn wakes_number(wakes: Wakes) -> u64 {
-    wakes.0.unwrap_or(u64::MAX)
-}
-
-/// The setting [`wakes_number`] made `number` of.
-fn wakes_of(number: u64) -> Wakes {
-    Wakes((number != u64::MAX).then_some(number))
+    match wakes {
+        Wakes::Never => 0,
+        Wakes::For(seconds) => seconds,
+        Wakes::Auto => u64::MAX - 1,
+        Wakes::Always => u64::MAX,
+    }
 }
 
 /// After how long a running command moves to the background, as
@@ -174,7 +175,7 @@ pub fn field_command(field: Field, text: &str, current: u64) -> Result<Option<St
             format!("/handover-at workers {}", handover_value(value as usize))
         }
         Field::BackgroundAfter => format!("/background-after {}", background_value(value)),
-        Field::MonitorWakes => wakes_of(value).command(),
+        Field::MonitorWakes => parse_wakes(text)?.command(),
     }))
 }
 
@@ -266,7 +267,7 @@ impl SessionInfo {
             (Field::HandoverMain, "950k"),
             (Field::HandoverWorkers, "200k"),
             (Field::BackgroundAfter, "10m or off"),
-            (Field::MonitorWakes, "2h or always"),
+            (Field::MonitorWakes, "auto, 2h or always"),
         ]
         .into_iter()
         .map(|(field, placeholder)| {
@@ -998,10 +999,16 @@ impl Render for SessionInfo {
                         .gap_1()
                         .child(h_flex().children(input(Field::MonitorWakes, self)))
                         .child(
-                            div()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(settings.monitor_wakes.sentence().replace('\'', "’")),
+                            div().text_xs().text_color(muted).child(
+                                settings
+                                    .monitor_wakes
+                                    .sentence(
+                                        settings
+                                            .monitor_wakes_within
+                                            .map(std::time::Duration::from_secs),
+                                    )
+                                    .replace('\'', "’"),
+                            ),
                         ),
                     cx,
                 ))
@@ -1558,7 +1565,17 @@ mod tests {
         assert!(command(Field::HandoverMain, "1.2345k", 950_000).is_err());
         assert!(command(Field::BackgroundAfter, "10 minutes", 600).is_err());
         assert!(command(Field::BackgroundAfter, "2h", 600).is_err());
-        // Monitor wakes takes a time up to a day, always, or off.
+        // Monitor wakes takes a time up to a day, auto, always, or off.
+        assert_eq!(
+            command(Field::MonitorWakes, "auto", 7_200),
+            Ok(Some("/monitor-wakes auto".into()))
+        );
+        let auto = super::wakes_number(arko::monitors::Wakes::Auto);
+        assert_eq!(command(Field::MonitorWakes, "Auto", auto), Ok(None));
+        assert_eq!(
+            command(Field::MonitorWakes, "1h", auto),
+            Ok(Some("/monitor-wakes 1h".into()))
+        );
         assert_eq!(
             command(Field::MonitorWakes, "always", 7_200),
             Ok(Some("/monitor-wakes always".into()))
@@ -2421,7 +2438,7 @@ mod view_tests {
         let after = cx.read(|cx| info.read(cx).field(Field::BackgroundAfter));
         assert_eq!(cx.read(|cx| after.read(cx).value().to_string()), "10m");
         let wakes = cx.read(|cx| info.read(cx).field(Field::MonitorWakes));
-        assert_eq!(cx.read(|cx| wakes.read(cx).value().to_string()), "2h");
+        assert_eq!(cx.read(|cx| wakes.read(cx).value().to_string()), "auto");
 
         act(cx, window, |window, cx| window.click("outside-access", cx));
         // Fixed: a click does nothing.

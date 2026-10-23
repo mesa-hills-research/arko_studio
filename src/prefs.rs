@@ -233,8 +233,8 @@ pub struct NewSessions {
     /// background, 0 for never. `None`: arko's 10 minutes.
     pub background_after: Option<u64>,
     /// How long after the user's last message a monitor's warning before
-    /// it ends still wakes the agent, as `/monitor-wakes` takes it (`2h`,
-    /// `always`, `off`). `None`: arko's 2 hours.
+    /// it ends still wakes the agent, as `/monitor-wakes` takes it (`auto`,
+    /// `2h`, `always`, `off`). `None`: arko's `auto`.
     pub monitor_wakes: Option<String>,
     /// Who chooses the workers' models, as `/worker-models` takes it.
     pub worker_models: arko::ModelChoice,

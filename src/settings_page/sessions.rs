@@ -350,7 +350,7 @@ impl SessionsPage {
                 self.monitor_wakes
                     .item(arko::monitors::NAME, "monitor-wakes")
                 .description(
-                    "A monitor’s warning before it ends wakes an idle agent for this long after your last message, so it can keep the monitor. 30m, 2h or 24h at most, always, or off.",
+                    "A monitor’s warning before it ends wakes an idle agent for this long after your last message, so it can keep the monitor. Auto lasts while the prompt cache from that message does. Or 30m, 2h or 24h at most, always, or off.",
                 )
                 .keywords(["monitor", "warning", "wake", "idle", "jobs"]),
                 super::switch(
@@ -529,8 +529,8 @@ pub fn parse_background_after(text: &str) -> Result<Option<u64>, String> {
 }
 
 /// How long monitors' warnings wake the agent, as arko's `/monitor-wakes`
-/// reads it: `30m`, `2h` or `24h` at most, `always`, or `off`. Empty:
-/// arko's own.
+/// reads it: `auto`, `30m`, `2h` or `24h` at most, `always`, or `off`.
+/// Empty: arko's own (`auto`).
 pub fn parse_monitor_wakes(text: &str) -> Result<Option<Wakes>, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -625,13 +625,14 @@ mod tests {
         use arko::monitors::Wakes;
 
         assert_eq!(parse_monitor_wakes(""), Ok(None));
-        assert_eq!(parse_monitor_wakes("2h"), Ok(Some(Wakes(Some(7_200)))));
-        assert_eq!(parse_monitor_wakes(" Always "), Ok(Some(Wakes(None))));
-        assert_eq!(parse_monitor_wakes("off"), Ok(Some(Wakes(Some(0)))));
+        assert_eq!(parse_monitor_wakes("2h"), Ok(Some(Wakes::For(7_200))));
+        assert_eq!(parse_monitor_wakes(" Always "), Ok(Some(Wakes::Always)));
+        assert_eq!(parse_monitor_wakes("off"), Ok(Some(Wakes::Never)));
+        assert_eq!(parse_monitor_wakes("auto"), Ok(Some(Wakes::Auto)));
         for text in ["soon", "25h", "0m"] {
             assert!(parse_monitor_wakes(text).is_err(), "{text}");
         }
-        for wakes in [Wakes(Some(0)), Wakes(Some(1_800)), Wakes(None)] {
+        for wakes in [Wakes::Never, Wakes::For(1_800), Wakes::Auto, Wakes::Always] {
             assert_eq!(parse_monitor_wakes(&wakes.shown()), Ok(Some(wakes)));
         }
     }

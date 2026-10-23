@@ -409,7 +409,7 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
         Some(0)
     );
 
-    // Monitor wakes takes a day at most, always, or off.
+    // Monitor wakes takes a day at most, auto, always, or off.
     act(cx, window, |window, cx| window.click("monitor-wakes", cx));
     act(cx, window, |window, cx| window.input("25h", cx));
     act(cx, window, |window, cx| window.press("enter", cx));
@@ -423,7 +423,7 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     );
     assert_eq!(
         backend.defaults().monitor_wakes,
-        Some(arko::monitors::Wakes(None))
+        Some(arko::monitors::Wakes::Always)
     );
 
     act(cx, window, |window, cx| {

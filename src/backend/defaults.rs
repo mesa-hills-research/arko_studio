@@ -310,7 +310,7 @@ mod tests {
         assert_eq!(options.handover_at, Some(950_000));
         assert_eq!(options.workers_handover_at, Some(300_000));
         assert_eq!(options.background_after, Some(0));
-        assert_eq!(options.monitor_wakes, Some(arko::monitors::Wakes(None)));
+        assert_eq!(options.monitor_wakes, Some(arko::monitors::Wakes::Always));
         assert_eq!(options.worker_models, Some(arko::ModelChoice::Profiles));
         assert_eq!(options.worker_depth, Some(3));
         assert!(options.allow_outside_workspace);
