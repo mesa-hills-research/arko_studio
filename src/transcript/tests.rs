@@ -2297,6 +2297,35 @@ fn a_failure_in_the_main_transcript_names_the_worker_that_started_it(cx: &mut Te
     assert!(own[0].starts_with("r2, failed ("), "{own:?}");
 }
 
+/// A worker's stop shows in the main transcript with the worker that started
+/// the stopped one, also when its starter's stop stopped it.
+#[gpui_kit::test]
+fn a_stop_in_the_main_transcript_names_the_worker_that_started_it(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Split the work", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.worker("r1", "Review the files", WorkerChange::Started);
+    feed.worker_under("r2", "r1");
+    feed.worker("r2", "Count the files", WorkerChange::Started);
+    let reason = "its lead r1 was stopped";
+    feed.worker("r2", "", WorkerChange::Stopped { reason });
+    feed.worker("r1", "", WorkerChange::Stopped { reason: "" });
+    let (_, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let labels: Vec<String> = keys(&view, cx)
+        .into_iter()
+        .filter(|key| matches!(key, RowKey::Notice(_)))
+        .map(|key| cx.read(|cx| view.read(cx).row_label(key).to_string()))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "r2 (under r1), stopped (its lead r1 was stopped)",
+            "r1, stopped"
+        ]
+    );
+}
+
 /// A worker's card says what it runs on once the session has recorded it,
 /// and the card stays one line tall.
 #[gpui_kit::test]

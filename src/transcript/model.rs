@@ -630,12 +630,12 @@ pub(crate) fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
     }
     let warning = item.level.is_some_and(|level| level != Level::Info);
     if !item.is_main() {
-        // A worker's calls and what went wrong for it show in Full. Its
-        // text, its report and what the user wrote to it are its own
-        // transcript's.
+        // A worker's calls, what went wrong for it and its stop show in
+        // Full. Its text, its report and what the user wrote to it are its
+        // own transcript's.
         return match (view, item.kind) {
             (View::Full, Kind::Call) => Show::Item,
-            (View::Full, Kind::Notice) if warning => Show::Item,
+            (View::Full, Kind::Notice) if warning || item.stop => Show::Item,
             _ => Show::Hidden,
         };
     }
@@ -1338,6 +1338,26 @@ mod tests {
         let loaded = self::model(items);
         let kept: usize = loaded.entries().iter().map(|e| kept_size(&e.item)).sum();
         assert!(kept <= KEPT_OUTPUTS, "{kept}");
+    }
+
+    /// A worker's stop shows in the main transcript's Full view, whether the
+    /// user stopped the worker or its starter's stop did, and the worker's
+    /// other Info notices stay in its own transcript.
+    #[test]
+    fn a_workers_stop_shows_in_the_main_transcript() {
+        let mut stop =
+            item(2, Kind::Notice, "r2", "stopped (its lead r1 was stopped)").level(Level::Info);
+        stop.stop = true;
+        stop.parent = Some("r1".into());
+        let items = vec![
+            item(1, Kind::User, "main", "go"),
+            stop,
+            item(3, Kind::Notice, "r2", "handed over").level(Level::Info),
+        ];
+        assert_eq!(
+            keys(&model(items), View::Full),
+            [RowKey::User(1), RowKey::Notice(2)]
+        );
     }
 
     /// The main transcript keeps the workers' calls and what went wrong for

@@ -1880,12 +1880,18 @@ impl TranscriptView {
 
     /// What a worker's notice is labelled with: the worker's ID, and in the
     /// main transcript the worker that started it, as Arko words it ("r2
-    /// (under r1)"). A worker's own transcript doesn't repeat who it is.
+    /// (under r1)"). A stop notice says it itself. A worker's own transcript
+    /// doesn't repeat who it is.
     pub(super) fn agent_label(&self, item: &Item) -> String {
         let parent = matches!(self.model.filter(), AgentFilter::Main)
-            .then(|| self.model.worker(&item.agent))
-            .flatten()
-            .and_then(|worker| worker.parent.as_deref());
+            .then(|| {
+                item.parent.as_deref().or_else(|| {
+                    self.model
+                        .worker(&item.agent)
+                        .and_then(|worker| worker.parent.as_deref())
+                })
+            })
+            .flatten();
         match parent {
             Some(parent) => format!("{} (under {parent})", item.agent),
             None => item.agent.clone(),
