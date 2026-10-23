@@ -36,8 +36,8 @@ sudo apt install build-essential pkg-config cmake libfontconfig-dev libwayland-d
   libxkbcommon-x11-dev libx11-xcb-dev libvulkan1 mesa-vulkan-drivers
 ```
 
-Clone the repository and build it. Cargo fetches Arko, its framework and GPUI (the `mhr-gpui`
-crates) from crates.io, and the pinned GPUI Kit commit from GitHub.
+Clone the repository and build it. Cargo fetches Arko, its framework, GPUI Kit (the
+`mhr-gpui-kit` crates) and GPUI (the `mhr-gpui` crates) from crates.io.
 
 ```sh
 git clone https://github.com/mesa-hills-research/arko_studio.git
