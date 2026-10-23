@@ -3077,14 +3077,22 @@ fn session_info(mode: ThemeMode) -> Screenshot {
         },
         skills: Ok(SkillsFacts {
             skills: [
-                ("release-notes", false),
-                ("docs-style", false),
-                ("user-facing-prose", true),
+                (
+                    "release-notes",
+                    "Write the release notes of a version from its commits.",
+                    false,
+                ),
+                ("docs-style", "Rules for the project docs.", false),
+                (
+                    "user-facing-prose",
+                    "How to write any text a person reads, such as UI text, messages, docs and commit messages.",
+                    true,
+                ),
             ]
             .into_iter()
-            .map(|(name, builtin)| SkillFacts {
+            .map(|(name, description, builtin)| SkillFacts {
                 name: name.into(),
-                description: String::new(),
+                description: description.into(),
                 always: false,
                 builtin,
                 replaces_builtin: None,

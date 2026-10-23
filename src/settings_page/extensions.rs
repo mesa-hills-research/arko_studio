@@ -326,19 +326,16 @@ fn skills_item(folder: &SkillFolder, home: Option<&Path>) -> SettingItem {
 }
 
 /// What a built-in skill says under its name, Arko's description of it and
-/// the folders whose skill of its name replaces it.
+/// the skills of its name that replace it.
 fn builtin_words(skill: &BuiltinSkill, home: Option<&Path>) -> String {
     let mut words = skill.description.clone();
     if !skill.replaced_by.is_empty() {
-        let folders: Vec<String> = skill
+        let skills: Vec<String> = skill
             .replaced_by
             .iter()
-            .map(|folder| tilde(folder, home))
+            .map(|path| tilde(path, home))
             .collect();
-        words.push_str(&format!(
-            " Replaced by the skill in {}.",
-            folders.join(" and ")
-        ));
+        words.push_str(&format!(" Replaced by {}.", skills.join(" and ")));
     }
     words
 }
@@ -377,7 +374,7 @@ mod tests {
     use super::{BuiltinSkill, builtin_words};
 
     #[test]
-    fn a_built_in_skill_says_which_folders_replace_it() {
+    fn a_built_in_skill_says_which_skills_replace_it() {
         let home = Path::new("/home/ada");
         let mut skill = BuiltinSkill {
             name: "repo-docs-style".into(),
@@ -386,15 +383,17 @@ mod tests {
             replaced_by: Vec::new(),
         };
         assert_eq!(builtin_words(&skill, Some(home)), "Rules for docs.");
-        skill.replaced_by = vec![home.join(".claude/skills")];
+        skill.replaced_by = vec![home.join(".claude/skills/repo-docs-style")];
         assert_eq!(
             builtin_words(&skill, Some(home)),
-            "Rules for docs. Replaced by the skill in ~/.claude/skills."
+            "Rules for docs. Replaced by ~/.claude/skills/repo-docs-style."
         );
-        skill.replaced_by.push(home.join("src/arko/.skills"));
+        skill
+            .replaced_by
+            .push(home.join("src/arko/.skills/docs.md"));
         assert_eq!(
             builtin_words(&skill, Some(home)),
-            "Rules for docs. Replaced by the skill in ~/.claude/skills and ~/src/arko/.skills."
+            "Rules for docs. Replaced by ~/.claude/skills/repo-docs-style and ~/src/arko/.skills/docs.md."
         );
     }
 }

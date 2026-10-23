@@ -1158,9 +1158,34 @@ impl Render for SessionInfo {
                         narrow,
                         "Skills",
                         v_flex().children(
-                            skills_lines(&facts.skills)
+                            skills_lines(&facts.skills, cx.global::<HomeFolder>().0.as_deref())
                                 .into_iter()
-                                .map(|line| div().text_sm().child(line)),
+                                .map(|(name, description, from)| {
+                                    h_flex()
+                                        .gap_2()
+                                        .text_sm()
+                                        .when(!name.is_empty(), |this| {
+                                            this.child(div().flex_none().child(name))
+                                        })
+                                        .when(!description.is_empty(), |this| {
+                                            this.child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .child(description),
+                                            )
+                                        })
+                                        .when(!from.is_empty(), |this| {
+                                            this.child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_xs()
+                                                    .text_color(muted)
+                                                    .child(from),
+                                            )
+                                        })
+                                }),
                         ),
                         cx,
                     ))
@@ -1312,43 +1337,58 @@ pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
     lines
 }
 
-/// The skills as lines: the folders' skills, the built-in ones that stay,
-/// and the built-in ones left out, in Arko's words.
-pub fn skills_lines(skills: &Result<SkillsFacts, String>) -> Vec<String> {
+/// The skills as Arko's `/skills` lists them, a line each by name: the
+/// skill's name, its description on one line, and in muted text where it
+/// comes from (`built in`, or its folder under `home` as `~`) and whether
+/// it's always loaded. The built-in skills left out are a muted line of
+/// their own.
+pub fn skills_lines(
+    skills: &Result<SkillsFacts, String>,
+    home: Option<&Path>,
+) -> Vec<(String, String, String)> {
     let skills = match skills {
-        Err(why) => return vec![format!("Couldn’t be read ({why})")],
+        Err(why) => {
+            return vec![(
+                format!("Couldn’t be read ({why})"),
+                String::new(),
+                String::new(),
+            )];
+        }
         Ok(skills) => skills,
     };
-    let own: Vec<String> = skills
+    let mut lines: Vec<(String, String, String)> = skills
         .skills
         .iter()
-        .filter(|skill| !skill.builtin)
-        .map(|skill| match skill.replaces_builtin {
-            Some(_) => format!("{} (replaces the built-in skill)", skill.name),
-            None => skill.name.clone(),
+        .map(|skill| {
+            // TODO: an ordinary skill's folder, once arko's SkillFacts has it.
+            let mut from = match (&skill.replaces_builtin, skill.builtin) {
+                (_, true) => "built in".to_string(),
+                (Some(path), _) => shown_folder(path, home),
+                (None, false) => String::new(),
+            };
+            if skill.always {
+                if !from.is_empty() {
+                    from.push_str(", ");
+                }
+                from.push_str("always loaded");
+            }
+            let description = skill.description.split_whitespace().collect::<Vec<_>>();
+            (skill.name.clone(), description.join(" "), from)
         })
         .collect();
-    let builtin: Vec<&str> = skills
-        .skills
-        .iter()
-        .filter(|skill| skill.builtin)
-        .map(|skill| skill.name.as_str())
-        .collect();
-    let mut lines = Vec::new();
-    if !own.is_empty() {
-        lines.push(own.join(", "));
-    }
-    if !builtin.is_empty() {
-        lines.push(format!("{} (built in)", builtin.join(", ")));
-    }
+    lines.sort();
     if !skills.builtin_off.is_empty() {
-        lines.push(format!(
-            "Built-in skills left out ({})",
-            skills.builtin_off.join(", ")
+        lines.push((
+            String::new(),
+            String::new(),
+            format!(
+                "Built-in skills left out ({})",
+                skills.builtin_off.join(", ")
+            ),
         ));
     }
     if lines.is_empty() {
-        lines.push("None".to_string());
+        lines.push(("None".to_string(), String::new(), String::new()));
     }
     lines
 }
@@ -1402,13 +1442,13 @@ mod tests {
     // shadow Rust's.
     use super::{
         Field, MODEL_KEPT, background_value, clicked, field_command, handover_value, index_text,
-        indexes_text, mcp_lines, skills_lines,
+        indexes_text, mcp_lines, shown_folder, skills_lines,
     };
     use arko::details::{
         IndexEmbeddings, IndexFacts, IndexKind, IndexWatch, McpFacts, McpServerFacts, SkillFacts,
         SkillsFacts,
     };
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// The info and the mode popover say it with the same words.
     #[test]
@@ -1520,12 +1560,13 @@ mod tests {
             ]
         );
         assert_eq!(mcp_lines(&McpFacts::default()), [("None".into(), None)]);
+        let home = Path::new("/home/ada");
         let skill = |name: &str, builtin: bool, replaces: bool| SkillFacts {
             name: name.into(),
-            description: String::new(),
+            description: format!("What {name}\n  is for."),
             always: false,
             builtin,
-            replaces_builtin: replaces.then(|| PathBuf::from("/home/ada/.claude/skills/docs")),
+            replaces_builtin: replaces.then(|| home.join(".claude/skills").join(name)),
         };
         let facts = |skills, builtin_off: &[&str]| {
             Ok(SkillsFacts {
@@ -1535,47 +1576,52 @@ mod tests {
                 builtin_off: builtin_off.iter().map(|name| name.to_string()).collect(),
             })
         };
+        let line = |name: &str, description: &str, from: &str| {
+            (name.to_string(), description.to_string(), from.to_string())
+        };
         assert_eq!(
-            skills_lines(&facts(vec![skill("docs-style", false, false)], &[])),
-            ["docs-style"]
+            skills_lines(&facts(Vec::new(), &[]), Some(home)),
+            [line("None", "", "")]
         );
-        assert_eq!(skills_lines(&facts(Vec::new(), &[])), ["None"]);
         assert_eq!(
-            skills_lines(&Err("no folder".into())),
-            ["Couldn’t be read (no folder)"]
+            skills_lines(&Err("no folder".into()), Some(home)),
+            [line("Couldn’t be read (no folder)", "", "")]
         );
-        // The built-in skills that stay, the folder skill replacing one,
-        // and those left out, in separate lines.
+        // A line each by name, the description on one line, then where it
+        // comes from. The built-in skills left out come last.
+        let always = SkillFacts {
+            description: String::new(),
+            always: true,
+            ..skill("house-rules", false, false)
+        };
         assert_eq!(
-            skills_lines(&facts(
-                vec![
-                    skill("release-notes", false, false),
-                    skill("repo-docs-style", false, true),
-                    skill("user-facing-prose", true, false),
-                ],
-                &[]
-            )),
+            skills_lines(
+                &facts(
+                    vec![
+                        skill("user-facing-prose", true, false),
+                        skill("repo-docs-style", false, true),
+                        skill("release-notes", false, false),
+                        always,
+                    ],
+                    &["ponytail"]
+                ),
+                Some(home)
+            ),
             [
-                "release-notes, repo-docs-style (replaces the built-in skill)",
-                "user-facing-prose (built in)"
+                line("house-rules", "", "always loaded"),
+                line("release-notes", "What release-notes is for.", ""),
+                line(
+                    "repo-docs-style",
+                    "What repo-docs-style is for.",
+                    &shown_folder(&home.join(".claude/skills/repo-docs-style"), Some(home))
+                ),
+                line(
+                    "user-facing-prose",
+                    "What user-facing-prose is for.",
+                    "built in"
+                ),
+                line("", "", "Built-in skills left out (ponytail)"),
             ]
-        );
-        assert_eq!(
-            skills_lines(&facts(
-                vec![skill("user-facing-prose", true, false)],
-                &["repo-docs-style"]
-            )),
-            [
-                "user-facing-prose (built in)",
-                "Built-in skills left out (repo-docs-style)"
-            ]
-        );
-        assert_eq!(
-            skills_lines(&facts(
-                Vec::new(),
-                &["repo-docs-style", "user-facing-prose"]
-            )),
-            ["Built-in skills left out (repo-docs-style, user-facing-prose)"]
         );
         assert_eq!(indexes_text(&[]), None);
     }
