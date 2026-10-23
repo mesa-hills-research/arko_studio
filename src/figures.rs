@@ -201,18 +201,37 @@ pub fn starts_over(unix_seconds: i64, now: i64) -> String {
     }
 }
 
+/// What Arko's line for `plan` says beyond its windows, such as "credits
+/// left 12.50, 1 set aside" for a ChatGPT plan with credits and a login put
+/// aside. Arko's line is the windows and then those words, so they are what
+/// follows the windows. `None` when there are none.
+pub fn plan_extras(plan: &PlanStatus) -> Option<String> {
+    let windows: Vec<String> = plan
+        .windows
+        .iter()
+        .map(|window| format!("{} {:.0}%", window.label, window.used_percent))
+        .collect();
+    let rest = plan
+        .text
+        .strip_prefix(&format!("{} {}", plan.plan, windows.join(", ")))?;
+    let rest = rest.trim_start_matches(',').trim();
+    (!rest.is_empty()).then(|| rest.to_string())
+}
+
 /// The plans' windows, a plan a line: "Claude plan · 5 h limit · 84% used,
-/// starts over at 14:00 · 7 d limit · 40% used".
+/// starts over at 14:00 · 7 d limit · 40% used", and for a ChatGPT plan its
+/// credits and the logins set aside, "· credits left 12.50, 1 set aside".
 pub fn plans_tooltip(plans: &[PlanStatus], now: i64) -> String {
     plans
         .iter()
         .map(|plan| {
-            let windows: Vec<String> = plan
+            let mut parts: Vec<String> = plan
                 .windows
                 .iter()
                 .map(|window| plan_window_line(window, now))
                 .collect();
-            format!("{} · {}", plan.plan, windows.join(" · "))
+            parts.extend(plan_extras(plan));
+            format!("{} · {}", plan.plan, parts.join(" · "))
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -365,6 +384,38 @@ mod tests {
             plans_tooltip(&plans, 0),
             "Claude plan · 5 h limit · 84% used · 7 d limit · 91% used"
         );
+    }
+
+    /// A ChatGPT plan's credits and the logins set aside, which Arko adds to
+    /// its line after the windows, show with them.
+    #[test]
+    fn a_plans_credits_and_set_aside_logins_show_with_its_windows() {
+        let window = |used_percent, label: &str| PlanWindow {
+            label: label.into(),
+            used_percent,
+            resets_at: None,
+        };
+        let mut plan = PlanStatus {
+            plan: "ChatGPT plan".into(),
+            windows: vec![window(12., "5 h"), window(82., "7 d")],
+            credits: None,
+            set_aside: 0,
+            extra_usage: None,
+            text: "ChatGPT plan 5 h 12%, 7 d 82%, credits left 12.50, 1 set aside".into(),
+        };
+        assert_eq!(
+            plan_extras(&plan).as_deref(),
+            Some("credits left 12.50, 1 set aside")
+        );
+        assert_eq!(
+            plans_tooltip(std::slice::from_ref(&plan), 0),
+            "ChatGPT plan · 5 h limit · 12% used · 7 d limit · 82% used · credits left 12.50, 1 set aside"
+        );
+        // Only the windows, or a line that isn't Arko's shape: nothing more.
+        plan.text = "ChatGPT plan 5 h 12%, 7 d 82%".into();
+        assert_eq!(plan_extras(&plan), None);
+        plan.text = "plan usage".into();
+        assert_eq!(plan_extras(&plan), None);
     }
 
     #[test]

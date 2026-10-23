@@ -336,6 +336,20 @@ impl RenderOnce for ContextDetails {
                             bar.description(format!("Starts over {over}"))
                         })
                     }))
+                    // A ChatGPT plan's credits, and the logins set aside.
+                    .children(figures::plan_extras(plan).map(|extras| {
+                        let mut chars = extras.chars();
+                        let line: String = chars
+                            .next()
+                            .map(|first| first.to_uppercase().chain(chars).collect())
+                            .unwrap_or_default();
+                        div()
+                            .id(SharedString::from(format!("plan-extras-{ix}")))
+                            .test_support()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(line)
+                    }))
                     .into_any_element()
             })
             .collect();

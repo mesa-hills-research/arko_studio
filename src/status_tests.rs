@@ -466,6 +466,32 @@ fn the_contexts_popover_shows_the_split_and_hands_over(cx: &mut TestAppContext) 
     assert_eq!(sent(&bar.session, cx), ["/handover"]);
 }
 
+/// A ChatGPT plan's credits and the logins set aside show under its windows
+/// in the context's popover, and a plan whose line says no more has none.
+#[gpui_kit::test]
+fn the_contexts_popover_shows_a_chatgpt_plans_credits(cx: &mut TestAppContext) {
+    let bar = bar(cx, 1300.);
+    let mut reading = busy();
+    reading.plans.push(arko::remote::PlanStatus {
+        plan: "ChatGPT plan".into(),
+        windows: vec![arko::remote::PlanWindow {
+            label: "5 h".into(),
+            used_percent: 12.,
+            resets_at: None,
+        }],
+        credits: None,
+        set_aside: 0,
+        extra_usage: None,
+        text: "ChatGPT plan 5 h 12%, credits left 12.50, 1 set aside".into(),
+    });
+    bar.show(cx, reading, Activity::default());
+    act(cx, bar.window, |window, cx| {
+        window.click("status-context", cx)
+    });
+    assert!(bar.find(cx, "plan-extras-1"));
+    assert!(!bar.find(cx, "plan-extras-0"));
+}
+
 #[gpui_kit::test]
 fn the_context_warns_from_90_percent_of_the_handover_size(cx: &mut TestAppContext) {
     let bar = bar(cx, 1300.);
