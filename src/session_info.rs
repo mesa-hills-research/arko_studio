@@ -437,10 +437,36 @@ impl SessionInfo {
         }));
     }
 
-    /// Removes the kept note `id` from the session folder `dir`, off the UI
-    /// thread, and shows the notes the folder holds then. Why it couldn't
-    /// is told in a notification.
-    fn remove_note(this: &Entity<Self>, dir: PathBuf, id: u32, window: &mut Window, cx: &mut App) {
+    /// Removes the kept note `id`. A running session removes it itself, so
+    /// its agents are told, and the note leaves the list at once. Otherwise
+    /// it goes from the session folder `dir`, off the UI thread, and the list
+    /// shows the notes the folder holds then. Why it couldn't is told in a
+    /// notification.
+    fn remove_note(
+        this: &Entity<Self>,
+        dir: Option<PathBuf>,
+        id: u32,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let running = this
+            .read(cx)
+            .session
+            .clone()
+            .filter(|session| session.read(cx).is_running());
+        if let Some(session) = running {
+            run(&session, &format!("/notes remove {id}"), window, cx);
+            this.update(cx, |this, cx| {
+                if let Some(Ok(notes)) = this.facts.as_mut().map(|facts| &mut facts.notes) {
+                    notes.retain(|note| note.id != id);
+                }
+                cx.notify();
+            });
+            return;
+        }
+        let Some(dir) = dir else {
+            return;
+        };
         let removing = cx.background_spawn(async move {
             let notes = KeptNotes::new(&dir);
             (notes.remove(id), notes.list())
@@ -1266,9 +1292,7 @@ impl Render for SessionInfo {
                                     .label("Remove")
                                     .accessibility_label(format!("Remove kept note {id}"))
                                     .on_click(move |_, window, cx| {
-                                        if let Some(dir) = dir.clone() {
-                                            SessionInfo::remove_note(&info, dir, id, window, cx)
-                                        }
+                                        SessionInfo::remove_note(&info, dir.clone(), id, window, cx)
                                     }),
                             )
                     }))
@@ -1724,6 +1748,7 @@ mod view_tests {
         cx: &mut TestAppContext,
         dir: &std::path::Path,
         notes: Result<Vec<arko::kept_notes::Note>, String>,
+        session: Option<Entity<LiveSession>>,
     ) -> (AnyWindowHandle, Entity<super::SessionInfo>) {
         use arko::details::{HandoverFacts, McpFacts, ModelFacts, SessionFacts};
         use gpui_kit::{Bounds, WindowBounds, WindowOptions, px, size};
@@ -1797,6 +1822,8 @@ mod view_tests {
                 let opened = gpui_kit::open_window(options, cx, |window, cx| {
                     let info = cx.new(|cx| {
                         let mut info = super::SessionInfo::new(window, cx);
+                        // The session's facts are the preview's.
+                        info.set_session(session, window, cx);
                         info.set_preview(preview, facts, window, cx);
                         info
                     });
@@ -1820,7 +1847,7 @@ mod view_tests {
         start(cx);
         let temp = tempfile::tempdir().unwrap();
         let kept = KeptNotes::new(temp.path());
-        let (window, _) = info_with_notes(cx, temp.path(), kept.list());
+        let (window, _) = info_with_notes(cx, temp.path(), kept.list(), None);
         let present = |cx: &mut TestAppContext, id: usize| {
             cx.update_window(window, |_, window, cx| {
                 window.render_frame(cx);
@@ -1832,7 +1859,7 @@ mod view_tests {
         kept.add("Tear the build box down.", Audience::Lead)
             .unwrap();
         kept.add("Use --locked.", Audience::AllWorkers).unwrap();
-        let (window, _) = info_with_notes(cx, temp.path(), kept.list());
+        let (window, _) = info_with_notes(cx, temp.path(), kept.list(), None);
         let words = cx
             .update_window(window, |_, window, cx| {
                 window.render_frame(cx);
@@ -1853,9 +1880,36 @@ mod view_tests {
         });
         // A file that can't be read says so, in Arko's words.
         std::fs::write(temp.path().join("kept-notes.json"), "not json").unwrap();
-        let (window, _) = info_with_notes(cx, temp.path(), kept.list());
+        let (window, _) = info_with_notes(cx, temp.path(), kept.list(), None);
         act(cx, window, |window, _| {
             assert!(window.try_find("kept-notes-error").is_some());
+        });
+    }
+
+    /// A running session removes a kept note itself, so that its agents are
+    /// told. Remove sends it `/notes remove N`, and the note leaves the list.
+    #[gpui_kit::test]
+    fn a_running_session_is_sent_the_command_to_remove_a_kept_note(cx: &mut TestAppContext) {
+        use arko::kept_notes::{Audience, KeptNotes};
+
+        start(cx);
+        let temp = tempfile::tempdir().unwrap();
+        let kept = KeptNotes::new(temp.path());
+        kept.add("Tear the build box down.", Audience::Lead)
+            .unwrap();
+        kept.add("Use --locked.", Audience::AllWorkers).unwrap();
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        let (window, _) = info_with_notes(cx, temp.path(), kept.list(), Some(session.clone()));
+        act(cx, window, |window, cx| {
+            window.click(("remove-note", 1usize), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(sent(&session, cx), ["/notes remove 1"]);
+        // The file is the session's to change.
+        assert_eq!(kept.list().unwrap().len(), 2);
+        act(cx, window, |window, _| {
+            assert!(window.try_find(("kept-note", 1usize)).is_none());
+            assert!(window.try_find(("kept-note", 2usize)).is_some());
         });
     }
 
