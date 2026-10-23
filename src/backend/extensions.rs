@@ -120,7 +120,10 @@ impl Extensions {
                     name: "repo-docs-style".into(),
                     description: "Rules for repository documentation, such as READMEs and docs pages. Load it before creating or editing project docs.".into(),
                     auto_load: false,
-                    replaced_by: vec![home.join(".claude/skills/repo-docs-style")],
+                    replaced_by: vec![
+                        home.join(".claude/skills/repo-docs-style"),
+                        home.join("src/arko/.agents/skills/repo-docs-style"),
+                    ],
                 },
                 BuiltinSkill {
                     name: "ponytail".into(),

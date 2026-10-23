@@ -320,15 +320,15 @@ fn skills_item(folder: &SkillFolder, home: Option<&Path>) -> SettingItem {
     .keywords(keywords)
 }
 
-/// "Replaced by" and the skills of a built-in skill's name that replace it,
-/// if any do.
+/// Where the skills of a built-in skill's name that replace it are, if any
+/// do ("~/.claude/skills/pdf and ~/src/app/.skills/pdf").
 fn replaced_words(skill: &BuiltinSkill, home: Option<&Path>) -> Option<String> {
     let skills: Vec<String> = skill
         .replaced_by
         .iter()
         .map(|path| tilde(path, home))
         .collect();
-    (!skills.is_empty()).then(|| format!("Replaced by {}", skills.join(" and ")))
+    (!skills.is_empty()).then(|| skills.join(" and "))
 }
 
 /// A built-in skill's row, one line as Arko's /skills lists it: its name,
@@ -369,22 +369,35 @@ fn builtin_row(skill: &BuiltinSkill, home: Option<&Path>) -> SettingItem {
                     .child(description.clone()),
             )
             .when_some(replaced.clone(), |this, replaced| {
-                // A long folder loses its leading folders first.
+                // "Replaced by" stays whole, and a long path loses its
+                // leading folders first.
                 this.child(
-                    div()
+                    h_flex()
                         .flex_none()
                         .min_w_0()
                         .max_w(relative(0.4))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis_start()
+                        .gap_1()
                         .text_xs()
                         .text_color(muted)
-                        .child(replaced),
+                        .child(div().flex_none().child("Replaced by"))
+                        .child(
+                            div()
+                                .id("replaced-by")
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis_start()
+                                .child(replaced.clone())
+                                .tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(replaced.clone())
+                                        .build(window, cx)
+                                }),
+                        ),
                 )
             })
             .child(
                 Switch::new(id.clone())
+                    .accessibility_label(name.clone())
                     .checked(prefs::get(cx).extensions.builtin_skill_on(&on))
                     .on_click(move |checked, _, cx| {
                         let (name, on) = (set.clone(), *checked);
@@ -444,14 +457,14 @@ mod tests {
         skill.replaced_by = vec![home.join(".claude/skills/repo-docs-style")];
         assert_eq!(
             replaced_words(&skill, Some(home)).as_deref(),
-            Some("Replaced by ~/.claude/skills/repo-docs-style")
+            Some("~/.claude/skills/repo-docs-style")
         );
         skill
             .replaced_by
             .push(home.join("src/arko/.skills/docs.md"));
         assert_eq!(
             replaced_words(&skill, Some(home)).as_deref(),
-            Some("Replaced by ~/.claude/skills/repo-docs-style and ~/src/arko/.skills/docs.md")
+            Some("~/.claude/skills/repo-docs-style and ~/src/arko/.skills/docs.md")
         );
     }
 }
