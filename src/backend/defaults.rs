@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crate::prefs::{self, Prefs};
 
 use super::Mode;
+use super::extensions::BUILTIN_SKILLS;
 
 /// The preferences a session's options come from, as the app holds them
 /// now. The backend keeps a copy ([`super::Backend::set_defaults`]), since
@@ -45,6 +46,12 @@ pub struct SessionDefaults {
     pub shell: Option<arko::WindowsShell>,
     /// MCP config files every session reads (arko's `--mcp-config`).
     pub mcp_config: Vec<PathBuf>,
+    /// Whether every session gets Arko's built-in skills. `None`: as
+    /// `ARKO_BUILTIN_SKILLS` says.
+    pub builtin_skills: Option<bool>,
+    /// The built-in skills every session leaves out, by name, when Arko
+    /// knows them. `None`: as `ARKO_BUILTIN_SKILLS_OFF` says.
+    pub builtin_skills_off: Option<Vec<String>>,
     /// Where every session serves its web page as it opens. `None` when it
     /// doesn't.
     pub web_page: Option<arko::remote::Bind>,
@@ -103,6 +110,15 @@ impl SessionDefaults {
                 prefs::WindowsShell::Powershell => arko::WindowsShell::Powershell,
             }),
             mcp_config: prefs.advanced.mcp_config.clone(),
+            builtin_skills: prefs.extensions.builtin_skills,
+            // A name Arko doesn't know would keep every session from opening.
+            builtin_skills_off: prefs.extensions.builtin_skills_off.as_ref().map(|names| {
+                names
+                    .iter()
+                    .filter(|name| BUILTIN_SKILLS.contains(&name.as_str()))
+                    .cloned()
+                    .collect()
+            }),
             web_page: prefs
                 .web_page
                 .share_by_default
@@ -118,6 +134,10 @@ impl SessionDefaults {
     /// left unchosen, then decides which settings that model supports.
     pub fn apply(&self, options: &mut arko::Options, new: Option<Mode>) {
         options.mcp_config.extend(self.mcp_config.iter().cloned());
+        // A resumed session takes the choice for the conversations that
+        // start after, so it applies to every session as it opens.
+        options.builtin_skills = self.builtin_skills;
+        options.builtin_skills_off = self.builtin_skills_off.clone();
         if options.remote.is_none() {
             options.remote = self.web_page;
             options.remote_port_fallback = self.web_page.is_some();
@@ -210,6 +230,40 @@ mod tests {
         assert_eq!(options.project_instructions, Some(arko::ProjectFiles::One));
         assert_eq!(options.remote, None);
         assert!(options.mcp_config.is_empty());
+        assert_eq!(options.builtin_skills, None);
+        assert_eq!(options.builtin_skills_off, None);
+    }
+
+    /// The built-in skill choice goes to a new and to a resumed session, a
+    /// chat too. A name Arko doesn't know is dropped, since Arko would not
+    /// open a session that leaves it out.
+    #[test]
+    fn the_built_in_skill_choice_reaches_new_and_resumed_sessions() {
+        let mut prefs = Prefs::default();
+        prefs.extensions.builtin_skills = Some(false);
+        prefs.extensions.builtin_skills_off = Some(vec![
+            "repo-docs-style".into(),
+            "dropped-by-a-later-arko".into(),
+        ]);
+        let defaults = SessionDefaults::from_prefs(&prefs);
+        for mode in [Some(Mode::Agent), Some(Mode::Chat), None] {
+            let mut options = new_options();
+            defaults.apply(&mut options, mode);
+            assert_eq!(options.builtin_skills, Some(false), "{mode:?}");
+            assert_eq!(
+                options.builtin_skills_off,
+                Some(vec!["repo-docs-style".to_string()]),
+                "{mode:?}"
+            );
+        }
+        // Switched back on, it is passed on too, so a resumed session that
+        // saved them off gets them again.
+        prefs.extensions.builtin_skills = Some(true);
+        prefs.extensions.builtin_skills_off = Some(Vec::new());
+        let mut options = new_options();
+        SessionDefaults::from_prefs(&prefs).apply(&mut options, None);
+        assert_eq!(options.builtin_skills, Some(true));
+        assert_eq!(options.builtin_skills_off, Some(Vec::new()));
     }
 
     #[test]

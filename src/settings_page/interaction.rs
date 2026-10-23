@@ -727,6 +727,49 @@ fn a_projects_mcp_answer_is_forgotten(cx: &mut TestAppContext) {
     });
 }
 
+/// The switches for Arko's built-in skills, all of them and each by name,
+/// reach the options of the sessions opened after, and switching back on
+/// is passed on too.
+#[gpui_kit::test]
+fn the_built_in_skill_switches_reach_the_sessions_options(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, _) = settings_window(cx, EXTENSIONS_PAGE, 2400.);
+    // Left to Arko until chosen.
+    assert_eq!(backend.defaults().builtin_skills, None);
+    assert_eq!(backend.defaults().builtin_skills_off, None);
+    let on = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).and_then(|found| found.checked())
+        })
+        .unwrap()
+    };
+    assert_eq!(on(cx, "builtin-skills"), Some(true));
+    assert_eq!(on(cx, "builtin-skill-user-facing-prose"), Some(true));
+    act(cx, window, |window, cx| {
+        window.click("builtin-skill-repo-docs-style", cx)
+    });
+    assert_eq!(
+        backend.defaults().builtin_skills_off,
+        Some(vec!["repo-docs-style".to_string()])
+    );
+    assert_eq!(backend.defaults().builtin_skills, None);
+    assert_eq!(on(cx, "builtin-skill-repo-docs-style"), Some(false));
+    assert_eq!(on(cx, "builtin-skill-user-facing-prose"), Some(true));
+    act(cx, window, |window, cx| window.click("builtin-skills", cx));
+    assert_eq!(backend.defaults().builtin_skills, Some(false));
+    assert_eq!(on(cx, "builtin-skills"), Some(false));
+    // Switched back on, each is passed on, so a resumed session that kept
+    // them off gets them again.
+    act(cx, window, |window, cx| window.click("builtin-skills", cx));
+    act(cx, window, |window, cx| {
+        window.click("builtin-skill-repo-docs-style", cx)
+    });
+    assert_eq!(backend.defaults().builtin_skills, Some(true));
+    assert_eq!(backend.defaults().builtin_skills_off, Some(Vec::new()));
+    assert_eq!(on(cx, "builtin-skill-repo-docs-style"), Some(true));
+}
+
 /// MCP config files added under Advanced reach every session's options,
 /// and Remove takes one out. Extensions lists what's there as it changes.
 #[gpui_kit::test]

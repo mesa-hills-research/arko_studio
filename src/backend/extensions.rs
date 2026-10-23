@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 
 pub const USER_MCP_FILE: &str = "mcp.json";
 pub const PROJECT_MCP_FILE: &str = ".mcp.json";
+/// The skills built into Arko, by name. Arko stops a session that leaves
+/// out a name it doesn't know, so a saved choice goes to it only with these.
+pub const BUILTIN_SKILLS: [&str; 2] = ["user-facing-prose", "repo-docs-style"];
 const PROJECT_SKILL_FOLDERS: [&str; 3] = [".agents/skills", ".claude/skills", ".skills"];
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -407,6 +410,19 @@ mod tests {
         assert_eq!(found.skills.len(), 1);
         assert!(found.skills[0].skills.iter().all(|skill| !skill.builtin));
         assert_eq!(found.skills[0].skills[0].name, "repo-docs-style");
+    }
+
+    /// The names a saved choice may hold are the ones Arko has built in.
+    #[test]
+    fn the_known_built_in_skills_are_arkos() {
+        let temp = tempfile::tempdir().unwrap();
+        let found = read(&temp.path().join("arko"), &[], &[]);
+        let names: Vec<&str> = found
+            .builtin
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect();
+        assert_eq!(names, BUILTIN_SKILLS);
     }
 
     #[test]

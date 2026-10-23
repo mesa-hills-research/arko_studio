@@ -36,6 +36,8 @@ pub struct Prefs {
     pub web_page: WebPagePrefs,
     /// What new sessions start with.
     pub new_sessions: NewSessions,
+    /// Which of Arko's built-in skills sessions get (Settings › Extensions).
+    pub extensions: ExtensionsPrefs,
     pub advanced: AdvancedPrefs,
 }
 
@@ -52,6 +54,7 @@ impl Default for Prefs {
             sessions: SessionPrefs::default(),
             web_page: WebPagePrefs::default(),
             new_sessions: NewSessions::default(),
+            extensions: ExtensionsPrefs::default(),
             advanced: AdvancedPrefs::default(),
         }
     }
@@ -276,6 +279,45 @@ impl Default for NewSessions {
             project_instructions: ProjectInstructions::One,
             worker_project_instructions: true,
             chat_instructions: String::new(),
+        }
+    }
+}
+
+/// Which of Arko's built-in skills every session gets as it opens, new or
+/// resumed (Settings › Extensions). A session already open keeps the skills
+/// it started with. Each field is `None` until the user chooses it, which
+/// leaves it to Arko's `ARKO_BUILTIN_SKILLS` and `ARKO_BUILTIN_SKILLS_OFF`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExtensionsPrefs {
+    /// Whether the agents get the built-in skills at all.
+    pub builtin_skills: Option<bool>,
+    /// The built-in skills left out, by name.
+    pub builtin_skills_off: Option<Vec<String>>,
+}
+
+impl ExtensionsPrefs {
+    /// Whether the built-in skills are on at all.
+    pub fn builtin_skills_on(&self) -> bool {
+        self.builtin_skills.unwrap_or(true)
+    }
+
+    /// Whether the built-in skill `name` isn't left out by name.
+    pub fn builtin_skill_on(&self, name: &str) -> bool {
+        !self
+            .builtin_skills_off
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|off| off == name)
+    }
+
+    /// Leaves out the built-in skill `name`, or stops leaving it out.
+    pub fn set_builtin_skill(&mut self, name: &str, on: bool) {
+        let off = self.builtin_skills_off.get_or_insert_with(Vec::new);
+        off.retain(|left| left != name);
+        if !on {
+            off.push(name.to_string());
         }
     }
 }
@@ -1042,6 +1084,47 @@ mod tests {
         let prefs = Prefs::load(&path);
         assert_eq!(prefs.new_sessions.worker_models, arko::ModelChoice::Agent);
         assert_eq!(prefs.new_sessions.worker_depth, 3);
+    }
+
+    /// The built-in skills are left to Arko until chosen, the choice reads
+    /// back as saved, and a file from before it has none.
+    #[test]
+    fn the_built_in_skill_choice_starts_with_arko_and_reads_back() {
+        assert_eq!(Prefs::default().extensions, ExtensionsPrefs::default());
+        let none = ExtensionsPrefs::default();
+        assert!(none.builtin_skills_on());
+        assert!(none.builtin_skill_on("repo-docs-style"));
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("studio.json");
+        std::fs::write(&path, r#"{ "new_sessions": { "handover_at": 300000 } }"#).unwrap();
+        assert_eq!(Prefs::load(&path).extensions, ExtensionsPrefs::default());
+        let mut prefs = Prefs::default();
+        prefs.extensions.builtin_skills = Some(false);
+        prefs.extensions.set_builtin_skill("repo-docs-style", false);
+        prefs
+            .extensions
+            .set_builtin_skill("user-facing-prose", false);
+        prefs
+            .extensions
+            .set_builtin_skill("user-facing-prose", true);
+        std::fs::write(&path, serde_json::to_string(&prefs).unwrap()).unwrap();
+        let read = Prefs::load(&path).extensions;
+        assert!(!read.builtin_skills_on());
+        assert!(!read.builtin_skill_on("repo-docs-style"));
+        assert!(read.builtin_skill_on("user-facing-prose"));
+        assert_eq!(
+            read.builtin_skills_off,
+            Some(vec!["repo-docs-style".into()])
+        );
+        // A value this version can't read keeps only its own default.
+        std::fs::write(
+            &path,
+            r#"{ "extensions": { "builtin_skills": "no", "builtin_skills_off": ["a"] } }"#,
+        )
+        .unwrap();
+        let read = Prefs::load(&path).extensions;
+        assert_eq!(read.builtin_skills, None);
+        assert_eq!(read.builtin_skills_off, Some(vec!["a".into()]));
     }
 
     /// A file that isn't JSON gives the defaults, and is kept beside, since

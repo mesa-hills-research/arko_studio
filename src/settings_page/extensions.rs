@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{IconName, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -180,22 +181,33 @@ impl ExtensionsPage {
                 )
                 .items(skills),
         );
-        let builtin = self.extensions.as_ref().map_or(Vec::new(), |extensions| {
-            extensions
-                .builtin
-                .iter()
-                .map(|skill| builtin_item(skill, home))
-                .collect()
-        });
-        if !builtin.is_empty() {
+        if let Some(extensions) = &self.extensions {
+            let mut items = vec![builtin_switch(
+                "builtin-skills",
+                "Built-in skills",
+                "Off leaves out all of them, whatever the rows below say.".into(),
+                |prefs| prefs.extensions.builtin_skills_on(),
+                |prefs, on| prefs.extensions.builtin_skills = Some(on),
+            )];
+            items.extend(extensions.builtin.iter().map(|skill| {
+                let name = skill.name.clone();
+                let on = name.clone();
+                builtin_switch(
+                    SharedString::from(format!("builtin-skill-{name}")),
+                    name.clone(),
+                    builtin_words(skill, home),
+                    move |prefs| prefs.extensions.builtin_skill_on(&on),
+                    move |prefs, on| prefs.extensions.set_builtin_skill(&name, on),
+                )
+            }));
             groups.push(
                 SettingGroup::new()
                     .key(super::group_key("Built in", &revision))
                     .title("Built in")
                     .description(
-                        "Skills that come with Arko. A skill of the same name in a folder above replaces one.",
+                        "Skills that come with Arko. A skill of the same name in a folder above replaces one. Sessions opened or resumed from now on get the choice, and one already open keeps its skills.",
                     )
-                    .items(builtin),
+                    .items(items),
             );
         }
         SettingPage::new(super::PAGES[super::EXTENSIONS_PAGE])
@@ -331,10 +343,31 @@ fn builtin_words(skill: &BuiltinSkill, home: Option<&Path>) -> String {
     words
 }
 
-fn builtin_item(skill: &BuiltinSkill, home: Option<&Path>) -> SettingItem {
-    SettingItem::new(skill.name.clone(), SettingField::render(|_, _, _| div()))
-        .description(builtin_words(skill, home))
-        .keywords(["skills", "built in", "SKILL.md"])
+/// A row with a switch bound to a preference, with `id` for tests.
+fn builtin_switch(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    description: String,
+    get: impl Fn(&prefs::Prefs) -> bool + Clone + 'static,
+    set: impl Fn(&mut prefs::Prefs, bool) + Clone + 'static,
+) -> SettingItem {
+    let id: SharedString = id.into();
+    SettingItem::new(
+        title,
+        SettingField::render(move |_, _, cx| {
+            let (get, set) = (get.clone(), set.clone());
+            Switch::new(id.clone())
+                .checked(get(prefs::get(cx)))
+                .on_click(move |on, _, cx| {
+                    let set = set.clone();
+                    let on = *on;
+                    prefs::update(cx, move |prefs| set(prefs, on))
+                })
+                .into_any_element()
+        }),
+    )
+    .description(description)
+    .keywords(["skills", "built in", "SKILL.md"])
 }
 
 #[cfg(test)]
