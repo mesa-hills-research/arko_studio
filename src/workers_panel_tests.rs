@@ -510,6 +510,29 @@ fn a_family_moves_to_finished_together_and_stays_together(cx: &mut TestAppContex
 
 /// Each row says what its worker runs on and what it has cost, on a line of
 /// its own that every row has once one does, and the worker's view says it too.
+/// A worker of a session opened again shows the tool calls it made before,
+/// as the feed keeps them.
+#[gpui_kit::test]
+fn a_restored_worker_shows_its_saved_tool_calls(cx: &mut TestAppContext) {
+    use arko::remote::WorkerState::Finished;
+    let panel = open(cx);
+    let now = *panel.now.borrow();
+    panel.feed.worker_restored(
+        "r4",
+        "Port the lexer",
+        Finished,
+        Some("Ported."),
+        None,
+        now - 60_000,
+        90_000,
+        12,
+    );
+    let workers = panel.feed.subscribe().0.workers;
+    panel.show(cx, workers);
+    let facts = cx.read(|cx| panel.panel.read(cx).facts("r4", now));
+    assert!(facts.contains("12 calls"), "{facts}");
+}
+
 #[gpui_kit::test]
 fn a_row_says_the_workers_model_profile_and_cost(cx: &mut TestAppContext) {
     use arko::remote::WorkerState::Running;
