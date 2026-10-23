@@ -147,6 +147,34 @@ pub fn costs_label(worker: &WorkerSummary) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
+/// The workers that run, as the dialog that asks before stopping them lists
+/// them. Each worker is followed by the workers it started, which say whose
+/// they are, as in "3 workers (r1, r2 under r1, r3)". `running` is each
+/// worker's ID and the ID of the worker that started it.
+pub fn running_text(running: &[(String, Option<String>)]) -> String {
+    let summaries: Vec<WorkerSummary> = running
+        .iter()
+        .map(|(id, parent)| {
+            let mut worker = WorkerSummary::new(id);
+            worker.parent = parent.clone();
+            worker
+        })
+        .collect();
+    let names: Vec<String> = arko::remote::family_order(&summaries)
+        .into_iter()
+        .map(|index| match &running[index] {
+            (id, Some(parent)) => format!("{id} under {parent}"),
+            (id, None) => id.clone(),
+        })
+        .collect();
+    let count = names.len();
+    format!(
+        "{count} {} ({})",
+        if count == 1 { "worker" } else { "workers" },
+        names.join(", ")
+    )
+}
+
 /// A worker's row as a screen reader names it: the worker, whose it is when
 /// another worker started it (as Arko's notices say it), its task and its
 /// state, such as "r3 (under r1), Fix the tokenizer tests, Running".
@@ -383,6 +411,31 @@ mod tests {
             assert!(!text.contains('\''), "{text}");
             assert!(!text.contains("takes effect"), "{text}");
         }
+    }
+
+    /// The dialog that asks before stopping lists each running worker with
+    /// the workers it started after it, and says whose a worker is.
+    #[test]
+    fn the_stop_dialog_lists_running_workers_by_family() {
+        let list = |workers: &[(&str, Option<&str>)]| {
+            let workers: Vec<_> = workers
+                .iter()
+                .map(|(id, parent)| (id.to_string(), parent.map(str::to_string)))
+                .collect();
+            running_text(&workers)
+        };
+        assert_eq!(list(&[("r1", None)]), "1 worker (r1)");
+        assert_eq!(
+            list(&[
+                ("r1", None),
+                ("r2", None),
+                ("r3", Some("r1")),
+                ("r4", Some("r3"))
+            ]),
+            "4 workers (r1, r3 under r1, r4 under r3, r2)"
+        );
+        // A worker whose starter isn't running still says whose it is.
+        assert_eq!(list(&[("r5", Some("r2"))]), "1 worker (r5 under r2)");
     }
 
     /// The message copies setting says what it does with it on or off, in

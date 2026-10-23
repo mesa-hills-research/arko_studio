@@ -19,6 +19,7 @@ use gpui_kit::*;
 use crate::backend::SharedBackend;
 use crate::live::{LiveSession, McpRequest, PromptAnswer, PromptKind};
 use crate::prefs;
+use crate::workers;
 
 /// The provider keys a session can ask for, as arko names them.
 const KEY_PROVIDERS: [(&str, &str); 4] = [
@@ -202,6 +203,10 @@ impl CredentialsForm {
                 "Claude Code ({}) isn’t signed in. Run `claude auth login` in a terminal, then check again.",
                 path.display()
             ),
+            arko::Need::ClaudeCode {
+                problem: arko::accounts::Problem::Outdated { version },
+                ..
+            } => arko::accounts::outdated_text(version),
             _ => "The key is saved in Arko’s folder, readable only by you, and the session uses it at once.".to_string(),
         }
     }
@@ -697,16 +702,11 @@ pub fn confirm_stop(
                                     this.child(div().font_medium().child(title.clone()))
                                 })
                                 .when(!ask.workers.is_empty(), |this| {
-                                    this.child(div().text_color(muted).child(format!(
-                                        "{} {} ({})",
-                                        ask.workers.len(),
-                                        if ask.workers.len() == 1 { "worker" } else { "workers" },
-                                        ask.workers
-                                            .iter()
-                                            .map(|(id, _)| id.as_str())
-                                            .collect::<Vec<_>>()
-                                            .join(", ")
-                                    )))
+                                    this.child(
+                                        div()
+                                            .text_color(muted)
+                                            .child(workers::running_text(&ask.workers)),
+                                    )
                                 })
                                 .children(ask.jobs.iter().map(|job| {
                                     div()
