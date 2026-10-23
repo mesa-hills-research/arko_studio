@@ -1186,7 +1186,8 @@ impl Render for SessionInfo {
                         v_flex().children(
                             skills_lines(&facts.skills, cx.global::<HomeFolder>().0.as_deref())
                                 .into_iter()
-                                .map(|(name, description, from)| {
+                                .enumerate()
+                                .map(|(ix, (name, description, from, path))| {
                                     // A line of one part, why the skills
                                     // couldn't be read or those left out,
                                     // wraps.
@@ -1232,7 +1233,16 @@ impl Render for SessionInfo {
                                                             .text_ellipsis_start()
                                                     })
                                                     .map(fit)
-                                                    .child(from),
+                                                    .child(from)
+                                                    .id(("skill-folder", ix))
+                                                    .when_some(path, |this, path| {
+                                                        this.tooltip(move |window, cx| {
+                                                            gpui_kit::component::tooltip::Tooltip::new(
+                                                                path.clone(),
+                                                            )
+                                                            .build(window, cx)
+                                                        })
+                                                    }),
                                             )
                                         })
                                 }),
@@ -1387,30 +1397,37 @@ pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
 
 /// The skills as Arko's `/skills` lists them, a line each by name: the
 /// skill's name, its description on one line, and in muted text where it
-/// comes from (`built in`, or its folder under `home` as `~`) and whether
-/// it's always loaded. The built-in skills left out are a muted line of
-/// their own.
+/// comes from (`built in`, or the folder it's in under `home` as `~`) and
+/// whether it's always loaded, then for its tooltip where it is. The
+/// built-in skills left out are a muted line of their own.
 pub fn skills_lines(
     skills: &Result<SkillsFacts, String>,
     home: Option<&Path>,
-) -> Vec<(String, String, String)> {
+) -> Vec<(String, String, String, Option<String>)> {
     let skills = match skills {
         Err(why) => {
             return vec![(
                 format!("Couldn’t be read ({why})"),
                 String::new(),
                 String::new(),
+                None,
             )];
         }
         Ok(skills) => skills,
     };
-    let mut lines: Vec<(String, String, String)> = skills
+    let mut lines: Vec<(String, String, String, Option<String>)> = skills
         .skills
         .iter()
         .map(|skill| {
-            let mut from = match &skill.path {
+            let path = skill.path.as_deref().filter(|_| !skill.builtin);
+            let mut from = match path {
                 _ if skill.builtin => "built in".to_string(),
-                Some(path) => shown_folder(path, home),
+                // A skill's own folder or file is named as the skill, so the
+                // folder it's in is what says where it comes from.
+                Some(path) => {
+                    let named = path.file_stem().is_some_and(|stem| *stem == *skill.name);
+                    shown_folder(path.parent().filter(|_| named).unwrap_or(path), home)
+                }
                 None => String::new(),
             };
             if skill.always {
@@ -1420,7 +1437,8 @@ pub fn skills_lines(
                 from.push_str("always loaded");
             }
             let description = skill.description.split_whitespace().collect::<Vec<_>>();
-            (skill.name.clone(), description.join(" "), from)
+            let full = path.map(|path| shown_folder(path, home));
+            (skill.name.clone(), description.join(" "), from, full)
         })
         .collect();
     lines.sort();
@@ -1432,10 +1450,11 @@ pub fn skills_lines(
                 "Built-in skills left out ({})",
                 skills.builtin_off.join(", ")
             ),
+            None,
         ));
     }
     if lines.is_empty() {
-        lines.push(("None".to_string(), String::new(), String::new()));
+        lines.push(("None".to_string(), String::new(), String::new(), None));
     }
     lines
 }
@@ -1625,7 +1644,12 @@ mod tests {
             })
         };
         let line = |name: &str, description: &str, from: &str| {
-            (name.to_string(), description.to_string(), from.to_string())
+            (
+                name.to_string(),
+                description.to_string(),
+                from.to_string(),
+                None::<String>,
+            )
         };
         assert_eq!(
             skills_lines(&facts(Vec::new(), &[]), Some(home)),
@@ -1642,7 +1666,24 @@ mod tests {
             always: true,
             ..skill("house-rules", false, false)
         };
-        let folder = |name: &str| shown_folder(&home.join(".claude/skills").join(name), Some(home));
+        // A skill's own folder is named as it, so the line names the folder
+        // that holds it, and the tooltip where the skill is. One renamed for
+        // an earlier skill of its name keeps its whole path.
+        let renamed = SkillFacts {
+            path: Some(home.join(".agents/skills/pdf")),
+            ..skill("pdf-2", false, false)
+        };
+        let skills = shown_folder(&home.join(".claude/skills"), Some(home));
+        let folder = |name: &str, from: &str| {
+            let path = shown_folder(&home.join(".claude/skills").join(name), Some(home));
+            (
+                name.to_string(),
+                format!("What {name} is for."),
+                from.to_string(),
+                Some(path),
+            )
+        };
+        let pdf = shown_folder(&home.join(".agents/skills/pdf"), Some(home));
         assert_eq!(
             skills_lines(
                 &facts(
@@ -1651,27 +1692,22 @@ mod tests {
                         skill("repo-docs-style", false, true),
                         skill("release-notes", false, false),
                         always,
+                        renamed,
                     ],
                     &["ponytail"]
                 ),
                 Some(home)
             ),
             [
-                line(
-                    "house-rules",
-                    "What house-rules is for.",
-                    &format!("{}, always loaded", folder("house-rules"))
+                folder("house-rules", &format!("{skills}, always loaded")),
+                (
+                    "pdf-2".to_string(),
+                    "What pdf-2 is for.".to_string(),
+                    pdf.clone(),
+                    Some(pdf),
                 ),
-                line(
-                    "release-notes",
-                    "What release-notes is for.",
-                    &folder("release-notes")
-                ),
-                line(
-                    "repo-docs-style",
-                    "What repo-docs-style is for.",
-                    &folder("repo-docs-style")
-                ),
+                folder("release-notes", &skills),
+                folder("repo-docs-style", &skills),
                 line(
                     "user-facing-prose",
                     "What user-facing-prose is for.",
