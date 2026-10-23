@@ -18,7 +18,7 @@ use gpui_kit::*;
 
 use crate::backend::account_words::{
     CACHE_1H_VARIABLE, ClaudeCodeStatus, KeySource, KeyState, LoginSource, LoginState, Problem,
-    source_words, tilde,
+    outdated_text, source_words, tilde,
 };
 use crate::backend::{Accounts, ModelChoices, SharedBackend, last_model};
 use crate::prefs::{self, NewSessionMode};
@@ -832,6 +832,8 @@ pub fn claude_code_words(status: &ClaudeCodeStatus, home: Option<&std::path::Pat
         Err(Problem::Missing) => {
             format!("{found} doesn’t run. Install it again, then check again.")
         }
+        // Arko's sentence names the version, so the path adds nothing.
+        Err(Problem::Outdated { version }) => outdated_text(version),
     }
 }
 
@@ -1100,6 +1102,16 @@ mod tests {
         );
         let words = claude_code_words(&status(None, Err(Problem::Missing)), home);
         assert!(words.starts_with("Not installed."), "{words}");
+        // A Claude Code too old says so in Arko's words.
+        let outdated = Problem::Outdated {
+            version: "2.1.296".into(),
+        };
+        let words = claude_code_words(&status(Some(path), Err(outdated)), home);
+        assert!(
+            words.starts_with("Claude Code 2.1.296 has a security flaw")
+                && words.contains("claude update"),
+            "{words}"
+        );
         let api = Ready {
             path: path.into(),
             method: Some("apiKey".into()),

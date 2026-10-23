@@ -1618,7 +1618,11 @@ mod tests {
     #[test]
     fn the_slash_menu_knows_a_command_typed_in_full() {
         let reading = Reading {
-            workers_running: vec!["r1".into(), "r10".into(), "r11".into()],
+            workers_running: vec![
+                ("r1".into(), None),
+                ("r10".into(), None),
+                ("r11".into(), None),
+            ],
             ..Reading::default()
         };
         let menu = slash_menu("/stop-workers r1", &reading).unwrap();

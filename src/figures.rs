@@ -352,6 +352,9 @@ mod tests {
                     resets_at: None,
                 })
                 .collect(),
+            credits: None,
+            set_aside: 0,
+            extra_usage: None,
             text: String::new(),
         };
         assert_eq!(plan_alert(&[plan(vec![(79.9, "5 h"), (40., "7 d")])]), None);

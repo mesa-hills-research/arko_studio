@@ -2231,7 +2231,6 @@ fn a_workers_worker_has_its_card_with_its_starter(cx: &mut TestAppContext) {
     feed.worker_under("r2", "r1");
     feed.worker("r2", "Count the files", WorkerChange::Started);
     let mut info = WorkerInfo::new();
-    info.parent = Some("r1".into());
     info.depth = 2;
     feed.worker_info("r2", info);
     let cards: Vec<u64> = item_ids(&feed)
@@ -2268,7 +2267,6 @@ fn a_failure_in_the_main_transcript_names_the_worker_that_started_it(cx: &mut Te
     feed.worker_under("r2", "r1");
     feed.worker("r2", "Count the files", WorkerChange::Started);
     let mut info = WorkerInfo::new();
-    info.parent = Some("r1".into());
     info.depth = 2;
     feed.worker_info("r2", info);
     for id in ["r2", "r3"] {

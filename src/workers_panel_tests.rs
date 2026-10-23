@@ -393,7 +393,6 @@ fn the_card_of_a_workers_worker_opens_it_in_the_panel(cx: &mut TestAppContext) {
     feed.worker_under("r2", "r1");
     feed.worker("r2", "Count the files", WorkerChange::Started);
     let mut info = WorkerInfo::new();
-    info.parent = Some("r1".into());
     info.depth = 2;
     feed.worker_info("r2", info);
     panel.panel.update(cx, |panel, cx| {
@@ -426,12 +425,12 @@ fn a_family_roots_row_says_what_its_workers_cost_with_it(cx: &mut TestAppContext
     let panel = open(cx);
     let feed = Feed::new("main");
     feed.turn_started();
+    feed.worker_under("r2", "r1");
     for id in ["r1", "r2", "r3"] {
         feed.worker(id, "Task", WorkerChange::Started);
     }
     let info = |parent: Option<&str>, cost: f64| {
         let mut info = WorkerInfo::new();
-        info.parent = parent.map(str::to_string);
         info.depth = if parent.is_some() { 2 } else { 1 };
         info.costs = Some((cost, cost));
         info

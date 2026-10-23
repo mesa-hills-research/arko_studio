@@ -254,7 +254,11 @@ fn the_slash_menu_takes_tab_and_enter_and_mod_enter_sends_as_typed(cx: &mut Test
     // Types `text` into an empty composer, workers r1, r10 and r11 running.
     let type_text = |text: &str, cx: &mut TestAppContext| {
         let reading = Arc::new(arko::remote::Reading {
-            workers_running: vec!["r1".into(), "r10".into(), "r11".into()],
+            workers_running: vec![
+                ("r1".into(), None),
+                ("r10".into(), None),
+                ("r11".into(), None),
+            ],
             ..arko::remote::Reading::default()
         });
         cx.update(|cx| {

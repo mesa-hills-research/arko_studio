@@ -1029,7 +1029,7 @@ impl Render for SessionInfo {
                                 .test_support()
                                 .text_xs()
                                 .text_color(muted)
-                                .child(depth_effect(depth)),
+                                .child(depth_effect(depth, chosen)),
                         ),
                         cx,
                     ))

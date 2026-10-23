@@ -701,7 +701,11 @@ pub fn confirm_stop(
                                         "{} {} ({})",
                                         ask.workers.len(),
                                         if ask.workers.len() == 1 { "worker" } else { "workers" },
-                                        ask.workers.join(", ")
+                                        ask.workers
+                                            .iter()
+                                            .map(|(id, _)| id.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
                                     )))
                                 })
                                 .children(ask.jobs.iter().map(|job| {

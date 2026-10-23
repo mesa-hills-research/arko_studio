@@ -121,7 +121,7 @@ fn busy() -> Reading {
         cost: 1.2,
         context_tokens: Some(142_318),
         context_window: Some(1_000_000),
-        workers_running: vec!["r1".into(), "r2".into()],
+        workers_running: vec![("r1".into(), None), ("r2".into(), None)],
         page: Some(Page {
             addr: "0.0.0.0:8765".parse().unwrap(),
             links: vec![link("http://192.168.1.20:8765/#key=k", "wlan0")],
@@ -134,6 +134,9 @@ fn busy() -> Reading {
                 used_percent: 84.,
                 resets_at: None,
             }],
+            credits: None,
+            set_aside: 0,
+            extra_usage: None,
             text: String::new(),
         }],
         ..Reading::default()
@@ -260,7 +263,7 @@ fn the_workers_count_toggles_the_workers_panel(cx: &mut TestAppContext) {
     let (window, workspace) = open(cx, 1300.);
     let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
     let reading = Reading {
-        workers_running: vec!["r1".into()],
+        workers_running: vec![("r1".into(), None)],
         ..Reading::default()
     };
     session.update(cx, |session, cx| {

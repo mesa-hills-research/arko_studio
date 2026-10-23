@@ -19,9 +19,11 @@ pub fn depth_about() -> String {
     curly(arko::workers::depth_about())
 }
 
-/// What a worker depth of `depth` allows now, in Arko's words.
-pub fn depth_effect(depth: u32) -> String {
-    curly(&arko::workers::depth_effect(depth))
+/// What a worker depth of `depth` allows now with the models `choice`, in
+/// Arko's words. Workers on the session's model start none, whatever the
+/// depth.
+pub fn depth_effect(depth: u32, choice: ModelChoice) -> String {
+    curly(&arko::workers::depth_effect(depth, choice))
 }
 
 /// What the "Message copies" setting does, with it `on` or off, in Arko's
@@ -354,13 +356,30 @@ mod tests {
             about.contains("a worker can start workers of its own"),
             "{about}"
         );
-        assert_eq!(depth_effect(1), "Only the main agent starts workers.");
-        let three = depth_effect(3);
+        let agent = ModelChoice::Agent;
+        assert_eq!(
+            depth_effect(1, agent),
+            "Only the main agent starts workers."
+        );
+        let three = depth_effect(3, agent);
         assert_eq!(
             three,
             "Workers can go 3 levels deep, and a worker can start workers of its own when the agent that starts it says so."
         );
-        for text in [about, depth_effect(2), three, depth_effect(1)] {
+        // Every worker on the session's model starts none, so the depth
+        // row can't promise nesting beside a models row that rules it out.
+        let session = depth_effect(3, ModelChoice::Session);
+        assert_eq!(
+            session,
+            "No worker starts workers, because every worker runs the session’s worker model."
+        );
+        for text in [
+            about,
+            depth_effect(2, agent),
+            three,
+            depth_effect(1, agent),
+            session,
+        ] {
             assert!(!text.contains('\''), "{text}");
             assert!(!text.contains("takes effect"), "{text}");
         }

@@ -733,7 +733,6 @@ parse of the whole text.";
         feed.worker_under("r2", "r1");
         feed.worker("r2", "Count the tokens", WorkerChange::Started);
         let mut info = arko::remote::WorkerInfo::new();
-        info.parent = Some("r1".into());
         info.depth = 2;
         feed.worker_info("r2", info);
         feed.worker("r3", "Profile the renderer", WorkerChange::Started);
@@ -2313,7 +2312,7 @@ mod status {
             cost: 1.2,
             context_tokens: Some(142_318),
             context_window: Some(1_000_000),
-            workers_running: vec!["r1".into(), "r2".into()],
+            workers_running: vec![("r1".into(), None), ("r2".into(), None)],
             page: Some(page()),
             plans: vec![PlanStatus {
                 plan: "Claude plan".into(),
@@ -2329,6 +2328,9 @@ mod status {
                         resets_at: None,
                     },
                 ],
+                credits: None,
+                set_aside: 0,
+                extra_usage: None,
                 text: String::new(),
             }],
             last_request: Some(LastRequest {
