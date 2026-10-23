@@ -1006,7 +1006,7 @@ impl TranscriptView {
                 }
                 let before = self.ui.get(&first).and_then(|ui| ui.group_open);
                 self.ui.entry(first).or_default().group_open = Some(true);
-                self.refresh_rows(cx);
+                self.refresh_rows_after_opening(cx);
                 Some(Opened { what, before })
             }
             Opening::Entry(id) => {
