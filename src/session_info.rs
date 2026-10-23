@@ -1161,11 +1161,26 @@ impl Render for SessionInfo {
                             skills_lines(&facts.skills, cx.global::<HomeFolder>().0.as_deref())
                                 .into_iter()
                                 .map(|(name, description, from)| {
+                                    // A line of one part, why the skills
+                                    // couldn't be read or those left out,
+                                    // wraps.
+                                    let alone = [&name, &description, &from]
+                                        .iter()
+                                        .filter(|part| !part.is_empty())
+                                        .count()
+                                        == 1;
+                                    let fit = move |part: Div| {
+                                        if alone {
+                                            part.flex_1().min_w_0()
+                                        } else {
+                                            part.flex_none()
+                                        }
+                                    };
                                     h_flex()
                                         .gap_2()
                                         .text_sm()
                                         .when(!name.is_empty(), |this| {
-                                            this.child(div().flex_none().child(name))
+                                            this.child(fit(div()).child(name))
                                         })
                                         .when(!description.is_empty(), |this| {
                                             this.child(
@@ -1178,11 +1193,7 @@ impl Render for SessionInfo {
                                         })
                                         .when(!from.is_empty(), |this| {
                                             this.child(
-                                                div()
-                                                    .flex_none()
-                                                    .text_xs()
-                                                    .text_color(muted)
-                                                    .child(from),
+                                                fit(div()).text_xs().text_color(muted).child(from),
                                             )
                                         })
                                 }),
