@@ -34,6 +34,12 @@ UPDATE_GOLDENS=1 cargo test --locked --test screenshots
 Look at the updated images in light and dark themes. The commit body should name the goldens
 that changed and explain why.
 
+## Where dependencies come from
+
+Every dependency comes from crates.io. `cargo deny check sources` (run on every push by the
+Sources workflow) fails on a git dependency or another registry, so a local override like the ones
+below has to stay out of the committed `Cargo.lock`.
+
 ## Building against a local GPUI Kit
 
 `Cargo.toml` takes GPUI Kit (the `mhr-gpui-kit` package) from crates.io at an exact version. The
