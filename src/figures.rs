@@ -4,7 +4,7 @@
 //! tooltip. Pure functions, so the bar and its popovers say the same, and
 //! tests check it without a window.
 
-use arko::remote::{Activity, CostPart, PlanStatus, PlanWindow, Reading};
+use arko::remote::{Activity, CostPart, ExtraUsage, PlanStatus, PlanWindow, Reading};
 use chrono::{DateTime, Datelike as _, Local, TimeZone as _};
 
 /// The time now, in Unix milliseconds: what every figure is worked out at.
@@ -201,26 +201,53 @@ pub fn starts_over(unix_seconds: i64, now: i64) -> String {
     }
 }
 
-/// What Arko's line for `plan` says beyond its windows, such as "credits
-/// left 12.50, 1 set aside" for a ChatGPT plan with credits and a login put
-/// aside. Arko's line is the windows and then those words, so they are what
-/// follows the windows. `None` when there are none.
+/// What a plan has besides its windows, in words: a ChatGPT plan's credits
+/// ("credits left 12.50", "has credits", "unlimited credits") and how many
+/// of its logins are set aside, a Claude plan's extra usage ("extra usage
+/// $271.40 of $500.00"). `None` when it has none. Arko gives credits and
+/// extra usage only when they are on.
 pub fn plan_extras(plan: &PlanStatus) -> Option<String> {
-    let windows: Vec<String> = plan
-        .windows
-        .iter()
-        .map(|window| format!("{} {:.0}%", window.label, window.used_percent))
-        .collect();
-    let rest = plan
-        .text
-        .strip_prefix(&format!("{} {}", plan.plan, windows.join(", ")))?;
-    let rest = rest.trim_start_matches(',').trim();
-    (!rest.is_empty()).then(|| rest.to_string())
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(credits) = &plan.credits {
+        parts.push(match credits.balance.as_deref().map(str::trim) {
+            _ if credits.unlimited => "unlimited credits".to_string(),
+            Some(balance) if !balance.is_empty() => format!("credits left {balance}"),
+            _ => "has credits".to_string(),
+        });
+    }
+    if let Some(extra) = &plan.extra_usage {
+        parts.push(extra_usage_words(extra));
+    }
+    if plan.set_aside > 0 {
+        parts.push(format!("{} set aside", plan.set_aside));
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+/// A Claude account's extra usage as Arko's lines say it: "extra usage
+/// $271.40 of $500.00" with its amounts, "extra usage $271.40 used" without
+/// a limit, "extra usage in use" or "extra usage on" when they aren't known.
+/// The amounts are in minor units of the currency (cents for USD).
+fn extra_usage_words(extra: &ExtraUsage) -> String {
+    let places = extra.decimal_places.unwrap_or(2) as usize;
+    let (before, after) = match extra.currency.as_deref() {
+        None | Some("USD") => ("$", String::new()),
+        Some(code) => ("", format!(" {code}")),
+    };
+    let amount = |minor: f64| format!("{before}{:.places$}", minor / 10_f64.powi(places as i32));
+    match (extra.used_credits, extra.monthly_limit) {
+        (Some(used), Some(limit)) => {
+            format!("extra usage {} of {}{after}", amount(used), amount(limit))
+        }
+        (Some(used), None) => format!("extra usage {}{after} used", amount(used)),
+        _ if extra.in_use => "extra usage in use".to_string(),
+        _ => "extra usage on".to_string(),
+    }
 }
 
 /// The plans' windows, a plan a line: "Claude plan · 5 h limit · 84% used,
-/// starts over at 14:00 · 7 d limit · 40% used", and for a ChatGPT plan its
-/// credits and the logins set aside, "· credits left 12.50, 1 set aside".
+/// starts over at 14:00 · 7 d limit · 40% used", and what the plan has
+/// besides (see [`plan_extras`]), "· credits left 12.50, 1 set aside".
 pub fn plans_tooltip(plans: &[PlanStatus], now: i64) -> String {
     plans
         .iter()
@@ -359,10 +386,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn plan_usage_shows_from_80_percent() {
-        let plan = |windows: Vec<(f64, &str)>| PlanStatus {
-            plan: "Claude plan".into(),
+    /// A plan with no credits, no extra usage and no login set aside.
+    fn plan(name: &str, windows: Vec<(f64, &str)>) -> PlanStatus {
+        PlanStatus {
+            plan: name.into(),
             windows: windows
                 .into_iter()
                 .map(|(used_percent, label)| PlanWindow {
@@ -375,7 +402,12 @@ mod tests {
             set_aside: 0,
             extra_usage: None,
             text: String::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn plan_usage_shows_from_80_percent() {
+        let plan = |windows: Vec<(f64, &str)>| plan("Claude plan", windows);
         assert_eq!(plan_alert(&[plan(vec![(79.9, "5 h"), (40., "7 d")])]), None);
         let plans = [plan(vec![(84., "5 h"), (91., "7 d")])];
         let (_, window) = plan_alert(&plans).unwrap();
@@ -386,36 +418,70 @@ mod tests {
         );
     }
 
-    /// A ChatGPT plan's credits and the logins set aside, which Arko adds to
-    /// its line after the windows, show with them.
+    /// A ChatGPT plan's credits and the logins set aside, and a Claude
+    /// plan's extra usage, show with the plan's windows in Arko's words.
     #[test]
-    fn a_plans_credits_and_set_aside_logins_show_with_its_windows() {
-        let window = |used_percent, label: &str| PlanWindow {
-            label: label.into(),
-            used_percent,
-            resets_at: None,
-        };
-        let mut plan = PlanStatus {
-            plan: "ChatGPT plan".into(),
-            windows: vec![window(12., "5 h"), window(82., "7 d")],
-            credits: None,
-            set_aside: 0,
-            extra_usage: None,
-            text: "ChatGPT plan 5 h 12%, 7 d 82%, credits left 12.50, 1 set aside".into(),
-        };
+    fn what_a_plan_has_besides_its_windows_is_said() {
+        use arko::remote::PlanCredits;
+
+        let mut chatgpt = plan("ChatGPT plan", vec![(12., "5 h"), (82., "7 d")]);
+        assert_eq!(plan_extras(&chatgpt), None);
+        chatgpt.credits = Some(PlanCredits {
+            has_credits: true,
+            unlimited: false,
+            balance: Some("12.50".into()),
+        });
+        chatgpt.set_aside = 1;
         assert_eq!(
-            plan_extras(&plan).as_deref(),
+            plan_extras(&chatgpt).as_deref(),
             Some("credits left 12.50, 1 set aside")
         );
         assert_eq!(
-            plans_tooltip(std::slice::from_ref(&plan), 0),
+            plans_tooltip(std::slice::from_ref(&chatgpt), 0),
             "ChatGPT plan · 5 h limit · 12% used · 7 d limit · 82% used · credits left 12.50, 1 set aside"
         );
-        // Only the windows, or a line that isn't Arko's shape: nothing more.
-        plan.text = "ChatGPT plan 5 h 12%, 7 d 82%".into();
-        assert_eq!(plan_extras(&plan), None);
-        plan.text = "plan usage".into();
-        assert_eq!(plan_extras(&plan), None);
+        let credits = |unlimited, balance: Option<&str>| {
+            let mut plan = plan("ChatGPT plan", vec![(12., "5 h")]);
+            plan.credits = Some(PlanCredits {
+                has_credits: true,
+                unlimited,
+                balance: balance.map(str::to_string),
+            });
+            plan_extras(&plan)
+        };
+        assert_eq!(credits(true, None).as_deref(), Some("unlimited credits"));
+        assert_eq!(credits(false, None).as_deref(), Some("has credits"));
+
+        let mut claude = plan("Claude plan", vec![(30., "5 h")]);
+        let mut extra = ExtraUsage {
+            enabled: Some(true),
+            ..ExtraUsage::default()
+        };
+        let mut said = |extra: &ExtraUsage| {
+            claude.extra_usage = Some(extra.clone());
+            plan_extras(&claude)
+        };
+        assert_eq!(said(&extra).as_deref(), Some("extra usage on"));
+        extra.in_use = true;
+        assert_eq!(said(&extra).as_deref(), Some("extra usage in use"));
+        extra.used_credits = Some(27_140.);
+        assert_eq!(said(&extra).as_deref(), Some("extra usage $271.40 used"));
+        extra.monthly_limit = Some(50_000.);
+        extra.currency = Some("USD".into());
+        extra.decimal_places = Some(2);
+        assert_eq!(
+            said(&extra).as_deref(),
+            Some("extra usage $271.40 of $500.00")
+        );
+        // A currency with no minor unit shows its code after the amounts.
+        extra.used_credits = Some(3_500.);
+        extra.monthly_limit = Some(10_000.);
+        extra.currency = Some("JPY".into());
+        extra.decimal_places = Some(0);
+        assert_eq!(
+            said(&extra).as_deref(),
+            Some("extra usage 3500 of 10000 JPY")
+        );
     }
 
     #[test]

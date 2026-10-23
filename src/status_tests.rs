@@ -466,14 +466,20 @@ fn the_contexts_popover_shows_the_split_and_hands_over(cx: &mut TestAppContext) 
     assert_eq!(sent(&bar.session, cx), ["/handover"]);
 }
 
-/// A ChatGPT plan's credits and the logins set aside show under its windows
-/// in the context's popover, and a plan whose line says no more has none.
+/// A ChatGPT plan's credits and set aside logins and a Claude plan's extra
+/// usage show under the plan's windows in the context's popover, and a plan
+/// with none has no line.
 #[gpui_kit::test]
-fn the_contexts_popover_shows_a_chatgpt_plans_credits(cx: &mut TestAppContext) {
+fn the_contexts_popover_shows_what_a_plan_has_besides_its_windows(cx: &mut TestAppContext) {
     let bar = bar(cx, 1300.);
     let mut reading = busy();
-    reading.plans.push(arko::remote::PlanStatus {
-        plan: "ChatGPT plan".into(),
+    reading.plans[0].extra_usage = Some(arko::remote::ExtraUsage {
+        enabled: Some(true),
+        in_use: true,
+        ..Default::default()
+    });
+    let plan = |name: &str| arko::remote::PlanStatus {
+        plan: name.into(),
         windows: vec![arko::remote::PlanWindow {
             label: "5 h".into(),
             used_percent: 12.,
@@ -482,14 +488,25 @@ fn the_contexts_popover_shows_a_chatgpt_plans_credits(cx: &mut TestAppContext) {
         credits: None,
         set_aside: 0,
         extra_usage: None,
-        text: "ChatGPT plan 5 h 12%, credits left 12.50, 1 set aside".into(),
+        text: String::new(),
+    };
+    reading.plans.push(arko::remote::PlanStatus {
+        credits: Some(arko::remote::PlanCredits {
+            has_credits: true,
+            unlimited: false,
+            balance: Some("12.50".into()),
+        }),
+        set_aside: 1,
+        ..plan("ChatGPT plan")
     });
+    reading.plans.push(plan("Other plan"));
     bar.show(cx, reading, Activity::default());
     act(cx, bar.window, |window, cx| {
         window.click("status-context", cx)
     });
+    assert!(bar.find(cx, "plan-extras-0"));
     assert!(bar.find(cx, "plan-extras-1"));
-    assert!(!bar.find(cx, "plan-extras-0"));
+    assert!(!bar.find(cx, "plan-extras-2"));
 }
 
 #[gpui_kit::test]
