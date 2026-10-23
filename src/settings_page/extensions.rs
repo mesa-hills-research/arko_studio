@@ -1,7 +1,8 @@
 //! Settings › Extensions: the MCP servers sessions start (Arko's
 //! `mcp.json`, the config files set under Advanced, each project's
 //! `.mcp.json` with the answer remembered for it, which can be forgotten)
-//! and the skill folders, with the skills found in each.
+//! and the skill folders, with the skills found in each, then the skills
+//! built into Arko.
 
 use std::path::{Path, PathBuf};
 
@@ -15,7 +16,7 @@ use gpui_kit::*;
 use crate::backend::SharedBackend;
 use crate::backend::account_words::tilde;
 use crate::backend::extensions::{
-    Approval, Extensions, McpFile, McpServer, ProjectServers, SkillFolder, SkillsOf,
+    Approval, BuiltinSkill, Extensions, McpFile, McpServer, ProjectServers, SkillFolder, SkillsOf,
 };
 use crate::prefs;
 use crate::session_view::{HomeFolder, recent_folders};
@@ -179,6 +180,24 @@ impl ExtensionsPage {
                 )
                 .items(skills),
         );
+        let builtin = self.extensions.as_ref().map_or(Vec::new(), |extensions| {
+            extensions
+                .builtin
+                .iter()
+                .map(|skill| builtin_item(skill, home))
+                .collect()
+        });
+        if !builtin.is_empty() {
+            groups.push(
+                SettingGroup::new()
+                    .key(super::group_key("Built in", &revision))
+                    .title("Built in")
+                    .description(
+                        "Skills that come with Arko. A skill of the same name in a folder above replaces one.",
+                    )
+                    .items(builtin),
+            );
+        }
         SettingPage::new(super::PAGES[super::EXTENSIONS_PAGE])
             .icon(IconName::Frame)
             .resettable(false)
@@ -292,4 +311,57 @@ fn skills_item(folder: &SkillFolder, home: Option<&Path>) -> SettingItem {
     )
     .description(format!("{whose}. {found}"))
     .keywords(keywords)
+}
+
+/// What a built-in skill says under its name, Arko's description of it and
+/// the folders whose skill of its name replaces it.
+fn builtin_words(skill: &BuiltinSkill, home: Option<&Path>) -> String {
+    let mut words = skill.description.clone();
+    if !skill.replaced_by.is_empty() {
+        let folders: Vec<String> = skill
+            .replaced_by
+            .iter()
+            .map(|folder| tilde(folder, home))
+            .collect();
+        words.push_str(&format!(
+            " Replaced by the skill in {}.",
+            folders.join(" and ")
+        ));
+    }
+    words
+}
+
+fn builtin_item(skill: &BuiltinSkill, home: Option<&Path>) -> SettingItem {
+    SettingItem::new(skill.name.clone(), SettingField::render(|_, _, _| div()))
+        .description(builtin_words(skill, home))
+        .keywords(["skills", "built in", "SKILL.md"])
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{BuiltinSkill, builtin_words};
+
+    #[test]
+    fn a_built_in_skill_says_which_folders_replace_it() {
+        let home = Path::new("/home/ada");
+        let mut skill = BuiltinSkill {
+            name: "repo-docs-style".into(),
+            description: "Rules for docs.".into(),
+            auto_load: false,
+            replaced_by: Vec::new(),
+        };
+        assert_eq!(builtin_words(&skill, Some(home)), "Rules for docs.");
+        skill.replaced_by = vec![home.join(".claude/skills")];
+        assert_eq!(
+            builtin_words(&skill, Some(home)),
+            "Rules for docs. Replaced by the skill in ~/.claude/skills."
+        );
+        skill.replaced_by.push(home.join("src/arko/.skills"));
+        assert_eq!(
+            builtin_words(&skill, Some(home)),
+            "Rules for docs. Replaced by the skill in ~/.claude/skills and ~/src/arko/.skills."
+        );
+    }
 }

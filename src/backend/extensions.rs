@@ -12,6 +12,8 @@ pub struct Extensions {
     pub files: Vec<McpFile>,
     pub projects: Vec<ProjectServers>,
     pub skills: Vec<SkillFolder>,
+    /// The skills built into Arko, which belong to no folder.
+    pub builtin: Vec<BuiltinSkill>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +60,18 @@ pub struct SkillFolder {
     pub skills: Vec<arko::extensions::SkillEntry>,
 }
 
+/// A skill built into Arko, with the skill folders whose skill of the same
+/// name replaces it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinSkill {
+    pub name: String,
+    pub description: String,
+    pub auto_load: bool,
+    /// The folders holding a skill of its name, in the order Arko reads them.
+    /// An empty list means nothing replaces it.
+    pub replaced_by: Vec<PathBuf>,
+}
+
 impl Extensions {
     /// A setup for tests and screenshots.
     pub fn sample(home: &Path, arko: &Path) -> Self {
@@ -83,7 +97,7 @@ impl Extensions {
             skills: vec![SkillFolder {
                 path: home.join(".claude/skills"),
                 of: SkillsOf::Home,
-                skills: ["docx", "pdf"]
+                skills: ["docx", "pdf", "repo-docs-style"]
                     .into_iter()
                     .map(|name| arko::extensions::SkillEntry {
                         name: name.into(),
@@ -95,6 +109,20 @@ impl Extensions {
                     })
                     .collect(),
             }],
+            builtin: vec![
+                BuiltinSkill {
+                    name: "user-facing-prose".into(),
+                    description: "How to write any text a person reads, such as UI text, messages, docs and commit messages. Load it before writing or reviewing any of these.".into(),
+                    auto_load: false,
+                    replaced_by: Vec::new(),
+                },
+                BuiltinSkill {
+                    name: "repo-docs-style".into(),
+                    description: "Rules for repository documentation, such as READMEs and docs pages. Load it before creating or editing project docs.".into(),
+                    auto_load: false,
+                    replaced_by: vec![home.join(".claude/skills")],
+                },
+            ],
         }
     }
 }
@@ -154,11 +182,49 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
                 approval,
             });
         }
+        for skill in &listed.skills {
+            if !skill.builtin {
+                continue;
+            }
+            // A folder's skill of its name replaces it, in this project or
+            // for every project.
+            let replacing = if skill.skipped.is_some() {
+                listed
+                    .skills
+                    .iter()
+                    .find(|other| {
+                        !other.builtin && other.skipped.is_none() && other.name == skill.name
+                    })
+                    .and_then(|other| other.path.parent())
+            } else {
+                None
+            };
+            match found
+                .builtin
+                .iter_mut()
+                .find(|seen| seen.name == skill.name)
+            {
+                Some(seen) => {
+                    if let Some(folder) = replacing
+                        && !seen.replaced_by.iter().any(|known| known == folder)
+                    {
+                        seen.replaced_by.push(folder.to_path_buf());
+                    }
+                }
+                None => found.builtin.push(BuiltinSkill {
+                    name: skill.name.clone(),
+                    description: skill.description.clone(),
+                    auto_load: skill.auto_load,
+                    replaced_by: replacing.map(Path::to_path_buf).into_iter().collect(),
+                }),
+            }
+        }
         for skill in listed.skills {
-            if found
-                .skills
-                .iter()
-                .any(|folder| folder.skills.iter().any(|seen| seen.path == skill.path))
+            if skill.builtin
+                || found
+                    .skills
+                    .iter()
+                    .any(|folder| folder.skills.iter().any(|seen| seen.path == skill.path))
             {
                 continue;
             }
@@ -316,6 +382,31 @@ mod tests {
                 .iter()
                 .any(|skill| skill.name == "flat" && skill.skipped.is_none())
         );
+    }
+
+    #[test]
+    fn built_in_skills_stay_out_of_the_folders_and_name_the_folder_that_replaces_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let project = temp.path().join("project");
+        write(
+            &project.join(".skills/repo-docs-style/SKILL.md"),
+            "---\nname: repo-docs-style\ndescription: Our docs rules\n---\nWrite plainly.",
+        );
+        let found = read(&root, std::slice::from_ref(&project), &[]);
+        let names: Vec<&str> = found
+            .builtin
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect();
+        assert_eq!(names, ["user-facing-prose", "repo-docs-style"]);
+        assert!(!found.builtin[0].description.is_empty());
+        assert!(found.builtin[0].replaced_by.is_empty());
+        assert_eq!(found.builtin[1].replaced_by, [project.join(".skills")]);
+        // The folders hold only the folder's own skill, with a path.
+        assert_eq!(found.skills.len(), 1);
+        assert!(found.skills[0].skills.iter().all(|skill| !skill.builtin));
+        assert_eq!(found.skills[0].skills[0].name, "repo-docs-style");
     }
 
     #[test]

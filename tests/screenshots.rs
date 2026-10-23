@@ -3059,19 +3059,23 @@ fn session_info(mode: ThemeMode) -> Screenshot {
             ..McpFacts::default()
         },
         skills: Ok(SkillsFacts {
-            skills: ["release-notes", "docs-style"]
-                .into_iter()
-                .map(|name| SkillFacts {
-                    name: name.into(),
-                    description: String::new(),
-                    always: false,
-                    builtin: false,
-                    replaces_builtin: None,
-                })
-                .collect(),
+            skills: [
+                ("release-notes", false),
+                ("docs-style", false),
+                ("user-facing-prose", true),
+            ]
+            .into_iter()
+            .map(|(name, builtin)| SkillFacts {
+                name: name.into(),
+                description: String::new(),
+                always: false,
+                builtin,
+                replaces_builtin: None,
+            })
+            .collect(),
             folders: Vec::new(),
             own_folder: PathBuf::new(),
-            builtin_off: Vec::new(),
+            builtin_off: vec!["repo-docs-style".into()],
         }),
         indexes: [
             ("arko", IndexKind::Code, "voyage-code-4", IndexWatch::Here),
