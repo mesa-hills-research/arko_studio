@@ -342,7 +342,7 @@ pub enum WindowsShell {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AdvancedPrefs {
-    /// `None`: as `ARKO_SHELL` says, else cmd.exe.
+    /// `None`: as `ARKO_SHELL` says, else PowerShell.
     pub windows_shell: Option<WindowsShell>,
     /// MCP config files every session starts the servers of, besides the
     /// project's `.mcp.json` and Arko's `mcp.json` (arko's `--mcp-config`).
