@@ -3129,7 +3129,7 @@ fn session_info(mode: ThemeMode) -> Screenshot {
         .collect()),
     };
     let window = app
-        .open_window_with(size(px(560.), px(1700.)), 1., |options, cx| {
+        .open_window_with(size(px(560.), px(1800.)), 1., |options, cx| {
             gpui_kit::open_window(options, cx, |window, cx| {
                 let info = cx.new(|cx| {
                     let mut info = SessionInfo::new(window, cx);

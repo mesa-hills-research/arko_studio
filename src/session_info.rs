@@ -69,6 +69,7 @@ fn current(control: &str, settings: &arko::remote::LiveSettings) -> Option<Strin
         "worker-models" => Some(settings.worker_models.name().to_string()),
         "worker-depth" => Some(settings.worker_depth.to_string()),
         "message-copies" => switch(settings.message_copies),
+        "worker-retry-cap" => switch(settings.worker_retry_cap.is_some()),
         _ => None,
     }
 }
@@ -1049,6 +1050,12 @@ impl Render for SessionInfo {
                     .parse()
                     .unwrap_or(settings.worker_depth);
                 let copies = shown("message-copies") == "on";
+                // On, the session's own cap, or the one `on` sets.
+                let cap = (shown("worker-retry-cap") == "on").then(|| {
+                    settings
+                        .worker_retry_cap
+                        .unwrap_or(workers::DEFAULT_RETRY_CAP)
+                });
                 body = body
                     .child(row(
                         narrow,
@@ -1074,6 +1081,28 @@ impl Render for SessionInfo {
                                 .text_color(muted)
                                 .child(depth_effect(depth, chosen)),
                         ),
+                        cx,
+                    ))
+                    .child(row(
+                        narrow,
+                        workers::RETRY_CAP_NAME,
+                        v_flex()
+                            .gap_1()
+                            .child(h_flex().child(switch(
+                                "worker-retry-cap",
+                                workers::RETRY_CAP_NAME,
+                                false,
+                                workers::retry_cap_command(true),
+                                workers::retry_cap_command(false),
+                            )))
+                            .child(
+                                div()
+                                    .id("worker-retry-cap-about")
+                                    .test_support()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(curly(&workers::retry_cap_about(cap))),
+                            ),
                         cx,
                     ))
                     .child(row(
@@ -2047,9 +2076,9 @@ mod view_tests {
         assert!(!tooltip_on(cx, false, "extra-rules-fixed"));
     }
 
-    /// Who chooses the workers' models and how deep workers go send the
-    /// commands of the terminal, and show the choice at once. A session
-    /// with no workers lists neither.
+    /// Who chooses the workers' models, how deep workers go, the retry cap
+    /// and message copies send the commands of the terminal, and show the
+    /// choice at once. A session with no workers lists none of them.
     #[gpui_kit::test]
     fn the_worker_settings_send_the_terminals_commands(cx: &mut TestAppContext) {
         use arko::{ModelChoice, workers};
@@ -2060,6 +2089,7 @@ mod view_tests {
             settings: LiveSettings {
                 worker_models: ModelChoice::Agent,
                 worker_depth: 2,
+                worker_retry_cap: Some(5),
                 message_copies: true,
                 ..LiveSettings::default()
             },
@@ -2095,6 +2125,7 @@ mod view_tests {
         assert!(!shows(window, cx, "worker-models"));
         assert!(!shows(window, cx, "worker-depth"));
         assert!(!shows(window, cx, "message-copies"));
+        assert!(!shows(window, cx, "worker-retry-cap"));
         show(cx, &session);
         // The rows are past the first screenful of the info.
         for _ in 0..40 {
@@ -2131,6 +2162,7 @@ mod view_tests {
         assert_eq!(checked(cx, "worker-models-profiles"), Some(false));
         assert_eq!(checked(cx, "worker-depth-2"), Some(true));
         assert_eq!(checked(cx, "message-copies"), Some(true));
+        assert_eq!(checked(cx, "worker-retry-cap"), Some(true));
         act(cx, window, |window, cx| {
             window.click("worker-models-profiles", cx)
         });
@@ -2144,13 +2176,19 @@ mod view_tests {
         // Message copies are a switch.
         act(cx, window, |window, cx| window.click("message-copies", cx));
         assert_eq!(checked(cx, "message-copies"), Some(false));
+        // So is the retry cap, which applies to the running workers at once.
+        act(cx, window, |window, cx| {
+            window.click("worker-retry-cap", cx)
+        });
+        assert_eq!(checked(cx, "worker-retry-cap"), Some(false));
         assert_eq!(
             sent(&session, cx),
             [
                 "/worker-models profiles",
                 workers::depth_command(3).as_str(),
                 "/worker-depth 1",
-                workers::copies_command(false).as_str()
+                workers::copies_command(false).as_str(),
+                "/worker-retry-cap off",
             ]
         );
         for command in sent(&session, cx) {
@@ -2162,6 +2200,7 @@ mod view_tests {
             next.settings.worker_models = ModelChoice::Session;
             next.settings.worker_depth = 4;
             next.settings.message_copies = false;
+            next.settings.worker_retry_cap = None;
             session.set_status(next, Activity::default(), cx)
         });
         cx.executor().advance_clock(super::HOLD);
@@ -2169,6 +2208,7 @@ mod view_tests {
         assert_eq!(checked(cx, "worker-models-session"), Some(true));
         assert_eq!(checked(cx, "worker-depth-4"), Some(true));
         assert_eq!(checked(cx, "message-copies"), Some(false));
+        assert_eq!(checked(cx, "worker-retry-cap"), Some(false));
     }
 
     /// Live settings change through the terminal's commands. Those fixed
