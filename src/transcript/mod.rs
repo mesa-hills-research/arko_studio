@@ -1535,7 +1535,10 @@ impl TranscriptView {
         if let Some(ix) = row {
             self.list.remeasure_row(ix);
         }
+        // The rows the reader opens are not news.
+        let away = self.new_while_away;
         self.refresh_rows(cx);
+        self.new_while_away = away;
         cx.notify();
     }
 
@@ -1568,7 +1571,10 @@ impl TranscriptView {
             self.list.hold_place(ix);
         }
         self.ui.entry(first).or_default().group_open = Some(!open);
+        // The rows the reader opens are not news.
+        let away = self.new_while_away;
         self.refresh_rows(cx);
+        self.new_while_away = away;
         cx.notify();
     }
 
