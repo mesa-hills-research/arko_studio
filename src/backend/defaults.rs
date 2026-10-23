@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use crate::prefs::{self, Prefs};
 
 use super::Mode;
-use super::extensions::BUILTIN_SKILLS;
 
 /// The preferences a session's options come from, as the app holds them
 /// now. The backend keeps a copy ([`super::Backend::set_defaults`]), since
@@ -115,11 +114,12 @@ impl SessionDefaults {
             }),
             mcp_config: prefs.advanced.mcp_config.clone(),
             builtin_skills: prefs.extensions.builtin_skills,
-            // A name Arko doesn't know would keep every session from opening.
+            // A name Arko doesn't know is a warning in every session, and
+            // the page has no switch to clear it.
             builtin_skills_off: prefs.extensions.builtin_skills_off.as_ref().map(|names| {
                 names
                     .iter()
-                    .filter(|name| BUILTIN_SKILLS.contains(&name.as_str()))
+                    .filter(|name| arko::builtin_skills::names().contains(&name.as_str()))
                     .cloned()
                     .collect()
             }),
@@ -240,8 +240,8 @@ mod tests {
     }
 
     /// The built-in skill choice goes to a new and to a resumed session, a
-    /// chat too. A name Arko doesn't know is dropped, since Arko would not
-    /// open a session that leaves it out.
+    /// chat too. A name Arko doesn't know is dropped, since Arko would warn
+    /// of it in every session.
     #[test]
     fn the_built_in_skill_choice_reaches_new_and_resumed_sessions() {
         let mut prefs = Prefs::default();
