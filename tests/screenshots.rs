@@ -2983,6 +2983,7 @@ fn session_info(mode: ThemeMode) -> Screenshot {
         HandoverFacts, IndexEmbeddings, IndexFacts, IndexKind, IndexWatch, McpFacts,
         McpServerFacts, ModelFacts, SessionFacts, SkillFacts, SkillsFacts, WorkersFacts,
     };
+    use arko::kept_notes::{Audience, Note};
     use arko_studio::backend::Mode;
     use arko_studio::session_info::{Facts, Preview, SessionInfo};
     use gpui_kit::AppContext as _;
@@ -3106,6 +3107,26 @@ fn session_info(mode: ThemeMode) -> Screenshot {
             index
         })
         .collect(),
+        notes: Ok([
+            (
+                "Tear the build box down when the last build is done.",
+                Audience::Lead,
+            ),
+            ("Run the tests with --locked.", Audience::AllWorkers),
+            (
+                "Leave src/engine.rs alone.",
+                Audience::Workers(vec!["r1".into(), "r2".into()]),
+            ),
+        ]
+        .into_iter()
+        .zip(1..)
+        .map(|((text, audience), id)| Note {
+            id,
+            text: text.into(),
+            audience,
+            created: chrono::DateTime::UNIX_EPOCH,
+        })
+        .collect()),
     };
     let window = app
         .open_window_with(size(px(560.), px(1700.)), 1., |options, cx| {

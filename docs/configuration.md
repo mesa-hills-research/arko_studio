@@ -29,7 +29,8 @@ Arko Studio adds these files inside the shared folder.
 
 **Settings** controls appearance, input and defaults for new sessions. Click an open session's
 title to change its live settings in **Session info**, such as whether the agent that started a
-worker gets a copy of your messages to it.
+worker gets a copy of your messages to it. It also lists the notes the main agent keeps for the
+session, and you can remove one.
 
 **Settings › Models & accounts** shows discovered credentials and lets you add or replace keys.
 Keys saved there go in the Arko folder's `.env` file. ChatGPT and Claude Code use their existing
