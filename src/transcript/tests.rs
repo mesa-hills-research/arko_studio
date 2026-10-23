@@ -1530,6 +1530,52 @@ fn the_new_count_includes_rows_above_the_notes_waiting_at_the_end(cx: &mut TestA
     assert_eq!(new(cx), 0);
 }
 
+/// The rows of a Quiet group the reader opens at the end of the transcript,
+/// or of a thinking they expand there, are what they asked to see and not
+/// news, though they go in below the rows the reader had.
+#[gpui_kit::test]
+fn opening_the_last_group_or_thinking_while_scrolled_up_is_not_new(cx: &mut TestAppContext) {
+    start(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Quiet));
+    let feed = Feed::new("main");
+    turns(&feed, 30, 1);
+    feed.user("Next", Source::App, Delivery::Turn);
+    feed.turn_started();
+    for n in 0..5 {
+        let id = call(
+            &feed,
+            "main",
+            "read_file",
+            &[("path", format!("src/x{n}.rs").into())],
+        );
+        result(&feed, "main", id, "read_file", "1 | fn x() {}\n");
+    }
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 300.);
+    load_all(cx, window, &view);
+    let new = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).new_while_away);
+    let group = ids_of(&feed, Kind::Call)[30];
+    scroll_to_key(cx, window, &view, user_row(&feed, 29));
+    assert!(cx.read(|cx| view.read(cx).list.is_scrolled_up()));
+    let folded = keys(&view, cx).len();
+    view.update(cx, |view, cx| view.toggle_group(group, cx));
+    settle(cx, window);
+    assert!(keys(&view, cx).len() >= folded + 5, "the calls show");
+    assert_eq!(new(cx), 0, "the group");
+
+    // The same for a thinking, in the Full view, which opens it from a row.
+    view.update(cx, |view, cx| view.scroll_to_end(cx));
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Full));
+    think(&feed, "Weighing the options");
+    settle(cx, window);
+    let thinking = *ids_of(&feed, Kind::Thinking).last().unwrap();
+    scroll_to_key(cx, window, &view, user_row(&feed, 29));
+    assert!(cx.read(|cx| view.read(cx).list.is_scrolled_up()));
+    view.update(cx, |view, cx| view.set_expanded(thinking, true, cx));
+    settle(cx, window);
+    assert!(keys(&view, cx).iter().any(block(thinking, 0)));
+    assert_eq!(new(cx), 0, "the thinking");
+}
+
 #[gpui_kit::test]
 fn a_long_transcript_shows_its_end_first_and_the_rest_a_chunk_a_frame(cx: &mut TestAppContext) {
     start(cx);
@@ -2185,7 +2231,6 @@ fn a_workers_worker_has_its_card_with_its_starter(cx: &mut TestAppContext) {
     feed.worker_under("r2", "r1");
     feed.worker("r2", "Count the files", WorkerChange::Started);
     let mut info = WorkerInfo::new();
-    info.parent = Some("r1".into());
     info.depth = 2;
     feed.worker_info("r2", info);
     let cards: Vec<u64> = item_ids(&feed)
@@ -2222,7 +2267,6 @@ fn a_failure_in_the_main_transcript_names_the_worker_that_started_it(cx: &mut Te
     feed.worker_under("r2", "r1");
     feed.worker("r2", "Count the files", WorkerChange::Started);
     let mut info = WorkerInfo::new();
-    info.parent = Some("r1".into());
     info.depth = 2;
     feed.worker_info("r2", info);
     for id in ["r2", "r3"] {
@@ -2251,6 +2295,35 @@ fn a_failure_in_the_main_transcript_names_the_worker_that_started_it(cx: &mut Te
     let own = labels(cx, AgentFilter::Worker("r2".into()));
     assert_eq!(own.len(), 1, "{own:?}");
     assert!(own[0].starts_with("r2, failed ("), "{own:?}");
+}
+
+/// A worker's stop shows in the main transcript with the worker that started
+/// the stopped one, also when its starter's stop stopped it.
+#[gpui_kit::test]
+fn a_stop_in_the_main_transcript_names_the_worker_that_started_it(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Split the work", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.worker("r1", "Review the files", WorkerChange::Started);
+    feed.worker_under("r2", "r1");
+    feed.worker("r2", "Count the files", WorkerChange::Started);
+    let reason = "its lead r1 was stopped";
+    feed.worker("r2", "", WorkerChange::Stopped { reason });
+    feed.worker("r1", "", WorkerChange::Stopped { reason: "" });
+    let (_, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let labels: Vec<String> = keys(&view, cx)
+        .into_iter()
+        .filter(|key| matches!(key, RowKey::Notice(_)))
+        .map(|key| cx.read(|cx| view.read(cx).row_label(key).to_string()))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "r2 (under r1), stopped (its lead r1 was stopped)",
+            "r1, stopped"
+        ]
+    );
 }
 
 /// A worker's card says what it runs on once the session has recorded it,

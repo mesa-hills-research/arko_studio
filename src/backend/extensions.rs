@@ -5,9 +5,6 @@ use std::path::{Path, PathBuf};
 
 pub const USER_MCP_FILE: &str = "mcp.json";
 pub const PROJECT_MCP_FILE: &str = ".mcp.json";
-/// The skills built into Arko, by name. Arko stops a session that leaves
-/// out a name it doesn't know, so a saved choice goes to it only with these.
-pub const BUILTIN_SKILLS: [&str; 2] = ["user-facing-prose", "repo-docs-style"];
 const PROJECT_SKILL_FOLDERS: [&str; 3] = [".agents/skills", ".claude/skills", ".skills"];
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -125,6 +122,12 @@ impl Extensions {
                     auto_load: false,
                     replaced_by: vec![home.join(".claude/skills")],
                 },
+                BuiltinSkill {
+                    name: "ponytail".into(),
+                    description: "Finish the whole task with the smallest change that fully works, split the work sensibly between workers, and check it in proportion to the risk. Use it for any coding task, for running workers, and when the user asks for the simplest solution.".into(),
+                    auto_load: false,
+                    replaced_by: Vec::new(),
+                },
             ],
         }
     }
@@ -146,7 +149,10 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
     };
     let mut found = Extensions::default();
     for (index, workspace) in workspaces.into_iter().enumerate() {
-        let listed = arko::extensions::list(root, workspace, mcp_config);
+        // Every built-in skill is listed, whatever the sessions get, since
+        // the page has a switch for each.
+        let listed =
+            arko::extensions::list_with(root, workspace, mcp_config, Some(true), Some(&[]));
         if index == 0 {
             let mut files = mcp_config.to_vec();
             let user = root.join(USER_MCP_FILE);
@@ -402,7 +408,7 @@ mod tests {
             .iter()
             .map(|skill| skill.name.as_str())
             .collect();
-        assert_eq!(names, ["user-facing-prose", "repo-docs-style"]);
+        assert_eq!(names, ["user-facing-prose", "repo-docs-style", "ponytail"]);
         assert!(!found.builtin[0].description.is_empty());
         // The user's own skill folders (a home folder may hold skills of these names) can
         // replace a built-in too, so the test looks only at the project's folder.
@@ -425,9 +431,9 @@ mod tests {
         assert_eq!(folder.skills[0].name, "repo-docs-style");
     }
 
-    /// The names a saved choice may hold are the ones Arko has built in.
+    /// Every built-in skill is listed, the ones Arko has.
     #[test]
-    fn the_known_built_in_skills_are_arkos() {
+    fn the_listed_built_in_skills_are_arkos() {
         let temp = tempfile::tempdir().unwrap();
         let found = read(&temp.path().join("arko"), &[], &[]);
         let names: Vec<&str> = found
@@ -435,7 +441,7 @@ mod tests {
             .iter()
             .map(|skill| skill.name.as_str())
             .collect();
-        assert_eq!(names, BUILTIN_SKILLS);
+        assert_eq!(names, arko::builtin_skills::names());
     }
 
     #[test]

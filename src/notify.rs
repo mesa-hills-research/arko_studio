@@ -644,17 +644,21 @@ mod tests {
             worker.state = state;
             worker.parent = parent.map(str::to_string);
             worker.report = report.map(str::to_string);
+            // The summary's `last` is cut short, its error is whole.
             worker.last = (state == WorkerState::Failed).then(|| "the model failed".to_string());
+            worker.error = (state == WorkerState::Failed)
+                .then(|| "the model failed after 3 tries\nThe last was a 429.".to_string());
             worker
         };
-        let send = |cx: &mut TestAppContext, workers: Vec<WorkerSummary>| {
-            session.update(cx, |session, cx| session.set_workers(workers, cx));
+        let send = |cx: &mut TestAppContext, workers: Vec<WorkerSummary>, ended: &[&str]| {
+            session.update(cx, |session, cx| session.set_workers(workers, ended, cx));
             cx.run_until_parked();
         };
         // One that ended before the session was shown is no news.
         send(
             cx,
             vec![worker("r0", None, WorkerState::Finished, Some("Old."))],
+            &[],
         );
         VisualTestContext::from_window(window, cx).deactivate_window();
         send(
@@ -663,6 +667,7 @@ mod tests {
                 worker("r1", None, WorkerState::Running, None),
                 worker("r2", Some("r1"), WorkerState::Running, None),
             ],
+            &[],
         );
         assert!(cx.shown_system_notifications().is_empty());
         // The worker's worker finishing is routine.
@@ -672,6 +677,7 @@ mod tests {
                 worker("r1", None, WorkerState::Running, None),
                 worker("r2", Some("r1"), WorkerState::Finished, Some("Counted 14.")),
             ],
+            &["r2"],
         );
         assert!(cx.shown_system_notifications().is_empty());
         // The worker the main agent started reports.
@@ -679,13 +685,13 @@ mod tests {
             worker("r1", None, WorkerState::Finished, Some("Reviewed.\nMore.")),
             worker("r2", Some("r1"), WorkerState::Finished, Some("Counted 14.")),
         ];
-        send(cx, done.clone());
+        send(cx, done.clone(), &["r1"]);
         let shown = cx.shown_system_notifications();
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0].title.as_ref(), "Fonts");
         assert_eq!(shown[0].body.as_ref(), "r1 reported. Reviewed.");
         // Told again, it says nothing more.
-        send(cx, done);
+        send(cx, done, &[]);
         assert_eq!(cx.shown_system_notifications().len(), 1);
         // A failure of a worker's worker does.
         send(
@@ -694,16 +700,18 @@ mod tests {
                 worker("r3", None, WorkerState::Running, None),
                 worker("r4", Some("r3"), WorkerState::Running, None),
             ],
+            &[],
         );
         send(
             cx,
             vec![worker("r4", Some("r3"), WorkerState::Failed, None)],
+            &["r4"],
         );
         let shown = cx.shown_system_notifications();
         assert_eq!(shown.len(), 2);
         assert_eq!(
             shown[1].body.as_ref(),
-            "r4 (under r3) failed (the model failed)"
+            "r4 (under r3) failed (the model failed after 3 tries)"
         );
     }
 

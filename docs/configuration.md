@@ -29,23 +29,31 @@ Arko Studio adds these files inside the shared folder.
 
 **Settings** controls appearance, input and defaults for new sessions. Click an open session's
 title to change its live settings in **Session info**, such as whether the agent that started a
-worker gets a copy of your messages to it.
+worker gets a copy of your messages to it. It also lists the notes the main agent keeps for the
+session, and you can remove one.
 
 **Settings › Models & accounts** shows discovered credentials and lets you add or replace keys.
 Keys saved there go in the Arko folder's `.env` file. ChatGPT and Claude Code use their existing
-logins. See [Arko's documentation](https://github.com/mesa-hills-research/arko) for providers and
-credential discovery.
+logins. You can add several ChatGPT logins (each a Codex `auth.json`). Arko uses them in order, and
+the next one takes over when the one before it reaches its limit. Make first and Remove change the
+order and the list. See [Arko's documentation](https://github.com/mesa-hills-research/arko) for
+providers and credential discovery.
 
 **Settings › Worker profiles** lists the profiles the main agent starts workers with. A profile is
 a Markdown file in the `profiles` folder of the Arko folder, with a model, an effort and
 instructions, so Arko in the terminal reads the same ones. Add, edit, duplicate and delete your
-profiles there. The page also lists each recent project's `.agents/profiles`, read only. The main
-agent can save profiles too, and asks you first when it saves one for a project or for every
-project. See [Arko's documentation](https://github.com/mesa-hills-research/arko) for the file
-format.
+profiles there. The page also lists each recent project's and repository's `.agents/profiles`, read
+only. Two switches choose where profiles are kept. One keeps a project's new profiles folder out of
+git, and the other makes a project in a subfolder of a git repository read the repository root's
+profiles too. The main agent can save profiles too, for the project unless it says otherwise. It
+asks you first when git would track the folder, when the project isn't in a git repository, or when
+the profile is for every project. See
+[Arko's documentation](https://github.com/mesa-hills-research/arko) for the file format.
 
-**Settings › Sessions** sets who chooses the workers' models, and how many levels of workers a new
-session allows, along with the other defaults for new sessions.
+**Settings › Sessions** sets who chooses the workers' models, how many levels of workers a new
+session allows, whether a worker fails after 10 failed model requests in a row (**Worker retry
+cap**, off by default), and whether the agent that started a worker gets a copy of your messages to
+it (**Message copies**, off by default), along with the other defaults for new sessions.
 
 **Settings › Extensions** lists the MCP servers and skills sessions get. Arko's built-in skills
 have a switch for all of them and one for each. A session opened or resumed after a change gets it,

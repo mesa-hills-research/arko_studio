@@ -588,7 +588,11 @@ impl StatusBar {
                 .filter(|_| wide)
                 .map(|turn| turn.label(now)),
             workers: if wide {
-                reading.workers_running.clone()
+                reading
+                    .workers_running
+                    .iter()
+                    .map(|(id, _)| id.clone())
+                    .collect()
             } else {
                 Vec::new()
             },

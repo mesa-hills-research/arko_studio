@@ -1255,6 +1255,8 @@ fn a_message_to_a_worker_reaches_it_and_shows_in_its_transcript_only(cx: &mut Te
         }
     });
     let app = start(cx, &mock);
+    // A new session sends no copies unless the preference asks for them.
+    cx.update(|cx| crate::prefs::update(cx, |prefs| prefs.new_sessions.message_copies = true));
     app.send(cx, "Indent and test.");
     app.wait_for_text(cx, "Started them.");
     act(cx, app.window, |window, cx| {

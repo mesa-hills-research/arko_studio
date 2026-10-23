@@ -434,6 +434,38 @@ fn the_next_match_keeps_its_quiet_group_open(cx: &mut TestAppContext) {
     }
 }
 
+/// A find that opens the Quiet group at the end of the transcript shows rows
+/// the reader asked to see and not news, though they go in below the rows
+/// the reader had.
+#[gpui_kit::test]
+fn a_find_opening_the_last_group_while_scrolled_up_is_not_new(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    for number in 0..30 {
+        feed.user(&format!("message {number}"), Source::App, Delivery::Turn);
+    }
+    feed.turn_started();
+    for number in 0..5 {
+        let output = if number == 0 { "needle" } else { "no match" };
+        command(&feed, &format!("ls {number}"), output);
+    }
+    let (window, view) = open_feed(cx, &feed, View::Quiet, 300.);
+    view.update(cx, |view, _| view.list.scroll_to(24, px(0.)));
+    settle(cx, window);
+    assert!(cx.read(|cx| view.read(cx).list.is_scrolled_up()));
+    let calls = |cx: &mut TestAppContext| {
+        rows(cx, &view)
+            .iter()
+            .filter(|key| matches!(key, RowKey::Call(_)))
+            .count()
+    };
+    assert_eq!(calls(cx), 0);
+    find(cx, window, &view, "needle");
+    assert_eq!(calls(cx), 5, "the group opened");
+    // The first call is in sight, and the reader still isn't at the end.
+    assert!(cx.read(|cx| view.read(cx).list.is_scrolled_up()));
+    assert_eq!(cx.read(|cx| view.read(cx).new_while_away), 0);
+}
+
 #[gpui_kit::test]
 fn a_match_in_thinking_opens_both_the_entry_and_its_code(cx: &mut TestAppContext) {
     let feed = Feed::new("main");

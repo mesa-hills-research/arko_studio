@@ -19,9 +19,19 @@ pub fn depth_about() -> String {
     curly(arko::workers::depth_about())
 }
 
-/// What a worker depth of `depth` allows now, in Arko's words.
-pub fn depth_effect(depth: u32) -> String {
-    curly(&arko::workers::depth_effect(depth))
+/// What a worker depth of `depth` allows now with the models `choice`, in
+/// Arko's words. Workers on the session's model start none, whatever the
+/// depth.
+pub fn depth_effect(depth: u32, choice: ModelChoice) -> String {
+    curly(&arko::workers::depth_effect(depth, choice))
+}
+
+/// What the "Worker retry cap" setting does, with it `on` or off, in Arko's
+/// words.
+pub fn retry_cap_about(on: bool) -> String {
+    curly(&arko::workers::retry_cap_about(
+        on.then_some(arko::workers::DEFAULT_RETRY_CAP),
+    ))
 }
 
 /// What the "Message copies" setting does, with it `on` or off, in Arko's
@@ -143,6 +153,34 @@ pub fn costs_label(worker: &WorkerSummary) -> Option<String> {
         .flatten()
         .collect();
     (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// The workers that run, as the dialog that asks before stopping them lists
+/// them. Each worker is followed by the workers it started, which say whose
+/// they are, as in "3 workers (r1, r2 under r1, r3)". `running` is each
+/// worker's ID and the ID of the worker that started it.
+pub fn running_text(running: &[(String, Option<String>)]) -> String {
+    let summaries: Vec<WorkerSummary> = running
+        .iter()
+        .map(|(id, parent)| {
+            let mut worker = WorkerSummary::new(id);
+            worker.parent = parent.clone();
+            worker
+        })
+        .collect();
+    let names: Vec<String> = arko::remote::family_order(&summaries)
+        .into_iter()
+        .map(|index| match &running[index] {
+            (id, Some(parent)) => format!("{id} under {parent}"),
+            (id, None) => id.clone(),
+        })
+        .collect();
+    let count = names.len();
+    format!(
+        "{count} {} ({})",
+        if count == 1 { "worker" } else { "workers" },
+        names.join(", ")
+    )
 }
 
 /// A worker's row as a screen reader names it: the worker, whose it is when
@@ -279,14 +317,29 @@ pub fn state_label(state: WorkerState) -> &'static str {
     }
 }
 
+/// Why a worker failed, whole, when it did and Arko says.
+pub fn failure(worker: &WorkerSummary) -> Option<&str> {
+    (worker.state == WorkerState::Failed)
+        .then_some(worker.error.as_deref())
+        .flatten()
+        .map(str::trim)
+        .filter(|error| !error.is_empty())
+}
+
 /// What a worker did last, in a line: its report's first line once it
-/// finished, else its latest call or why it stopped.
+/// finished, the first line of its error once it failed (the summary's
+/// `last` cuts the error short), else its latest call or why it stopped.
 pub fn last_line(worker: &WorkerSummary) -> Option<String> {
+    fn first(text: &str) -> Option<&str> {
+        text.lines().find(|line| !line.trim().is_empty())
+    }
     let report = (worker.state == WorkerState::Finished)
         .then_some(worker.report.as_deref())
         .flatten()
-        .and_then(|report| report.lines().find(|line| !line.trim().is_empty()));
+        .and_then(first);
+    let error = failure(worker).and_then(first);
     report
+        .or(error)
         .or(worker.last.as_deref())
         .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty())
@@ -354,16 +407,58 @@ mod tests {
             about.contains("a worker can start workers of its own"),
             "{about}"
         );
-        assert_eq!(depth_effect(1), "Only the main agent starts workers.");
-        let three = depth_effect(3);
+        let agent = ModelChoice::Agent;
+        assert_eq!(
+            depth_effect(1, agent),
+            "Only the main agent starts workers."
+        );
+        let three = depth_effect(3, agent);
         assert_eq!(
             three,
             "Workers can go 3 levels deep, and a worker can start workers of its own when the agent that starts it says so."
         );
-        for text in [about, depth_effect(2), three, depth_effect(1)] {
+        // Every worker on the session's model starts none, so the depth
+        // row can't promise nesting beside a models row that rules it out.
+        let session = depth_effect(3, ModelChoice::Session);
+        assert_eq!(
+            session,
+            "No worker starts workers, because every worker runs the session’s worker model."
+        );
+        for text in [
+            about,
+            depth_effect(2, agent),
+            three,
+            depth_effect(1, agent),
+            session,
+        ] {
             assert!(!text.contains('\''), "{text}");
             assert!(!text.contains("takes effect"), "{text}");
         }
+    }
+
+    /// The dialog that asks before stopping lists each running worker with
+    /// the workers it started after it, and says whose a worker is.
+    #[test]
+    fn the_stop_dialog_lists_running_workers_by_family() {
+        let list = |workers: &[(&str, Option<&str>)]| {
+            let workers: Vec<_> = workers
+                .iter()
+                .map(|(id, parent)| (id.to_string(), parent.map(str::to_string)))
+                .collect();
+            running_text(&workers)
+        };
+        assert_eq!(list(&[("r1", None)]), "1 worker (r1)");
+        assert_eq!(
+            list(&[
+                ("r1", None),
+                ("r2", None),
+                ("r3", Some("r1")),
+                ("r4", Some("r3"))
+            ]),
+            "4 workers (r1, r3 under r1, r4 under r3, r2)"
+        );
+        // A worker whose starter isn't running still says whose it is.
+        assert_eq!(list(&[("r5", Some("r2"))]), "1 worker (r5 under r2)");
     }
 
     /// The message copies setting says what it does with it on or off, in
@@ -681,5 +776,29 @@ mod tests {
         assert_eq!(last_line(&running), None);
         running.last = Some("$ cargo test".into());
         assert_eq!(last_line(&running).as_deref(), Some("$ cargo test"));
+    }
+
+    /// A worker that failed shows the first line of its whole error, not
+    /// the summary's `last`, which Arko cuts short.
+    #[test]
+    fn the_last_line_of_a_failed_worker_is_its_error() {
+        let mut failed = worker("r1", WorkerState::Failed, Some(0), Some(1));
+        failed.last = Some("the model failed after 3 tr".into());
+        assert_eq!(
+            last_line(&failed).as_deref(),
+            Some("the model failed after 3 tr")
+        );
+        failed.error = Some("\nthe model failed after 3 tries\nThe last was a 429.".into());
+        assert_eq!(
+            last_line(&failed).as_deref(),
+            Some("the model failed after 3 tries")
+        );
+        assert_eq!(
+            failure(&failed),
+            Some("the model failed after 3 tries\nThe last was a 429.")
+        );
+        // An error left over from a run that went on isn't shown.
+        failed.state = WorkerState::Running;
+        assert_eq!(failure(&failed), None);
     }
 }

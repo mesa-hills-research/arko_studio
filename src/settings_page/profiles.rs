@@ -1,12 +1,13 @@
 //! Settings › Worker profiles: the setups the main agent starts workers
 //! with, a model, an effort and instructions each. The user's own are
 //! edited here (Arko's folder holds them as files, so the terminal app sees
-//! the same ones), and each recent project's are listed read only. Files
-//! are read and written through `arko::profiles`, on a background thread.
+//! the same ones), and each recent project's and repository's are listed read
+//! only. Where profiles are kept is chosen here too. Files are read and
+//! written through `arko::profiles`, on a background thread.
 
 use std::path::{Path, PathBuf};
 
-use arko::profiles::{self, Cache, MAX_DESCRIPTION, MAX_INSTRUCTIONS, Profile};
+use arko::profiles::{self, Cache, MAX_DESCRIPTION, MAX_INSTRUCTIONS, Preferences, Profile};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -170,26 +171,35 @@ impl ProfilesPage {
     /// The page, as last read.
     pub fn page(&self, this: &Entity<Self>) -> SettingPage {
         let home = self.home.as_deref();
-        let (user, projects) = match &self.profiles {
+        let (user, projects, repositories) = match &self.profiles {
             None => (
                 vec![
                     SettingItem::new("Profiles", SettingField::render(|_, _, _| div()))
                         .description("Reading…"),
                 ],
                 Vec::new(),
+                Vec::new(),
             ),
-            Some(profiles) => (
-                self.user_items(this, &profiles.user),
-                profiles
-                    .projects
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, project)| {
-                        let items = project_items(ix, &project.list, self.models.as_ref(), home);
-                        (tilde(&project.folder, home), items)
-                    })
-                    .collect(),
-            ),
+            Some(profiles) => {
+                // (A group's rows have ids of their own, so the repositories'
+                // number on from the projects'.)
+                let shown = |from: usize, folders: &[store::Project]| -> Vec<_> {
+                    folders
+                        .iter()
+                        .enumerate()
+                        .map(|(ix, folder)| {
+                            let items =
+                                project_items(from + ix, &folder.list, self.models.as_ref(), home);
+                            (tilde(&folder.folder, home), items)
+                        })
+                        .collect()
+                };
+                (
+                    self.user_items(this, &profiles.user),
+                    shown(0, &profiles.projects),
+                    shown(profiles.projects.len(), &profiles.repositories),
+                )
+            }
         };
         let mut groups = vec![
             SettingGroup::new()
@@ -211,6 +221,20 @@ impl ProfilesPage {
                     .items(items),
             );
         }
+        for (folder, items) in repositories {
+            groups.push(
+                SettingGroup::new()
+                    .key(super::group_key(&folder, &self.revision))
+                    .title(folder)
+                    .description(
+                        "Read only. Edit the files in the repository. A session in one of its folders reads these after the project’s own, and before yours.",
+                    )
+                    .items(items),
+            );
+        }
+        if let Some(profiles) = &self.profiles {
+            groups.push(self.kept_group(this, profiles.preferences));
+        }
         SettingPage::new(super::PAGES[super::PROFILES_PAGE])
             .icon(gpui_kit::assets::IconName::UserCog)
             .resettable(false)
@@ -218,6 +242,89 @@ impl ProfilesPage {
                 "A profile is a named setup for workers, with a model, an effort and instructions. The main agent starts a worker with one by name. Profiles are files in Arko’s folder, so the terminal app uses the same ones.",
             )
             .groups(groups)
+    }
+
+    /// The choices about where profiles are kept, which Arko keeps for every
+    /// project and reads each time a worker starts.
+    fn kept_group(&self, this: &Entity<Self>, preferences: Preferences) -> SettingGroup {
+        let switch = |id: &'static str,
+                      title: &'static str,
+                      description: &'static str,
+                      on: bool,
+                      set: fn(&mut Preferences, bool),
+                      keywords: [&'static str; 3]| {
+            let page = this.clone();
+            SettingItem::new(
+                title,
+                SettingField::render(move |_, _, _| {
+                    let page = page.clone();
+                    Switch::new(id)
+                        .checked(on)
+                        .on_click(move |on, window, cx| {
+                            ProfilesPage::choose(&page, |prefs| set(prefs, *on), window, cx)
+                        })
+                        .into_any_element()
+                }),
+            )
+            .description(description)
+            .keywords(keywords)
+        };
+        SettingGroup::new()
+            .key(super::group_key("Where profiles are kept", &self.revision))
+            .title("Where profiles are kept")
+            .items([
+                switch(
+                    "keep-profiles-out-of-git",
+                    "Keep new profile folders out of git",
+                    "A project’s new .agents/profiles folder gets a .gitignore, so git ignores it. Delete that file to share the profiles.",
+                    preferences.keep_out_of_git,
+                    |prefs, on| prefs.keep_out_of_git = on,
+                    ["worker", "profile", "gitignore"],
+                ),
+                switch(
+                    "read-repository-profiles",
+                    "Read the repository’s profiles",
+                    "In a subfolder of a git repository, Arko reads the .agents/profiles in the repository’s root too, after the project’s own.",
+                    preferences.repo_root,
+                    |prefs, on| prefs.repo_root = on,
+                    ["worker", "profile", "repository"],
+                ),
+            ])
+    }
+
+    /// Changes where profiles are kept: the page shows it at once, the file
+    /// is written off the UI thread, and the page reads again.
+    fn choose(
+        this: &Entity<Self>,
+        change: impl FnOnce(&mut Preferences),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let mut preferences = Preferences::default();
+        this.update(cx, |page, cx| {
+            if let Some(profiles) = page.profiles.as_mut() {
+                change(&mut profiles.preferences);
+                preferences = profiles.preferences;
+                page.revision += 1;
+                cx.notify();
+            }
+        });
+        let backend = cx.global::<SharedBackend>().clone();
+        let saving =
+            cx.background_spawn(async move { backend.set_profile_preferences(preferences) });
+        let page = this.clone();
+        window
+            .spawn(cx, async move |cx| {
+                let saved = saving.await;
+                cx.update(|window, cx| {
+                    if let Err(why) = saved {
+                        window.push_notification(Notification::error(curly(&why)), cx);
+                    }
+                    page.update(cx, |page, cx| page.refresh(cx));
+                })
+                .ok();
+            })
+            .detach();
     }
 
     /// The user's profiles as rows with Edit, then the row that adds one.

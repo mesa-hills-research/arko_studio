@@ -1,21 +1,23 @@
 //! Session info (click the title, Session › Info, or the palette): the
 //! session's folder, mode and models, its handover sizes, its settings,
-//! its MCP servers, skills and indexes, its ID and data folder. The
-//! settings that can change while it runs change here, through the same
-//! commands the terminal sends. Those fixed once the conversation started
-//! say so.
+//! its MCP servers, skills and indexes, the notes its main agent keeps, its
+//! ID and data folder. The settings that can change while it runs change
+//! here, through the same commands the terminal sends. Those fixed once the
+//! conversation started say so.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arko::details::{IndexFacts, IndexWatch, McpFacts, SessionFacts, SkillsFacts};
+use arko::kept_notes::{KeptNotes, Note};
 use arko::remote::Reading;
 use arko::{ExtraRules, ModelChoice, ProjectFiles};
 use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _, Toggle, ToggleGroup},
     h_flex, v_flex,
 };
@@ -98,6 +100,14 @@ pub struct Facts {
     pub skills: Result<SkillsFacts, String>,
     /// The workspace's search indexes.
     pub indexes: Vec<IndexFacts>,
+    /// The notes the main agent keeps in the session's folder, or why the
+    /// file can't be read.
+    pub notes: Result<Vec<Note>, String>,
+}
+
+/// Who a kept note is for, as the info says it ("For the main agent").
+fn note_audience(note: &Note) -> String {
+    format!("For {}", note.audience.describe())
 }
 
 /// A handover size as the info shows it and `/handover-at` takes it:
@@ -395,10 +405,14 @@ impl SessionInfo {
     /// Reads the session's details again, off the UI thread (as the info
     /// opens).
     pub fn load(&mut self, cx: &mut Context<Self>) {
-        let Some((details, opening)) = self.session.as_ref().and_then(|session| {
+        let Some((details, dir, opening)) = self.session.as_ref().and_then(|session| {
             let live = session.read(cx);
-            let details = live.link()?.details.clone();
-            Some((details, (session.entity_id(), live.opening())))
+            let link = live.link()?;
+            Some((
+                link.details.clone(),
+                link.info.dir.clone(),
+                (session.entity_id(), live.opening()),
+            ))
         }) else {
             return;
         };
@@ -409,6 +423,7 @@ impl SessionInfo {
                 mcp: details.mcp(),
                 skills: details.skills(),
                 indexes: details.indexes(),
+                notes: KeptNotes::new(&dir).list(),
             }
         });
         self._load = Some(cx.spawn(async move |this, cx| {
@@ -419,6 +434,34 @@ impl SessionInfo {
             })
             .ok();
         }));
+    }
+
+    /// Removes the kept note `id` from the session folder `dir`, off the UI
+    /// thread, and shows the notes the folder holds then. Why it couldn't
+    /// is told in a notification.
+    fn remove_note(this: &Entity<Self>, dir: PathBuf, id: u32, window: &mut Window, cx: &mut App) {
+        let removing = cx.background_spawn(async move {
+            let notes = KeptNotes::new(&dir);
+            (notes.remove(id), notes.list())
+        });
+        let this = this.clone();
+        window
+            .spawn(cx, async move |cx| {
+                let (removed, notes) = removing.await;
+                cx.update(|window, cx| {
+                    if let Err(why) = removed {
+                        window.push_notification(Notification::error(curly(&why)), cx);
+                    }
+                    this.update(cx, |this, cx| {
+                        if let Some(facts) = this.facts.as_mut() {
+                            facts.notes = notes;
+                        }
+                        cx.notify();
+                    });
+                })
+                .ok();
+            })
+            .detach();
     }
 
     /// Shows `preview` and `facts`, with no session behind them (its
@@ -1029,7 +1072,7 @@ impl Render for SessionInfo {
                                 .test_support()
                                 .text_xs()
                                 .text_color(muted)
-                                .child(depth_effect(depth)),
+                                .child(depth_effect(depth, chosen)),
                         ),
                         cx,
                     ))
@@ -1098,6 +1141,60 @@ impl Render for SessionInfo {
                         indexes_text(&facts.indexes).unwrap_or_else(|| "None".to_string()),
                         cx,
                     )),
+            };
+        }
+        // The notes the main agent keeps, when it keeps some (or when the
+        // file can't be read).
+        if let Some(notes) = facts.as_ref().map(|facts| &facts.notes)
+            && !matches!(notes, Ok(list) if list.is_empty())
+        {
+            body = body.child(heading("Kept notes", cx));
+            body = match notes {
+                Err(why) => body.child(
+                    div()
+                        .id("kept-notes-error")
+                        .test_support()
+                        .text_sm()
+                        .text_color(danger)
+                        .child(curly(why)),
+                ),
+                Ok(list) => {
+                    let info = cx.entity();
+                    body.children(list.iter().map(|note| {
+                        let (info, dir, id) = (info.clone(), dir.clone(), note.id);
+                        h_flex()
+                            .id(("kept-note", id))
+                            .test_support()
+                            .items_start()
+                            .gap_2()
+                            .py_1()
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_0p5()
+                                    .child(div().text_sm().child(note.text.clone()))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .child(note_audience(note)),
+                                    ),
+                            )
+                            .child(
+                                Button::new(("remove-note", id))
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Remove")
+                                    .accessibility_label(format!("Remove kept note {id}"))
+                                    .on_click(move |_, window, cx| {
+                                        if let Some(dir) = dir.clone() {
+                                            SessionInfo::remove_note(&info, dir, id, window, cx)
+                                        }
+                                    }),
+                            )
+                    }))
+                }
             };
         }
         // Where it's kept.
@@ -1513,6 +1610,147 @@ mod tests {
 
 #[cfg(test)]
 mod view_tests {
+    /// The info of a session with no live link, whose facts say `notes`, in
+    /// a window of its own, drawn once.
+    fn info_with_notes(
+        cx: &mut TestAppContext,
+        dir: &std::path::Path,
+        notes: Result<Vec<arko::kept_notes::Note>, String>,
+    ) -> (AnyWindowHandle, Entity<super::SessionInfo>) {
+        use arko::details::{HandoverFacts, McpFacts, ModelFacts, SessionFacts};
+        use gpui_kit::{Bounds, WindowBounds, WindowOptions, px, size};
+
+        struct Card(Entity<super::SessionInfo>);
+        impl gpui_kit::Render for Card {
+            fn render(
+                &mut self,
+                _: &mut gpui_kit::Window,
+                _: &mut gpui_kit::Context<Self>,
+            ) -> impl gpui_kit::IntoElement {
+                self.0.clone()
+            }
+        }
+
+        let model = ModelFacts {
+            model: "claude-opus-5-5".into(),
+            shown: "claude-opus-5-5".into(),
+            effort: arko::Effort::High,
+            fast: false,
+            cache_1h: false,
+        };
+        let facts = super::Facts {
+            session: SessionFacts {
+                id: "s1".into(),
+                dir: dir.to_path_buf(),
+                workspace: "/work".into(),
+                title: None,
+                created: chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+                main: model,
+                workers: None,
+                handover: HandoverFacts {
+                    main_at: 950_000,
+                    main_compacts: false,
+                    workers_at: 200_000,
+                    workers_compact: false,
+                },
+                text_replies: true,
+                extra_rules: arko::ExtraRules::Small,
+                cc_compact: false,
+                project_files: arko::ProjectFiles::One,
+                project_workers: None,
+                outside: false,
+                background_after: 600,
+                show_thinking: false,
+                hide_thinking: false,
+            },
+            mcp: McpFacts::default(),
+            skills: Err("not read".into()),
+            indexes: Vec::new(),
+            notes,
+        };
+        let preview = super::Preview {
+            title: "Keep notes".into(),
+            mode: crate::backend::Mode::Agent,
+            workspace: None,
+            id: "s1".into(),
+            dir: Some(dir.to_path_buf()),
+            reading: Arc::new(Reading::default()),
+        };
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: Default::default(),
+                size: size(px(800.), px(1400.)),
+            })),
+            ..Default::default()
+        };
+        let (window, info) = cx
+            .update(|cx| {
+                let mut shown = None;
+                let opened = gpui_kit::open_window(options, cx, |window, cx| {
+                    let info = cx.new(|cx| {
+                        let mut info = super::SessionInfo::new(window, cx);
+                        info.set_preview(preview, facts, window, cx);
+                        info
+                    });
+                    shown = Some(info.clone());
+                    cx.new(|_| Card(info))
+                });
+                opened.map(|(window, _)| (window, shown.unwrap()))
+            })
+            .unwrap();
+        cx.run_until_parked();
+        (window, info)
+    }
+
+    /// The notes the main agent keeps list with who they are for, each with
+    /// Remove, and nothing shows when there are none. A file that can't be
+    /// read says why.
+    #[gpui_kit::test]
+    fn the_info_lists_the_kept_notes_and_removes_one(cx: &mut TestAppContext) {
+        use arko::kept_notes::{Audience, KeptNotes};
+
+        start(cx);
+        let temp = tempfile::tempdir().unwrap();
+        let kept = KeptNotes::new(temp.path());
+        let (window, _) = info_with_notes(cx, temp.path(), kept.list());
+        let present = |cx: &mut TestAppContext, id: usize| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find(("kept-note", id)).is_some()
+            })
+            .unwrap()
+        };
+        assert!(!present(cx, 1), "no notes, nothing shows");
+        kept.add("Tear the build box down.", Audience::Lead)
+            .unwrap();
+        kept.add("Use --locked.", Audience::AllWorkers).unwrap();
+        let (window, _) = info_with_notes(cx, temp.path(), kept.list());
+        let words = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                [1usize, 2].map(|id| window.try_find(("kept-note", id)).is_some())
+            })
+            .unwrap();
+        assert_eq!(words, [true, true]);
+        // Removing the first leaves the second, in the file too.
+        act(cx, window, |window, cx| {
+            window.click(("remove-note", 1usize), cx)
+        });
+        cx.run_until_parked();
+        let left: Vec<u32> = kept.list().unwrap().iter().map(|note| note.id).collect();
+        assert_eq!(left, [2]);
+        act(cx, window, |window, _| {
+            assert!(window.try_find(("kept-note", 1usize)).is_none());
+            assert!(window.try_find(("kept-note", 2usize)).is_some());
+        });
+        // A file that can't be read says so, in Arko's words.
+        std::fs::write(temp.path().join("kept-notes.json"), "not json").unwrap();
+        let (window, _) = info_with_notes(cx, temp.path(), kept.list());
+        act(cx, window, |window, _| {
+            assert!(window.try_find("kept-notes-error").is_some());
+        });
+    }
+
     #[gpui_kit::test]
     fn optimistic_controls_belong_to_the_shown_session(cx: &mut TestAppContext) {
         start(cx);

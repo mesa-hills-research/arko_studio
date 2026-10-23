@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use crate::prefs::{self, Prefs};
 
 use super::Mode;
-use super::extensions::BUILTIN_SKILLS;
 
 /// The preferences a session's options come from, as the app holds them
 /// now. The backend keeps a copy ([`super::Backend::set_defaults`]), since
@@ -34,6 +33,12 @@ pub struct SessionDefaults {
     pub worker_models: arko::ModelChoice,
     /// How many levels of workers, when it is a depth a session can have.
     pub worker_depth: Option<u32>,
+    /// Whether a worker fails after Arko's number of failed model requests
+    /// in a row.
+    pub worker_retry_cap: bool,
+    /// Whether the agent that started a worker gets a copy of the user's
+    /// messages to it.
+    pub message_copies: bool,
     pub outside_access: bool,
     pub text_replies: bool,
     pub cc_compact: bool,
@@ -90,6 +95,8 @@ impl SessionDefaults {
                 .and_then(|wakes| arko::monitors::parse_wakes(wakes).ok()),
             worker_models: new.worker_models,
             worker_depth: arko::workers::check_depth(new.worker_depth).ok(),
+            worker_retry_cap: new.worker_retry_cap,
+            message_copies: new.message_copies,
             outside_access: new.outside_access,
             text_replies: new.text_replies,
             cc_compact: new.cc_compact,
@@ -111,11 +118,12 @@ impl SessionDefaults {
             }),
             mcp_config: prefs.advanced.mcp_config.clone(),
             builtin_skills: prefs.extensions.builtin_skills,
-            // A name Arko doesn't know would keep every session from opening.
+            // A name Arko doesn't know is a warning in every session, and
+            // the page has no switch to clear it.
             builtin_skills_off: prefs.extensions.builtin_skills_off.as_ref().map(|names| {
                 names
                     .iter()
-                    .filter(|name| BUILTIN_SKILLS.contains(&name.as_str()))
+                    .filter(|name| arko::builtin_skills::names().contains(&name.as_str()))
                     .cloned()
                     .collect()
             }),
@@ -163,6 +171,10 @@ impl SessionDefaults {
         options.monitor_wakes = self.monitor_wakes;
         options.worker_models = Some(self.worker_models);
         options.worker_depth = self.worker_depth;
+        options.worker_retry_cap = self
+            .worker_retry_cap
+            .then_some(arko::workers::DEFAULT_RETRY_CAP);
+        options.message_copies = Some(self.message_copies);
         if cfg!(windows) {
             options.shell = self.shell;
         }
@@ -235,8 +247,8 @@ mod tests {
     }
 
     /// The built-in skill choice goes to a new and to a resumed session, a
-    /// chat too. A name Arko doesn't know is dropped, since Arko would not
-    /// open a session that leaves it out.
+    /// chat too. A name Arko doesn't know is dropped, since Arko would warn
+    /// of it in every session.
     #[test]
     fn the_built_in_skill_choice_reaches_new_and_resumed_sessions() {
         let mut prefs = Prefs::default();
@@ -309,6 +321,45 @@ mod tests {
         assert_eq!(options.worker_project_instructions, Some(false));
         assert_eq!(options.chat_instructions, None, "an agent has no chat's");
         assert_eq!(options.mcp_config, [PathBuf::from("/home/ada/mcp.json")]);
+    }
+
+    /// A new session has no worker retry cap unless the preference turns it
+    /// on, at Arko's default, and a resumed session keeps its own.
+    #[test]
+    fn the_worker_retry_cap_is_off_in_a_new_session_unless_chosen() {
+        let mut prefs = Prefs::default();
+        let mut options = new_options();
+        SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent));
+        assert_eq!(options.worker_retry_cap, None);
+        prefs.new_sessions.worker_retry_cap = true;
+        let defaults = SessionDefaults::from_prefs(&prefs);
+        let mut options = new_options();
+        defaults.apply(&mut options, Some(Mode::Agent));
+        assert_eq!(
+            options.worker_retry_cap,
+            Some(arko::workers::DEFAULT_RETRY_CAP)
+        );
+        let mut options = new_options();
+        defaults.apply(&mut options, None);
+        assert_eq!(options.worker_retry_cap, None);
+    }
+
+    /// A new session starts with message copies off unless the preference
+    /// turns them on, and a resumed session keeps its own.
+    #[test]
+    fn message_copies_are_off_in_a_new_session_unless_chosen() {
+        let mut prefs = Prefs::default();
+        let mut options = new_options();
+        SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent));
+        assert_eq!(options.message_copies, Some(false));
+        prefs.new_sessions.message_copies = true;
+        let defaults = SessionDefaults::from_prefs(&prefs);
+        let mut options = new_options();
+        defaults.apply(&mut options, Some(Mode::Agent));
+        assert_eq!(options.message_copies, Some(true));
+        let mut options = new_options();
+        defaults.apply(&mut options, None);
+        assert_eq!(options.message_copies, None);
     }
 
     /// The model chosen in the composer wins over the default.

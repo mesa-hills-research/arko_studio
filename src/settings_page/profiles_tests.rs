@@ -246,7 +246,7 @@ fn an_effort_the_model_lacks_shows_arkos_reason(cx: &mut TestAppContext) {
             }],
             unreadable: Vec::new(),
         },
-        projects: Vec::new(),
+        ..Profiles::default()
     };
     start_with_profiles(cx, profiles);
     let (window, _, _) = settings_window(cx, PROFILES_PAGE, 1400.);
@@ -500,6 +500,46 @@ fn the_page_says_what_a_model_needs_and_lists_projects_read_only(cx: &mut TestAp
         window.within("popup-menu").click(2usize, cx)
     });
     assert!(!shows(window, cx, "profile-model-needs"));
+}
+
+/// A repository's profiles list read only under its root, and the two
+/// choices about where profiles are kept save as Arko reads them.
+#[gpui_kit::test]
+fn the_page_lists_a_repository_and_saves_where_profiles_are_kept(cx: &mut TestAppContext) {
+    let mut profiles = Profiles::sample(Path::new("/arko"));
+    profiles.repositories.push(Project {
+        folder: "/home/ada/src/arko".into(),
+        list: List {
+            entries: vec![Entry {
+                file: "/home/ada/src/arko/.agents/profiles/lint.md".into(),
+                profile: Profile::new("lint", "Runs the linter"),
+                note: None,
+            }],
+            unreadable: Vec::new(),
+        },
+    });
+    let backend = start_with_profiles(cx, profiles);
+    let (window, _, _) = settings_window(cx, PROFILES_PAGE, 1400.);
+    // The repository's profile has Show, not Edit.
+    assert!(shows(window, cx, ("show-profile", 0usize)));
+    assert!(!shows(window, cx, ("edit-profile", 3usize)));
+    // Both choices are on until the user turns them off.
+    let kept = || backend.saved_profiles().preferences;
+    assert_eq!(kept(), arko::profiles::Preferences::default());
+    act(cx, window, |window, cx| {
+        window.click("keep-profiles-out-of-git", cx)
+    });
+    act(cx, window, |window, cx| {
+        window.click("read-repository-profiles", cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        kept(),
+        arko::profiles::Preferences {
+            keep_out_of_git: false,
+            repo_root: false,
+        }
+    );
 }
 
 /// The profiles of a real folder: what the page's backend saves is the file

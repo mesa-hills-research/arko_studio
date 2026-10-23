@@ -530,7 +530,7 @@ fn profile_models() -> arko_studio::backend::ModelChoices {
     }
 }
 
-/// The user's profiles and a project's, read only.
+/// The user's profiles, a project's and a repository's, read only.
 fn profiles_with_project() -> arko_studio::backend::profiles::Profiles {
     use arko::profiles::Profile;
     use arko_studio::backend::profiles::{Entry, List, Project, Unreadable};
@@ -553,6 +553,19 @@ fn profiles_with_project() -> arko_studio::backend::profiles::Profiles {
                 file: "/home/ada/src/arko/.agents/profiles/torn.md".into(),
                 reason: "it has no description".into(),
             }],
+        },
+    });
+    let mut triage = Profile::new("triage", "Sorts new issues by area");
+    triage.model = Some("haiku".into());
+    profiles.repositories.push(Project {
+        folder: "/home/ada/src/mesa".into(),
+        list: List {
+            entries: vec![Entry {
+                file: "/home/ada/src/mesa/.agents/profiles/triage.md".into(),
+                note: triage.model_problem(),
+                profile: triage,
+            }],
+            unreadable: Vec::new(),
         },
     });
     profiles
@@ -733,7 +746,6 @@ parse of the whole text.";
         feed.worker_under("r2", "r1");
         feed.worker("r2", "Count the tokens", WorkerChange::Started);
         let mut info = arko::remote::WorkerInfo::new();
-        info.parent = Some("r1".into());
         info.depth = 2;
         feed.worker_info("r2", info);
         feed.worker("r3", "Profile the renderer", WorkerChange::Started);
@@ -2313,7 +2325,7 @@ mod status {
             cost: 1.2,
             context_tokens: Some(142_318),
             context_window: Some(1_000_000),
-            workers_running: vec!["r1".into(), "r2".into()],
+            workers_running: vec![("r1".into(), None), ("r2".into(), None)],
             page: Some(page()),
             plans: vec![PlanStatus {
                 plan: "Claude plan".into(),
@@ -2329,6 +2341,9 @@ mod status {
                         resets_at: None,
                     },
                 ],
+                credits: None,
+                set_aside: 0,
+                extra_usage: None,
                 text: String::new(),
             }],
             last_request: Some(LastRequest {
@@ -2968,6 +2983,7 @@ fn session_info(mode: ThemeMode) -> Screenshot {
         HandoverFacts, IndexEmbeddings, IndexFacts, IndexKind, IndexWatch, McpFacts,
         McpServerFacts, ModelFacts, SessionFacts, SkillFacts, SkillsFacts, WorkersFacts,
     };
+    use arko::kept_notes::{Audience, Note};
     use arko_studio::backend::Mode;
     use arko_studio::session_info::{Facts, Preview, SessionInfo};
     use gpui_kit::AppContext as _;
@@ -3091,6 +3107,26 @@ fn session_info(mode: ThemeMode) -> Screenshot {
             index
         })
         .collect(),
+        notes: Ok([
+            (
+                "Tear the build box down when the last build is done.",
+                Audience::Lead,
+            ),
+            ("Run the tests with --locked.", Audience::AllWorkers),
+            (
+                "Leave src/engine.rs alone.",
+                Audience::Workers(vec!["r1".into(), "r2".into()]),
+            ),
+        ]
+        .into_iter()
+        .zip(1..)
+        .map(|((text, audience), id)| Note {
+            id,
+            text: text.into(),
+            audience,
+            created: chrono::DateTime::UNIX_EPOCH,
+        })
+        .collect()),
     };
     let window = app
         .open_window_with(size(px(560.), px(1700.)), 1., |options, cx| {

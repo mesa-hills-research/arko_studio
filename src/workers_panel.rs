@@ -700,6 +700,7 @@ impl WorkersPanel {
             elapsed: workers::run_time_ms(worker, now).map(workers::elapsed_label),
             last: workers::last_line(worker)
                 .unwrap_or_else(|| workers::state_label(worker.state).to_string()),
+            error: workers::failure(worker).map(str::to_string),
             context: self.context_label(&worker.id),
             calls: worker.tool_calls,
             level,
@@ -1092,6 +1093,8 @@ struct RowFacts {
     title: String,
     elapsed: Option<String>,
     last: String,
+    /// Why it failed, whole, shown when the pointer rests on its last line.
+    error: Option<String>,
     context: Option<String>,
     calls: u32,
     /// How many workers' workers it is: it stands in that far.
@@ -1209,10 +1212,16 @@ impl Render for WorkerRow {
                             .text_color(theme.muted_foreground)
                             .child(
                                 div()
+                                    .id("worker-last")
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .child(facts.last.clone()),
+                                    .child(facts.last.clone())
+                                    .when_some(facts.error.clone(), |this, error| {
+                                        this.tooltip(move |window, cx| {
+                                            Tooltip::new(error.clone()).build(window, cx)
+                                        })
+                                    }),
                             )
                             .children(facts.context.clone().map(figures))
                             .child(calls(facts.calls, window)),

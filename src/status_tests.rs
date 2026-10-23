@@ -121,7 +121,7 @@ fn busy() -> Reading {
         cost: 1.2,
         context_tokens: Some(142_318),
         context_window: Some(1_000_000),
-        workers_running: vec!["r1".into(), "r2".into()],
+        workers_running: vec![("r1".into(), None), ("r2".into(), None)],
         page: Some(Page {
             addr: "0.0.0.0:8765".parse().unwrap(),
             links: vec![link("http://192.168.1.20:8765/#key=k", "wlan0")],
@@ -134,6 +134,9 @@ fn busy() -> Reading {
                 used_percent: 84.,
                 resets_at: None,
             }],
+            credits: None,
+            set_aside: 0,
+            extra_usage: None,
             text: String::new(),
         }],
         ..Reading::default()
@@ -260,7 +263,7 @@ fn the_workers_count_toggles_the_workers_panel(cx: &mut TestAppContext) {
     let (window, workspace) = open(cx, 1300.);
     let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
     let reading = Reading {
-        workers_running: vec!["r1".into()],
+        workers_running: vec![("r1".into(), None)],
         ..Reading::default()
     };
     session.update(cx, |session, cx| {
@@ -461,6 +464,49 @@ fn the_contexts_popover_shows_the_split_and_hands_over(cx: &mut TestAppContext) 
         window.click("hand-over-now", cx)
     });
     assert_eq!(sent(&bar.session, cx), ["/handover"]);
+}
+
+/// A ChatGPT plan's credits and set aside logins and a Claude plan's extra
+/// usage show under the plan's windows in the context's popover, and a plan
+/// with none has no line.
+#[gpui_kit::test]
+fn the_contexts_popover_shows_what_a_plan_has_besides_its_windows(cx: &mut TestAppContext) {
+    let bar = bar(cx, 1300.);
+    let mut reading = busy();
+    reading.plans[0].extra_usage = Some(arko::remote::ExtraUsage {
+        enabled: Some(true),
+        in_use: true,
+        ..Default::default()
+    });
+    let plan = |name: &str| arko::remote::PlanStatus {
+        plan: name.into(),
+        windows: vec![arko::remote::PlanWindow {
+            label: "5 h".into(),
+            used_percent: 12.,
+            resets_at: None,
+        }],
+        credits: None,
+        set_aside: 0,
+        extra_usage: None,
+        text: String::new(),
+    };
+    reading.plans.push(arko::remote::PlanStatus {
+        credits: Some(arko::remote::PlanCredits {
+            has_credits: true,
+            unlimited: false,
+            balance: Some("12.50".into()),
+        }),
+        set_aside: 1,
+        ..plan("ChatGPT plan")
+    });
+    reading.plans.push(plan("Other plan"));
+    bar.show(cx, reading, Activity::default());
+    act(cx, bar.window, |window, cx| {
+        window.click("status-context", cx)
+    });
+    assert!(bar.find(cx, "plan-extras-0"));
+    assert!(bar.find(cx, "plan-extras-1"));
+    assert!(!bar.find(cx, "plan-extras-2"));
 }
 
 #[gpui_kit::test]

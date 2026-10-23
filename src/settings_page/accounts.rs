@@ -1,10 +1,10 @@
 //! Settings › Models & accounts: the models and effort new sessions start
 //! with, and what reaches the models: the API keys (where each comes
-//! from, adding, replacing and removing one), the ChatGPT login and Claude
-//! Code. Everything is read and changed through the app's backend, on a
-//! background thread.
+//! from, adding, replacing and removing one), the ChatGPT logins (in the
+//! order Arko uses them) and Claude Code. Everything is read and changed
+//! through the app's backend, on a background thread.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
@@ -17,12 +17,13 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::backend::account_words::{
-    CACHE_1H_VARIABLE, ClaudeCodeStatus, KeySource, KeyState, LoginSource, LoginState, Problem,
-    source_words, tilde,
+    CACHE_1H_VARIABLE, ChatGptLogin, ClaudeCodeStatus, KeySource, KeyState, LoginSource,
+    LoginState, Problem, outdated_text, source_words, tilde,
 };
 use crate::backend::{Accounts, ModelChoices, SharedBackend, last_model};
 use crate::prefs::{self, NewSessionMode};
 use crate::session_view::HomeFolder;
+use crate::workers::curly;
 
 /// The accounts the page has a row for, by the name the page points at
 /// them with: each provider's key as `/keys` names it, the ChatGPT login and
@@ -292,7 +293,7 @@ impl AccountsPage {
         });
     }
 
-    /// Asks for Codex's `auth.json` and uses it for the ChatGPT login.
+    /// Asks for Codex's `auth.json` and adds it to the ChatGPT logins.
     pub fn choose_login(this: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -309,7 +310,7 @@ impl AccountsPage {
                 if let Some(path) = paths.into_iter().next() {
                     cx.update(|window, cx| {
                         if let Some(this) = this.upgrade() {
-                            use_login(&this, path, window, cx);
+                            add_login(&this, path, window, cx);
                         }
                     })
                     .ok();
@@ -631,81 +632,57 @@ impl AccountsPage {
 
     fn logins_group(&self, this: &Entity<Self>) -> SettingGroup {
         let home = self.home.as_deref();
-        let login = match &self.accounts {
-            None => "Checking…".to_string(),
-            Some(accounts) => {
-                let login = &accounts.chatgpt;
-                let path = login
-                    .path
-                    .as_deref()
-                    .map(|path| tilde(path, home))
-                    .unwrap_or_else(|| "Codex’s auth.json".into());
-                let whose = match login.source {
-                    LoginSource::Default => "Codex’s own",
-                    LoginSource::Setting => "from ARKO_CODEX_AUTH",
-                    LoginSource::Entered | LoginSource::Flag => "chosen",
-                };
-                match &login.state {
-                    LoginState::Ready => format!(
-                        "Signed in with {path} ({whose}). OpenAI models run on your ChatGPT plan."
+        let logins: &[ChatGptLogin] = self
+            .accounts
+            .as_ref()
+            .map_or(&[], |accounts| accounts.chatgpt.as_slice());
+        let mut items: Vec<SettingItem> = if self.accounts.is_none() {
+            vec![
+                SettingItem::new("ChatGPT login", SettingField::render(|_, _, _| div()))
+                    .description("Checking…"),
+            ]
+        } else if logins.is_empty() {
+            vec![
+                SettingItem::new("ChatGPT login", SettingField::render(|_, _, _| div()))
+                    .description(
+                        "There is no ChatGPT login. Sign in with “codex login”, or add the auth.json Codex keeps it in.",
                     ),
-                    LoginState::Missing => format!(
-                        "No login at {path}. Sign in with “codex login”, or choose the auth.json Codex keeps it in."
-                    ),
-                    LoginState::Invalid(why) => format!("{path} ({whose}) can’t be used ({why})."),
-                }
-            }
+            ]
+        } else {
+            logins
+                .iter()
+                .enumerate()
+                .map(|(ix, login)| self.login_item(this, ix, logins.len(), login))
+                .collect()
         };
+        let choose = this.clone();
+        items.push(
+            SettingItem::new(
+                "Add a ChatGPT login",
+                SettingField::render(move |_, _, _| {
+                    let choose = choose.clone();
+                    Button::new("choose-login")
+                        .outline()
+                        .small()
+                        .label("Add…")
+                        .on_click(move |_, window, cx| {
+                            AccountsPage::choose_login(&choose, window, cx)
+                        })
+                }),
+            )
+            .description(
+                "Choose the auth.json Codex keeps another ChatGPT account in. Arko uses it when the logins before it reach their limit.",
+            )
+            .keywords(["openai", "codex", "auth.json", "plan", "chatgpt", "sign in"]),
+        );
         let claude = match &self.accounts {
             None => "Checking…".to_string(),
             Some(accounts) => claude_code_words(&accounts.claude_code, home),
         };
-        let (choose, check) = (this.clone(), this.clone());
-        let clear = this.clone();
-        let chosen = self
-            .accounts
-            .as_ref()
-            .is_some_and(|accounts| accounts.chatgpt.source != LoginSource::Default);
-        let (login_page, claude_page) = (this.clone(), this.clone());
+        let check = this.clone();
+        let claude_page = this.clone();
         let checking = self.checking || self.accounts.is_none();
-        SettingGroup::new().title("Logins").items([
-            SettingItem::new(
-                "ChatGPT login",
-                SettingField::render(move |_, _, cx| {
-                    let choose = choose.clone();
-                    let choosing = choose.clone();
-                    let clear = clear.clone();
-                    let button = h_flex()
-                        .gap_1()
-                        .when(chosen, |this| {
-                            this.child(
-                                Button::new("clear-login")
-                                    .ghost()
-                                    .small()
-                                    .label("Use Codex’s own login")
-                                    .on_click(move |_, window, cx| clear_login(&clear, window, cx)),
-                            )
-                        })
-                        .child(
-                            Button::new("choose-login")
-                                .outline()
-                                .small()
-                                .label("Choose file…")
-                                .on_click(move |_, window, cx| {
-                                    AccountsPage::choose_login(&choose, window, cx)
-                                }),
-                        )
-                        .into_any_element();
-                    login_page.read(cx).row_field(
-                        CHATGPT,
-                        button,
-                        move |window, cx| AccountsPage::choose_login(&choosing, window, cx),
-                        cx,
-                    )
-                }),
-            )
-            .description(login)
-            .keywords(["openai", "codex", "auth.json", "plan", "sign in"]),
+        items.push(
             SettingItem::new(
                 "Claude Code",
                 SettingField::render(move |_, _, cx| {
@@ -730,7 +707,116 @@ impl AccountsPage {
             )
             .description(claude)
             .keywords(["cc", "claude plan", "install", "sign in", "anthropic"]),
-        ])
+        );
+        let group = SettingGroup::new().title("Logins");
+        let group = if logins.len() > 1 {
+            group.description(
+                "Arko uses the ChatGPT logins in order. The next one takes over when the one before it reaches its limit.",
+            )
+        } else {
+            group
+        };
+        group.items(items)
+    }
+
+    /// The row of the ChatGPT login at `ix` of `count`, with Make first for
+    /// the ones after the first, and Remove for the ones chosen here or
+    /// in `ARKO_CODEX_AUTH` (Codex's own can't be removed).
+    fn login_item(
+        &self,
+        this: &Entity<Self>,
+        ix: usize,
+        count: usize,
+        login: &ChatGptLogin,
+    ) -> SettingItem {
+        let page = this.clone();
+        let path = login.path.clone();
+        let home = self.home.clone();
+        let removable = login.source != LoginSource::Default;
+        let title = if count == 1 {
+            "ChatGPT login".to_string()
+        } else {
+            format!("ChatGPT login {}", ix + 1)
+        };
+        SettingItem::new(
+            title,
+            SettingField::render(move |_, _, cx| {
+                let buttons = path.iter().fold(h_flex().gap_1(), |row, path| {
+                    let (first, remove) = (page.clone(), page.clone());
+                    let (first_path, remove_path) = (path.clone(), path.clone());
+                    // The buttons say which login, as the row shows its path.
+                    let shown = tilde(path, home.as_deref());
+                    row.when(ix > 0, |row| {
+                        row.child(
+                            Button::new(("first-login", ix))
+                                .ghost()
+                                .small()
+                                .label("Make first")
+                                .accessibility_label(format!("Make {shown} first"))
+                                .on_click(move |_, window, cx| {
+                                    first_login(&first, first_path.clone(), window, cx)
+                                }),
+                        )
+                    })
+                    .when(removable, |row| {
+                        row.child(
+                            Button::new(("remove-login", ix))
+                                .ghost()
+                                .small()
+                                .label("Remove")
+                                .accessibility_label(format!("Remove {shown}"))
+                                .on_click(move |_, window, cx| {
+                                    remove_login(&remove, remove_path.clone(), window, cx)
+                                }),
+                        )
+                    })
+                });
+                let adding = page.clone();
+                let primary = move |window: &mut Window, cx: &mut App| {
+                    AccountsPage::choose_login(&adding, window, cx)
+                };
+                // The first row is the one the page points at when a model
+                // needs the login.
+                if ix == 0 {
+                    page.read(cx)
+                        .row_field(CHATGPT, buttons.into_any_element(), primary, cx)
+                } else {
+                    buttons.into_any_element()
+                }
+            }),
+        )
+        .description(login_words(login, ix, count, self.home.as_deref()))
+        .keywords(["openai", "codex", "auth.json", "plan", "chatgpt", "sign in"])
+    }
+}
+
+/// What a ChatGPT login's row says: where it is, whose it is when it is the
+/// only one, and whether it works, then where it stands among the others.
+fn login_words(login: &ChatGptLogin, ix: usize, count: usize, home: Option<&Path>) -> String {
+    let path = login
+        .path
+        .as_deref()
+        .map(|path| tilde(path, home))
+        .unwrap_or_else(|| "Codex’s auth.json".into());
+    let whose = match login.source {
+        LoginSource::Default => "Codex’s own",
+        LoginSource::Setting => "from ARKO_CODEX_AUTH",
+        LoginSource::Entered | LoginSource::Flag => "chosen",
+    };
+    match (&login.state, count) {
+        (LoginState::Ready, 1) => {
+            format!("Signed in with {path} ({whose}). OpenAI models run on your ChatGPT plan.")
+        }
+        (LoginState::Ready, _) if ix == 0 => format!("Signed in with {path}. Arko uses it first."),
+        (LoginState::Ready, _) => format!("Signed in with {path}."),
+        (LoginState::Missing, 1) => format!(
+            "No login at {path}. Sign in with “codex login”, or add the auth.json Codex keeps it in."
+        ),
+        (LoginState::Missing, _) => {
+            format!("No login at {path}. Sign in with “codex login” again, or remove it.")
+        }
+        (LoginState::Invalid(why), 1) => format!("{path} ({whose}) can’t be used ({why})."),
+        (LoginState::Invalid(why), _) => format!("{path} can’t be used ({why})."),
     }
 }
 
@@ -832,6 +918,8 @@ pub fn claude_code_words(status: &ClaudeCodeStatus, home: Option<&std::path::Pat
         Err(Problem::Missing) => {
             format!("{found} doesn’t run. Install it again, then check again.")
         }
+        // Arko's sentence names the version, so the path adds nothing.
+        Err(Problem::Outdated { version }) => outdated_text(version),
     }
 }
 
@@ -867,39 +955,56 @@ fn remove_key(
         .detach();
 }
 
-/// Uses the Codex auth file at `path` for the ChatGPT login, saying how it
+/// Adds the Codex auth file at `path` to the ChatGPT logins, saying how it
 /// went.
-pub fn use_login(this: &Entity<AccountsPage>, path: PathBuf, window: &mut Window, cx: &mut App) {
-    let backend = cx.global::<SharedBackend>().clone();
-    let choosing = cx.background_spawn(async move { backend.set_chatgpt_login(&path) });
-    let this = this.clone();
-    window
-        .spawn(cx, async move |cx| {
-            let chosen = choosing.await;
-            cx.update(|window, cx| {
-                match chosen {
-                    Ok(said) => window.push_notification(said, cx),
-                    Err(why) => window.push_notification(Notification::error(why), cx),
-                }
-                this.update(cx, |page, cx| page.refresh(cx));
-            })
-            .ok();
-        })
-        .detach();
+pub fn add_login(this: &Entity<AccountsPage>, path: PathBuf, window: &mut Window, cx: &mut App) {
+    change_logins(
+        this,
+        move |backend| backend.add_chatgpt_login(&path),
+        window,
+        cx,
+    );
 }
 
-/// Goes back to the login Codex keeps, then reads the account row again.
-fn clear_login(this: &Entity<AccountsPage>, window: &mut Window, cx: &mut App) {
+/// Takes the login at `path` out of the ChatGPT logins, saying how it went.
+fn remove_login(this: &Entity<AccountsPage>, path: PathBuf, window: &mut Window, cx: &mut App) {
+    change_logins(
+        this,
+        move |backend| backend.remove_chatgpt_login(&path),
+        window,
+        cx,
+    );
+}
+
+/// Puts the login at `path` first among the ChatGPT logins, saying how it
+/// went.
+fn first_login(this: &Entity<AccountsPage>, path: PathBuf, window: &mut Window, cx: &mut App) {
+    change_logins(
+        this,
+        move |backend| backend.first_chatgpt_login(&path),
+        window,
+        cx,
+    );
+}
+
+/// Changes the ChatGPT logins with `change`, off the UI thread, says how it
+/// went, and reads the account rows again.
+fn change_logins(
+    this: &Entity<AccountsPage>,
+    change: impl FnOnce(&SharedBackend) -> Result<String, String> + Send + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let backend = cx.global::<SharedBackend>().clone();
-    let clearing = cx.background_spawn(async move { backend.clear_chatgpt_login() });
+    let changing = cx.background_spawn(async move { change(&backend) });
     let this = this.clone();
     window
         .spawn(cx, async move |cx| {
-            let cleared = clearing.await;
+            let changed = changing.await;
             cx.update(|window, cx| {
-                match cleared {
+                match changed {
                     Ok(said) => window.push_notification(said, cx),
-                    Err(why) => window.push_notification(Notification::error(why), cx),
+                    Err(why) => window.push_notification(Notification::error(curly(&why)), cx),
                 }
                 this.update(cx, |page, cx| page.refresh(cx));
             })
@@ -1062,8 +1167,10 @@ impl Render for KeyForm {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{claude_code_words, effort_options, replacing_words};
-    use crate::backend::account_words::{ClaudeCodeStatus, Problem, Ready};
+    use super::{claude_code_words, effort_options, login_words, replacing_words};
+    use crate::backend::account_words::{
+        ChatGptLogin, ClaudeCodeStatus, LoginSource, LoginState, Problem, Ready,
+    };
     use std::path::{Path, PathBuf};
 
     fn status(path: Option<&str>, ready: Result<Ready, Problem>) -> ClaudeCodeStatus {
@@ -1100,6 +1207,16 @@ mod tests {
         );
         let words = claude_code_words(&status(None, Err(Problem::Missing)), home);
         assert!(words.starts_with("Not installed."), "{words}");
+        // A Claude Code too old says so in Arko's words.
+        let outdated = Problem::Outdated {
+            version: "2.1.296".into(),
+        };
+        let words = claude_code_words(&status(Some(path), Err(outdated)), home);
+        assert!(
+            words.starts_with("Claude Code 2.1.296 has a security flaw")
+                && words.contains("claude update"),
+            "{words}"
+        );
         let api = Ready {
             path: path.into(),
             method: Some("apiKey".into()),
@@ -1107,6 +1224,52 @@ mod tests {
         };
         let words = claude_code_words(&status(Some(path), Ok(api)), home);
         assert!(words.contains("may be billed per token"), "{words}");
+    }
+
+    /// A ChatGPT login's row says whose it is when it is alone, and where it
+    /// stands when it is one of several.
+    #[test]
+    fn a_chatgpt_logins_row_says_where_it_stands() {
+        let home = Some(Path::new("/home/ada"));
+        let login = |path: &str, source, state| ChatGptLogin {
+            path: Some(PathBuf::from(path)),
+            source,
+            state,
+        };
+        let own = login(
+            "/home/ada/.codex/auth.json",
+            LoginSource::Default,
+            LoginState::Ready,
+        );
+        assert_eq!(
+            login_words(&own, 0, 1, home),
+            "Signed in with ~/.codex/auth.json (Codex’s own). OpenAI models run on your ChatGPT plan."
+        );
+        let second = login(
+            "/home/ada/.codex-2/auth.json",
+            LoginSource::Entered,
+            LoginState::Ready,
+        );
+        assert_eq!(
+            login_words(&own, 0, 2, home),
+            "Signed in with ~/.codex/auth.json. Arko uses it first."
+        );
+        assert_eq!(
+            login_words(&second, 1, 2, home),
+            "Signed in with ~/.codex-2/auth.json."
+        );
+        let lost = login(
+            "/home/ada/.codex-2/auth.json",
+            LoginSource::Entered,
+            LoginState::Missing,
+        );
+        assert_eq!(
+            login_words(&lost, 1, 2, home),
+            "No login at ~/.codex-2/auth.json. Sign in with “codex login” again, or remove it."
+        );
+        assert!(
+            login_words(&lost, 0, 1, home).ends_with("or add the auth.json Codex keeps it in.")
+        );
     }
 
     /// A key saved in Arko's folder replaces one saved there for good, and

@@ -1507,6 +1507,15 @@ impl TranscriptView {
 
     // ----- what the reader does -----
 
+    /// Rebuilds the rows after the reader opened or closed something, or
+    /// their find did. The rows that go in are what they asked to see, so
+    /// they don't count as new.
+    fn refresh_rows_after_opening(&mut self, cx: &mut Context<Self>) {
+        let away = self.new_while_away;
+        self.refresh_rows(cx);
+        self.new_while_away = away;
+    }
+
     /// Opens or closes an entry's disclosure: a call's details, a thinking's
     /// text, a group of calls.
     fn toggle(&mut self, id: u64, open_by_default: bool, cx: &mut Context<Self>) {
@@ -1535,7 +1544,7 @@ impl TranscriptView {
         if let Some(ix) = row {
             self.list.remeasure_row(ix);
         }
-        self.refresh_rows(cx);
+        self.refresh_rows_after_opening(cx);
         cx.notify();
     }
 
@@ -1568,7 +1577,7 @@ impl TranscriptView {
             self.list.hold_place(ix);
         }
         self.ui.entry(first).or_default().group_open = Some(!open);
-        self.refresh_rows(cx);
+        self.refresh_rows_after_opening(cx);
         cx.notify();
     }
 
