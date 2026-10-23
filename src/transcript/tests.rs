@@ -786,6 +786,120 @@ fn a_replys_actions_stay_while_the_pointer_moves_onto_them_and_work(cx: &mut Tes
     assert_eq!(hovered(cx), None);
 }
 
+/// Rows that scroll far away from under the pointer never say that the
+/// pointer left them. The actions still show for the entry the pointer is
+/// on, stay while it rests on each of them until its tooltip shows, work,
+/// and go once the pointer leaves.
+#[gpui_kit::test]
+fn actions_follow_the_pointer_after_rows_scroll_away_from_under_it(cx: &mut TestAppContext) {
+    start(cx);
+    // A long conversation whose messages can be edited and sent again.
+    let mut items = Vec::new();
+    for turn in 0..30 {
+        let id = turn * 3;
+        let mut message = arko::remote::Item::new(Kind::User, format!("Question {turn}"));
+        message.message_index = Some(turn as usize * 2);
+        message.source = Some(Source::App);
+        message.delivery = Some(Delivery::Turn);
+        let reply = arko::remote::Item::new(Kind::Reply, format!("Answer {turn}."));
+        let footer = arko::remote::Item::new(Kind::Turn, "3 s");
+        for (offset, mut item) in [message, reply, footer].into_iter().enumerate() {
+            item.id = id + offset as u64 + 1;
+            item.turn = Some(turn + 1);
+            items.push(item);
+        }
+    }
+    let feed = Feed::new("main");
+    feed.restore(items);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    load_all(cx, window, &view);
+    let replies = ids_of(&feed, Kind::Reply);
+    let (reply, message) = (replies[29], ids_of(&feed, Kind::User)[29]);
+    let (events, _subscription) = events_of(&view, cx);
+    let hovered = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).hovered);
+    let hover = |cx: &mut TestAppContext, target: ElementId| {
+        cx.update_window(window, |_, window, cx| window.hover(target, cx))
+            .unwrap();
+        cx.run_until_parked();
+    };
+    // The pointer rests on a reply's text while the reader jumps to the end.
+    for turn in [3, 8, 13] {
+        scroll_to_key(cx, window, &view, user_row(&feed, turn));
+        let text = keys(&view, cx)
+            .into_iter()
+            .find(block(replies[turn], 0))
+            .unwrap();
+        hover(cx, super::row::element_id(text));
+        assert_eq!(hovered(cx), Some(replies[turn]));
+        view.update(cx, |view, cx| view.scroll_to_end(cx));
+        settle(cx, window);
+    }
+    // Rests the pointer on `target`, an action of `entry`, until its
+    // tooltip shows.
+    let rest_on = |cx: &mut TestAppContext, target: (&'static str, u64), entry: u64| {
+        hover(cx, target.into());
+        for _ in 0..6 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+            cx.run_until_parked();
+            cx.update_window(window, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+        }
+        let tooltip = gpui_kit::VisualTestContext::from_window(window, cx).debug_bounds("tooltip");
+        assert!(tooltip.is_some(), "{target:?} shows its tooltip");
+        assert_eq!(hovered(cx), Some(entry), "{target:?}");
+        let actions = if entry == reply {
+            ("reply-actions", reply)
+        } else {
+            ("user-actions", message)
+        };
+        let shown = cx
+            .update_window(window, |_, window, _| window.find(actions).visible())
+            .unwrap();
+        assert!(shown, "the actions show with {target:?}'s tooltip");
+    };
+    let click = |cx: &mut TestAppContext, target: (&'static str, u64)| {
+        cx.update_window(window, |_, window, cx| window.click(target, cx))
+            .unwrap();
+        cx.run_until_parked();
+    };
+
+    // From the latest reply's text onto Copy, the menu and Regenerate.
+    let text = keys(&view, cx).into_iter().find(block(reply, 0)).unwrap();
+    hover(cx, super::row::element_id(text));
+    assert_eq!(hovered(cx), Some(reply));
+    rest_on(cx, ("copy-reply", reply), reply);
+    click(cx, ("copy-reply", reply));
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("Answer 29.".to_string())
+    );
+    rest_on(cx, ("reply-menu", reply), reply);
+    rest_on(cx, ("regenerate", reply), reply);
+    click(cx, ("regenerate", reply));
+    assert!(matches!(
+        events.borrow().last(),
+        Some(TranscriptEvent::Regenerate)
+    ));
+    // From the message onto Edit, Branch and Copy.
+    hover(cx, super::row::element_id(RowKey::User(message)));
+    assert_eq!(hovered(cx), Some(message));
+    rest_on(cx, ("edit-message", message), message);
+    rest_on(cx, ("branch-message", message), message);
+    rest_on(cx, ("copy-user", message), message);
+    click(cx, ("branch-message", message));
+    assert!(matches!(
+        events.borrow().last(),
+        Some(TranscriptEvent::Branch(id)) if *id == message
+    ));
+    // Onto the turn's footer, which has no actions: they go.
+    hover(cx, super::row::element_id(RowKey::Turn(reply + 1)));
+    cx.executor()
+        .advance_clock(super::HOVER_GRACE + std::time::Duration::from_millis(10));
+    cx.run_until_parked();
+    assert_eq!(hovered(cx), None);
+}
+
 /// Copy puts the reply on the clipboard as the agent wrote it, Markdown,
 /// code fences and all, also while the reply shows formatted or as source.
 #[gpui_kit::test]

@@ -397,8 +397,10 @@ pub struct TranscriptView {
     movable: HashSet<u64>,
     /// The entry whose hover actions show.
     hovered: Option<u64>,
-    /// The rows under the pointer, of entries with hover actions.
-    hovered_rows: HashSet<RowKey>,
+    /// The row under the pointer, of an entry with hover actions: the last
+    /// one the pointer came over, as a row scrolled away from under the
+    /// pointer never says that the pointer left it.
+    hovered_row: Option<RowKey>,
     /// Hides the hover actions a moment after the pointer left their entry.
     hover_grace: Option<Task<()>>,
     /// Entries that came while the reader was scrolled up.
@@ -534,7 +536,7 @@ impl TranscriptView {
             show_source: show_source(cx),
             movable: HashSet::new(),
             hovered: None,
-            hovered_rows: HashSet::new(),
+            hovered_row: None,
             hover_grace: None,
             new_while_away: 0,
             core_rows: 0,
@@ -813,7 +815,7 @@ impl TranscriptView {
             let model = &self.model;
             self.chosen.retain(|id, _| model.entry(*id).is_some());
             self.hovered = None;
-            self.hovered_rows.clear();
+            self.hovered_row = None;
             self.cursor = None;
             let ids: Vec<u64> = self.model.entries().iter().map(|e| e.item.id).collect();
             let start = ids.len().saturating_sub(FIRST_ENTRIES);
@@ -1353,10 +1355,10 @@ impl TranscriptView {
         self.rows = rows;
         // A row gone from under the pointer never says that the pointer
         // left it.
-        if !self.hovered_rows.is_empty() {
-            let rows = &self.rows;
-            self.hovered_rows
-                .retain(|key| rows.iter().any(|row| row.key == *key));
+        if let Some(key) = self.hovered_row
+            && !self.rows.iter().any(|row| row.key == key)
+        {
+            self.hovered_row = None;
         }
         if let Some((key, offset)) = anchor
             && let Some((ix, offset)) = self.place_of(key, offset)
@@ -1662,16 +1664,14 @@ impl TranscriptView {
     /// them never hides them.
     fn row_hovered(&mut self, key: RowKey, hovered: bool, cx: &mut Context<Self>) {
         if hovered {
-            self.hovered_rows.insert(key);
+            self.hovered_row = Some(key);
+        } else if self.hovered_row == Some(key) {
+            self.hovered_row = None;
         } else {
-            self.hovered_rows.remove(&key);
+            // The pointer is already over the next row.
+            return;
         }
-        let entry = if hovered {
-            Some(key.entry())
-        } else {
-            self.hovered_rows.iter().next().map(|row| row.entry())
-        };
-        match entry {
+        match self.hovered_row.map(RowKey::entry) {
             Some(entry) => {
                 self.hover_grace = None;
                 if self.hovered != Some(entry) {
@@ -1683,7 +1683,7 @@ impl TranscriptView {
                 self.hover_grace = Some(cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(HOVER_GRACE).await;
                     this.update(cx, |this, cx| {
-                        if this.hovered_rows.is_empty() && this.hovered.take().is_some() {
+                        if this.hovered_row.is_none() && this.hovered.take().is_some() {
                             cx.notify();
                         }
                     })

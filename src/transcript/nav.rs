@@ -261,7 +261,7 @@ impl TranscriptView {
     /// the list of workers).
     fn leave(&mut self, _: &Leave, _: &mut Window, cx: &mut Context<Self>) {
         // The actions the keyboard showed go, unless the pointer is there.
-        if self.hovered_rows.is_empty() && self.hovered.take().is_some() {
+        if self.hovered_row.is_none() && self.hovered.take().is_some() {
             cx.notify();
         }
         if matches!(self.model.filter(), AgentFilter::Worker(_)) {
