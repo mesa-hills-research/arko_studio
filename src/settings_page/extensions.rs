@@ -10,7 +10,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{IconName, Sizable as _, WindowExt as _};
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, WindowExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -189,17 +189,12 @@ impl ExtensionsPage {
                 |prefs| prefs.extensions.builtin_skills_on(),
                 |prefs, on| prefs.extensions.builtin_skills = Some(on),
             )];
-            items.extend(extensions.builtin.iter().map(|skill| {
-                let name = skill.name.clone();
-                let on = name.clone();
-                builtin_switch(
-                    SharedString::from(format!("builtin-skill-{name}")),
-                    name.clone(),
-                    builtin_words(skill, home),
-                    move |prefs| prefs.extensions.builtin_skill_on(&on),
-                    move |prefs, on| prefs.extensions.set_builtin_skill(&name, on),
-                )
-            }));
+            items.extend(
+                extensions
+                    .builtin
+                    .iter()
+                    .map(|skill| builtin_row(skill, home)),
+            );
             groups.push(
                 SettingGroup::new()
                     .key(super::group_key("Built in", &revision))
@@ -325,19 +320,82 @@ fn skills_item(folder: &SkillFolder, home: Option<&Path>) -> SettingItem {
     .keywords(keywords)
 }
 
-/// What a built-in skill says under its name, Arko's description of it and
-/// the skills of its name that replace it.
-fn builtin_words(skill: &BuiltinSkill, home: Option<&Path>) -> String {
-    let mut words = skill.description.clone();
-    if !skill.replaced_by.is_empty() {
-        let skills: Vec<String> = skill
-            .replaced_by
-            .iter()
-            .map(|path| tilde(path, home))
-            .collect();
-        words.push_str(&format!(" Replaced by {}.", skills.join(" and ")));
-    }
-    words
+/// "Replaced by" and the skills of a built-in skill's name that replace it,
+/// if any do.
+fn replaced_words(skill: &BuiltinSkill, home: Option<&Path>) -> Option<String> {
+    let skills: Vec<String> = skill
+        .replaced_by
+        .iter()
+        .map(|path| tilde(path, home))
+        .collect();
+    (!skills.is_empty()).then(|| format!("Replaced by {}", skills.join(" and ")))
+}
+
+/// A built-in skill's row, one line as Arko's /skills lists it: its name,
+/// its description cut to fit, in muted text what replaces it if a folder's
+/// skill does, and its switch.
+fn builtin_row(skill: &BuiltinSkill, home: Option<&Path>) -> SettingItem {
+    let name = SharedString::from(skill.name.clone());
+    let description = SharedString::from(
+        skill
+            .description
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+    let replaced = replaced_words(skill, home);
+    let id = SharedString::from(format!("builtin-skill-{name}"));
+    let keywords: Vec<SharedString> = vec![
+        "skills".into(),
+        "built in".into(),
+        "SKILL.md".into(),
+        name.clone(),
+        description.clone(),
+    ];
+    SettingItem::render(move |_, _, cx| {
+        let muted = cx.theme().muted_foreground;
+        let (on, set) = (name.clone(), name.clone());
+        h_flex()
+            .w_full()
+            .gap_3()
+            .child(div().flex_none().text_sm().child(name.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .text_color(muted)
+                    .truncate()
+                    .child(description.clone()),
+            )
+            .when_some(replaced.clone(), |this, replaced| {
+                // A long folder loses its leading folders first.
+                this.child(
+                    div()
+                        .flex_none()
+                        .min_w_0()
+                        .max_w(relative(0.4))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis_start()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(replaced),
+                )
+            })
+            .child(
+                Switch::new(id.clone())
+                    .checked(prefs::get(cx).extensions.builtin_skill_on(&on))
+                    .on_click(move |checked, _, cx| {
+                        let (name, on) = (set.clone(), *checked);
+                        prefs::update(cx, move |prefs| {
+                            prefs.extensions.set_builtin_skill(&name, on)
+                        })
+                    }),
+            )
+            .into_any_element()
+    })
+    .keywords(keywords)
 }
 
 /// A row with a switch bound to a preference, with `id` for tests.
@@ -371,7 +429,7 @@ fn builtin_switch(
 mod tests {
     use std::path::Path;
 
-    use super::{BuiltinSkill, builtin_words};
+    use super::{BuiltinSkill, replaced_words};
 
     #[test]
     fn a_built_in_skill_says_which_skills_replace_it() {
@@ -382,18 +440,18 @@ mod tests {
             auto_load: false,
             replaced_by: Vec::new(),
         };
-        assert_eq!(builtin_words(&skill, Some(home)), "Rules for docs.");
+        assert_eq!(replaced_words(&skill, Some(home)), None);
         skill.replaced_by = vec![home.join(".claude/skills/repo-docs-style")];
         assert_eq!(
-            builtin_words(&skill, Some(home)),
-            "Rules for docs. Replaced by ~/.claude/skills/repo-docs-style."
+            replaced_words(&skill, Some(home)).as_deref(),
+            Some("Replaced by ~/.claude/skills/repo-docs-style")
         );
         skill
             .replaced_by
             .push(home.join("src/arko/.skills/docs.md"));
         assert_eq!(
-            builtin_words(&skill, Some(home)),
-            "Rules for docs. Replaced by ~/.claude/skills/repo-docs-style and ~/src/arko/.skills/docs.md."
+            replaced_words(&skill, Some(home)).as_deref(),
+            Some("Replaced by ~/.claude/skills/repo-docs-style and ~/src/arko/.skills/docs.md")
         );
     }
 }
