@@ -334,9 +334,9 @@ impl ListDelegate for CatalogList {
         });
     }
 
-    fn cancel(&mut self, window: &mut Window, cx: &mut Context<ListState<Self>>) {
-        window.defer(cx, |window, cx| window.close_dialog(cx));
-    }
+    /// Esc goes on to the browser's dialog, which closes it: closing it
+    /// here too would close the dialog under it (a profile's editor).
+    fn cancel(&mut self, _: &mut Window, _: &mut Context<ListState<Self>>) {}
 }
 
 #[cfg(test)]

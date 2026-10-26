@@ -605,3 +605,40 @@ fn the_editor_picks_a_model_from_openrouters_catalog(cx: &mut TestAppContext) {
         );
     });
 }
+
+/// Esc in the editor's model list, or in OpenRouter's catalog opened from
+/// it, backs out of that alone: the editor stays open with what was typed.
+#[gpui_kit::test]
+fn esc_in_the_model_list_or_the_catalog_keeps_the_editor(cx: &mut TestAppContext) {
+    let backend = FakeBackend::sample("/arko", SystemTime::now())
+        .with_profiles(Profiles::default())
+        .with_models(super::interaction::openrouter_models());
+    start_on(cx, backend, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, PROFILES_PAGE, 1400.);
+    let page = page(cx, &settings);
+    act(cx, window, |window, cx| window.click("add-profile", cx));
+    let form = editor(cx, &page);
+    fill(cx, window, &form, "quick-reader", "Reads files");
+    let in_editor = |cx: &mut TestAppContext| {
+        let mut open = false;
+        act(cx, window, |window, cx| {
+            open = window.has_active_dialog(cx) && window.try_find("profile-save").is_some()
+        });
+        open
+    };
+    act(cx, window, |window, cx| {
+        window.click("profile-model-button", cx)
+    });
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert!(in_editor(cx), "the model list's Esc kept the editor");
+    pick_model(cx, window, "profile-model-button", "deepseek");
+    act(cx, window, |window, _| {
+        assert!(window.try_find("openrouter-browser").is_some());
+    });
+    act(cx, window, |window, cx| window.press("escape", cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("openrouter-browser").is_none());
+    });
+    assert!(in_editor(cx), "the catalog's Esc kept the editor");
+    assert_eq!(cx.read(|cx| form.read(cx).draft(cx).name), "quick-reader");
+}
