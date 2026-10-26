@@ -213,6 +213,7 @@ impl Startup {
 
 /// Sets the app up, before its first window.
 pub fn init(startup: Startup, cx: &mut App) {
+    use gpui_kit::AppContext as _;
     gpui_kit::init(cx);
     // Every text field's right-click menu is the one the kit draws in the
     // theme, the same on every platform, as the app's other menus are.
@@ -230,6 +231,14 @@ pub fn init(startup: Startup, cx: &mut App) {
     cx.set_global(session_view::HomeFolder(startup.home));
     cx.set_global(paths::LogsFolder(startup.logs));
     live::init(cx);
+    // A name a model is still being asked for goes on after its session
+    // closes, but not past the app: quitting ends it, and the Claude Code it
+    // runs.
+    cx.on_app_quit(|cx| {
+        let root = cx.global::<SharedBackend>().data_root().to_path_buf();
+        cx.background_spawn(async move { arko::session_names::stop_in(&root) })
+    })
+    .detach();
     writing::init(startup.arko.as_deref(), cx);
     history::init(startup.arko.clone(), cx);
     drafts::init(

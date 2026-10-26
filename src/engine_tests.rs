@@ -294,6 +294,71 @@ fn a_name_given_to_a_session_in_the_background_reaches_the_sidebar_and_the_palet
     app.close_all(cx);
 }
 
+/// A name a model is still being asked for goes on after its session
+/// closes, and it is kept for the next time the session is listed. Quitting
+/// the app ends it, and what the model answers after the app quit isn't
+/// kept.
+fn name_asked_after_the_session_closed(cx: &mut TestAppContext, quits: bool) {
+    use arko::session_names::Way;
+    use arko::testing::{NamingFake, NamingStep, name_sessions_with};
+    let mock = Mock::start(|_, _| answer("Done.", Duration::ZERO));
+    let app = start(cx, &mock);
+    arko::session_names::save(&app.root, &[Way::ClaudePlan]).unwrap();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let fake = NamingFake::new(&[(
+        Way::ClaudePlan,
+        NamingStep::Gated(gate.clone(), "Pear count"),
+    )]);
+    name_sessions_with(&app.root, fake.clone());
+    app.send(cx, "Count the pears.");
+    app.wait_for_text(cx, "Done.");
+    wait_until(cx, "the model to be asked", |_| {
+        fake.ways_asked().len() == 1
+    });
+    // The session closes. The name is still being asked for.
+    app.close_all(cx);
+    if quits {
+        cx.quit();
+    }
+    gate.notify_one();
+    let title = || arko::sessions::list(&app.root).remove(0).title;
+    if quits {
+        std::thread::sleep(Duration::from_millis(500));
+        cx.run_until_parked();
+        assert!(
+            fake.given().is_empty(),
+            "the answer was not taken after quitting"
+        );
+        assert_eq!(title(), "Count the pears.");
+    } else {
+        until_real(cx, "the name to come", || title() == "Pear count");
+    }
+}
+
+/// Waits up to 10 s of real time for `done`, which the engine's threads
+/// bring about (the test clock may run faster than they do).
+fn until_real(cx: &mut TestAppContext, what: &str, mut done: impl FnMut() -> bool) {
+    let started = std::time::Instant::now();
+    while !done() {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        cx.run_until_parked();
+    }
+}
+
+#[gpui_kit::test]
+fn a_name_still_being_asked_arrives_after_the_session_closed(cx: &mut TestAppContext) {
+    name_asked_after_the_session_closed(cx, false);
+}
+
+#[gpui_kit::test]
+fn quitting_the_app_ends_a_name_that_is_being_asked(cx: &mut TestAppContext) {
+    name_asked_after_the_session_closed(cx, true);
+}
+
 #[gpui_kit::test]
 fn escape_stops_a_turn_and_send_comes_back(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, _| answer("Too late.", Duration::from_secs(20)));
