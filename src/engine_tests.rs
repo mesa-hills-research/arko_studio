@@ -429,9 +429,9 @@ impl App {
 }
 
 /// Questions that come while the message box is empty open the answer
-/// panel by itself. Its choices, "You decide", "Other" and "Anything else"
-/// reach the agent as one note, and the card in the transcript says what
-/// became of each question.
+/// panel by itself. Its choices, "You decide" and "Other" reach the agent
+/// as one note, and the card in the transcript says what became of each
+/// question.
 #[gpui_kit::test]
 fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
     let mock = asking(
@@ -464,17 +464,12 @@ fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
         panel.update(cx, |panel, cx| panel.focus_field(2, window, cx));
         window.input("main", cx);
     });
-    act(cx, app.window, |window, cx| {
-        panel.update(cx, |panel, cx| panel.focus_field(3, window, cx));
-        window.input("Keep the old API one more release.", cx);
-    });
     act(cx, app.window, |window, cx| window.click("answer-send", cx));
     app.wait_for_text(cx, "Thanks.");
     assert!(mock.was_sent("The user answered q1, q2 and q3."));
     assert!(mock.was_sent("q1 Tabs or spaces? Spaces"));
     assert!(mock.was_sent("q2 Push now? You decide (you said you'd assume: not yet)"));
     assert!(mock.was_sent("q3 Which branch? main"));
-    assert!(mock.was_sent("Anything else: Keep the old API one more release."));
     assert!(!app.shows(cx, "answer-panel"));
     assert!(!app.shows(cx, "questions-chip"));
     let session = app.shown(cx).unwrap();

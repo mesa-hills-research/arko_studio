@@ -1033,7 +1033,7 @@ impl SessionView {
         let panel = match self.panel() {
             Some(panel) => panel.clone(),
             None => {
-                let panel = cx.new(|cx| AnswerPanel::new(window, cx));
+                let panel = cx.new(|_| AnswerPanel::default());
                 self.panels.push(KeptPanel {
                     session: session.downgrade(),
                     view: panel.clone(),
@@ -1150,7 +1150,7 @@ impl SessionView {
                 });
                 match sent {
                     Ok(()) => {
-                        panel.update(cx, |panel, cx| panel.sent(&ids, window, cx));
+                        panel.update(cx, |panel, cx| panel.sent(&ids, cx));
                         self.close_panel(window, cx);
                     }
                     Err(why) => window.push_notification(why, cx),
@@ -1167,7 +1167,7 @@ impl SessionView {
                     session.send(arko::Input::AnswerQuestions(answers), cx)
                 });
                 match sent {
-                    Ok(()) => panel.update(cx, |panel, cx| panel.sent(&ids, window, cx)),
+                    Ok(()) => panel.update(cx, |panel, cx| panel.sent(&ids, cx)),
                     Err(why) => window.push_notification(why, cx),
                 }
                 self.sync_questions(window, cx);

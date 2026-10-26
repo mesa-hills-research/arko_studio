@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use arko::questions::{AgentQuestion, Answer, Answers, QuestionAnswer, QuestionState};
 use gpui_kit::base::SelectableText;
-use gpui_kit::component::input::{self, Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{self, Input, InputEvent, InputState};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
@@ -23,8 +23,6 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-
-use crate::prefs;
 
 /// The key context of the answer panel.
 pub const PANEL_CONTEXT: &str = "AnswerPanel";
@@ -152,49 +150,18 @@ pub enum AnswerPanelEvent {
 impl EventEmitter<AnswerPanelEvent> for AnswerPanel {}
 
 /// The answer panel: each open question with its choices as chips, an
-/// "Other" field and "You decide", one "Anything else" box, and Send. An
-/// approval of a worker profile shows the profile, Save and Don't save, an
-/// Other field for changes, and its instructions.
+/// "Other" field and "You decide", and Send. An approval of a worker
+/// profile shows the profile, Save and Don't save, an Other field for
+/// changes, and its instructions.
+#[derive(Default)]
 pub struct AnswerPanel {
     questions: Vec<AgentQuestion>,
     drafts: HashMap<String, Draft>,
-    anything_else: Entity<TextareaState>,
-    _anything_else: Subscription,
     /// The questions' list, which scrolls to a card's questions.
     scroll: ScrollHandle,
 }
 
 impl AnswerPanel {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let send_key = prefs::get(cx).input.send_key;
-        let anything_else = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .auto_grow(1, 4)
-                .placeholder("Anything else")
-                .submit_keys(crate::composer::submit_keys(send_key))
-        });
-        let subscription = cx.subscribe_in(
-            &anything_else,
-            window,
-            |this, field: &Entity<TextareaState>, event: &InputEvent, _, cx| match event {
-                InputEvent::PressEnter { secondary, shift }
-                    if field.read(cx).is_submit_chord(*secondary, *shift) =>
-                {
-                    this.send(cx)
-                }
-                InputEvent::Change => cx.notify(),
-                _ => {}
-            },
-        );
-        Self {
-            questions: Vec::new(),
-            drafts: HashMap::new(),
-            anything_else,
-            _anything_else: subscription,
-            scroll: ScrollHandle::new(),
-        }
-    }
-
     /// Shows `questions`, keeping what was filled in for those it showed.
     pub fn set_questions(
         &mut self,
@@ -247,16 +214,14 @@ impl AnswerPanel {
         &self.questions
     }
 
-    /// What is filled in: an answer for each question that has one, and
-    /// "Anything else".
+    /// What is filled in.
     pub fn answers(&self, cx: &App) -> Answers {
         self.answers_choosing(None, cx)
     }
 
     /// What is filled in, with `chosen` (a question's id and a choice) as
     /// that question's whole answer. Every question the panel shows is
-    /// named, those left unanswered with an empty answer, so arko knows
-    /// which conversation "Anything else" belongs to.
+    /// named, those left unanswered with an empty answer.
     pub fn answers_choosing(&self, chosen: Option<(&str, &str)>, cx: &App) -> Answers {
         let answers = self
             .questions
@@ -288,11 +253,7 @@ impl AnswerPanel {
                 QuestionAnswer::new(question.id.clone(), answer)
             })
             .collect();
-        let anything_else = self.anything_else.read(cx).value().trim().to_string();
-        Answers {
-            answers,
-            anything_else: (!anything_else.is_empty()).then_some(anything_else),
-        }
+        Answers { answers }
     }
 
     /// Asks the session view to send what is filled in, if anything is.
@@ -302,12 +263,9 @@ impl AnswerPanel {
         }
     }
 
-    /// What was sent is cleared: the drafts of the questions answered, and
-    /// "Anything else".
-    pub fn sent(&mut self, answered: &[String], window: &mut Window, cx: &mut Context<Self>) {
+    /// What was sent is cleared: the drafts of the questions answered.
+    pub fn sent(&mut self, answered: &[String], cx: &mut Context<Self>) {
         self.drafts.retain(|id, _| !answered.contains(id));
-        self.anything_else
-            .update(cx, |field, cx| field.set_value("", window, cx));
         cx.notify();
     }
 
@@ -319,9 +277,6 @@ impl AnswerPanel {
             .and_then(|question| self.drafts.get(&question.id))
         {
             draft.other.update(cx, |field, cx| field.focus(window, cx));
-        } else {
-            self.anything_else
-                .update(cx, |field, cx| field.focus(window, cx));
         }
     }
 
@@ -341,36 +296,16 @@ impl AnswerPanel {
         }
     }
 
-    /// Gives the keyboard to question `index`'s field, or to "Anything
-    /// else" past the last question (tests).
+    /// Gives the keyboard to question `index`'s field (tests).
     #[cfg(test)]
     pub fn focus_field(&self, index: usize, window: &mut Window, cx: &mut App) {
-        match self
-            .questions
-            .get(index)
-            .and_then(|question| self.drafts.get(&question.id))
-        {
-            Some(draft) => draft.other.update(cx, |field, cx| field.focus(window, cx)),
-            None => self
-                .anything_else
-                .update(cx, |field, cx| field.focus(window, cx)),
-        }
+        let draft = self.drafts.get(&self.questions[index].id).unwrap();
+        draft.other.update(cx, |field, cx| field.focus(window, cx));
     }
 
     /// Whether the keyboard is in the panel.
     pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
-        use gpui_kit::Focusable as _;
-        self.drafts.values().any(|draft| {
-            draft
-                .other
-                .read(cx)
-                .focus_handle(cx)
-                .contains_focused(window, cx)
-        }) || self
-            .anything_else
-            .read(cx)
-            .focus_handle(cx)
-            .contains_focused(window, cx)
+        self.focused_question(window, cx).is_some()
     }
 
     /// The question whose field has the keyboard, by its id.
@@ -498,6 +433,9 @@ impl AnswerPanel {
                 .get(index - 1)
                 .is_some_and(|before| before.item != question.item || question.item == 0);
         let words = text(question);
+        // A question that takes several of its choices says so after its
+        // words. An approval never does.
+        let choose_any = question.multiple && !question.choices.is_empty() && approval.is_none();
         // The profile an approval would save, under what it asks.
         let profile = approval.map(|approval| {
             v_flex()
@@ -546,7 +484,15 @@ impl AnswerPanel {
                 .id(part("answer-question", &id, 0))
                 .test_support()
                 .role(Role::Group)
-                .aria_label(first_line(&question.numbered()).to_string())
+                .aria_label(if choose_any {
+                    format!(
+                        "{}, {}",
+                        first_line(&question.numbered()),
+                        arko::questions::CHOOSE_ANY.to_lowercase()
+                    )
+                } else {
+                    first_line(&question.numbered()).to_string()
+                })
                 .gap_1p5()
                 .when(new_batch, |this| {
                     this.pt_4().border_t_1().border_color(theme.border)
@@ -570,21 +516,28 @@ impl AnswerPanel {
                             v_flex()
                                 .flex_1()
                                 .min_w_0()
-                                .child(SelectableText::new(
-                                    part("answer-text", &id, 0),
-                                    words.clone(),
-                                ))
+                                // "Choose any" follows the question's words.
+                                .child(
+                                    h_flex()
+                                        .flex_wrap()
+                                        .items_baseline()
+                                        .gap_x_1p5()
+                                        .child(SelectableText::new(
+                                            part("answer-text", &id, 0),
+                                            words.clone(),
+                                        ))
+                                        .when(choose_any, |this| {
+                                            this.child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_xs()
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(arko::questions::CHOOSE_ANY),
+                                            )
+                                        }),
+                                )
                                 .children(profile),
-                        )
-                        .when(question.multiple, |this| {
-                            this.child(
-                                div()
-                                    .flex_none()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .child("Choose any"),
-                            )
-                        }),
+                        ),
                 )
                 .child(
                     h_flex()
@@ -673,12 +626,7 @@ impl Render for AnswerPanel {
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .gap_4()
-                    .children(questions)
-                    .child(
-                        Textarea::new(&self.anything_else)
-                            .small()
-                            .aria_label("Anything else"),
-                    ),
+                    .children(questions),
             )
             .child(
                 h_flex()

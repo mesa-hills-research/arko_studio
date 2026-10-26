@@ -204,7 +204,7 @@ fn questions_open_the_panel_while_the_user_isnt_typing(cx: &mut TestAppContext) 
         labels,
         [
             Some("1. Tabs or spaces?".into()),
-            Some("2. Which tests should I run?".into()),
+            Some("2. Which tests should I run?, choose any".into()),
             Some("3. Which branch?".into())
         ]
     );
@@ -249,9 +249,8 @@ fn questions_that_come_while_typing_wait_in_a_chip(cx: &mut TestAppContext) {
     assert!(!app.shows(cx, "questions-chip"));
 }
 
-/// Choices (one, or several where the question allows), "You decide",
-/// "Other" and "Anything else" are sent as one answer, the choices in the
-/// question's order.
+/// Choices (one, or several where the question allows), "You decide" and
+/// "Other" are sent as one answer, the choices in the question's order.
 #[gpui_kit::test]
 fn the_panel_sends_what_is_filled_in(cx: &mut TestAppContext) {
     let app = start(cx);
@@ -265,7 +264,6 @@ fn the_panel_sends_what_is_filled_in(cx: &mut TestAppContext) {
     // q3: You decide, and q1 also says why.
     app.click(cx, part("answer-you-decide", "q3", 0));
     app.fill(cx, 0, "Two of them");
-    app.fill(cx, 3, "Keep the old API one more release.");
     app.click(cx, "answer-send");
     let answer = |choices: &[&str], text: Option<&str>, you_decide: bool| Answer {
         choices: choices.iter().map(|choice| choice.to_string()).collect(),
@@ -280,7 +278,6 @@ fn the_panel_sends_what_is_filled_in(cx: &mut TestAppContext) {
                 QuestionAnswer::new("q2", answer(&["Unit", "Screenshots"], None, false)),
                 QuestionAnswer::new("q3", answer(&[], None, true)),
             ],
-            anything_else: Some("Keep the old API one more release.".into()),
         })]
     );
     assert!(!app.shows(cx, "answer-panel"));
@@ -310,7 +307,6 @@ fn a_partial_send_leaves_the_rest_open(cx: &mut TestAppContext) {
                 QuestionAnswer::new("q2", Answer::default()),
                 QuestionAnswer::new("q3", Answer::default()),
             ],
-            anything_else: None,
         })]
     );
     assert!(!app.shows(cx, "answer-panel"));
@@ -545,7 +541,6 @@ fn an_approval_is_saved_with_save(cx: &mut TestAppContext) {
                     ..Answer::default()
                 }
             )],
-            anything_else: None,
         })]
     );
     assert!(!app.shows(cx, "answer-panel"));
@@ -568,14 +563,13 @@ fn typed_words_ask_for_changes_to_an_approval(cx: &mut TestAppContext) {
                     ..Answer::default()
                 }
             )],
-            anything_else: None,
         })]
     );
 }
 
 /// Two approvals asked together share a card, numbered, and each takes
-/// its own answer, with what else is filled in. The panel stays for the
-/// one left.
+/// its own answer. Each answer names the other too, and the panel stays
+/// for the one left.
 #[gpui_kit::test]
 fn two_approvals_in_one_card_take_their_own_answers(cx: &mut TestAppContext) {
     let app = start(cx);
@@ -597,7 +591,6 @@ fn two_approvals_in_one_card_take_their_own_answers(cx: &mut TestAppContext) {
             "2. Save the worker profile linter for every project?"
         ]
     );
-    app.fill(cx, 2, "Thanks");
     // The second's Save.
     app.click(cx, part("answer-choice", "x00000002", 0));
     assert!(app.shows(cx, "answer-panel"));
@@ -625,11 +618,9 @@ fn two_approvals_in_one_card_take_their_own_answers(cx: &mut TestAppContext) {
                     QuestionAnswer::new("x00000001", Answer::default()),
                     choice("x00000002", "Save"),
                 ],
-                anything_else: Some("Thanks".into()),
             }),
             arko::Input::AnswerQuestions(Answers {
                 answers: vec![choice("x00000001", "Don't save")],
-                anything_else: None,
             }),
         ]
     );
@@ -749,4 +740,28 @@ fn the_question_typed_in_leaving_closes_the_panel(cx: &mut TestAppContext) {
     assert_eq!(notified, 1);
     assert!(app.composer_focused(cx));
     assert!(app.sent(cx).is_empty());
+}
+
+/// "Choose any" follows a question that takes several of its choices, and
+/// only such a question.
+#[gpui_kit::test]
+fn choose_any_follows_a_question_that_takes_several(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(
+        cx,
+        vec![
+            asked(serde_json::json!({
+                "id": "q1", "question": "Which tests?", "choices": ["Unit", "Screenshots"],
+                "multiple": true, "state": "open", "item": 7, "number": 1
+            })),
+            asked(serde_json::json!({
+                "id": "q2", "question": "Which files?", "multiple": true, "state": "open",
+                "item": 7, "number": 2
+            })),
+        ],
+    );
+    assert_eq!(
+        app.question_labels(cx),
+        ["1. Which tests?, choose any", "2. Which files?"]
+    );
 }
