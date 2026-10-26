@@ -287,8 +287,8 @@ fn the_panel_sends_what_is_filled_in(cx: &mut TestAppContext) {
     assert!(!app.shows(cx, "questions-chip"));
 }
 
-/// Send sends what is filled in. The questions left stay open, in the
-/// quiet chip, and "You decide" lets go of the choices.
+/// Send sends what is filled in, and names the questions left unanswered,
+/// which stay open in the quiet chip. "You decide" lets go of the choices.
 #[gpui_kit::test]
 fn a_partial_send_leaves_the_rest_open(cx: &mut TestAppContext) {
     let app = start(cx);
@@ -299,13 +299,17 @@ fn a_partial_send_leaves_the_rest_open(cx: &mut TestAppContext) {
     assert_eq!(
         app.sent(cx),
         [arko::Input::AnswerQuestions(Answers {
-            answers: vec![QuestionAnswer::new(
-                "q1",
-                Answer {
-                    you_decide: true,
-                    ..Answer::default()
-                }
-            )],
+            answers: vec![
+                QuestionAnswer::new(
+                    "q1",
+                    Answer {
+                        you_decide: true,
+                        ..Answer::default()
+                    }
+                ),
+                QuestionAnswer::new("q2", Answer::default()),
+                QuestionAnswer::new("q3", Answer::default()),
+            ],
             anything_else: None,
         })]
     );
@@ -603,23 +607,30 @@ fn two_approvals_in_one_card_take_their_own_answers(cx: &mut TestAppContext) {
     );
     // The first's Don't save.
     app.click(cx, part("answer-choice", "x00000001", 1));
-    let choice = |id: &str, choice: &str, anything_else: Option<&str>| {
-        arko::Input::AnswerQuestions(Answers {
-            answers: vec![QuestionAnswer::new(
-                id,
-                Answer {
-                    choices: vec![choice.into()],
-                    ..Answer::default()
-                },
-            )],
-            anything_else: anything_else.map(str::to_string),
-        })
+    let choice = |id: &str, choice: &str| {
+        QuestionAnswer::new(
+            id,
+            Answer {
+                choices: vec![choice.into()],
+                ..Answer::default()
+            },
+        )
     };
+    // Each names every question the panel showed.
     assert_eq!(
         app.sent(cx),
         [
-            choice("x00000002", "Save", Some("Thanks")),
-            choice("x00000001", "Don't save", None)
+            arko::Input::AnswerQuestions(Answers {
+                answers: vec![
+                    QuestionAnswer::new("x00000001", Answer::default()),
+                    choice("x00000002", "Save"),
+                ],
+                anything_else: Some("Thanks".into()),
+            }),
+            arko::Input::AnswerQuestions(Answers {
+                answers: vec![choice("x00000001", "Don't save")],
+                anything_else: None,
+            }),
         ]
     );
     assert!(!app.shows(cx, "answer-panel"));
@@ -660,6 +671,7 @@ fn the_panel_keeps_what_is_filled_in_for_each_session(cx: &mut TestAppContext) {
                     ..Answer::default()
                 }
             ),
+            QuestionAnswer::new("q2", Answer::default()),
             QuestionAnswer::new(
                 "q3",
                 Answer {
@@ -693,4 +705,48 @@ fn a_cards_line_opens_the_panel_on_that_card(cx: &mut TestAppContext) {
         view.update(cx, |view, cx| view.open_panel(Some(7), window, cx))
     });
     assert_eq!(app.focused_question(cx).as_deref(), Some("q1"));
+}
+
+/// Words typed for an approval ask for changes, so Save waits until they
+/// are cleared.
+#[gpui_kit::test]
+fn save_waits_while_changes_are_typed(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, vec![approval("x1a2b3c4d", "3d-judge", None)]);
+    app.fill(cx, 0, "Use opus");
+    app.click(cx, part("answer-choice", "x1a2b3c4d", 0));
+    assert!(app.sent(cx).is_empty());
+    act(cx, app.window, |window, cx| {
+        for _ in 0.."Use opus".len() {
+            window.press("backspace", cx);
+        }
+    });
+    app.click(cx, part("answer-choice", "x1a2b3c4d", 0));
+    assert_eq!(app.sent(cx).len(), 1);
+}
+
+/// When the question being typed in is answered elsewhere, the panel
+/// closes and says so, and the typing doesn't move to another question.
+/// Another question leaving changes nothing for it.
+#[gpui_kit::test]
+fn the_question_typed_in_leaving_closes_the_panel(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, three());
+    app.fill(cx, 2, "ma");
+    // q1 answered on the web page.
+    app.ask(cx, three().into_iter().skip(1).collect());
+    assert!(app.shows(cx, "answer-panel"));
+    assert_eq!(app.focused_question(cx).as_deref(), Some("q3"));
+    // Then q3, the one typed in.
+    app.ask(cx, three().into_iter().skip(1).take(1).collect());
+    assert!(!app.shows(cx, "answer-panel"));
+    let notified = cx
+        .update_window(app.window, |_, window, cx| {
+            use gpui_kit::component::WindowExt as _;
+            window.notifications(cx).len()
+        })
+        .unwrap();
+    assert_eq!(notified, 1);
+    assert!(app.composer_focused(cx));
+    assert!(app.sent(cx).is_empty());
 }

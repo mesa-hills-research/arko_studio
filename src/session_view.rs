@@ -1005,6 +1005,25 @@ impl SessionView {
             .into_iter()
             .cloned()
             .collect();
+        // The question being typed in, if it is no longer open.
+        let left = self
+            .answer_panel()
+            .and_then(|panel| panel.read(cx).focused_question(window, cx))
+            .filter(|id| !open.iter().any(|question| question.id == *id));
+        // Settled elsewhere (another front end, or the agent), not by what
+        // was just sent here: the typing doesn't move to another question.
+        let elsewhere = left.as_ref().is_some_and(|id| {
+            !session
+                .read(cx)
+                .reading()
+                .questions
+                .iter()
+                .any(|question| question.id == *id)
+        });
+        if elsewhere {
+            self.close_panel(window, cx);
+            window.push_notification("That question is no longer open.", cx);
+        }
         if open.is_empty() {
             self.close_panel(window, cx);
             self.panels
@@ -1024,6 +1043,10 @@ impl SessionView {
             }
         };
         panel.update(cx, |panel, cx| panel.set_questions(open, window, cx));
+        // Answered here (an approval's Save), the keyboard stays in the panel.
+        if left.is_some() && !elsewhere && self.panel_open {
+            panel.update(cx, |panel, cx| panel.focus(window, cx));
+        }
         if !self.panel_open && !session.read(cx).unseen_questions().is_empty() && !self.typing(cx) {
             self.panel_open = true;
             self.sync_composer(window, cx);

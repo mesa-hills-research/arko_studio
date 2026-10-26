@@ -254,20 +254,24 @@ impl AnswerPanel {
     }
 
     /// What is filled in, with `chosen` (a question's id and a choice) as
-    /// that question's whole answer.
+    /// that question's whole answer. Every question the panel shows is
+    /// named, those left unanswered with an empty answer, so arko knows
+    /// which conversation "Anything else" belongs to.
     pub fn answers_choosing(&self, chosen: Option<(&str, &str)>, cx: &App) -> Answers {
         let answers = self
             .questions
             .iter()
-            .filter_map(|question| {
+            .map(|question| {
                 if let Some((_, choice)) = chosen.filter(|(id, _)| *id == question.id) {
                     let answer = Answer {
                         choices: vec![choice.to_string()],
                         ..Answer::default()
                     };
-                    return Some(QuestionAnswer::new(question.id.clone(), answer));
+                    return QuestionAnswer::new(question.id.clone(), answer);
                 }
-                let draft = self.drafts.get(&question.id)?;
+                let Some(draft) = self.drafts.get(&question.id) else {
+                    return QuestionAnswer::new(question.id.clone(), Answer::default());
+                };
                 let text = draft.other.read(cx).value().trim().to_string();
                 let answer = Answer {
                     // In the question's order, whatever order they were
@@ -281,7 +285,7 @@ impl AnswerPanel {
                     text: (!text.is_empty()).then_some(text),
                     you_decide: draft.you_decide,
                 };
-                (!answer.is_empty()).then(|| QuestionAnswer::new(question.id.clone(), answer))
+                QuestionAnswer::new(question.id.clone(), answer)
             })
             .collect();
         let anything_else = self.anything_else.read(cx).value().trim().to_string();
@@ -369,13 +373,18 @@ impl AnswerPanel {
             .contains_focused(window, cx)
     }
 
-    /// The question whose field has the keyboard, by its id (tests).
-    #[cfg(test)]
+    /// The question whose field has the keyboard, by its id.
     pub fn focused_question(&self, window: &Window, cx: &App) -> Option<String> {
         use gpui_kit::Focusable as _;
         self.drafts
             .iter()
-            .find(|(_, draft)| draft.other.read(cx).focus_handle(cx).is_focused(window))
+            .find(|(_, draft)| {
+                draft
+                    .other
+                    .read(cx)
+                    .focus_handle(cx)
+                    .contains_focused(window, cx)
+            })
             .map(|(id, _)| id.clone())
     }
 
@@ -422,6 +431,7 @@ impl AnswerPanel {
         let theme = cx.theme();
         let id: SharedString = question.id.clone().into();
         let approval = question.approval.as_ref();
+        let changes = !draft.other.read(cx).value().trim().is_empty();
         let chips = question.choices.iter().enumerate().map(|(n, choice)| {
             let chosen = draft.choices.contains(choice);
             let (id, choice) = (id.clone(), choice.clone());
@@ -429,9 +439,13 @@ impl AnswerPanel {
                 .small()
                 .label(choice.clone());
             // An approval's choices answer at once, and Save is the primary one.
+            // Words typed for it ask for changes, which Save would drop.
             if approval.is_some() {
                 let button = if choice == arko::questions::SAVE {
-                    button.primary()
+                    button
+                        .primary()
+                        .disabled(changes)
+                        .when(changes, |this| this.tooltip("Clear your changes to save"))
                 } else {
                     button.outline()
                 };
@@ -476,12 +490,13 @@ impl AnswerPanel {
                 ))
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_you_decide(&id, cx)))
         });
-        // Another ask's questions start below a line.
+        // Another ask's questions start below a line. One whose card isn't
+        // there yet (item 0) stands on its own.
         let new_batch = index > 0
             && self
                 .questions
                 .get(index - 1)
-                .is_some_and(|before| before.item != question.item);
+                .is_some_and(|before| before.item != question.item || question.item == 0);
         let words = text(question);
         // The profile an approval would save, under what it asks.
         let profile = approval.map(|approval| {
