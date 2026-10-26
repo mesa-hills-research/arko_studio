@@ -80,6 +80,12 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
                     out.push_str(&format!("\n*[Image · {}]*\n", image_label(&image.label)));
                 }
             }
+            // The agent's questions, numbered in their batch as the card
+            // shows them, each with what became of it.
+            Kind::Question if item.questions.as_ref().is_some_and(|q| !q.is_empty()) => {
+                section(&mut out, "Arko");
+                out.push_str(&questions(item.questions.as_deref().unwrap_or_default()));
+            }
             Kind::Text | Kind::Reply | Kind::Question => {
                 if item.text.trim().is_empty() {
                     continue;
@@ -455,11 +461,62 @@ pub fn folder(workspace: Option<&Path>, home: Option<&Path>) -> PathBuf {
 #[path = "export_tests.rs"]
 mod engine_tests;
 
+/// A card of the agent's questions in Markdown: each question (numbered
+/// when it came with others), and what became of it in italics.
+fn questions(questions: &[arko::questions::AgentQuestion]) -> String {
+    let mut out = String::new();
+    for (place, question) in questions.iter().enumerate() {
+        let text = closed(trimmed(&question.question));
+        let (state, detail) = crate::questions::state_words(&question.state);
+        let state = match detail {
+            Some(detail) => format!("{state} · {}", detail.trim()),
+            None => state.to_string(),
+        };
+        match crate::questions::number(place, questions.len()) {
+            Some(number) => {
+                let indent = " ".repeat(number.to_string().len() + 2);
+                let text = text.replace('\n', &format!("\n{indent}"));
+                out.push_str(&format!("\n{number}. {text}\n\n{indent}*{state}*\n"));
+            }
+            None => out.push_str(&format!("\n{text}\n\n*{state}*\n")),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Header, STARTS_PARTWAY, code, file_name, free_path, markdown, why, with_saved, write,
     };
+
+    /// A card of questions exports as a numbered list with each one's state,
+    /// without the agent's ids.
+    #[test]
+    fn questions_export_numbered_with_their_states() {
+        let questions: Vec<arko::questions::AgentQuestion> = [
+            serde_json::json!({
+                "id": "q3", "question": "Tabs or spaces?", "state": "answered", "answer": "Spaces"
+            }),
+            serde_json::json!({ "id": "q4", "question": "Push now?", "state": "dismissed" }),
+        ]
+        .into_iter()
+        .map(|json| serde_json::from_value(json).unwrap())
+        .collect();
+        assert_eq!(
+            super::questions(&questions),
+            "\n1. Tabs or spaces?\n\n   *Answered · Spaces*\n\n2. Push now?\n\n   *Dismissed*\n"
+        );
+        assert_eq!(
+            super::questions(&questions[1..]),
+            "\nPush now?\n\n*Dismissed*\n"
+        );
+        let mut card = Item::new(Kind::Question, "q3 Tabs or spaces?\nq4 Push now?");
+        card.questions = Some(questions);
+        let text = markdown(&Header::default(), &[card]);
+        assert!(text.contains("1. Tabs or spaces?"), "{text}");
+        assert!(!text.contains("q3"), "{text}");
+    }
     use arko::remote::{CallStatus, Item, Kind, Level};
 
     fn item(kind: Kind, text: &str) -> Item {
