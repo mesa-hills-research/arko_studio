@@ -945,12 +945,23 @@ fn the_choices_stay_inside_their_rows(cx: &mut TestAppContext) {
         cx.update(|cx| settings.update(cx, |settings, cx| settings.show_page(page, cx)));
         act(cx, window, |_, _| {});
     };
-    // The dropdowns' buttons on the page shown, as their right edges.
+    // The dropdowns' buttons on the page shown, as their right edges:
+    // the kit's and OpenRouter's menus.
+    let menus = [
+        "btn",
+        "openrouter-region",
+        "openrouter-sort",
+        "openrouter-precision",
+    ]
+    .map(|id| ElementId::Name(id.into()));
     let choices = |window: &Window| {
         snapshots(window)
             .into_iter()
             .filter(|element| {
-                element.path().last() == Some(&ElementId::Name("btn".into()))
+                element
+                    .path()
+                    .last()
+                    .is_some_and(|last| menus.contains(last))
                     && element
                         .path()
                         .contains(&ElementId::Name("settings-page".into()))
@@ -1109,15 +1120,14 @@ fn the_openrouter_settings_are_saved_through_the_backend(cx: &mut TestAppContext
     act(cx, window, |window, cx| window.click("openrouter-zdr", cx));
     assert!(backend.openrouter().zdr());
     assert!(cx.read(|cx| part.read(cx).settings().unwrap().data_collection_implied()));
-    // Region, Providers by and Precision, from their menus in the
-    // OpenRouter group (the second): each choice in arko's order.
-    for (item, choice) in [(2usize, 3usize), (3, 2), (4, 2)] {
-        act(cx, window, |window, cx| {
-            window
-                .within("group-1")
-                .within(format!("item-{item}"))
-                .click("btn", cx)
-        });
+    // Region, Providers by and Precision, from their menus: each choice
+    // in arko's order.
+    for (menu, choice) in [
+        ("openrouter-region", 3usize),
+        ("openrouter-sort", 2),
+        ("openrouter-precision", 2),
+    ] {
+        act(cx, window, |window, cx| window.click(menu, cx));
         act(cx, window, |window, cx| {
             window.within("popup-menu").click(choice, cx)
         });
@@ -1144,4 +1154,100 @@ fn the_openrouter_settings_are_saved_through_the_backend(cx: &mut TestAppContext
     });
     assert_eq!(backend.catalog_fetches(), 1);
     assert_eq!(words(cx), "6 with tool use, updated just now");
+}
+
+/// The Settings page's OpenRouter part, in `window`.
+fn openrouter_part(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+) -> Entity<super::openrouter::OpenRouterPart> {
+    let part = cx
+        .update_window(window, |_, window, cx| {
+            cx.new(|cx| super::openrouter::OpenRouterPart::new(window, cx))
+        })
+        .unwrap();
+    cx.run_until_parked();
+    part
+}
+
+/// Two windows' OpenRouter settings, each read before the other's change,
+/// each change one control: both changes are kept, zero data retention
+/// included, and each window shows them. So does a change made elsewhere,
+/// which the next change here keeps.
+#[gpui_kit::test]
+fn openrouter_changes_from_two_windows_keep_each_other(cx: &mut TestAppContext) {
+    use arko::openrouter::{Region, Sort};
+    let backend = start_on(
+        cx,
+        FakeBackend::sample("/arko", SystemTime::now()),
+        prefs::Prefs::default(),
+    );
+    let (window, _) = open(cx, 1300.);
+    let (first, second) = (openrouter_part(cx, window), openrouter_part(cx, window));
+    cx.update(|cx| {
+        first.update(cx, |part, cx| {
+            part.change(|settings| settings.set_zdr(true), cx)
+        });
+        second.update(cx, |part, cx| {
+            part.change(|settings| settings.set_region(Region::Us), cx)
+        });
+    });
+    cx.run_until_parked();
+    let saved = backend.openrouter();
+    assert!(saved.zdr());
+    assert_eq!(saved.region(), Region::Us);
+    for part in [&first, &second] {
+        assert_eq!(
+            cx.read(|cx| part.read(cx).settings().cloned()),
+            Some(saved.clone())
+        );
+    }
+    // The terminal app sets the providers' order; a region chosen here
+    // keeps it.
+    backend.change_openrouter_elsewhere(|settings| settings.set_sort(Sort::Latency));
+    cx.update(|cx| {
+        first.update(cx, |part, cx| {
+            part.change(|settings| settings.set_region(Region::Eu), cx)
+        })
+    });
+    cx.run_until_parked();
+    let saved = backend.openrouter();
+    assert_eq!((saved.sort(), saved.region()), (Sort::Latency, Region::Eu));
+    assert!(saved.zdr());
+}
+
+/// A save that fails says why, and what shows is what's saved: the
+/// settings as they were when nothing else waits, else what the later
+/// change saved.
+#[gpui_kit::test]
+fn a_failed_openrouter_save_shows_what_is_saved(cx: &mut TestAppContext) {
+    use arko::openrouter::{Region, Sort};
+    let backend = start_on(
+        cx,
+        FakeBackend::sample("/arko", SystemTime::now()),
+        prefs::Prefs::default(),
+    );
+    let (window, _) = open(cx, 1300.);
+    let part = openrouter_part(cx, window);
+    let shown = |cx: &mut TestAppContext| cx.read(|cx| part.read(cx).settings().cloned().unwrap());
+    let problem = |cx: &mut TestAppContext| cx.read(|cx| part.read(cx).problem().is_some());
+    // Alone, it goes back to the settings saved.
+    backend.fail_openrouter_saves(1);
+    cx.update(|cx| part.update(cx, |part, cx| part.change(|s| s.set_zdr(true), cx)));
+    cx.run_until_parked();
+    assert!(!shown(cx).zdr());
+    assert!(!backend.openrouter().zdr());
+    assert!(problem(cx));
+    // With a change after it waiting, that one's save shows.
+    backend.fail_openrouter_saves(1);
+    cx.update(|cx| {
+        part.update(cx, |part, cx| {
+            part.change(|s| s.set_region(Region::Eu), cx);
+            part.change(|s| s.set_sort(Sort::Price), cx);
+        })
+    });
+    cx.run_until_parked();
+    let saved = backend.openrouter();
+    assert_eq!((saved.region(), saved.sort()), (Region::Any, Sort::Price));
+    assert_eq!(shown(cx), saved);
 }

@@ -298,6 +298,15 @@ impl SessionView {
                 }
             }),
             cx.observe(&model_filter, |_, _, cx| cx.notify()),
+            // OpenRouter's settings, saved in Settings: the gear's tooltip
+            // says so.
+            cx.observe_global::<crate::backend::OpenRouterSaved>(|this, cx| {
+                if let Some(saved) = cx.global::<crate::backend::OpenRouterSaved>().settings() {
+                    this.openrouter.summary = saved.summary();
+                    this.openrouter.recent = saved.recent();
+                    cx.notify();
+                }
+            }),
             cx.on_release(|this, cx| this.window_closed(cx)),
         ];
         // Alt+↑ in the empty composer edits the latest message, when it can.

@@ -293,6 +293,32 @@ impl ModelChoices {
 
 pub use arko::openrouter::{Catalog, Listed, Settings as OpenRouterSettings};
 
+/// A change to OpenRouter's routing settings, made to them as they are
+/// when it's saved.
+pub type OpenRouterChange = Arc<dyn Fn(&mut OpenRouterSettings) + Send + Sync>;
+
+/// OpenRouter's routing settings as this app last saved them. Its
+/// observers (each Settings window, the composers) show them.
+#[derive(Default)]
+pub struct OpenRouterSaved {
+    settings: Option<OpenRouterSettings>,
+}
+
+impl gpui_kit::Global for OpenRouterSaved {}
+
+impl OpenRouterSaved {
+    pub fn settings(&self) -> Option<&OpenRouterSettings> {
+        self.settings.as_ref()
+    }
+
+    /// Tells the observers `settings` were just saved.
+    pub fn publish(settings: OpenRouterSettings, cx: &mut gpui_kit::App) {
+        cx.set_global(OpenRouterSaved {
+            settings: Some(settings),
+        });
+    }
+}
+
 /// Six of OpenRouter's models, fetched a minute before `now`, for tests
 /// and screenshots.
 pub fn sample_catalog(now: SystemTime) -> Catalog {
@@ -383,9 +409,10 @@ pub trait Backend: Send + Sync + 'static {
     /// folder says, with the models picked lately.
     fn openrouter(&self) -> OpenRouterSettings;
 
-    /// Saves how OpenRouter routes requests. Open sessions use it from
-    /// their next request. `Err` says why it wasn't saved.
-    fn set_openrouter(&self, settings: OpenRouterSettings) -> Result<(), String>;
+    /// Makes `change` to how OpenRouter routes requests, as the settings
+    /// are now, and saves them. Open sessions use them from their next
+    /// request. `Ok` has the settings saved, `Err` why they weren't.
+    fn change_openrouter(&self, change: OpenRouterChange) -> Result<OpenRouterSettings, String>;
 
     /// Starts a session, at once: it opens on threads of its own, asking
     /// `prompter` for what it lacks.
@@ -672,10 +699,16 @@ impl Backend for ArkoBackend {
         OpenRouterSettings::load(&self.root)
     }
 
-    fn set_openrouter(&self, settings: OpenRouterSettings) -> Result<(), String> {
+    fn change_openrouter(&self, change: OpenRouterChange) -> Result<OpenRouterSettings, String> {
+        // One change at a time in this app, each to the file as it is.
+        static CHANGING: Mutex<()> = Mutex::new(());
+        let _changing = lock(&CHANGING);
+        let mut settings = OpenRouterSettings::read(&self.root)?;
+        change(&mut settings);
         settings
             .save(&self.root)
-            .map_err(|error| format!("Couldn’t save {} ({error}).", arko::openrouter::FILE))
+            .map_err(|error| format!("Couldn’t save {} ({error}).", arko::openrouter::FILE))?;
+        Ok(settings)
     }
 
     fn start(&self, start: Start, prompter: Arc<dyn arko::Prompter>) -> Launch {
@@ -842,6 +875,8 @@ struct FakeState {
     started: Vec<NewSession>,
     /// How many times an open session's models were listed.
     session_menus: usize,
+    /// How many of the next OpenRouter saves fail.
+    openrouter_failures: usize,
     extensions: extensions::Extensions,
     profiles: profiles::Profiles,
 }
@@ -866,6 +901,7 @@ impl FakeBackend {
                 last_efforts: Vec::new(),
                 started: Vec::new(),
                 session_menus: 0,
+                openrouter_failures: 0,
                 extensions: extensions::Extensions::sample(Path::new("/home/ada"), &root),
                 profiles: profiles::Profiles::default(),
             }),
@@ -1002,6 +1038,16 @@ impl FakeBackend {
             state.last_efforts.retain(|(name, _)| name != model);
             state.last_efforts.push((model.into(), effort.into()));
         });
+    }
+
+    /// Fails the next `count` saves of OpenRouter's settings.
+    pub fn fail_openrouter_saves(&self, count: usize) {
+        self.with_state(|state| state.openrouter_failures = count);
+    }
+
+    /// Changes OpenRouter's settings as another app would.
+    pub fn change_openrouter_elsewhere(&self, change: impl FnOnce(&mut OpenRouterSettings)) {
+        self.with_state(|state| change(&mut state.openrouter));
     }
 
     /// How many times an open session's models were listed.
@@ -1188,9 +1234,15 @@ impl Backend for FakeBackend {
         self.with_state(|state| state.openrouter.clone())
     }
 
-    fn set_openrouter(&self, settings: OpenRouterSettings) -> Result<(), String> {
-        self.with_state(|state| state.openrouter = settings);
-        Ok(())
+    fn change_openrouter(&self, change: OpenRouterChange) -> Result<OpenRouterSettings, String> {
+        self.with_state(|state| {
+            if state.openrouter_failures > 0 {
+                state.openrouter_failures -= 1;
+                return Err("Couldn’t save openrouter.json (the disk is full).".into());
+            }
+            change(&mut state.openrouter);
+            Ok(state.openrouter.clone())
+        })
     }
 
     fn start(&self, start: Start, _: Arc<dyn arko::Prompter>) -> Launch {
@@ -1478,6 +1530,33 @@ impl FakeBackend {
 
 #[cfg(test)]
 mod tests {
+    /// A change to OpenRouter's settings is made to the file as it is:
+    /// a model picked since the settings were read stays among the recent
+    /// ones, and a file Arko can't read is left as it is.
+    #[test]
+    fn openrouter_changes_keep_what_was_saved_since() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let backend = ArkoBackend::new(root);
+        let read_before = backend.openrouter();
+        arko::openrouter::remember(root, "openrouter:z-ai/glm-5");
+        let saved = backend
+            .change_openrouter(std::sync::Arc::new(|settings| settings.set_zdr(true)))
+            .unwrap();
+        assert!(read_before.recent_names().is_empty());
+        assert!(saved.zdr());
+        assert_eq!(saved.recent_names(), ["openrouter:z-ai/glm-5"]);
+        assert_eq!(backend.openrouter(), saved);
+        let file = root.join(arko::openrouter::FILE);
+        std::fs::write(&file, "{ not json").unwrap();
+        assert!(
+            backend
+                .change_openrouter(std::sync::Arc::new(|settings| settings.set_zdr(false)))
+                .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{ not json");
+    }
+
     #[test]
     fn two_prepared_sessions_both_share_their_page() {
         let temp = tempfile::tempdir().unwrap();
