@@ -13,6 +13,8 @@ The native interface is written in Rust with [GPUI](https://www.gpui.rs) and
 - Run workers on models of their own, with profiles that set a model, an effort and instructions,
   and see a worker's own workers under it.
 - Read streamed replies, Markdown, highlighted code, diffs and images in one transcript.
+- Answer the agent's questions while it works, in a panel above the message box (Alt+Q) or in your
+  next message.
 - Find, edit, regenerate, branch and export conversations, with keyboard shortcuts and a command
   palette.
 - See context use, costs and cache expiry, and share a session through its web page.

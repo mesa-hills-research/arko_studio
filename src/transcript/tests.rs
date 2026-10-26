@@ -1496,10 +1496,10 @@ fn working_shows_while_the_agent_waits_on_the_model(cx: &mut TestAppContext) {
         "{:?}",
         keys(&view, cx)
     );
-    let question = feed.question("Release or debug?");
+    crate::questions::ask(&feed, &[("q1", "Release or debug?")], true);
     settle(cx, window);
     assert_eq!(working_row(&view, cx), None);
-    feed.answered(question, "Release.", Source::App);
+    crate::questions::answer(&feed, "q1", "Release.");
     settle(cx, window);
     let answer = *ids_of(&feed, Kind::User).last().unwrap();
     assert!(
@@ -1571,9 +1571,9 @@ fn working_is_announced_once_for_a_turn(cx: &mut TestAppContext) {
     );
 
     // An answer to a question starts the agent again, and that is said.
-    let question = feed.question("Release or debug?");
+    crate::questions::ask(&feed, &[("q1", "Release or debug?")], true);
     settle(cx, window);
-    feed.answered(question, "Release.", Source::App);
+    crate::questions::answer(&feed, "q1", "Release.");
     settle(cx, window);
     let answer = *ids_of(&feed, Kind::User).last().unwrap();
     assert_eq!(working_row(&view, cx), Some(RowKey::Working(answer)));
@@ -4788,4 +4788,94 @@ fn every_note_not_read_yet_shows_in_every_view(cx: &mut TestAppContext) {
     feed.turn_started();
     assert!(pending(&feed).is_empty());
     notes_show_in_every_view(cx, window, &view, &feed);
+}
+
+/// A card of the agent's questions shows each question and what became of
+/// it, as a screen reader hears it too, and changes as that changes.
+#[gpui_kit::test]
+fn a_question_card_shows_each_questions_state(cx: &mut TestAppContext) {
+    use arko::questions::QuestionState;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Tidy the parser.", Source::App, Delivery::Turn);
+    let card = crate::questions::ask(
+        &feed,
+        &[
+            ("q1", "Tabs or spaces?"),
+            ("q2", "Push now?"),
+            ("q3", "Which branch?"),
+            ("q4", "Keep the old API?"),
+            ("q5", "Rename the module?"),
+        ],
+        false,
+    );
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    settle(cx, window);
+    assert!(keys(&view, cx).contains(&RowKey::Question(card)));
+    assert_eq!(
+        announced_as(cx, window, RowKey::Question(card))
+            .1
+            .as_deref(),
+        Some(
+            "Arko asks, 1. Tabs or spaces?, open, 2. Push now?, open, 3. Which branch?, open, 4. Keep the old API?, open, 5. Rename the module?, open"
+        )
+    );
+    feed.set_question_state(
+        "q1",
+        QuestionState::Answered {
+            answer: "Spaces".into(),
+        },
+    );
+    feed.set_question_state("q2", QuestionState::AnsweredInMessage);
+    feed.set_question_state(
+        "q3",
+        QuestionState::Closed {
+            why: Some("Found it in the README".into()),
+        },
+    );
+    feed.set_question_state("q4", QuestionState::Dismissed);
+    settle(cx, window);
+    assert_eq!(
+        announced_as(cx, window, RowKey::Question(card)),
+        (
+            Some(gpui_kit::Role::ListItem),
+            Some(
+                "Arko asks, 1. Tabs or spaces?, answered Spaces, 2. Push now?, answered in a message, 3. Which branch?, settled by Arko Found it in the README, 4. Keep the old API?, dismissed, 5. Rename the module?, open"
+                    .into()
+            )
+        )
+    );
+}
+
+/// The words of a question card are found, and copied as selected.
+#[gpui_kit::test]
+fn a_question_cards_words_are_found_and_copied(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Tidy the parser.", Source::App, Delivery::Turn);
+    let card = crate::questions::ask(&feed, &[("q1", "Tabs or spaces?")], false);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    settle(cx, window);
+    view.update(cx, |view, cx| view.find("spaces", cx));
+    settle(cx, window);
+    assert_eq!(cx.read(|cx| view.read(cx).find_status().total), 1);
+    view.update(cx, |view, cx| view.find("", cx));
+    settle(cx, window);
+    cx.update_window(window, |_, window, cx| {
+        let text = window.find(("question-text", card * 8)).bounds();
+        let middle = text.size.height / 2.;
+        window.drag(
+            text.origin + gpui_kit::point(px(1.), middle),
+            text.origin + gpui_kit::point(text.size.width - px(1.), middle),
+            cx,
+        );
+        window.press("secondary-c", cx);
+    })
+    .unwrap();
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert_eq!(copied, "Tabs or spaces?");
 }

@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use gpui_kit::component::input::{self, Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::text::TextView;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
@@ -33,6 +32,7 @@ use crate::composer::{Attached, Composer, ComposerEvent, Outgoing};
 use crate::editing::{self, Change, Choice};
 use crate::layout::WidthClass;
 use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase, PromptKind};
+use crate::questions::{AnswerPanel, AnswerPanelEvent};
 use crate::transcript::{AgentFilter, FindStatus, TranscriptEvent, TranscriptView};
 use crate::{drafts, menus, prefs};
 
@@ -41,8 +41,9 @@ const RECENT_FOLDERS: usize = 8;
 
 /// How long typing rests before the draft is kept.
 const DRAFT_REST: std::time::Duration = std::time::Duration::from_millis(300);
-/// The tallest the question card's text grows, in rem, before it scrolls.
-pub const QUESTION_MAX_HEIGHT: f32 = 12.;
+/// How long after the last key the user still counts as typing: questions
+/// that come then wait in a chip instead of opening the answer panel.
+const TYPING_REST: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A new session, before its first message: how it will work, where and on
 /// which model.
@@ -98,18 +99,6 @@ struct FindBar {
 /// The key context of the find bar.
 pub const FIND_CONTEXT: &str = "FindBar";
 
-/// The key context of the agent's question above the composer.
-pub const QUESTION_CONTEXT: &str = "Question";
-
-gpui_kit::actions!(
-    question,
-    [
-        /// From the question's text (a selection to copy) back to the
-        /// composer, which answers it.
-        LeaveQuestion,
-    ]
-);
-
 /// A message of the user's being edited in the composer.
 struct Editing {
     /// The message, by its item.
@@ -164,8 +153,16 @@ pub struct SessionView {
     composer: Entity<Composer>,
     composer_empty: bool,
     width: WidthClass,
-    /// The question collapsed with Later.
-    later: Option<u64>,
+    /// The answer panel, while the session has open questions.
+    panel: Option<Entity<AnswerPanel>>,
+    _panel: Option<Subscription>,
+    /// Whether the answer panel shows.
+    panel_open: bool,
+    /// Where the keyboard was before Alt+Q gave it to the panel: it goes
+    /// back there when the panel closes.
+    panel_return: Option<FocusHandle>,
+    /// When the user last changed the composer's text.
+    last_key: Option<std::time::Instant>,
     /// The composer's rows while expanded.
     expanded_rows: Option<usize>,
     /// The worker the composer writes to (`/message r1 …`), chosen in the
@@ -347,7 +344,11 @@ impl SessionView {
             composer,
             composer_empty: true,
             width: WidthClass::Wide,
-            later: None,
+            panel: None,
+            _panel: None,
+            panel_open: false,
+            panel_return: None,
+            last_key: None,
             expanded_rows: None,
             target: None,
             editing: None,
@@ -803,19 +804,23 @@ impl SessionView {
             old.update(cx, |old, cx| old.set_shown(false, cx));
         }
         self._session.clear();
-        self.later = None;
+        self.close_panel(window, cx);
+        self.panel = None;
+        self._panel = None;
         self.target = None;
         self.session = session;
         if let Some(session) = &self.session {
             session.update(cx, |session, cx| session.set_shown(true, cx));
             self._session
                 .push(cx.observe_in(session, window, |this, _, window, cx| {
+                    this.sync_questions(window, cx);
                     this.sync_composer(window, cx);
                     this.sync_transcript(window, cx);
                     cx.notify();
                 }));
         }
         self.restore_draft(window, cx);
+        self.sync_questions(window, cx);
         self.sync_composer(window, cx);
         self.sync_transcript(window, cx);
         cx.notify();
@@ -921,10 +926,196 @@ impl SessionView {
             .map_or(self.draft.mode, |session| session.read(cx).mode())
     }
 
-    /// The question the composer answers: the agent's, unless collapsed.
-    fn question(&self, cx: &App) -> Option<(u64, SharedString)> {
-        let question = self.session.as_ref()?.read(cx).question()?;
-        Some((question.id, question.text.clone().into()))
+    /// The answer panel while it shows (tests and screenshots).
+    #[doc(hidden)]
+    pub fn answer_panel(&self) -> Option<&Entity<AnswerPanel>> {
+        self.panel.as_ref().filter(|_| self.panel_open)
+    }
+
+    /// The open questions attached to the composer, which the next message
+    /// answers.
+    fn attached(&self, cx: &App) -> Vec<String> {
+        self.session
+            .as_ref()
+            .map(|session| session.read(cx).attached_questions())
+            .unwrap_or_default()
+    }
+
+    /// The open questions neither attached nor in the panel, which a chip
+    /// above the composer stands for, and whether one of them is new.
+    fn waiting_questions(&self, cx: &App) -> (Vec<String>, bool) {
+        let Some(session) = &self.session else {
+            return (Vec::new(), false);
+        };
+        if self.panel_open {
+            return (Vec::new(), false);
+        }
+        let session = session.read(cx);
+        let attached = session.attached_questions();
+        let unseen = session.unseen_questions();
+        let waiting: Vec<String> = session
+            .open_questions()
+            .iter()
+            .map(|question| question.id.clone())
+            .filter(|id| !attached.contains(id))
+            .collect();
+        let new = waiting.iter().any(|id| unseen.contains(id));
+        (waiting, new)
+    }
+
+    /// Whether the user is typing: the composer has text, or had a key a
+    /// moment ago.
+    fn typing(&self, cx: &App) -> bool {
+        let now = cx.background_executor().now();
+        !self.composer_empty
+            || self.editing.is_some()
+            || self
+                .last_key
+                .is_some_and(|key| now.saturating_duration_since(key) < TYPING_REST)
+    }
+
+    /// Follows the session's open questions: the panel shows them, and opens
+    /// by itself for new ones while the user isn't typing.
+    fn sync_questions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let open: Vec<arko::questions::AgentQuestion> = session
+            .read(cx)
+            .open_questions()
+            .into_iter()
+            .cloned()
+            .collect();
+        if open.is_empty() {
+            self.close_panel(window, cx);
+            return;
+        }
+        let panel = match &self.panel {
+            Some(panel) => panel.clone(),
+            None => {
+                let panel = cx.new(|cx| AnswerPanel::new(window, cx));
+                self._panel = Some(cx.subscribe_in(&panel, window, Self::on_panel_event));
+                self.panel = Some(panel.clone());
+                panel
+            }
+        };
+        let numbers = session.read(cx).question_numbers();
+        panel.update(cx, |panel, cx| {
+            panel.set_questions(open, numbers, window, cx)
+        });
+        if !self.panel_open && !session.read(cx).unseen_questions().is_empty() && !self.typing(cx) {
+            self.panel_open = true;
+            self.sync_composer(window, cx);
+            cx.notify();
+        }
+        if self.panel_open {
+            session.update(cx, |session, _| session.see_questions());
+        }
+    }
+
+    /// Opens the answer panel, or gives it the keyboard (Alt+Q).
+    pub fn answer_questions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let open = self
+            .session
+            .as_ref()
+            .is_some_and(|session| !session.read(cx).open_questions().is_empty());
+        if !open {
+            window.push_notification("No open questions.", cx);
+            return;
+        }
+        self.panel_open = true;
+        self.sync_questions(window, cx);
+        self.sync_composer(window, cx);
+        let Some(panel) = self.panel.clone() else {
+            return;
+        };
+        if !panel.read(cx).contains_focus(window, cx) {
+            self.panel_return = window.focused(cx);
+            panel.update(cx, |panel, cx| panel.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Hides the answer panel, and gives the keyboard back if it had it.
+    fn close_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.panel_open {
+            return;
+        }
+        self.panel_open = false;
+        let had_focus = self
+            .panel
+            .as_ref()
+            .is_some_and(|panel| panel.read(cx).contains_focus(window, cx));
+        let back = self.panel_return.take();
+        if had_focus {
+            match back {
+                Some(back) => window.focus(&back, cx),
+                None => self.focus_composer(window, cx),
+            }
+        }
+        self.sync_composer(window, cx);
+        cx.notify();
+    }
+
+    /// Closes the panel and attaches the open questions to the composer,
+    /// which the next message answers ("Answer in chat", Esc).
+    fn answer_in_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(session) = &self.session {
+            session.update(cx, |session, cx| session.attach_questions(cx));
+        }
+        let back = self.panel_return.take();
+        self.panel_open = false;
+        match back {
+            Some(back) => window.focus(&back, cx),
+            None => self.focus_composer(window, cx),
+        }
+        self.sync_composer(window, cx);
+        cx.notify();
+    }
+
+    fn on_panel_event(
+        &mut self,
+        panel: &Entity<AnswerPanel>,
+        event: &AnswerPanelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            AnswerPanelEvent::Send => {
+                let answers = panel.read(cx).answers(cx);
+                let Some(session) = self.session.clone() else {
+                    return;
+                };
+                let ids = answers.ids();
+                let sent = session.update(cx, |session, cx| {
+                    session.send(arko::Input::AnswerQuestions(answers), cx)
+                });
+                match sent {
+                    Ok(()) => {
+                        panel.update(cx, |panel, cx| panel.sent(&ids, window, cx));
+                        self.close_panel(window, cx);
+                    }
+                    Err(why) => window.push_notification(why, cx),
+                }
+            }
+            AnswerPanelEvent::AnswerInChat => self.answer_in_chat(window, cx),
+            AnswerPanelEvent::Close => self.close_panel(window, cx),
+        }
+    }
+
+    /// "Not now": the questions the chip stands for are dismissed, and the
+    /// agent goes on with its defaults.
+    fn dismiss_questions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (ids, _) = self.waiting_questions(cx);
+        let Some(session) = &self.session else {
+            return;
+        };
+        if let Err(why) = session.update(cx, |session, cx| {
+            session.send(arko::Input::DismissQuestions(ids), cx)
+        }) {
+            window.push_notification(why, cx);
+        }
+        cx.notify();
     }
 
     /// What the composer says while empty.
@@ -935,13 +1126,12 @@ impl SessionView {
         if let Some(target) = &self.target {
             return format!("Message {target}").into();
         }
+        let attached = session.read(cx).attached_questions().len();
         let session = session.read(cx);
-        if let Some(question) = session.question() {
-            if self.later == Some(question.id) {
-                "Answer Arko’s question".into()
-            } else {
-                "Answer the question above".into()
-            }
+        if attached == 1 {
+            "Answer Arko’s question".into()
+        } else if attached > 1 {
+            "Answer Arko’s questions".into()
         } else if session.is_working() {
             "Add to the task while Arko works".into()
         } else {
@@ -986,7 +1176,7 @@ impl SessionView {
             None => (Arc::default(), false),
         };
         let agent = self.mode(cx) == Mode::Agent;
-        let cancellable = self.target.is_some() || self.editing.is_some();
+        let cancellable = self.target.is_some() || self.editing.is_some() || self.panel_open;
         self.composer.update(cx, |composer, cx| {
             composer.set_placeholder(&placeholder, window, cx);
             composer.set_session_state(reading, working, agent);
@@ -1035,15 +1225,7 @@ impl SessionView {
     ) {
         match event {
             ComposerEvent::Submit(outgoing) => self.send(outgoing.clone(), window, cx),
-            ComposerEvent::Stop => match self.question(cx) {
-                // Esc backs out of the question card first, as Later does.
-                Some((id, _)) if self.later != Some(id) => {
-                    self.later = Some(id);
-                    self.sync_composer(window, cx);
-                    cx.notify();
-                }
-                _ => self.stop(window, cx),
-            },
+            ComposerEvent::Stop => self.stop(window, cx),
             ComposerEvent::Cancel => self.cancel(window, cx),
             ComposerEvent::EditLast => {
                 if let Some(last) = self
@@ -1061,6 +1243,10 @@ impl SessionView {
                     self.composer_empty = empty;
                     cx.notify();
                 }
+                // (Sending empties it, which isn't typing.)
+                if !empty {
+                    self.last_key = Some(cx.background_executor().now());
+                }
                 // The draft is kept once typing rests.
                 self._draft = Some(cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(DRAFT_REST).await;
@@ -1073,7 +1259,11 @@ impl SessionView {
     /// Esc in the composer, in a mode Esc ends: the edit ends, or the
     /// composer writes to the main agent again.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_some() {
+        // The answer panel over the composer closes first, as Esc in it
+        // does.
+        if self.panel_open {
+            self.answer_in_chat(window, cx);
+        } else if self.editing.is_some() {
             self.end_edit(window, cx);
         } else {
             self.set_target(None, window, cx);
@@ -1612,6 +1802,7 @@ impl SessionView {
         let message = arko::Message {
             text: outgoing.text,
             images: outgoing.images.iter().map(Attached::to_arko).collect(),
+            answers: Vec::new(),
         };
         if !prefs::get(cx).sessions.ask_before_edit {
             self.finish_edit(Choice::Change, item, message, window, cx);
@@ -1764,6 +1955,7 @@ impl SessionView {
                     arko::Message {
                         text,
                         images: images.iter().map(Attached::to_arko).collect(),
+                        answers: Vec::new(),
                     }
                 });
                 self.branch(session, Some(last), first, None, None, window, cx);
@@ -1875,13 +2067,18 @@ impl SessionView {
             return;
         }
         let images: Vec<arko::Attachment> = attached.iter().map(|image| image.to_arko()).collect();
+        // A command runs and leaves the questions attached. Other text
+        // answers them.
+        let command = arko::commands::find(&text).is_some();
         let message = arko::Message {
             text: text.clone(),
             images,
+            answers: if command || self.target.is_some() {
+                Vec::new()
+            } else {
+                self.attached(cx)
+            },
         };
-        // As in the terminal, a command runs while a question waits, and the
-        // question stays open. Other text answers it.
-        let command = arko::commands::find(&text).is_some();
         let worker = self.session.as_ref().and(self.target.clone());
         let result = match (&self.session, &self.target) {
             (Some(_), Some(_)) if !message.images.is_empty() => Err(
@@ -1892,32 +2089,14 @@ impl SessionView {
                 // As `/message r1 …` typed in the terminal.
                 let input = arko::Input::Message(arko::Message {
                     text: format!("/message {worker} {}", text.trim()),
-                    images: Vec::new(),
+                    ..Default::default()
                 });
                 session.update(cx, |session, cx| session.send(input, cx))
             }
-            (session, _) => match session {
-                None => self.start_session(message, attached, cx),
-                Some(session) => match session.read(cx).question() {
-                    Some(_) if command => session.update(cx, |session, cx| {
-                        session.send(arko::Input::Message(message), cx)
-                    }),
-                    Some(_) if !message.images.is_empty() => Err(
-                        "An answer takes text only. Send the images once the question is answered."
-                            .to_string(),
-                    ),
-                    Some(question) => {
-                        let input = arko::Input::Answer {
-                            question: question.id,
-                            text: text.clone(),
-                        };
-                        session.update(cx, |session, cx| session.send(input, cx))
-                    }
-                    None => session.update(cx, |session, cx| {
-                        session.send(arko::Input::Message(message), cx)
-                    }),
-                },
-            },
+            (None, _) => self.start_session(message, attached, cx),
+            (Some(session), None) => session.update(cx, |session, cx| {
+                session.send(arko::Input::Message(message), cx)
+            }),
         };
         match result {
             Ok(()) => {
@@ -2797,7 +2976,7 @@ impl SessionView {
     ) {
         let input = arko::Input::Message(arko::Message {
             text: command,
-            images: Vec::new(),
+            ..Default::default()
         });
         if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
             window.push_notification(why, cx);
@@ -3035,81 +3214,96 @@ impl SessionView {
             .into_any_element()
     }
 
-    /// The question card, pinned above the composer while the agent waits
-    /// on an answer.
-    fn render_question(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (id, text) = self.question(cx)?;
-        if self.later == Some(id) {
+    /// The chip above the composer for open questions neither attached nor
+    /// in the panel: "Arko asks 2 questions" for new ones, which came while
+    /// the user typed, else a quiet "2 open questions". It opens the panel,
+    /// and "Not now" dismisses them.
+    fn render_questions_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (waiting, new) = self.waiting_questions(cx);
+        if waiting.is_empty() {
             return None;
         }
         let theme = cx.theme();
-        // The request to save a worker profile shows as it is written, each
-        // line apart and the instructions unformatted, for the user to judge.
-        let plain = crate::workers::is_profile_approval(&text);
+        let (label, color) = if new {
+            (crate::questions::asks_text(waiting.len()), theme.foreground)
+        } else {
+            (
+                crate::questions::open_text(waiting.len()),
+                theme.muted_foreground,
+            )
+        };
         Some(
-            v_flex()
-                .id("question-card")
+            h_flex()
+                .id("questions-chip")
                 .test_support()
-                .key_context(QUESTION_CONTEXT)
-                .on_action(cx.listener(|this, _: &LeaveQuestion, window, cx| {
-                    this.focus_composer(window, cx)
-                }))
-                .mb_2()
-                .p_3()
-                .gap_2()
-                .bg(theme.secondary)
-                .text_color(theme.secondary_foreground)
-                .border_1()
-                .border_color(theme.border)
-                .rounded(theme.radius_lg)
+                .mb_1()
+                .gap_1()
                 .child(
-                    h_flex()
-                        .items_start()
-                        .gap_2()
-                        .child(
+                    Button::new("questions-open")
+                        .ghost()
+                        .xsmall()
+                        .icon(
                             Icon::new(gpui_kit::assets::IconName::MessageCircleQuestionMark)
-                                .text_color(theme.warning)
-                                .flex_none(),
-                        )
-                        .child(
-                            // A long question (a plan to approve) scrolls
-                            // and leaves room for the transcript.
-                            div()
-                                .id("question-text")
-                                .test_support()
-                                .flex_1()
-                                .min_w_0()
-                                .max_h(rems(QUESTION_MAX_HEIGHT))
-                                .overflow_y_scroll()
-                                .text_sm()
-                                .child(if plain {
-                                    div()
-                                        .id("question-plain")
-                                        .test_support()
-                                        .child(gpui_kit::base::SelectableText::new(
-                                            ("question", id),
-                                            text,
-                                        ))
-                                        .into_any_element()
+                                .text_color(if new {
+                                    theme.warning
                                 } else {
-                                    TextView::markdown(("question", id as usize), text)
-                                        .into_any_element()
+                                    theme.muted_foreground
                                 }),
                         )
-                        .child(
-                            Button::new("question-later")
-                                .ghost()
-                                .xsmall()
-                                .label("Later")
-                                .tooltip("Keep the question in the composer’s footer")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.later = Some(id);
-                                    cx.notify();
-                                })),
+                        .child(div().text_color(color).child(label.clone()))
+                        .accessibility_label(label)
+                        .tooltip_with_action("Answer", &crate::questions::AnswerQuestions, None)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.answer_questions(window, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("questions-not-now")
+                        .ghost()
+                        .xsmall()
+                        .label("Not now")
+                        .tooltip("Arko goes on without your answers")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.dismiss_questions(window, cx)),
                         ),
                 )
                 .into_any_element(),
         )
+    }
+
+    /// "Replying to 2 questions ×": the questions the next message answers,
+    /// and the way to send it without answering them.
+    fn render_replying(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        h_flex()
+            .id("questions-replying")
+            .test_support()
+            .flex_none()
+            .h_6()
+            .pl_2()
+            .gap_1()
+            .rounded(theme.radius)
+            .bg(theme.secondary)
+            .text_xs()
+            .text_color(theme.secondary_foreground)
+            .child(Icon::new(gpui_kit::assets::IconName::MessageCircleQuestionMark).xsmall())
+            .child(crate::questions::replying_text(count))
+            .child(
+                Button::new("questions-detach")
+                    .ghost()
+                    .xsmall()
+                    .compact()
+                    .icon(IconName::Close)
+                    .tooltip("Remove")
+                    .accessibility_label("Remove")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if let Some(session) = &this.session {
+                            session.update(cx, |session, cx| session.detach_questions(cx));
+                        }
+                        this.sync_composer(window, cx);
+                    })),
+            )
+            .into_any_element()
     }
 
     /// A strip above the composer while the session waits for credentials
@@ -3232,15 +3426,23 @@ impl SessionView {
             .target
             .clone()
             .map(|target| self.render_target(target, cx));
+        let attached = self.attached(cx).len();
+        let replying = (attached > 0).then(|| self.render_replying(attached, cx));
         let theme = cx.theme();
         let working = self
             .session
             .as_ref()
             .is_some_and(|session| session.read(cx).is_working());
-        let later_question = self
-            .question(cx)
-            .filter(|(id, _)| self.later == Some(*id))
-            .map(|(id, _)| id);
+        let panel = self.panel.clone().filter(|_| self.panel_open).map(|panel| {
+            // Above the composer, over the transcript's end.
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(relative(1.))
+                .mb_2()
+                .child(panel)
+        });
         let expanded = prefs::get(cx).input.composer_expanded;
         let send_key = prefs::get(cx).input.send_key;
         let send_chord = Keystroke::parse(crate::composer::send_chord(send_key)).ok();
@@ -3256,6 +3458,7 @@ impl SessionView {
             .border_color(theme.input)
             .rounded(theme.radius_lg)
             .bg(theme.background)
+            .children(panel)
             .child(
                 h_flex()
                     .items_start()
@@ -3302,25 +3505,7 @@ impl SessionView {
                     )
                     .child(chip)
                     .children(target)
-                    .when_some(later_question, |this, _| {
-                        this.child(
-                            Button::new("question-chip")
-                                .ghost()
-                                .small()
-                                .icon(
-                                    Icon::new(
-                                        gpui_kit::assets::IconName::MessageCircleQuestionMark,
-                                    )
-                                    .text_color(theme.warning),
-                                )
-                                .label("Question")
-                                .tooltip("Show the agent’s question")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.later = None;
-                                    cx.notify();
-                                })),
-                        )
-                    })
+                    .children(replying)
                     .child(div().flex_1())
                     .map(|this| {
                         // The tooltips name the keys: Esc stops, the send key sends.
@@ -3487,7 +3672,7 @@ impl Render for SessionView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders += 1;
         let narrow = self.width == WidthClass::Narrow;
-        let question = self.render_question(cx);
+        let questions = self.render_questions_chip(cx);
         let prompt = self.render_prompt(cx);
         let editing = self.render_editing(cx);
         let find = self.render_find(cx);
@@ -3541,7 +3726,7 @@ impl Render for SessionView {
                     .px_4()
                     .pb_3()
                     .children(prompt)
-                    .children(question)
+                    .children(questions)
                     .children(editing)
                     .child(self.render_composer(window, cx)),
             )

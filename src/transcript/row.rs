@@ -366,6 +366,7 @@ impl TranscriptView {
             RowKey::User(id) => self.user_height(id, column, m),
             RowKey::Call(id) => self.call_height(id, column, m, cx),
             RowKey::Notice(id) => self.notice_height(id, column, m),
+            RowKey::Question(id) => self.question_height(id, column, m),
             RowKey::Output(id) => {
                 let lines = self.ui.get(&id).map_or(&[][..], |ui| &ui.lines);
                 // Inside its border and left padding.
@@ -491,6 +492,33 @@ impl TranscriptView {
         m.body_at(0.875).text_lines(lines, width) * m.line_sm
     }
 
+    /// The height of a card of the agent's questions, as [`Self::questions`]
+    /// lays it out: a label line, then each question's text and its state,
+    /// with a gap between questions.
+    fn question_height(&self, id: u64, column: f32, m: &Metrics) -> f32 {
+        let rem = m.rem;
+        let Some(questions) = self.item(id).and_then(|item| item.questions.as_ref()) else {
+            return 0.;
+        };
+        let mut height = m.line_xs + 0.25 * rem;
+        for (n, question) in questions.iter().enumerate() {
+            // The text, past its number.
+            let mut width = column;
+            if let Some(number) = crate::questions::number(n, questions.len()) {
+                let digits = number.to_string().len() as f32;
+                width -= digits * m.body.advance_at(rem) + 0.375 * rem;
+            }
+            let lines = super::height::hard_lines(question.question.trim());
+            height += m.body.text_lines(&lines, width) * m.line;
+            // Its state, small.
+            height += m.line_sm;
+            if n > 0 {
+                height += 0.75 * rem;
+            }
+        }
+        height
+    }
+
     fn block_height(&self, id: u64, block: usize, source: bool, column: f32, m: &Metrics) -> f32 {
         use super::height::BlockFacts;
         let rem = m.rem;
@@ -588,6 +616,7 @@ pub(super) fn element_id(key: RowKey) -> ElementId {
         RowKey::Output(id) => ("output", id),
         RowKey::Turn(id) => ("turn", id),
         RowKey::Worker(id) => ("worker", id),
+        RowKey::Question(id) => ("questions", id),
         RowKey::Working(id) => ("working", id),
     };
     (name, id).into()
@@ -951,6 +980,7 @@ impl TranscriptView {
             RowKey::Output(id) => self.output(id, cx),
             RowKey::Turn(id) => self.turn(id, view, cx),
             RowKey::Worker(id) => self.worker(id, view, cx),
+            RowKey::Question(id) => self.questions(id, cx),
             RowKey::Working(id) => self.working(id, cx),
         }
     }
@@ -1894,6 +1924,90 @@ impl TranscriptView {
             Some(parent) => format!("{} (under {parent})", item.agent),
             None => item.agent.clone(),
         }
+    }
+
+    /// A card of the agent's questions: "Question" over it, then each
+    /// question (its id where the agent gave one) with what became of it.
+    fn questions(&self, id: u64, cx: &App) -> AnyElement {
+        let theme = cx.theme();
+        let Some(questions) = self.item(id).and_then(|item| item.questions.as_ref()) else {
+            return div().into_any_element();
+        };
+        let label = if questions.len() == 1 {
+            "Question"
+        } else {
+            "Questions"
+        };
+        v_flex()
+            .w_full()
+            .child(
+                h_flex()
+                    .gap_1()
+                    .pb_1()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(Icon::new(Lucide::MessageCircleQuestionMark).xsmall())
+                    .child(label),
+            )
+            .children(questions.iter().enumerate().map(|(n, question)| {
+                let (state, detail) = crate::questions::state_words(&question.state);
+                let open = question.state.is_open();
+                v_flex()
+                    .id(("question", id * 8 + n as u64))
+                    .test_support()
+                    .when(n > 0, |this| this.pt_3())
+                    .child(
+                        h_flex()
+                            .items_baseline()
+                            .gap_1p5()
+                            .when_some(
+                                crate::questions::number(n, questions.len()),
+                                |this, number| {
+                                    this.child(
+                                        div()
+                                            .flex_none()
+                                            .text_color(theme.muted_foreground)
+                                            .child(number.to_string()),
+                                    )
+                                },
+                            )
+                            .child(
+                                div()
+                                    .id(("question-text", id * 8 + n as u64))
+                                    .test_support()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(self.marked(
+                                        ("question-words", id * 8 + n as u64),
+                                        id,
+                                        Place::Question(n),
+                                        question.question.trim().to_string(),
+                                        cx,
+                                    )),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .id(("question-state", id * 8 + n as u64))
+                            .test_support()
+                            .gap_1p5()
+                            .text_sm()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(if open {
+                                        theme.warning
+                                    } else {
+                                        theme.muted_foreground
+                                    })
+                                    .child(state),
+                            )
+                            .when_some(detail, |this, detail| {
+                                this.child(div().min_w_0().truncate().child(detail))
+                            }),
+                    )
+            }))
+            .into_any_element()
     }
 
     fn notice(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {

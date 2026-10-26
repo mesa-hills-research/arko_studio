@@ -282,6 +282,7 @@ fn session_menu() -> Menu {
         MenuItem::action("Branch from Here", BranchSession),
         MenuItem::action("Export as Markdown…", ExportMarkdown),
         MenuItem::separator(),
+        MenuItem::action("Answer Questions", crate::questions::AnswerQuestions),
         MenuItem::action("Stop", StopTurn),
         MenuItem::action("Move to Background", MoveToBackground),
         MenuItem::action("Hand Over Now", HandOverNow),

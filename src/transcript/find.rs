@@ -46,6 +46,8 @@ pub(crate) enum Place {
     Output,
     /// An entry's Markdown before its rows are ready: its source.
     Unready,
+    /// Question `n` of a card of the agent's questions.
+    Question(usize),
 }
 
 /// One match.
@@ -689,6 +691,13 @@ impl TranscriptView {
                     .unwrap_or_else(|| item.text.clone());
                 vec![(Place::Text, title)]
             }
+            Kind::Question if super::model::has_questions(item) => item
+                .questions
+                .iter()
+                .flatten()
+                .enumerate()
+                .map(|(n, question)| (Place::Question(n), question.question.trim().to_string()))
+                .collect(),
             Kind::Text | Kind::Reply | Kind::Message | Kind::Question | Kind::Thinking => {
                 let doc = self
                     .ui

@@ -423,7 +423,7 @@ impl Workspace {
         };
         let input = arko::Input::Message(arko::Message {
             text: format!("/resume {number}"),
-            images: Vec::new(),
+            ..Default::default()
         });
         if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
             window.push_notification(why, cx);
@@ -578,14 +578,6 @@ impl Workspace {
                 self.sidebar.update(cx, |sidebar, cx| sidebar.refresh(cx));
                 self.sync_chrome(window, cx);
             }
-            LiveEvent::QuestionClosed {
-                answered_here: false,
-            } if session.read(cx).is_working() => {
-                window.push_notification(
-                    Notification::info("The question was answered elsewhere."),
-                    cx,
-                );
-            }
             // `/exit` typed with jobs or workers running: closing asks first.
             // (A close the app started asks through its own dialog.)
             LiveEvent::QuitAsked if *session.read(cx).phase() != Phase::Closing => {
@@ -724,7 +716,7 @@ impl Workspace {
                 if let Some(session) = self.session.clone() {
                     let input = arko::Input::Message(arko::Message {
                         text: command.clone(),
-                        images: Vec::new(),
+                        ..Default::default()
                     });
                     if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
                         window.push_notification(why, cx);
@@ -1345,7 +1337,7 @@ impl Render for Workspace {
                 if let Some(session) = this.session.clone() {
                     let input = arko::Input::Message(arko::Message {
                         text: "/handover".into(),
-                        images: Vec::new(),
+                        ..Default::default()
                     });
                     if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
                         window.push_notification(why, cx);
@@ -1378,6 +1370,14 @@ impl Render for Workspace {
                     if this.settings.is_none() {
                         this.session_view
                             .update(cx, |view, cx| view.focus_transcript(window, cx));
+                    }
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::questions::AnswerQuestions, window, cx| {
+                    if this.settings.is_none() {
+                        this.session_view
+                            .update(cx, |view, cx| view.answer_questions(window, cx));
                     }
                 }),
             )

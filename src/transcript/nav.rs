@@ -108,6 +108,9 @@ impl TranscriptView {
             RowKey::Separator(_) | RowKey::Notice(_) | RowKey::Output(_) | RowKey::Turn(_) => {
                 first_line(&item.text)
             }
+            RowKey::Question(_) => {
+                crate::questions::card_label(item.questions.as_deref().unwrap_or_default())
+            }
             RowKey::Working(_) => "Working".to_string(),
         };
         label.into()

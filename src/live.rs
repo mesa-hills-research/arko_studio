@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use arko::questions::AgentQuestion;
 use arko::remote::{Activity, Feed, Question, Reading, Update, WorkerState, WorkerSummary};
 use async_trait::async_trait;
 use gpui_kit::*;
@@ -170,11 +171,6 @@ pub enum LiveEvent {
     Ended,
     TurnEnded,
     QuestionAsked,
-    /// The question closed: answered in this app, or elsewhere (the web
-    /// page), or with its turn stopped.
-    QuestionClosed {
-        answered_here: bool,
-    },
     /// A request to the engine failed: the sentence to show.
     Refused(String),
     /// A worker finished or failed.
@@ -344,6 +340,64 @@ impl Drained {
     }
 }
 
+/// What the user did with the agent's questions in this app, beside what
+/// the engine's status says of them.
+#[derive(Default)]
+struct Questions {
+    /// Answered, dismissed or replied to here: hidden until the status no
+    /// longer lists them open.
+    settled: std::collections::HashSet<String>,
+    /// Attached to the message box ("Replying to 2 questions"), in the order
+    /// asked.
+    attached: Vec<String>,
+    /// Shown in the answer panel.
+    seen: std::collections::HashSet<String>,
+    /// The questions open when the session opened, and those the status
+    /// listed since.
+    known: std::collections::HashSet<String>,
+}
+
+impl Questions {
+    /// Takes the open questions of a new status. Returns whether one of
+    /// them is new.
+    fn read(&mut self, open: &[AgentQuestion]) -> bool {
+        let is_open = |id: &String| open.iter().any(|question| question.id == *id);
+        self.settled.retain(is_open);
+        self.attached.retain(is_open);
+        let mut new = false;
+        for question in open {
+            new |= self.known.insert(question.id.clone());
+        }
+        new
+    }
+
+    /// The questions `input` answers, dismisses or replies to (of those
+    /// `open`) are settled here.
+    fn sent(&mut self, input: &arko::Input, open: &[AgentQuestion]) {
+        let ids: Vec<String> = match input {
+            arko::Input::AnswerQuestions(answers) => answers
+                .answers
+                .iter()
+                .filter(|answer| !answer.answer.is_empty())
+                .map(|answer| answer.id.clone())
+                .collect(),
+            arko::Input::DismissQuestions(ids) if ids.is_empty() => {
+                open.iter().map(|question| question.id.clone()).collect()
+            }
+            arko::Input::DismissQuestions(ids) => ids.clone(),
+            arko::Input::Message(message) => message.answers.clone(),
+            _ => Vec::new(),
+        };
+        self.attached.retain(|id| !ids.contains(id));
+        self.settled.extend(ids);
+    }
+
+    /// Forgets the session's questions, which open anew with it.
+    fn reopened(&mut self) {
+        *self = Self::default();
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
@@ -377,8 +431,8 @@ pub struct LiveSession {
     quit_ask: Option<arko::QuitAsk>,
     /// What the user agreed to stop to close it.
     quit_agreed: Option<arko::QuitAsk>,
-    /// The question this app answered last.
-    answered: Option<u64>,
+    /// What the user did with the agent's questions in this app.
+    questions: Questions,
     /// When the user last sent it something or looked at it, in Unix
     /// milliseconds: cache reminders leave sessions alone after an hour.
     touched_at: i64,
@@ -432,7 +486,7 @@ impl LiveSession {
             prompt: None,
             quit_ask: None,
             quit_agreed: None,
-            answered: None,
+            questions: Questions::default(),
             touched_at: crate::figures::now_ms(),
             input_epoch: std::cell::Cell::new(0),
             opened: 0,
@@ -588,6 +642,13 @@ impl LiveSession {
         }
         self.reading = status.borrow().clone();
         self.apply_reading();
+        // The questions open as it opens (a resumed session's) aren't news.
+        self.questions.known = feed
+            .open_questions()
+            .into_iter()
+            .map(|question| question.id)
+            .collect();
+        self.questions.read(&self.reading.questions);
         // Closed before it opened, only the quit is queued.
         for queued in self.queued.drain(..) {
             let _ = input.send(queued);
@@ -708,11 +769,13 @@ impl LiveSession {
         if let Some(reading) = drained.reading {
             self.reading = reading;
             self.apply_reading();
+            if self.questions.read(&self.reading.questions) {
+                cx.emit(LiveEvent::QuestionAsked);
+            }
         }
         if let Some(activity) = drained.activity {
             let was = std::mem::replace(&mut self.activity, activity);
             let now = &self.activity;
-            let question = |activity: &Activity| activity.question.as_ref().map(|q| q.id);
             if !was.working && now.working {
                 self.refresh_running = std::mem::take(&mut self.refresh_coming);
             }
@@ -722,16 +785,6 @@ impl LiveSession {
                 self.refreshed_last = std::mem::take(&mut self.refresh_running)
                     || std::mem::take(&mut self.refresh_coming);
                 cx.emit(LiveEvent::TurnEnded);
-            }
-            if question(&was) != question(now) {
-                if let Some(closed) = question(&was) {
-                    cx.emit(LiveEvent::QuestionClosed {
-                        answered_here: self.answered == Some(closed),
-                    });
-                }
-                if now.question.is_some() {
-                    cx.emit(LiveEvent::QuestionAsked);
-                }
             }
         }
         for worker in drained.workers {
@@ -773,7 +826,7 @@ impl LiveSession {
         if let Some(id) = &self.id {
             let indicator = Indicator {
                 working: self.activity.working,
-                question: self.activity.question.is_some(),
+                question: self.activity.question.is_some() || !self.open_questions().is_empty(),
             };
             LiveSessions::set_indicator(id, indicator, cx);
             LiveSessions::set_title(id, &self.title, cx);
@@ -790,7 +843,7 @@ impl LiveSession {
         self.link = None;
         self._feed.clear();
         self.activity = Activity::default();
-        self.answered = None;
+        self.questions.reopened();
         self.launch(Start::Resume(id), cx);
         cx.notify();
     }
@@ -1036,9 +1089,92 @@ impl LiveSession {
         self.activity.working
     }
 
-    /// The question the agent waits on.
+    /// The question card the agent waits on, while it waits for the
+    /// user's answer (a question asked with `wait`, or Arko's own).
     pub fn question(&self) -> Option<&Question> {
         self.activity.question.as_ref()
+    }
+
+    /// The agent's open questions, in the order asked, without those the
+    /// user answered, dismissed or replied to here.
+    pub fn open_questions(&self) -> Vec<&AgentQuestion> {
+        self.reading
+            .questions
+            .iter()
+            .filter(|question| !self.questions.settled.contains(&question.id))
+            .collect()
+    }
+
+    /// The number each open question shows with, by its id: its place
+    /// among the questions asked with it ([`crate::questions::numbers`]).
+    pub fn question_numbers(&self) -> HashMap<String, usize> {
+        match &self.link {
+            // The feed has the questions answered meanwhile too.
+            Some(link) => crate::questions::numbers(&link.feed.questions()),
+            None => crate::questions::numbers(&self.reading.questions),
+        }
+    }
+
+    /// The open questions attached to the message box, which the next
+    /// message answers.
+    pub fn attached_questions(&self) -> Vec<String> {
+        self.questions
+            .attached
+            .iter()
+            .filter(|id| !self.questions.settled.contains(*id))
+            .cloned()
+            .collect()
+    }
+
+    /// Attaches the open questions to the message box: the next message
+    /// answers them.
+    pub fn attach_questions(&mut self, cx: &mut Context<Self>) {
+        let open: Vec<String> = self
+            .open_questions()
+            .iter()
+            .map(|question| question.id.clone())
+            .collect();
+        if open != self.questions.attached {
+            self.questions.attached = open;
+            cx.notify();
+        }
+    }
+
+    /// Takes the questions off the message box again.
+    pub fn detach_questions(&mut self, cx: &mut Context<Self>) {
+        if !self.questions.attached.is_empty() {
+            self.questions.attached.clear();
+            cx.notify();
+        }
+    }
+
+    /// The open questions the answer panel hasn't shown yet.
+    pub fn unseen_questions(&self) -> Vec<String> {
+        self.open_questions()
+            .iter()
+            .filter(|question| !self.questions.seen.contains(&question.id))
+            .map(|question| question.id.clone())
+            .collect()
+    }
+
+    /// The answer panel shows the open questions.
+    pub fn see_questions(&mut self) {
+        let open: Vec<String> = self
+            .open_questions()
+            .iter()
+            .map(|question| question.id.clone())
+            .collect();
+        self.questions.seen.extend(open);
+    }
+
+    /// Shows `questions` as the agent's open questions (previews and
+    /// screenshots, where no session runs).
+    #[doc(hidden)]
+    pub fn show_questions(&mut self, questions: Vec<AgentQuestion>, cx: &mut Context<Self>) {
+        Arc::make_mut(&mut self.reading).questions = questions;
+        self.questions.read(&self.reading.questions);
+        self.update_indicator(cx);
+        cx.notify();
     }
 
     pub fn workers(&self) -> &[WorkerSummary] {
@@ -1071,9 +1207,7 @@ impl LiveSession {
 
     /// Sends `input` to the engine, or keeps it until the session opens.
     pub fn send(&mut self, input: arko::Input, cx: &mut Context<Self>) -> Result<(), String> {
-        if let arko::Input::Answer { question, .. } = &input {
-            self.answered = Some(*question);
-        }
+        self.questions.sent(&input, &self.reading.questions);
         self.touched_at = crate::figures::now_ms();
         self.changes();
         match (&self.phase, &self.link) {
@@ -1428,8 +1562,9 @@ pub fn init(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{Drained, LiveEvent, LiveSession, LiveSessions, Phase, first_line};
-    use arko::remote::{Activity, Question};
+    use arko::remote::{Activity, Reading};
     use gpui_kit::{AppContext as _, TestAppContext};
+    use std::sync::Arc;
 
     /// A session the backend refuses (open in a terminal) says why, and
     /// isn't counted among those running.
@@ -1452,11 +1587,13 @@ mod tests {
         });
     }
 
-    /// The session tells of the turns that end and the questions that come
-    /// and go. A question that closes without this app's answer was
-    /// answered elsewhere.
+    /// The session tells of the turns that end and of the questions that
+    /// come, each once. The questions answered here leave its open
+    /// questions at once.
     #[gpui_kit::test]
     fn turns_and_questions_are_told_as_they_change(cx: &mut TestAppContext) {
+        use crate::questions::question;
+
         cx.update(super::init);
         let session = cx.new(|cx| {
             let mut session = LiveSession::blank(cx);
@@ -1471,17 +1608,20 @@ mod tests {
             })
             .detach();
         });
-        let apply = |cx: &mut TestAppContext, working: bool, question: Option<u64>| {
+        let apply = |cx: &mut TestAppContext, working: bool, open: &[&str]| {
             session.update(cx, |session, cx| {
                 session.apply(
                     Drained {
+                        reading: Some(Arc::new(Reading {
+                            questions: open
+                                .iter()
+                                .map(|id| question(id, "Tabs or spaces?"))
+                                .collect(),
+                            ..Reading::default()
+                        })),
                         activity: Some(Activity {
                             working,
-                            question: question.map(|id| Question {
-                                id,
-                                text: "Tabs or spaces?".into(),
-                            }),
-                            since: None,
+                            ..Activity::default()
                         }),
                         ..Drained::default()
                     },
@@ -1489,31 +1629,35 @@ mod tests {
                 )
             })
         };
-        apply(cx, true, Some(1));
         let indicator = |cx: &mut TestAppContext| {
             cx.read(|cx| {
                 super::LiveSessions::indicator(&crate::backend::SessionId("s1".into()), cx)
             })
         };
+        apply(cx, true, &["q1"]);
         assert!(indicator(cx).question && indicator(cx).working);
-        apply(cx, true, None);
-        apply(cx, true, Some(2));
-        session.update(cx, |session, _| session.answered = Some(2));
-        apply(cx, false, None);
+        apply(cx, true, &["q1", "q2"]);
+        apply(cx, true, &["q2"]);
+        apply(cx, false, &["q2"]);
         assert_eq!(
             *heard.borrow(),
             [
                 LiveEvent::QuestionAsked,
-                LiveEvent::QuestionClosed {
-                    answered_here: false
-                },
                 LiveEvent::QuestionAsked,
-                LiveEvent::TurnEnded,
-                LiveEvent::QuestionClosed {
-                    answered_here: true
-                },
+                LiveEvent::TurnEnded
             ]
         );
+        session
+            .update(cx, |session, cx| {
+                session.send(arko::Input::DismissQuestions(vec!["q2".into()]), cx)
+            })
+            .unwrap();
+        assert!(cx.read(|cx| session.read(cx).open_questions().is_empty()));
+        // Until the status says so, and after.
+        apply(cx, false, &["q2"]);
+        assert!(cx.read(|cx| session.read(cx).open_questions().is_empty()));
+        apply(cx, false, &[]);
+        assert!(!indicator(cx).question);
     }
 
     /// What the engine says in a burst (here 4,000 changes of the turn's

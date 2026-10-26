@@ -349,7 +349,10 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) {
             let live = session.read(cx);
             (
                 live.title().to_string(),
-                live.question().map(|question| question.text.clone()),
+                // The latest question, which is the news.
+                live.open_questions()
+                    .last()
+                    .map(|question| question.question.clone()),
             )
         };
         let Some(notice) = notice(
@@ -419,7 +422,7 @@ mod tests {
     use crate::live::{LiveEvent, LiveSession, WorkerEnd};
     use crate::prefs::Notifications;
     use crate::tests::open;
-    use arko::remote::{Activity, Question, Reading};
+    use arko::remote::{Activity, Reading};
     use gpui_kit::component::WindowExt as _;
     use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext};
     use std::sync::Arc;
@@ -577,18 +580,26 @@ mod tests {
     }
 
     fn turn(session: &Entity<LiveSession>, cx: &mut TestAppContext, question: Option<&str>) {
+        static ASKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+        let id = format!(
+            "q{}",
+            ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         for working in [true, false] {
             let activity = Activity {
                 working,
-                question: question.filter(|_| working).map(|text| Question {
-                    id: 1,
-                    text: text.into(),
-                }),
                 since: None,
+                ..Activity::default()
             };
-            session.update(cx, |session, cx| {
-                session.set_status(Reading::default(), activity, cx)
-            });
+            let reading = Reading {
+                questions: question
+                    .filter(|_| working)
+                    .map(|text| crate::questions::question(&id, text))
+                    .into_iter()
+                    .collect(),
+                ..Reading::default()
+            };
+            session.update(cx, |session, cx| session.set_status(reading, activity, cx));
             cx.run_until_parked();
         }
     }

@@ -693,6 +693,8 @@ pub(crate) enum RowKey {
     Output(u64),
     Turn(u64),
     Worker(u64),
+    /// The card of the agent's questions, each with its state.
+    Question(u64),
     /// "Working…" while the agent waits on the model with nothing else
     /// showing it, by the latest entry before it.
     Working(u64),
@@ -714,6 +716,7 @@ impl RowKey {
             | RowKey::Output(id)
             | RowKey::Turn(id)
             | RowKey::Worker(id)
+            | RowKey::Question(id)
             | RowKey::Working(id)
             | RowKey::Block { id, .. } => id,
         }
@@ -866,6 +869,8 @@ impl Rows<'_> {
         match item.kind {
             Kind::Conversation => self.push(RowKey::Separator(id), Class::Separator),
             Kind::User => self.push(RowKey::User(id), Class::User),
+            // A card of the agent's questions, with each one's state.
+            Kind::Question if has_questions(item) => self.push(RowKey::Question(id), Class::Prose),
             Kind::Text | Kind::Message | Kind::Question => self.blocks(id, Class::Prose),
             Kind::Reply => {
                 self.blocks(id, Class::Prose);
@@ -890,6 +895,14 @@ impl Rows<'_> {
             _ => {}
         }
     }
+}
+
+/// Whether `item` is a card of the agent's questions with their states (an
+/// ask from before questions had them shows as its text).
+pub(crate) fn has_questions(item: &Item) -> bool {
+    item.questions
+        .as_ref()
+        .is_some_and(|questions| !questions.is_empty())
 }
 
 /// Calls in a row past this many fold into one row in the Quiet view.
