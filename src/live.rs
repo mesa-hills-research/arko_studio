@@ -39,6 +39,10 @@ pub struct Indicator {
 pub struct LiveSessions {
     sessions: Vec<Entity<LiveSession>>,
     indicators: HashMap<SessionId, Indicator>,
+    /// Each session's name as its engine gave it last, which the sidebar
+    /// lists again for when it changes (a model's name arrives while the
+    /// window shows another session).
+    titles: HashMap<SessionId, SharedString>,
 }
 
 impl Global for LiveSessions {}
@@ -67,6 +71,20 @@ impl LiveSessions {
             .unwrap_or_default()
     }
 
+    /// The names of the sessions open in this app, as their engines gave
+    /// them last.
+    pub fn titles(cx: &App) -> HashMap<SessionId, SharedString> {
+        cx.global::<Self>().titles.clone()
+    }
+
+    fn set_title(id: &SessionId, title: &SharedString, cx: &mut App) {
+        if cx.global::<Self>().titles.get(id) != Some(title) {
+            cx.update_global::<Self, _>(|this, _| {
+                this.titles.insert(id.clone(), title.clone());
+            });
+        }
+    }
+
     /// The ids of the sessions open in this app.
     pub fn ids(cx: &App) -> Vec<SessionId> {
         cx.global::<Self>()
@@ -87,6 +105,7 @@ impl LiveSessions {
                 .retain(|session| session.entity_id() != entity);
             if let Some(id) = id {
                 this.indicators.remove(id);
+                this.titles.remove(id);
             }
         });
     }
@@ -757,6 +776,7 @@ impl LiveSession {
                 question: self.activity.question.is_some(),
             };
             LiveSessions::set_indicator(id, indicator, cx);
+            LiveSessions::set_title(id, &self.title, cx);
         }
     }
 

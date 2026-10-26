@@ -248,6 +248,52 @@ fn a_first_message_starts_a_session_and_its_reply_arrives(cx: &mut TestAppContex
     );
 }
 
+/// A name an engine gives a session that the window isn't showing (a
+/// model's, after its first message) reaches the sidebar's row and the
+/// palette's entry without the window coming forward again.
+#[gpui_kit::test]
+fn a_name_given_to_a_session_in_the_background_reaches_the_sidebar_and_the_palette(
+    cx: &mut TestAppContext,
+) {
+    let mock = Mock::start(|_, _| answer("Done.", Duration::ZERO));
+    let app = start(cx, &mock);
+    app.send(cx, "Count the pears.");
+    app.wait_for_text(cx, "Done.");
+    let first = app.shown(cx).unwrap();
+    wait_until(cx, "the first turn to end", |cx| {
+        cx.read(|cx| !first.read(cx).is_working())
+    });
+    // A second session in the same window: the first is in the background.
+    act(cx, app.window, |window, cx| window.press("secondary-n", cx));
+    app.send(cx, "Count the apples.");
+    app.wait_for_text(cx, "Done.");
+    assert_eq!(
+        open_title(&app.workspace, cx).as_deref(),
+        Some("Count the apples.")
+    );
+    // The first is given a name, which its engine says.
+    cx.update(|cx| first.update(cx, |session, cx| session.rename("Pear count".into(), cx)));
+    let listed = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let sidebar = app.workspace.read(cx).sidebar().read(cx);
+            let row = sidebar
+                .rows()
+                .iter()
+                .any(|row| matches!(row, Row::Session { title, .. } if title == "Pear count"));
+            let entry = crate::palette::sections(sidebar.sessions())
+                .iter()
+                .filter(|section| section.title == "Go to Session")
+                .flat_map(|section| section.rows.iter())
+                .any(|row| row.label == "Pear count");
+            (row, entry)
+        })
+    };
+    wait_until(cx, "the sidebar and the palette to list the name", |cx| {
+        listed(cx) == (true, true)
+    });
+    app.close_all(cx);
+}
+
 #[gpui_kit::test]
 fn escape_stops_a_turn_and_send_comes_back(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, _| answer("Too late.", Duration::from_secs(20)));

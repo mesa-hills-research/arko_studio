@@ -238,6 +238,7 @@ pub struct Sidebar {
     /// The sessions running in this app when the list was last read: one
     /// more means a new session to list.
     live_ids: Vec<SessionId>,
+    live_titles: std::collections::HashMap<SessionId, SharedString>,
     _subscriptions: Vec<Subscription>,
     _refresh: Option<Task<()>>,
 }
@@ -260,12 +261,20 @@ impl Sidebar {
             }),
             // The running sessions' indicators. A session created here gets
             // its row.
+            // A name an engine gives a session that is open (a model's, a
+            // while after the first message) is listed again, whichever
+            // session the window shows.
             cx.observe_global::<LiveSessions>(|this, cx| {
                 let ids = LiveSessions::ids(cx);
-                if ids.iter().any(|id| !this.live_ids.contains(id)) {
+                let titles = LiveSessions::titles(cx);
+                let renamed = titles
+                    .iter()
+                    .any(|(id, title)| this.live_titles.get(id).is_some_and(|was| was != title));
+                if renamed || ids.iter().any(|id| !this.live_ids.contains(id)) {
                     this.refresh(cx);
                 }
                 this.live_ids = ids;
+                this.live_titles = titles;
                 cx.notify();
             }),
             // Which sessions have news.
@@ -284,6 +293,7 @@ impl Sidebar {
             scroll: UniformListScrollHandle::new(),
             loaded: false,
             live_ids: Vec::new(),
+            live_titles: Default::default(),
             _subscriptions: subscriptions,
             _refresh: None,
         };
