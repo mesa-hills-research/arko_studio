@@ -257,6 +257,9 @@ enum Row {
     Model {
         name: SharedString,
         label: SharedString,
+        /// What a screen reader says for it: its name, its way and
+        /// whether it can be used.
+        spoken: SharedString,
         /// What else it's found by: its alias and the way it's reached.
         found_by: String,
     },
@@ -286,6 +289,7 @@ fn sections(
         rows: vec![Row::Model {
             name: SharedString::default(),
             label: first.clone(),
+            spoken: first.clone(),
             found_by: String::new(),
         }],
     }];
@@ -302,20 +306,30 @@ fn sections(
             None => group.name.clone(),
         };
         let way = way(&group.name);
+        let spoken = |label: &str| match group.needs {
+            Some(_) => format!("{label}, {way}, can’t be used yet"),
+            None => format!("{label}, {way}"),
+        };
         let mut rows: Vec<Row> = group
             .models
             .iter()
-            .map(|model| Row::Model {
-                name: model.name.clone().into(),
-                label: arko::models::display_name(&model.name).into(),
-                found_by: format!("{} {} {way}", model.name, model.alias).to_lowercase(),
+            .map(|model| {
+                let label = arko::models::display_name(&model.name);
+                Row::Model {
+                    name: model.name.clone().into(),
+                    spoken: spoken(&label).into(),
+                    label: label.into(),
+                    found_by: format!("{} {} {way}", model.name, model.alias).to_lowercase(),
+                }
             })
             .collect();
         if openrouter {
             if !placed && crate::openrouter::slug(chosen).is_some() {
+                let label = openrouter_name(chosen, known);
                 rows.push(Row::Model {
                     name: chosen.to_string().into(),
-                    label: openrouter_name(chosen, known).into(),
+                    spoken: spoken(&label).into(),
+                    label: label.into(),
                     found_by: format!("{chosen} {way}").to_lowercase(),
                 });
                 placed = true;
@@ -333,6 +347,7 @@ fn sections(
         sections[0].rows.push(Row::Model {
             name: chosen.to_string().into(),
             label: chosen.to_string().into(),
+            spoken: chosen.to_string().into(),
             found_by: chosen.to_lowercase(),
         });
     }
@@ -490,17 +505,28 @@ impl ListDelegate for ModelList {
         _: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
-        let id = SharedString::from(format!("{}-{}", ix.section, ix.row));
+        let id = SharedString::from(format!("model-row-{}-{}", ix.section, ix.row));
         let item = match self.row(ix)? {
-            Row::Model { name, label, .. } => ListItem::new(id)
+            Row::Model {
+                name,
+                label,
+                spoken,
+                ..
+            } => ListItem::new(id)
                 .child(label.clone())
+                .accessibility_label(spoken.clone())
                 .confirmed(*name == self.chosen)
                 .check_icon(IconName::Check),
-            Row::Browse { .. } => ListItem::new(id).child(
-                h_flex()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(ALL_OPENROUTER),
-            ),
+            Row::Browse { needs } => ListItem::new(id)
+                .accessibility_label(match needs {
+                    Some(_) => "All OpenRouter models, can’t be used yet",
+                    None => "All OpenRouter models",
+                })
+                .child(
+                    h_flex()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(ALL_OPENROUTER),
+                ),
         };
         Some(item)
     }

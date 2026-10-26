@@ -2366,14 +2366,16 @@ impl SessionView {
                                 }),
                         )
                     });
-                // A row that looks further, muted.
-                let link = |id: SharedString, text: String| {
+                // A row that looks further, muted, and what a screen reader
+                // says for it.
+                let link = |id: SharedString, text: String, spoken: String| {
                     Button::new(id)
                         .ghost()
                         .small()
                         .w_full()
                         .justify_start()
                         .disabled(locked)
+                        .accessibility_label(spoken)
                         .child(div().text_xs().text_color(muted).child(text))
                 };
                 Some(
@@ -2506,19 +2508,23 @@ impl SessionView {
                         .when(openrouter && filter.trim().is_empty(), |this| {
                             let browse = browse.clone();
                             this.child(
-                                link("model-browse".into(), "All OpenRouter models…".into())
-                                    .on_click(move |_, window, cx| {
-                                        browse(String::new(), window, cx)
-                                    }),
+                                link(
+                                    "model-browse".into(),
+                                    "All OpenRouter models…".into(),
+                                    "All OpenRouter models".into(),
+                                )
+                                .on_click(move |_, window, cx| browse(String::new(), window, cx)),
                             )
                         })
                         .when(unlisted > OPENROUTER_FOUND, |this| {
                             let query = filter.trim().to_string();
                             this.child(
-                                link("model-see-all".into(), format!("See all {matching}"))
-                                    .on_click(move |_, window, cx| {
-                                        browse(query.clone(), window, cx)
-                                    }),
+                                link(
+                                    "model-see-all".into(),
+                                    format!("See all {matching}"),
+                                    format!("See all {matching} OpenRouter models found"),
+                                )
+                                .on_click(move |_, window, cx| browse(query.clone(), window, cx)),
                             )
                         })
                         .into_any_element(),
@@ -2628,6 +2634,16 @@ impl SessionView {
                             let model = model.clone();
                             Button::new(SharedString::from(format!("effort-{effort}")))
                                 .xsmall()
+                                // A screen reader hears which one runs, and why.
+                                .accessibility_label(match from {
+                                    Some(EffortFrom::Chosen) => format!("{effort}, chosen"),
+                                    Some(EffortFrom::LastUsed) => format!("{effort}, last used"),
+                                    Some(EffortFrom::Settings | EffortFrom::Default) => {
+                                        format!("{effort}, default")
+                                    }
+                                    None => effort.clone(),
+                                })
+                                .toggled(from.is_some())
                                 .map(|this| match from {
                                     Some(EffortFrom::Chosen) => this.primary(),
                                     Some(EffortFrom::LastUsed) => {

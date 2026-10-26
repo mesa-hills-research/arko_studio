@@ -1146,7 +1146,10 @@ fn a_search_finds_openrouter_models_in_the_catalog(cx: &mut TestAppContext) {
             window.find("model-1-0").label(),
             Some("Kimi K3. 262k context, $0.60 in and $2.50 out per million tokens")
         );
-        assert!(window.try_find("model-browse").is_some());
+        assert_eq!(
+            window.find("model-browse").label(),
+            Some("All OpenRouter models")
+        );
         assert!(window.try_find("model-found-0").is_none());
     });
     find_model(&workspace, window, "glm", cx);
@@ -1188,6 +1191,10 @@ fn see_all_and_all_openrouter_models_open_the_catalog(cx: &mut TestAppContext) {
         assert!(window.try_find("model-found-4").is_some());
         assert!(window.try_find("model-found-5").is_none());
         assert!(window.try_find("model-browse").is_none());
+        assert_eq!(
+            window.find("model-see-all").label(),
+            Some("See all 12 OpenRouter models found")
+        );
         window.click("model-see-all", cx)
     });
     act(cx, window, |window, cx| {
@@ -1259,8 +1266,10 @@ fn the_effort_row_marks_the_effort_a_session_would_use(cx: &mut TestAppContext) 
         effort("claude-opus-5-5", cx),
         Some(("xhigh".to_string(), EffortFrom::Default))
     );
+    // A screen reader hears which effort runs, and why.
     act(cx, window, |window, _| {
-        assert!(window.try_find("effort-xhigh").is_some());
+        assert_eq!(window.find("effort-xhigh").label(), Some("xhigh, default"));
+        assert_eq!(window.find("effort-high").label(), Some("high"));
     });
     // Sonnet last ran at medium.
     act(cx, window, |window, cx| window.click("model-0-1", cx));
@@ -1284,6 +1293,11 @@ fn the_effort_row_marks_the_effort_a_session_would_use(cx: &mut TestAppContext) 
         effort("claude-sonnet-5-5", cx),
         Some(("low".to_string(), EffortFrom::Chosen))
     );
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| {
+        assert_eq!(window.find("effort-low").label(), Some("low, chosen"));
+        window.press("escape", cx);
+    });
     act(cx, window, |window, _| {
         assert!(window.try_find("model-list").is_none());
     });

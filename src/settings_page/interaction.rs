@@ -1251,3 +1251,67 @@ fn a_failed_openrouter_save_shows_what_is_saved(cx: &mut TestAppContext) {
     assert_eq!((saved.region(), saved.sort()), (Region::Any, Sort::Price));
     assert_eq!(shown(cx), saved);
 }
+
+/// The model lists' rows and OpenRouter's controls have names a screen
+/// reader says: each row its model, way and state, each control its field
+/// and value.
+#[gpui_kit::test]
+fn the_model_rows_and_openrouter_controls_have_names(cx: &mut TestAppContext) {
+    use gpui_kit::base::test_support::snapshots;
+    let backend = FakeBackend::sample("/arko", SystemTime::now()).with_models(openrouter_models());
+    start_on(cx, backend, prefs::Prefs::default());
+    let (window, _, _) = settings_window(cx, ACCOUNTS_PAGE, 2800.);
+    act(cx, window, |window, _| {
+        assert_eq!(
+            window.find("openrouter-zdr").label(),
+            Some("Zero data retention")
+        );
+        assert_eq!(
+            window.find("openrouter-data-collection").label(),
+            Some("No data collection")
+        );
+        assert_eq!(
+            window.find("openrouter-region").label(),
+            Some("Region, Any")
+        );
+        assert_eq!(
+            window.find("openrouter-sort").label(),
+            Some("Providers by, Default")
+        );
+        assert_eq!(
+            window.find("openrouter-precision").label(),
+            Some("Precision, Any")
+        );
+        for (field, name) in [
+            ("openrouter-only", "Only these providers"),
+            ("openrouter-ignore", "Never these providers"),
+        ] {
+            let field = gpui_kit::ElementId::Name(field.into());
+            assert!(
+                snapshots(window)
+                    .iter()
+                    .any(|element| element.path().contains(&field) && element.label() == Some(name)),
+                "{name}"
+            );
+        }
+    });
+    act(cx, window, |window, cx| {
+        window.click("new-sessions-model-button", cx)
+    });
+    act(cx, window, |window, _| {
+        let list = window.within("new-sessions-model");
+        assert_eq!(list.find("model-row-0-0").label(), Some("Last used"));
+        assert_eq!(
+            list.find("model-row-1-0").label(),
+            Some("Opus 5.5, Anthropic API")
+        );
+        assert_eq!(
+            list.find("model-row-2-0").label(),
+            Some("Kimi K3, OpenRouter")
+        );
+        assert_eq!(
+            list.find("model-row-2-1").label(),
+            Some("All OpenRouter models")
+        );
+    });
+}
