@@ -3227,3 +3227,65 @@ fn renaming_light() {
 fn renaming_dark() {
     goldens().assert("renaming-dark", &renaming(ThemeMode::Dark));
 }
+
+/// A new session's model list, open: Claude by API key, then OpenRouter
+/// with its settings button, the models picked lately and the row that
+/// opens its whole catalog.
+fn model_popover(mode: ThemeMode) -> Screenshot {
+    use arko_studio::backend::{ModelChoice, ModelChoices, ModelGroup};
+    use gpui_kit::test::TestWindowExt as _;
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let choice = |name: &str, alias: &str| ModelChoice {
+        name: name.into(),
+        alias: alias.into(),
+    };
+    let backend = FakeBackend::sample("/arko", SystemTime::now()).with_models(ModelChoices {
+        groups: vec![
+            ModelGroup {
+                name: "Anthropic API, billed per token".into(),
+                needs: None,
+                models: vec![
+                    choice("claude-opus-5-5", "opus"),
+                    choice("claude-sonnet-5-5", "sonnet"),
+                ],
+            },
+            ModelGroup {
+                name: "OpenRouter, billed per token".into(),
+                needs: None,
+                models: vec![
+                    choice("openrouter:moonshotai/kimi-k3", ""),
+                    choice("openrouter:z-ai/glm-5", ""),
+                ],
+            },
+        ],
+        default: Some("claude-opus-5-5".into()),
+        note: None,
+    });
+    let startup = Startup::for_tests(Arc::new(backend))
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(1300.), px(800.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, _)| window)
+        })
+        .unwrap();
+    app.run_until_parked();
+    app.update_window(window, |_, window, cx| window.click("mode-model", cx))
+        .unwrap();
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn model_popover_light() {
+    goldens().assert("model-popover-light", &model_popover(ThemeMode::Light));
+}
+
+#[test]
+fn model_popover_dark() {
+    goldens().assert("model-popover-dark", &model_popover(ThemeMode::Dark));
+}

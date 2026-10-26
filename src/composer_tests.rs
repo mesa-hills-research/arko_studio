@@ -1026,3 +1026,201 @@ fn the_composer_menu_is_the_drawn_one(cx: &mut TestAppContext) {
         assert!(labels.iter().any(|label| label == "Paste"), "{labels:?}");
     });
 }
+
+/// The app on the sample sessions with an OpenRouter group listing Kimi
+/// K3, and OpenRouter's catalog `catalog`.
+fn start_with_openrouter(
+    cx: &mut TestAppContext,
+    catalog: crate::backend::Catalog,
+) -> (Arc<FakeBackend>, AnyWindowHandle, Entity<Workspace>) {
+    use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
+    let choice = |name: &str, alias: &str| ModelChoice {
+        name: name.into(),
+        alias: alias.into(),
+    };
+    let backend = FakeBackend::sample("/arko", SystemTime::now())
+        .with_models(ModelChoices {
+            groups: vec![
+                ModelGroup {
+                    name: "Anthropic API, billed per token".into(),
+                    needs: None,
+                    models: vec![choice("claude-opus-5-5", "opus")],
+                },
+                ModelGroup {
+                    name: "OpenRouter, billed per token".into(),
+                    needs: None,
+                    models: vec![choice("openrouter:moonshotai/kimi-k3", "")],
+                },
+            ],
+            default: Some("claude-opus-5-5".into()),
+            note: None,
+        })
+        .with_catalog(catalog);
+    let backend = Arc::new(backend);
+    cx.update(|cx| crate::init(Startup::for_tests(backend.clone()), cx));
+    let (window, workspace) = open(cx, 1300.);
+    (backend, window, workspace)
+}
+
+/// Types `text` in the model list's search.
+fn find_model(
+    workspace: &Entity<Workspace>,
+    window: AnyWindowHandle,
+    text: &str,
+    cx: &mut TestAppContext,
+) {
+    let filter = cx.read(|cx| {
+        workspace
+            .read(cx)
+            .session_view()
+            .read(cx)
+            .model_filter()
+            .clone()
+    });
+    let text = text.to_string();
+    act(cx, window, |window, cx| {
+        filter.update(cx, |filter, cx| {
+            filter.set_value(text, window, cx);
+            cx.notify();
+        })
+    });
+}
+
+fn draft_model(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> Option<String> {
+    cx.read(|cx| {
+        workspace
+            .read(cx)
+            .session_view()
+            .read(cx)
+            .draft()
+            .model
+            .clone()
+    })
+}
+
+/// The gear on the OpenRouter group's heading opens Models & accounts at
+/// the OpenRouter group, with the keyboard on its first row.
+#[gpui_kit::test]
+fn the_openrouter_gear_opens_its_settings(cx: &mut TestAppContext) {
+    let (_, window, workspace) =
+        start_with_openrouter(cx, crate::backend::sample_catalog(SystemTime::now()));
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.try_find(("model-group-settings", 0usize)).is_none());
+        window.click(("model-group-settings", 1usize), cx)
+    });
+    let settings = cx.read(|cx| workspace.read(cx).settings().unwrap().clone());
+    let (page, target, focus) = cx.read(|cx| {
+        let accounts = settings.read(cx).accounts().read(cx);
+        (
+            settings.read(cx).page(),
+            accounts.target(),
+            accounts.focus_of("openrouter-settings").unwrap(),
+        )
+    });
+    assert_eq!(page, crate::settings_page::ACCOUNTS_PAGE);
+    assert_eq!(target, Some("openrouter-settings"));
+    act(cx, window, |window, _| {
+        assert!(focus.is_focused(window));
+        assert!(window.try_find("account-openrouter-settings").is_some());
+    });
+}
+
+/// An OpenRouter row's screen-reader name and tooltip give its context and
+/// prices, and a search adds the catalog's models the group doesn't list.
+#[gpui_kit::test]
+fn a_search_finds_openrouter_models_in_the_catalog(cx: &mut TestAppContext) {
+    let (_, window, workspace) =
+        start_with_openrouter(cx, crate::backend::sample_catalog(SystemTime::now()));
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, _| {
+        assert_eq!(
+            window.find("model-1-0").label(),
+            Some("Kimi K3. 262k context, $0.60 in and $2.50 out per million tokens")
+        );
+        assert!(window.try_find("model-browse").is_some());
+        assert!(window.try_find("model-found-0").is_none());
+    });
+    find_model(&workspace, window, "glm", cx);
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("model-found-1").is_none());
+        assert!(window.try_find("model-see-all").is_none());
+        window.click("model-found-0", cx)
+    });
+    assert_eq!(
+        draft_model(&workspace, cx).as_deref(),
+        Some("openrouter:z-ai/glm-5")
+    );
+}
+
+/// A search with more than five of OpenRouter's models shows five, then
+/// "See all", which opens the catalog on the search. "All OpenRouter
+/// models…" opens it too.
+#[gpui_kit::test]
+fn see_all_and_all_openrouter_models_open_the_catalog(cx: &mut TestAppContext) {
+    use crate::backend::{Catalog, Listed};
+    let catalog = Catalog {
+        models: (1..=12)
+            .map(|n| Listed {
+                name: format!("openrouter:vendor/model-{n}"),
+                label: format!("Model {n}"),
+                context: Some(128_000),
+                input_price: Some(1.),
+                output_price: Some(2.),
+                zone: None,
+            })
+            .collect(),
+        fetched: Some(SystemTime::now()),
+        problem: None,
+    };
+    let (_, window, workspace) = start_with_openrouter(cx, catalog);
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    find_model(&workspace, window, "model", cx);
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("model-found-4").is_some());
+        assert!(window.try_find("model-found-5").is_none());
+        assert!(window.try_find("model-browse").is_none());
+        window.click("model-see-all", cx)
+    });
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        assert!(window.try_find("openrouter-browser").is_some());
+    });
+    // The catalog opened on the search, all twelve found: Enter picks the
+    // first.
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(
+        draft_model(&workspace, cx).as_deref(),
+        Some("openrouter:vendor/model-1")
+    );
+    act(cx, window, |window, cx| {
+        assert!(!window.has_active_dialog(cx))
+    });
+
+    find_model(&workspace, window, "", cx);
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("model-browse", cx));
+    act(cx, window, |window, cx| {
+        window.press("down", cx);
+        window.press("enter", cx);
+    });
+    assert_eq!(
+        draft_model(&workspace, cx).as_deref(),
+        Some("openrouter:vendor/model-2")
+    );
+}
+
+/// Opening the model list fetches OpenRouter's catalog again when the one
+/// arko keeps is stale, and only then.
+#[gpui_kit::test]
+fn opening_the_model_list_refreshes_a_stale_catalog(cx: &mut TestAppContext) {
+    let mut catalog = crate::backend::sample_catalog(SystemTime::now());
+    catalog.fetched = Some(SystemTime::now() - std::time::Duration::from_secs(3600));
+    let (backend, window, _) = start_with_openrouter(cx, catalog);
+    assert_eq!(backend.catalog_fetches(), 0);
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    assert_eq!(backend.catalog_fetches(), 1);
+    act(cx, window, |window, cx| window.press("escape", cx));
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    assert_eq!(backend.catalog_fetches(), 1, "fresh now");
+}

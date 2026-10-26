@@ -192,7 +192,30 @@ pub struct SessionView {
     /// The images of a first message whose session didn't open, for the
     /// new session's composer.
     returned_images: Vec<Attached>,
+    /// What the model list knows of OpenRouter.
+    openrouter: OpenRouterSeen,
+    _openrouter: Option<Task<()>>,
 }
+
+/// What the model list knows of OpenRouter: the models picked lately and
+/// the catalog arko keeps, for their details and the search, and the
+/// routing settings in a few words.
+#[derive(Default)]
+struct OpenRouterSeen {
+    recent: Vec<crate::backend::Listed>,
+    catalog: crate::backend::Catalog,
+    summary: Option<String>,
+    /// The catalog is being fetched.
+    loading: bool,
+    /// When it was last read, to read it again only after a while.
+    read_at: Option<std::time::Instant>,
+}
+
+/// How long the model list goes before it reads OpenRouter's catalog
+/// again (arko fetches it only when what it keeps is stale).
+const OPENROUTER_REREAD: std::time::Duration = std::time::Duration::from_secs(30);
+/// How many of OpenRouter's models a search in the model list adds.
+pub const OPENROUTER_FOUND: usize = 5;
 
 /// A new session's first message, kept until the session opens.
 struct FirstMessage {
@@ -280,6 +303,8 @@ impl SessionView {
             closed: false,
             first: None,
             returned_images: Vec::new(),
+            openrouter: OpenRouterSeen::default(),
+            _openrouter: None,
         };
         this.restore_draft(window, cx);
         this.sync_expanded(window, cx);
@@ -405,6 +430,56 @@ impl SessionView {
             })
             .ok();
         }));
+    }
+
+    /// Reads what the model list shows of OpenRouter, in the background:
+    /// the settings and what arko keeps at once, then the catalog fetched
+    /// again when it is stale. Once in a while, as the list opens.
+    fn see_openrouter(&mut self, cx: &mut Context<Self>) {
+        let due = self
+            .openrouter
+            .read_at
+            .is_none_or(|at| at.elapsed() >= OPENROUTER_REREAD);
+        if !due || self._openrouter.is_some() {
+            return;
+        }
+        self.openrouter.read_at = Some(std::time::Instant::now());
+        self.openrouter.loading = true;
+        let backend = cx.global::<SharedBackend>().clone();
+        let kept = cx.background_spawn({
+            let backend = backend.clone();
+            async move { (backend.openrouter(), backend.openrouter_models_kept()) }
+        });
+        self._openrouter = Some(cx.spawn(async move |this, cx| {
+            let (settings, catalog) = kept.await;
+            this.update(cx, |this, cx| {
+                this.openrouter.recent = settings.recent();
+                this.openrouter.summary = settings.summary();
+                this.openrouter.catalog = catalog;
+                cx.notify();
+            })
+            .ok();
+            let catalog = cx
+                .background_spawn(async move { backend.openrouter_models(false) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.openrouter.catalog = catalog;
+                this.openrouter.loading = false;
+                this._openrouter = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// OpenRouter's model `name` as the models picked lately or the
+    /// catalog have it, with its name ("GLM 5") and details.
+    fn openrouter_model(&self, name: &str) -> Option<&crate::backend::Listed> {
+        self.openrouter
+            .recent
+            .iter()
+            .find(|model| model.name == name)
+            .or_else(|| self.openrouter.catalog.get(name))
     }
 
     /// The model a new session would start on: the one chosen in the chip's
@@ -656,6 +731,12 @@ impl SessionView {
     /// The composer.
     pub fn composer(&self) -> &Entity<Composer> {
         &self.composer
+    }
+
+    /// The model list's search field (tests).
+    #[cfg(test)]
+    pub fn model_filter(&self) -> &Entity<InputState> {
+        &self.model_filter
     }
 
     pub fn focus_composer(&self, window: &mut Window, cx: &mut App) {
@@ -1983,6 +2064,8 @@ impl SessionView {
         };
         let session_without_models = self.session.is_some() && choices.groups.is_empty();
 
+        self.see_openrouter(cx);
+        let locked = started && !workers_only;
         let rows = choices
             .groups
             .iter()
@@ -2001,21 +2084,107 @@ impl SessionView {
                     })
                     .cloned()
                     .collect();
-                if models.is_empty() {
+                let openrouter = group.name.starts_with("OpenRouter");
+                // A search also looks in OpenRouter's catalog: the first
+                // few models found that the group doesn't list join it.
+                let (found, unlisted, matching) = if openrouter && !filter.trim().is_empty() {
+                    let catalog = &self.openrouter.catalog.models;
+                    let matching = crate::openrouter::search(catalog, &filter);
+                    let unlisted: Vec<_> = matching
+                        .iter()
+                        .map(|at| &catalog[*at])
+                        .filter(|model| !group.models.iter().any(|g| g.name == model.name))
+                        .collect();
+                    let found: Vec<_> = unlisted
+                        .iter()
+                        .take(OPENROUTER_FOUND)
+                        .map(|model| (*model).clone())
+                        .collect();
+                    (found, unlisted.len(), matching.len())
+                } else {
+                    (Vec::new(), 0, 0)
+                };
+                let loading = openrouter
+                    && !filter.trim().is_empty()
+                    && self.openrouter.loading
+                    && self.openrouter.catalog.models.is_empty();
+                if models.is_empty() && found.is_empty() && !loading {
                     return None;
                 }
                 let usable = group.needs.is_none();
                 let needs = group.needs.clone();
+                let muted = theme.muted_foreground;
+                // Opens OpenRouter's catalog on `query`, choosing for this
+                // list's agent.
+                let browse = {
+                    let (view, popover, needs) = (view.clone(), popover.clone(), needs.clone());
+                    let current = current.clone();
+                    move |query: String, window: &mut Window, cx: &mut App| {
+                        popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+                        let view = view.clone();
+                        crate::openrouter::browse(
+                            crate::openrouter::Browse {
+                                query,
+                                current: current.clone(),
+                                needs: needs.clone(),
+                                refuse_unusable: true,
+                            },
+                            Rc::new(move |model, window, cx| {
+                                view.update(cx, |view, cx| {
+                                    view.choose_model(model.name, workers_only, window, cx)
+                                })
+                                .ok();
+                            }),
+                            window,
+                            cx,
+                        );
+                    }
+                };
+                let heading = h_flex()
+                    .pt_1()
+                    .justify_between()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(group.name.clone())
+                    .when(openrouter, |this| {
+                        let tooltip = match &self.openrouter.summary {
+                            Some(summary) => format!("OpenRouter settings\n{summary}"),
+                            None => "OpenRouter settings".to_string(),
+                        };
+                        let (view, popover) = (view.clone(), popover.clone());
+                        this.child(
+                            Button::new(("model-group-settings", group_ix))
+                                .ghost()
+                                .xsmall()
+                                .compact()
+                                .icon(IconName::Settings)
+                                .tooltip(tooltip)
+                                .accessibility_label("OpenRouter settings")
+                                .on_click(move |_, window, cx| {
+                                    popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+                                    view.update(cx, |_, cx| {
+                                        cx.emit(SessionViewEvent::OpenAccounts(Some(
+                                            crate::settings_page::OPENROUTER_WAY.into(),
+                                        )))
+                                    })
+                                    .ok();
+                                }),
+                        )
+                    });
+                // A row that looks further, muted.
+                let link = |id: SharedString, text: String| {
+                    Button::new(id)
+                        .ghost()
+                        .small()
+                        .w_full()
+                        .justify_start()
+                        .disabled(locked)
+                        .child(div().text_xs().text_color(muted).child(text))
+                };
                 Some(
                     v_flex()
                         .gap_0p5()
-                        .child(
-                            div()
-                                .pt_1()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child(group.name.clone()),
-                        )
+                        .child(heading)
                         .when_some(needs.clone(), |this, needs| {
                             let way = SharedString::from(group.name.clone());
                             this.child(
@@ -2038,7 +2207,17 @@ impl SessionView {
                         })
                         .children(models.into_iter().enumerate().map(|(ix, model)| {
                             let checked = current.as_deref() == Some(model.name.as_str());
-                            let label = arko::models::display_name(&model.name);
+                            // An OpenRouter model's name as OpenRouter has
+                            // it, and its context and prices in its tooltip.
+                            let known = openrouter
+                                .then(|| self.openrouter_model(&model.name))
+                                .flatten();
+                            let label = known
+                                .map(|known| known.label.clone())
+                                .unwrap_or_else(|| arko::models::display_name(&model.name));
+                            let details = known
+                                .map(|known| known.details())
+                                .filter(|details| !details.is_empty());
                             // What to know before choosing it, in the row's
                             // tooltip, marked by an (i) after its name.
                             let note = arko::models::note(&model.name);
@@ -2050,7 +2229,7 @@ impl SessionView {
                                 .small()
                                 .w_full()
                                 .justify_start()
-                                .disabled(!usable || (started && !workers_only))
+                                .disabled(!usable || locked)
                                 .when(checked, |this| this.icon(IconName::Check))
                                 .when_some(note, |this, note| {
                                     this.tooltip(note)
@@ -2069,6 +2248,10 @@ impl SessionView {
                                                 ),
                                         )
                                 })
+                                .when_some(details, |this, details| {
+                                    this.tooltip(details.clone())
+                                        .accessibility_label(format!("{label}. {details}"))
+                                })
                                 .label(label)
                                 .on_click(move |_, window, cx| {
                                     let name = name.clone();
@@ -2079,6 +2262,60 @@ impl SessionView {
                                     popover.update(cx, |popover, cx| popover.dismiss(window, cx));
                                 })
                         }))
+                        .children(found.into_iter().enumerate().map(|(ix, model)| {
+                            let checked = current.as_deref() == Some(model.name.as_str());
+                            let details = model.details();
+                            let (view, popover) = (view.clone(), popover.clone());
+                            Button::new(SharedString::from(format!("model-found-{ix}")))
+                                .ghost()
+                                .small()
+                                .w_full()
+                                .justify_start()
+                                .disabled(!usable || locked)
+                                .when(checked, |this| this.icon(IconName::Check))
+                                .when(!details.is_empty(), |this| {
+                                    this.tooltip(details.clone())
+                                        .accessibility_label(format!("{}. {details}", model.label))
+                                })
+                                .label(model.label.clone())
+                                .on_click(move |_, window, cx| {
+                                    let name = model.name.clone();
+                                    view.update(cx, |view, cx| {
+                                        view.choose_model(name, workers_only, window, cx)
+                                    })
+                                    .ok();
+                                    popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+                                })
+                        }))
+                        .when(loading, |this| {
+                            this.child(
+                                div()
+                                    .id("model-found-loading")
+                                    .test_support()
+                                    .px_2()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child("Loading…"),
+                            )
+                        })
+                        .when(openrouter && filter.trim().is_empty(), |this| {
+                            let browse = browse.clone();
+                            this.child(
+                                link("model-browse".into(), "All OpenRouter models…".into())
+                                    .on_click(move |_, window, cx| {
+                                        browse(String::new(), window, cx)
+                                    }),
+                            )
+                        })
+                        .when(unlisted > OPENROUTER_FOUND, |this| {
+                            let query = filter.trim().to_string();
+                            this.child(
+                                link("model-see-all".into(), format!("See all {matching}"))
+                                    .on_click(move |_, window, cx| {
+                                        browse(query.clone(), window, cx)
+                                    }),
+                            )
+                        })
                         .into_any_element(),
                 )
             });

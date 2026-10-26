@@ -31,7 +31,7 @@ mod profiles;
 mod sessions;
 mod web;
 
-pub use accounts::AccountsPage;
+pub use accounts::{AccountsPage, OPENROUTER_WAY};
 pub use extensions::ExtensionsPage;
 pub use profiles::ProfilesPage;
 pub use sessions::SessionsPage;
