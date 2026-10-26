@@ -1590,7 +1590,16 @@ mod tests {
         let menu = slash_menu("/s", &reading).unwrap();
         let names: Vec<&str> = menu.items.iter().map(|item| item.label.as_ref()).collect();
         // The session's commands and the app's /settings, without the screen's.
-        assert_eq!(names, ["/stop-workers", "/settings", "/skills", "/session"]);
+        assert_eq!(
+            names,
+            [
+                "/stop-workers",
+                "/settings",
+                "/skills",
+                "/session",
+                "/session-names"
+            ]
+        );
         assert_eq!(menu.range, 0..2);
         assert!(slash_menu("/x", &reading).is_none());
         assert!(slash_menu("/view\nmore", &reading).is_none());

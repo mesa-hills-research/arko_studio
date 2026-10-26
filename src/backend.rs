@@ -17,10 +17,12 @@ pub use arko::Holder;
 mod accounts;
 mod defaults;
 pub mod extensions;
+mod names;
 pub mod profiles;
 
 pub use accounts::{Accounts, key_named};
 pub use defaults::{SessionDefaults, web_page_bind};
+pub use names::{SessionNames, Way};
 
 /// Reading accounts in words, for Settings.
 pub mod account_words {
@@ -359,6 +361,15 @@ pub trait Backend: Send + Sync + 'static {
     /// It runs `claude`.
     fn accounts(&self) -> Accounts;
 
+    /// How new sessions are named now, with what each way of asking a model
+    /// lacks. It runs `claude`.
+    fn session_names(&self) -> SessionNames;
+
+    /// Names new sessions by asking a model in the order of `ways` (none:
+    /// by the first words of the first message). `Err` says why it isn't
+    /// saved.
+    fn set_session_names(&self, ways: &[Way]) -> Result<(), String>;
+
     /// Removes the key of `provider` (as `/keys remove` names it) that
     /// Arko saved in its folder, from there and from every open session.
     /// `Ok` says what was done, `Err` why not.
@@ -667,6 +678,14 @@ impl Backend for ArkoBackend {
         Accounts::read(&self.root)
     }
 
+    fn session_names(&self) -> SessionNames {
+        SessionNames::read(&self.root)
+    }
+
+    fn set_session_names(&self, ways: &[Way]) -> Result<(), String> {
+        arko::session_names::save(&self.root, ways).map_err(|why| sentence(&why))
+    }
+
     fn remove_key(&self, provider: &str) -> Result<String, String> {
         let key = key_named(provider).ok_or_else(|| format!("Arko takes no {provider} key."))?;
         outcome(arko::accounts::remove(&self.root, key))
@@ -747,6 +766,11 @@ struct FakeState {
     accounts_read: usize,
     extensions: extensions::Extensions,
     profiles: profiles::Profiles,
+    /// How sessions are named, and what each way lacks.
+    names: SessionNames,
+    /// The lists of ways saved, in order, and why saving is refused.
+    names_saved: Vec<Vec<Way>>,
+    names_refused: Option<String>,
 }
 
 impl FakeBackend {
@@ -765,6 +789,17 @@ impl FakeBackend {
                 accounts_read: 0,
                 extensions: extensions::Extensions::sample(Path::new("/home/ada"), &root),
                 profiles: profiles::Profiles::default(),
+                names: SessionNames {
+                    ways: Vec::new(),
+                    missing: vec![
+                        (Way::ClaudePlan, None),
+                        (Way::ChatGptPlan, None),
+                        (Way::ClaudeKey, Some("No Anthropic API key".into())),
+                        (Way::OpenAiKey, Some("No OpenAI API key".into())),
+                    ],
+                },
+                names_saved: Vec::new(),
+                names_refused: None,
             }),
             defaults: Mutex::new(SessionDefaults::default()),
         }
@@ -864,6 +899,33 @@ impl FakeBackend {
             note: None,
         };
         self
+    }
+
+    /// Starts with sessions named by asking a model by `ways`, which lack
+    /// what `missing` says.
+    pub fn with_session_names(self, ways: &[Way], missing: &[(Way, &str)]) -> Self {
+        self.with_state(|state| {
+            state.names.ways = ways.to_vec();
+            state.names.missing = Way::ALL
+                .into_iter()
+                .map(|way| {
+                    let reason = missing.iter().find(|(lacking, _)| *lacking == way);
+                    (way, reason.map(|(_, reason)| reason.to_string()))
+                })
+                .collect();
+        });
+        self
+    }
+
+    /// Refuses to save how sessions are named, saying `why`.
+    pub fn refusing_session_names(self, why: &str) -> Self {
+        self.with_state(|state| state.names_refused = Some(why.to_string()));
+        self
+    }
+
+    /// The lists of ways saved so far, each in the order given.
+    pub fn saved_session_names(&self) -> Vec<Vec<Way>> {
+        self.with_state(|state| state.names_saved.clone())
     }
 
     /// Starts with the worker profiles `profiles`.
@@ -1140,6 +1202,21 @@ impl Backend for FakeBackend {
         self.with_state(|state| {
             state.accounts_read += 1;
             state.accounts.clone()
+        })
+    }
+
+    fn session_names(&self) -> SessionNames {
+        self.with_state(|state| state.names.clone())
+    }
+
+    fn set_session_names(&self, ways: &[Way]) -> Result<(), String> {
+        self.with_state(|state| {
+            if let Some(why) = &state.names_refused {
+                return Err(why.clone());
+            }
+            state.names.ways = ways.to_vec();
+            state.names_saved.push(ways.to_vec());
+            Ok(())
         })
     }
 

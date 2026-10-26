@@ -489,7 +489,7 @@ impl SettingsPage {
                 .read(cx)
                 .page(&self.accounts, self.accounts_revision, cx),
             self.profiles.read(cx).page(&self.profiles),
-            self.sessions.read(cx).page(cx),
+            self.sessions.read(cx).page(&self.sessions, cx),
             notifications_page(cx),
             self.web_page.read(cx).page(cx),
             self.extensions
@@ -1284,6 +1284,8 @@ impl Render for SettingsPage {
 
 #[cfg(test)]
 mod interaction;
+#[cfg(test)]
+mod names_tests;
 #[cfg(test)]
 mod profiles_tests;
 

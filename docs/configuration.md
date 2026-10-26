@@ -55,6 +55,15 @@ session allows, whether a worker fails after 10 failed model requests in a row (
 cap**, off by default), and whether the agent that started a worker gets a copy of your messages to
 it (**Message copies**, off by default), along with the other defaults for new sessions.
 
+Under **Names**, **Session names** chooses how a new session is named. **First words** uses the start
+of its first message, cut to 30 characters. **Named by a model** asks a model in the background, and
+the first message goes to the provider that runs it. The ways are Haiku 5.5 on your Claude plan, GPT-6
+Luna on your ChatGPT plan, and the same two models with your Anthropic and OpenAI API keys, which bill
+per token and start off. A checkbox turns each on, the arrows set the order, and a way that can't run
+says what it lacks. A way that fails or takes 20 seconds hands over to the next, and the first words
+stay the name when none works. A name you give a session is never replaced. Arko in the terminal reads
+the same setting (`session-names.json`) and changes it with `/session-names`.
+
 **Settings › Extensions** lists the MCP servers and skills sessions get. Arko's built-in skills
 have a switch for all of them and one for each. A session opened or resumed after a change gets it,
 and a session already open keeps its skills. A switch you haven't used leaves its part to Arko's
