@@ -152,7 +152,7 @@ fn shown_prefs(prefs: &prefs::Prefs) -> prefs::Prefs {
 
 impl SettingsPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let accounts = cx.new(AccountsPage::new);
+        let accounts = cx.new(|cx| AccountsPage::new(window, cx));
         let profiles = cx.new(|cx| ProfilesPage::new(window, cx));
         let sessions = cx.new(|cx| SessionsPage::new(window, cx));
         let web_page = cx.new(|cx| WebPageSettings::new(window, cx));

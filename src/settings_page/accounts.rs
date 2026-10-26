@@ -5,6 +5,7 @@
 //! through the app's backend, on a background thread.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
@@ -21,6 +22,7 @@ use crate::backend::account_words::{
     LoginState, Problem, outdated_text, source_words, tilde,
 };
 use crate::backend::{Accounts, ModelChoices, SharedBackend, last_model};
+use crate::model_select::ModelSelect;
 use crate::prefs::{self, NewSessionMode};
 use crate::session_view::HomeFolder;
 use crate::workers::curly;
@@ -66,8 +68,9 @@ pub fn account_for(way: &str) -> Option<&'static str> {
 pub struct AccountsPage {
     accounts: Option<Accounts>,
     models: Option<ModelChoices>,
-    /// The models' labels in the model lists, by name.
-    model_labels: Vec<(SharedString, SharedString)>,
+    /// The Model and Default workers' model settings.
+    main_model: Entity<ModelSelect>,
+    worker_model: Entity<ModelSelect>,
     /// The last session's main model: what "Last used" stands for.
     last_model: Option<String>,
     /// Claude Code is being checked again.
@@ -82,11 +85,52 @@ pub struct AccountsPage {
 }
 
 impl AccountsPage {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let main_model = cx.new(|cx| {
+            let mut select = ModelSelect::new(
+                "new-sessions-model",
+                "Model",
+                Rc::new(|cx: &App| {
+                    prefs::get(cx)
+                        .new_sessions
+                        .model
+                        .clone()
+                        .unwrap_or_default()
+                        .into()
+                }),
+                Rc::new(|model, _, cx| prefs::update(cx, |prefs| prefs.new_sessions.model = model)),
+                window,
+                cx,
+            );
+            select.set_models("Last used", None, cx);
+            select
+        });
+        let worker_model = cx.new(|cx| {
+            let mut select = ModelSelect::new(
+                "new-sessions-worker-model",
+                "Default workers’ model",
+                Rc::new(|cx: &App| {
+                    prefs::get(cx)
+                        .new_sessions
+                        .worker_model
+                        .clone()
+                        .unwrap_or_default()
+                        .into()
+                }),
+                Rc::new(|model, _, cx| {
+                    prefs::update(cx, |prefs| prefs.new_sessions.worker_model = model)
+                }),
+                window,
+                cx,
+            );
+            select.set_models("Automatic", None, cx);
+            select
+        });
         let mut this = Self {
             accounts: None,
             models: None,
-            model_labels: Vec::new(),
+            main_model,
+            worker_model,
             last_model: None,
             checking: false,
             home: cx.global::<HomeFolder>().0.clone(),
@@ -173,18 +217,26 @@ impl AccountsPage {
         let reading = cx.background_spawn(async move {
             let last = last_model(backend.data_root());
             let models = backend.models(None);
-            let labels = model_labels(&models);
-            (backend.accounts(), models, labels, last)
+            (backend.accounts(), models, last)
         });
         self._load = Some(cx.spawn(async move |this, cx| {
-            let (accounts, models, labels, last) = reading.await;
+            let (accounts, models, last) = reading.await;
             this.update(cx, |this, cx| {
                 // A key, a login or Claude Code changed (here, or in the
                 // terminal app): the composers list their models again.
                 crate::backend::accounts_read(&accounts, cx);
+                let last_used = match &last {
+                    Some(model) => format!("Last used ({})", arko::models::display_name(model)),
+                    None => "Last used".to_string(),
+                };
+                this.main_model.update(cx, |select, cx| {
+                    select.set_models(last_used, Some(models.clone()), cx)
+                });
+                this.worker_model.update(cx, |select, cx| {
+                    select.set_models("Automatic", Some(models.clone()), cx)
+                });
                 this.accounts = Some(accounts);
                 this.models = Some(models);
-                this.model_labels = labels;
                 this.last_model = last;
                 this.checking = false;
                 cx.notify();
@@ -360,10 +412,6 @@ impl AccountsPage {
                     .and_then(|models| models.default.clone())
             });
         let workers = chosen.worker_model.clone().or_else(|| main.clone());
-        let last_used = match &self.last_model {
-            Some(model) => format!("Last used ({})", arko::models::display_name(model)),
-            None => "Last used".to_string(),
-        };
         let cache_from_env = self
             .accounts
             .as_ref()
@@ -389,27 +437,13 @@ impl AccountsPage {
                     "Agent works in a folder with tools and workers. Chat has no tools.",
                 )
                 .keywords(["default mode", "chat", "agent"]),
-                SettingItem::new(
-                    "Model",
-                    SettingField::scrollable_dropdown(
-                        self.model_options(last_used, chosen.model.as_deref()),
-                        |cx: &App| {
-                            prefs::get(cx)
-                                .new_sessions
-                                .model
-                                .clone()
-                                .unwrap_or_default()
-                                .into()
-                        },
-                        |value: SharedString, cx: &mut App| {
-                            prefs::update(cx, |prefs| {
-                                prefs.new_sessions.model =
-                                    (!value.is_empty()).then(|| value.to_string())
-                            })
-                        },
+                SettingItem::new("Model", {
+                    let select = self.main_model.clone();
+                    SettingField::render(move |_, _, _| select.clone()).on_reset(
+                        |cx| prefs::get(cx).new_sessions.model.is_some(),
+                        |_, cx| prefs::update(cx, |prefs| prefs.new_sessions.model = None),
                     )
-                    .default_value(""),
-                )
+                })
                 .description(self.model_note(chosen.model.as_deref()).unwrap_or_else(|| {
                     "The main agent’s. Last used is the last session’s model, else one your credentials reach.".into()
                 }))
@@ -437,27 +471,15 @@ impl AccountsPage {
                 )
                 .description("How much the main agent’s model reasons. Default is xhigh, or the nearest its model takes.")
                 .keywords(["reasoning", "thinking"]),
-                SettingItem::new(
-                    "Default workers’ model",
-                    SettingField::scrollable_dropdown(
-                        self.model_options("Automatic".into(), chosen.worker_model.as_deref()),
-                        |cx: &App| {
-                            prefs::get(cx)
-                                .new_sessions
-                                .worker_model
-                                .clone()
-                                .unwrap_or_default()
-                                .into()
-                        },
-                        |value: SharedString, cx: &mut App| {
-                            prefs::update(cx, |prefs| {
-                                prefs.new_sessions.worker_model =
-                                    (!value.is_empty()).then(|| value.to_string())
-                            })
+                SettingItem::new("Default workers’ model", {
+                    let select = self.worker_model.clone();
+                    SettingField::render(move |_, _, _| select.clone()).on_reset(
+                        |cx| prefs::get(cx).new_sessions.worker_model.is_some(),
+                        |_, cx| {
+                            prefs::update(cx, |prefs| prefs.new_sessions.worker_model = None)
                         },
                     )
-                    .default_value(""),
-                )
+                })
                 .description(
                     self.model_note(chosen.worker_model.as_deref()).unwrap_or_else(|| {
                         "The model workers use when the main agent doesn’t choose one. A profile or the agent’s own choice wins. Automatic reuses the last session’s workers’ model when Model is Last used. Otherwise, workers use the main model.".into()
@@ -513,23 +535,6 @@ impl AccountsPage {
                 ))
                 .keywords(["prompt cache", "anthropic", CACHE_1H_VARIABLE]),
             ])
-    }
-
-    /// The models to choose from, `first` standing for the default, each
-    /// with the way it's reached, and those that can't be used saying why.
-    fn model_options(
-        &self,
-        first: String,
-        chosen: Option<&str>,
-    ) -> Vec<(SharedString, SharedString)> {
-        let mut options = vec![(SharedString::default(), SharedString::from(first))];
-        options.extend(self.model_labels.iter().cloned());
-        if let Some(chosen) = chosen
-            && !options.iter().any(|(value, _)| value == chosen)
-        {
-            options.push((chosen.to_string().into(), chosen.to_string().into()));
-        }
-        options
     }
 
     /// What the model `chosen` needs that isn't there, as a description.
@@ -818,24 +823,6 @@ fn login_words(login: &ChatGptLogin, ix: usize, count: usize, home: Option<&Path
         (LoginState::Invalid(why), 1) => format!("{path} ({whose}) can’t be used ({why})."),
         (LoginState::Invalid(why), _) => format!("{path} can’t be used ({why})."),
     }
-}
-
-/// Each model of `models` as the model lists show it, by its name: "Opus
-/// 5.5 · Anthropic API", "(can't be used yet)" when its group needs
-/// something. Made once per reading, since naming a model takes a while.
-pub(super) fn model_labels(models: &ModelChoices) -> Vec<(SharedString, SharedString)> {
-    let mut labels = Vec::new();
-    for group in &models.groups {
-        let way = group.name.split(',').next().unwrap_or(&group.name).trim();
-        for model in &group.models {
-            let mut label = format!("{} · {way}", arko::models::display_name(&model.name));
-            if group.needs.is_some() {
-                label.push_str(" (can’t be used yet)");
-            }
-            labels.push((model.name.clone().into(), label.into()));
-        }
-    }
-    labels
 }
 
 /// What a key's row is found by.
@@ -1295,51 +1282,6 @@ mod tests {
                 .contains("GEMINI_API_KEY from /opt/arko-studio/.env comes first again")
         );
         assert_eq!(words("voyage"), None);
-    }
-
-    /// Each model is named once per reading, with the way it's reached.
-    #[test]
-    fn models_are_labelled_with_their_way_and_what_they_need() {
-        use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
-        let models = ModelChoices {
-            groups: vec![
-                ModelGroup {
-                    name: "Anthropic API, billed per token".into(),
-                    needs: None,
-                    models: vec![ModelChoice {
-                        name: "claude-opus-5-5".into(),
-                        alias: "opus".into(),
-                    }],
-                },
-                ModelGroup {
-                    name: "OpenAI, with your API key".into(),
-                    needs: Some("an OpenAI key".into()),
-                    models: vec![ModelChoice {
-                        name: "gpt-6.1-sol".into(),
-                        alias: "sol".into(),
-                    }],
-                },
-            ],
-            default: None,
-            note: None,
-        };
-        let labels: Vec<(String, String)> = super::model_labels(&models)
-            .into_iter()
-            .map(|(name, label)| (name.to_string(), label.to_string()))
-            .collect();
-        assert_eq!(
-            labels,
-            [
-                (
-                    "claude-opus-5-5".to_string(),
-                    "Opus 5.5 · Anthropic API".to_string()
-                ),
-                (
-                    "gpt-6.1-sol".to_string(),
-                    "GPT-6.1 Sol · OpenAI (can’t be used yet)".to_string()
-                ),
-            ]
-        );
     }
 
     #[test]

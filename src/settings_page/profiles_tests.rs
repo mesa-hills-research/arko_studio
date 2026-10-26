@@ -65,6 +65,19 @@ fn shows(
     .unwrap()
 }
 
+/// Opens the model list of the button `button`, finds `query` and picks
+/// the first model found.
+pub(super) fn pick_model(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    button: &'static str,
+    query: &str,
+) {
+    act(cx, window, |window, cx| window.click(button, cx));
+    act(cx, window, |window, cx| window.input(query, cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+}
+
 /// Types `name` and `description` into the open editor.
 fn fill(
     cx: &mut TestAppContext,
@@ -106,7 +119,7 @@ fn a_profile_is_added_in_the_editor(cx: &mut TestAppContext) {
     // A screen reader names the dropdowns with the field and its value.
     act(cx, window, |window, _| {
         assert_eq!(
-            window.find("profile-model").label(),
+            window.find("profile-model-button").label(),
             Some("Model, The session’s worker model")
         );
         assert_eq!(
@@ -126,12 +139,9 @@ fn a_profile_is_added_in_the_editor(cx: &mut TestAppContext) {
         "quick-reader",
         "Reads files and answers in a line",
     );
-    // The model and the effort come from the menus, the effort from the
+    // The model comes from its searchable list, the effort from the
     // model's own.
-    act(cx, window, |window, cx| window.click("profile-model", cx));
-    act(cx, window, |window, cx| {
-        window.within("popup-menu").click(2usize, cx)
-    });
+    pick_model(cx, window, "profile-model-button", "sonnet");
     act(cx, window, |window, cx| window.click("profile-effort", cx));
     act(cx, window, |window, cx| {
         window.within("popup-menu").click(1usize, cx)
@@ -484,21 +494,13 @@ fn the_page_says_what_a_model_needs_and_lists_projects_read_only(cx: &mut TestAp
     // The editor says it under the model.
     act(cx, window, |window, cx| window.click("add-profile", cx));
     let form = editor(cx, &page);
-    act(cx, window, |window, cx| window.click("profile-model", cx));
-    // The session's worker model, then the two models, in the order of the
-    // groups. Haiku is the first.
-    act(cx, window, |window, cx| {
-        window.within("popup-menu").click(1usize, cx)
-    });
+    pick_model(cx, window, "profile-model-button", "haiku");
     assert!(shows(window, cx, "profile-model-needs"));
     assert_eq!(
         cx.read(|cx| form.read(cx).draft(cx).model),
         Some("claude-haiku-5-5".to_string())
     );
-    act(cx, window, |window, cx| window.click("profile-model", cx));
-    act(cx, window, |window, cx| {
-        window.within("popup-menu").click(2usize, cx)
-    });
+    pick_model(cx, window, "profile-model-button", "sol");
     assert!(!shows(window, cx, "profile-model-needs"));
 }
 
@@ -570,4 +572,36 @@ fn the_real_backend_saves_files_arko_reads(cx: &mut TestAppContext) {
     backend.delete_profile("scout").unwrap();
     assert!(backend.profiles(&[]).user.is_empty());
     let _ = cx;
+}
+
+/// The editor's Model finds a model of OpenRouter's catalog that the list
+/// doesn't have.
+#[gpui_kit::test]
+fn the_editor_picks_a_model_from_openrouters_catalog(cx: &mut TestAppContext) {
+    let backend = FakeBackend::sample("/arko", SystemTime::now())
+        .with_profiles(Profiles::default())
+        .with_models(super::interaction::openrouter_models())
+        .with_catalog(crate::backend::sample_catalog(SystemTime::now()));
+    start_on(cx, backend, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, PROFILES_PAGE, 1400.);
+    let page = page(cx, &settings);
+    act(cx, window, |window, cx| window.click("add-profile", cx));
+    let form = editor(cx, &page);
+    pick_model(cx, window, "profile-model-button", "deepseek");
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("openrouter-browser").is_some());
+        window.press("enter", cx);
+    });
+    assert_eq!(
+        cx.read(|cx| form.read(cx).draft(cx).model),
+        Some("openrouter:deepseek/deepseek-v4".to_string())
+    );
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_dialog(cx), "the editor stays open");
+        assert!(window.try_find("openrouter-browser").is_none());
+        assert_eq!(
+            window.find("profile-model-button").label(),
+            Some("Model, DeepSeek V4 · OpenRouter")
+        );
+    });
 }

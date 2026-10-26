@@ -6,6 +6,7 @@
 //! written through `arko::profiles`, on a background thread.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use arko::profiles::{self, Cache, MAX_DESCRIPTION, MAX_INSTRUCTIONS, Preferences, Profile};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
@@ -21,10 +22,11 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::accounts::{effort_options, model_labels};
+use super::accounts::effort_options;
 use crate::backend::account_words::tilde;
 use crate::backend::profiles::{self as store, Entry, List, Profiles};
 use crate::backend::{ModelChoices, SharedBackend};
+use crate::model_select::ModelSelect;
 use crate::prefs;
 use crate::session_view::{HomeFolder, recent_folders};
 use crate::workers::curly;
@@ -33,8 +35,6 @@ use crate::workers::curly;
 pub struct ProfilesPage {
     profiles: Option<Profiles>,
     models: Option<ModelChoices>,
-    /// The models' labels in the model list, by name.
-    model_labels: Vec<(SharedString, SharedString)>,
     home: Option<PathBuf>,
     /// How many times what the page shows changed: its groups draw again
     /// only then.
@@ -62,7 +62,6 @@ impl ProfilesPage {
         let mut this = Self {
             profiles: None,
             models: None,
-            model_labels: Vec::new(),
             home: cx.global::<HomeFolder>().0.clone(),
             revision: 0,
             editor: None,
@@ -101,11 +100,10 @@ impl ProfilesPage {
                 .unwrap_or_default();
             let profiles = backend.profiles(&folders);
             let models = backend.models(None);
-            let labels = model_labels(&models);
-            (profiles, models, labels)
+            (profiles, models)
         });
         self._load = Some(cx.spawn(async move |this, cx| {
-            let (profiles, models, labels) = reading.await;
+            let (profiles, models) = reading.await;
             this.update(cx, |this, cx| {
                 if this.profiles.as_ref() == Some(&profiles)
                     && this.models.as_ref() == Some(&models)
@@ -114,7 +112,6 @@ impl ProfilesPage {
                 }
                 this.profiles = Some(profiles);
                 this.models = Some(models);
-                this.model_labels = labels;
                 this.revision += 1;
                 cx.notify();
             })
@@ -136,7 +133,6 @@ impl ProfilesPage {
             profile,
             names,
             page.models.clone(),
-            page.model_labels.clone(),
             page.home.clone(),
             window,
             cx,
@@ -569,7 +565,8 @@ pub struct ProfileForm {
     /// The names the user's other profiles have.
     taken: Vec<String>,
     models: Option<ModelChoices>,
-    model_labels: Vec<(SharedString, SharedString)>,
+    /// The Model field.
+    model_select: Entity<ModelSelect>,
     home: Option<PathBuf>,
     /// Why what was typed isn't a profile, from Save.
     error: Option<SharedString>,
@@ -585,7 +582,6 @@ impl ProfileForm {
         entry: Option<Entry>,
         taken: Vec<String>,
         models: Option<ModelChoices>,
-        model_labels: Vec<(SharedString, SharedString)>,
         home: Option<PathBuf>,
         window: &mut Window,
         cx: &mut App,
@@ -594,8 +590,7 @@ impl ProfileForm {
             Some(entry) => format!("Edit the profile {}", entry.profile.name),
             None => "Add a worker profile".to_string(),
         };
-        let form = cx
-            .new(|cx| ProfileForm::new(page, entry, taken, models, model_labels, home, window, cx));
+        let form = cx.new(|cx| ProfileForm::new(page, entry, taken, models, home, window, cx));
         let name = form.read(cx).name.clone();
         let (content, saving) = (form.clone(), form.clone());
         window.open_dialog(cx, move |dialog, _, _| {
@@ -629,7 +624,6 @@ impl ProfileForm {
         entry: Option<Entry>,
         taken: Vec<String>,
         models: Option<ModelChoices>,
-        model_labels: Vec<(SharedString, SharedString)>,
         home: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -674,6 +668,34 @@ impl ProfileForm {
                 }
             }),
         ];
+        let form = cx.entity().downgrade();
+        let choosing = form.clone();
+        let model_select = cx.new(|cx| {
+            let mut select = ModelSelect::new(
+                "profile-model",
+                "Model",
+                Rc::new(move |cx: &App| {
+                    form.upgrade()
+                        .map(|form| {
+                            let form = form.read(cx);
+                            form.model_value(form.profile.model.as_deref())
+                        })
+                        .unwrap_or_default()
+                }),
+                Rc::new(move |model, _, cx| {
+                    choosing
+                        .update(cx, |form, cx| {
+                            form.profile.model = model;
+                            cx.notify();
+                        })
+                        .ok();
+                }),
+                window,
+                cx,
+            );
+            select.set_models("The session’s worker model", models.clone(), cx);
+            select.full_width()
+        });
         Self {
             page,
             original: entry,
@@ -683,7 +705,7 @@ impl ProfileForm {
             instructions,
             taken,
             models,
-            model_labels,
+            model_select,
             home,
             error: None,
             busy: false,
@@ -797,14 +819,8 @@ impl ProfileForm {
         let page = self.page.clone();
         window.close_dialog(cx);
         // A new profile that starts as the copy: no file, no old name.
-        let (names, models, labels, home) = (
-            self.taken.clone(),
-            self.models.clone(),
-            self.model_labels.clone(),
-            self.home.clone(),
-        );
-        let form =
-            ProfileForm::open_copy(page.clone(), entry, names, models, labels, home, window, cx);
+        let (names, models, home) = (self.taken.clone(), self.models.clone(), self.home.clone());
+        let form = ProfileForm::open_copy(page.clone(), entry, names, models, home, window, cx);
         page.update(cx, |page, _| page.editor = Some(form.downgrade()));
     }
 
@@ -815,12 +831,11 @@ impl ProfileForm {
         copy: Entry,
         taken: Vec<String>,
         models: Option<ModelChoices>,
-        model_labels: Vec<(SharedString, SharedString)>,
         home: Option<PathBuf>,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
-        let form = Self::open(page, None, taken, models, model_labels, home, window, cx);
+        let form = Self::open(page, None, taken, models, home, window, cx);
         let profile = copy.profile;
         form.update(cx, |form, cx| {
             form.profile = profile.clone();
@@ -898,22 +913,6 @@ impl ProfileForm {
             .map(|choice| SharedString::from(choice.name.clone()))
             .unwrap_or_else(|| SharedString::from(model.to_string()))
     }
-
-    /// The models to choose from, the session's worker model first.
-    fn model_options(&self) -> Vec<(SharedString, SharedString)> {
-        let mut options = vec![(
-            SharedString::default(),
-            SharedString::from("The session’s worker model"),
-        )];
-        options.extend(self.model_labels.iter().cloned());
-        // A model the list doesn't have (an OpenRouter slug, one Arko no
-        // longer offers) is kept as written.
-        let chosen = self.model_value(self.profile.model.as_deref());
-        if !chosen.is_empty() && !options.iter().any(|(value, _)| *value == chosen) {
-            options.push((chosen.clone(), chosen));
-        }
-        options
-    }
 }
 
 /// A field's caption.
@@ -959,25 +958,6 @@ impl ProfileForm {
                 let value = value.clone();
                 view.update(cx, |form, cx| {
                     form.profile.cache = value.parse().ok();
-                    cx.notify();
-                })
-                .ok();
-            },
-        )
-    }
-
-    /// The model's dropdown.
-    fn model_dropdown(&self, model: Option<&str>, cx: &mut Context<Self>) -> impl IntoElement {
-        let view = cx.entity().downgrade();
-        Self::dropdown(
-            "profile-model",
-            "Model",
-            self.model_options(),
-            self.model_value(model),
-            move |value, _, cx| {
-                let value = value.to_string();
-                view.update(cx, |form, cx| {
-                    form.profile.model = Some(value).filter(|model| !model.is_empty());
                     cx.notify();
                 })
                 .ok();
@@ -1082,7 +1062,7 @@ impl ProfileForm {
         let model = v_flex()
             .gap_1()
             .child(caption("Model", cx))
-            .child(self.model_dropdown(draft.model.as_deref(), cx))
+            .child(self.model_select.clone())
             .when_some(self.needs_words(draft.model.as_deref()), |this, words| {
                 this.child(note("profile-model-needs", words, muted))
             });

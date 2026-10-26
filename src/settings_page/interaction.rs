@@ -1015,3 +1015,79 @@ fn a_group_shows_a_preference_changed_elsewhere(cx: &mut TestAppContext) {
     }
     assert_eq!(sound(cx), on);
 }
+
+/// The models of the model settings' tests: the sample's Anthropic models,
+/// and Kimi K3 on OpenRouter.
+pub(super) fn openrouter_models() -> ModelChoices {
+    let choice = |name: &str, alias: &str| ModelChoice {
+        name: name.into(),
+        alias: alias.into(),
+    };
+    ModelChoices {
+        groups: vec![
+            ModelGroup {
+                name: "Anthropic API, billed per token".into(),
+                needs: None,
+                models: vec![
+                    choice("claude-opus-5-5", "opus"),
+                    choice("claude-sonnet-5-5", "sonnet"),
+                ],
+            },
+            ModelGroup {
+                name: "OpenRouter, billed per token".into(),
+                needs: None,
+                models: vec![choice("openrouter:moonshotai/kimi-k3", "")],
+            },
+        ],
+        default: Some("claude-opus-5-5".into()),
+        note: None,
+    }
+}
+
+/// Model and Default workers' model are found by typing, and a model
+/// none of the groups lists is chosen in OpenRouter's catalog, which opens
+/// on what was typed.
+#[gpui_kit::test]
+fn the_model_settings_find_a_model_and_browse_openrouter(cx: &mut TestAppContext) {
+    let backend = FakeBackend::sample("/arko", SystemTime::now())
+        .with_models(openrouter_models())
+        .with_catalog(crate::backend::sample_catalog(SystemTime::now()));
+    let backend = start_on(cx, backend, prefs::Prefs::default());
+    let (window, _, _) = settings_window(cx, ACCOUNTS_PAGE, 2000.);
+    let pick = super::profiles_tests::pick_model;
+    pick(cx, window, "new-sessions-model-button", "sonnet");
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.model.clone())
+            .as_deref(),
+        Some("claude-sonnet-5-5")
+    );
+    act(cx, window, |window, _| {
+        assert_eq!(
+            window.find("new-sessions-model-button").label(),
+            Some("Model, Sonnet 5.5 · Anthropic API")
+        );
+    });
+    // GLM 5 isn't listed: Enter takes the one row left, which opens the
+    // catalog on "glm", and Enter there picks it.
+    pick(cx, window, "new-sessions-worker-model-button", "glm");
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        assert!(window.try_find("openrouter-browser").is_some());
+        window.press("enter", cx);
+    });
+    act(cx, window, |window, cx| {
+        assert!(!window.has_active_dialog(cx));
+    });
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.worker_model.clone())
+            .as_deref(),
+        Some("openrouter:z-ai/glm-5")
+    );
+    assert_eq!(backend.catalog_fetches(), 0, "the sample was fresh");
+    act(cx, window, |window, _| {
+        assert_eq!(
+            window.find("new-sessions-worker-model-button").label(),
+            Some("Default workers’ model, GLM 5 · OpenRouter")
+        );
+    });
+}
