@@ -11,6 +11,8 @@ use super::fields::{self, TextKind, TextSetting};
 use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
+mod names;
+
 use crate::workers::{copies_about, curly, depth_about, models_about, retry_cap_about};
 use arko::ModelChoice;
 use arko::commands::MIN_HANDOVER_SIZE;
@@ -31,6 +33,8 @@ pub struct SessionsPage {
     instructions_seen: String,
     /// Saves the chat instructions once the typing rests.
     instructions_typed: Option<Task<()>>,
+    /// How new sessions are named, as the page last read it.
+    names: names::Names,
     /// The preferences as the page last showed them.
     seen: prefs::Prefs,
     _subscriptions: Vec<Subscription>,
@@ -136,6 +140,8 @@ impl SessionsPage {
                 }
                 _ => {}
             }),
+            // A key or a login added or removed changes what a way lacks.
+            cx.observe_global::<crate::backend::AccountsSeen>(|this, cx| this.refresh_names(cx)),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 if !super::shown_changed(&mut this.seen, cx) {
                     return;
@@ -170,7 +176,7 @@ impl SessionsPage {
             }
         })
         .detach();
-        Self {
+        let mut this = Self {
             handover,
             workers_handover,
             background_after,
@@ -178,9 +184,12 @@ impl SessionsPage {
             chat_instructions,
             instructions_seen: new.chat_instructions,
             instructions_typed: None,
+            names: names::Names::new(),
             seen: super::shown_prefs(prefs::get(cx)),
             _subscriptions: subscriptions,
-        }
+        };
+        this.refresh_names(cx);
+        this
     }
 
     /// Types in the chat instructions as Settings › Input says, as it
@@ -242,7 +251,7 @@ impl SessionsPage {
         ]
     }
 
-    pub fn page(&self, cx: &App) -> SettingPage {
+    pub fn page(&self, this: &Entity<Self>, cx: &App) -> SettingPage {
         let prefs = prefs::get(cx);
         let new = &prefs.new_sessions;
         let errors = self.errors();
@@ -280,6 +289,7 @@ impl SessionsPage {
                 self.agent_group(cx)
                     .key(super::group_key("Agent sessions", &agent)),
                 self.chat_group().key(super::group_key("Chats", &())),
+                self.names_group(this),
                 confirmations_group()
                     .key(super::group_key("Confirmations", &prefs.sessions)),
             ])

@@ -375,6 +375,68 @@ fn settings_advanced_dark() {
     );
 }
 
+/// Settings › Sessions in a window tall enough for the names group, which
+/// names sessions by a model with `ways` on, on the sample accounts.
+fn settings_names_window(mode: ThemeMode, ways: &[arko_studio::backend::Way]) -> Screenshot {
+    use arko_studio::backend::Way;
+    let backend = FakeBackend::sample("/arko", SystemTime::now()).with_session_names(
+        ways,
+        &[
+            (Way::ClaudeKey, "No Anthropic API key"),
+            (Way::OpenAiKey, "No OpenAI API key"),
+        ],
+    );
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let startup = Startup::for_tests(Arc::new(backend))
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let opened = std::cell::RefCell::new(None);
+    let window = app
+        .open_window_with(size(px(1300.), px(2400.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened.replace(Some(workspace));
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.take().unwrap();
+    app.update_window(window, |_, window, cx| {
+        window.dispatch_action(Box::new(arko_studio::menus::OpenSettings), cx)
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.update(|cx| {
+        let settings = workspace.read(cx).settings().unwrap().clone();
+        settings.update(cx, |settings, cx| settings.show_page(SESSIONS_PAGE, cx));
+    });
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+/// The names group with a model naming sessions: the ways in order, each
+/// with its checkbox and arrows, and the sample's missing keys said.
+#[test]
+fn settings_sessions_names_light() {
+    use arko_studio::backend::Way;
+    goldens().assert(
+        "settings-sessions-names-light",
+        &settings_names_window(ThemeMode::Light, &[Way::ChatGptPlan, Way::ClaudePlan]),
+    );
+}
+
+#[test]
+fn settings_sessions_names_dark() {
+    use arko_studio::backend::Way;
+    goldens().assert(
+        "settings-sessions-names-dark",
+        &settings_names_window(ThemeMode::Dark, &[Way::ChatGptPlan, Way::ClaudePlan]),
+    );
+}
+
 /// Under 480 px, each setting's control goes under its title.
 #[test]
 fn settings_sessions_narrow_light() {

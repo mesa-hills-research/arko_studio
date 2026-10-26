@@ -238,6 +238,7 @@ pub struct Sidebar {
     /// The sessions running in this app when the list was last read: one
     /// more means a new session to list.
     live_ids: Vec<SessionId>,
+    live_titles: std::collections::HashMap<SessionId, SharedString>,
     _subscriptions: Vec<Subscription>,
     _refresh: Option<Task<()>>,
 }
@@ -260,12 +261,20 @@ impl Sidebar {
             }),
             // The running sessions' indicators. A session created here gets
             // its row.
+            // A name an engine gives a session that is open (a model's, a
+            // while after the first message) is listed again, whichever
+            // session the window shows.
             cx.observe_global::<LiveSessions>(|this, cx| {
                 let ids = LiveSessions::ids(cx);
-                if ids.iter().any(|id| !this.live_ids.contains(id)) {
+                let titles = LiveSessions::titles(cx);
+                let renamed = titles
+                    .iter()
+                    .any(|(id, title)| this.live_titles.get(id).is_some_and(|was| was != title));
+                if renamed || ids.iter().any(|id| !this.live_ids.contains(id)) {
                     this.refresh(cx);
                 }
                 this.live_ids = ids;
+                this.live_titles = titles;
                 cx.notify();
             }),
             // Which sessions have news.
@@ -284,6 +293,7 @@ impl Sidebar {
             scroll: UniformListScrollHandle::new(),
             loaded: false,
             live_ids: Vec::new(),
+            live_titles: Default::default(),
             _subscriptions: subscriptions,
             _refresh: None,
         };
@@ -1401,6 +1411,43 @@ mod tests {
             ["# arko", "Fix the handover size for workers"]
         );
         assert!(rows(&sessions, &[], &HashSet::new(), "nothing like it", now).is_empty());
+    }
+
+    /// A session is named by the first words of its first message, and the
+    /// filter still finds the rest of that message in its conversation.
+    #[test]
+    fn a_session_shows_its_short_name_and_is_found_by_its_whole_first_line() {
+        let now = SystemTime::now();
+        let line = "Fix the flaky scroll test in the sidebar before the release";
+        let entry = SessionEntry {
+            id: SessionId("s".into()),
+            title: arko::session_names::short_name(line),
+            mode: Mode::Chat,
+            workspace: None,
+            model: String::new(),
+            created: now - Duration::from_secs(60),
+            last_active: None,
+            conversations: vec![ConversationEntry {
+                number: 1,
+                title: line.into(),
+                current: true,
+            }],
+            holder: None,
+            had_workers: false,
+        };
+        let shown = rows(std::slice::from_ref(&entry), &[], &HashSet::new(), "", now);
+        assert_eq!(titles(&shown), ["# Chats", "Fix the flaky scroll test in…"]);
+        for words in ["before the release", "SIDEBAR BEFORE", "scroll test in"] {
+            let found = rows(
+                std::slice::from_ref(&entry),
+                &[],
+                &HashSet::new(),
+                words,
+                now,
+            );
+            assert_eq!(titles(&found).len(), 2, "{words}");
+        }
+        assert!(rows(&[entry], &[], &HashSet::new(), "after the release", now).is_empty());
     }
 
     #[test]

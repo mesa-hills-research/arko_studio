@@ -39,6 +39,10 @@ pub struct Indicator {
 pub struct LiveSessions {
     sessions: Vec<Entity<LiveSession>>,
     indicators: HashMap<SessionId, Indicator>,
+    /// Each session's name as its engine gave it last, which the sidebar
+    /// lists again for when it changes (a model's name arrives while the
+    /// window shows another session).
+    titles: HashMap<SessionId, SharedString>,
 }
 
 impl Global for LiveSessions {}
@@ -67,6 +71,20 @@ impl LiveSessions {
             .unwrap_or_default()
     }
 
+    /// The names of the sessions open in this app, as their engines gave
+    /// them last.
+    pub fn titles(cx: &App) -> HashMap<SessionId, SharedString> {
+        cx.global::<Self>().titles.clone()
+    }
+
+    fn set_title(id: &SessionId, title: &SharedString, cx: &mut App) {
+        if cx.global::<Self>().titles.get(id) != Some(title) {
+            cx.update_global::<Self, _>(|this, _| {
+                this.titles.insert(id.clone(), title.clone());
+            });
+        }
+    }
+
     /// The ids of the sessions open in this app.
     pub fn ids(cx: &App) -> Vec<SessionId> {
         cx.global::<Self>()
@@ -87,6 +105,7 @@ impl LiveSessions {
                 .retain(|session| session.entity_id() != entity);
             if let Some(id) = id {
                 this.indicators.remove(id);
+                this.titles.remove(id);
             }
         });
     }
@@ -757,6 +776,7 @@ impl LiveSession {
                 question: self.activity.question.is_some(),
             };
             LiveSessions::set_indicator(id, indicator, cx);
+            LiveSessions::set_title(id, &self.title, cx);
         }
     }
 
@@ -1368,15 +1388,14 @@ impl LiveSession {
     }
 }
 
-/// The first line of `text`, shortened, as a new session's title until the
-/// engine names it.
+/// The first words of `text`, cut as arko cuts a session's name, as a new
+/// session's title until the engine names it.
 fn first_line(text: &str) -> SharedString {
     let line = text
         .lines()
         .find(|line| !line.trim().is_empty())
         .unwrap_or("");
-    let line = line.trim();
-    let short: String = line.chars().take(80).collect();
+    let short = arko::session_names::short_name(line);
     if short.is_empty() {
         "New session".into()
     } else {
@@ -1614,6 +1633,10 @@ mod tests {
             "Count the pears."
         );
         assert_eq!(first_line("   "), "New session");
-        assert_eq!(first_line(&"a".repeat(200)).len(), 80);
+        assert_eq!(
+            first_line("Fix the flaky scroll test in the sidebar"),
+            "Fix the flaky scroll test in…"
+        );
+        assert_eq!(first_line(&"a".repeat(200)).chars().count(), 30);
     }
 }

@@ -491,6 +491,7 @@ impl Workspace {
             self._session
                 .push(cx.subscribe_in(session, window, Self::on_live_event));
             // The title follows the session's name as the engine gives it.
+            // (The sidebar lists a name again when any open session's changes.)
             self._session
                 .push(cx.observe_in(session, window, |this, session, window, cx| {
                     if this.shown_title.as_ref() != Some(session.read(cx).title()) {
