@@ -1368,15 +1368,14 @@ impl LiveSession {
     }
 }
 
-/// The first line of `text`, shortened, as a new session's title until the
-/// engine names it.
+/// The first words of `text`, cut as arko cuts a session's name, as a new
+/// session's title until the engine names it.
 fn first_line(text: &str) -> SharedString {
     let line = text
         .lines()
         .find(|line| !line.trim().is_empty())
         .unwrap_or("");
-    let line = line.trim();
-    let short: String = line.chars().take(80).collect();
+    let short = arko::session_names::short_name(line);
     if short.is_empty() {
         "New session".into()
     } else {
@@ -1614,6 +1613,10 @@ mod tests {
             "Count the pears."
         );
         assert_eq!(first_line("   "), "New session");
-        assert_eq!(first_line(&"a".repeat(200)).len(), 80);
+        assert_eq!(
+            first_line("Fix the flaky scroll test in the sidebar"),
+            "Fix the flaky scroll test in…"
+        );
+        assert_eq!(first_line(&"a".repeat(200)).chars().count(), 30);
     }
 }

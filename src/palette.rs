@@ -281,4 +281,31 @@ mod tests {
         let last = sections.last().unwrap().rows.last().unwrap();
         assert!(matches!(last.target, Target::Session(_)));
     }
+
+    /// "Go to Session" lists a session by its short name, and finds it by
+    /// the whole first line of its conversation.
+    #[test]
+    fn a_session_is_found_by_its_whole_first_line() {
+        let mut sessions = FakeBackend::sample("/arko", SystemTime::now())
+            .sessions()
+            .unwrap();
+        let line = "Fix the flaky scroll test in the sidebar before the release";
+        sessions[0].title = arko::session_names::short_name(line);
+        sessions[0].conversations = vec![crate::backend::ConversationEntry {
+            number: 1,
+            title: line.into(),
+            current: true,
+        }];
+        let sections = sections(&sessions);
+        let row = sections
+            .iter()
+            .find(|section| section.title == "Go to Session")
+            .unwrap()
+            .rows
+            .iter()
+            .find(|row| matches!(&row.target, Target::Session(id) if *id == sessions[0].id))
+            .unwrap();
+        assert_eq!(row.label, "Fix the flaky scroll test in…");
+        assert!(row.keywords.iter().any(|keyword| keyword == line));
+    }
 }

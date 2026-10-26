@@ -1403,6 +1403,43 @@ mod tests {
         assert!(rows(&sessions, &[], &HashSet::new(), "nothing like it", now).is_empty());
     }
 
+    /// A session is named by the first words of its first message, and the
+    /// filter still finds the rest of that message in its conversation.
+    #[test]
+    fn a_session_shows_its_short_name_and_is_found_by_its_whole_first_line() {
+        let now = SystemTime::now();
+        let line = "Fix the flaky scroll test in the sidebar before the release";
+        let entry = SessionEntry {
+            id: SessionId("s".into()),
+            title: arko::session_names::short_name(line),
+            mode: Mode::Chat,
+            workspace: None,
+            model: String::new(),
+            created: now - Duration::from_secs(60),
+            last_active: None,
+            conversations: vec![ConversationEntry {
+                number: 1,
+                title: line.into(),
+                current: true,
+            }],
+            holder: None,
+            had_workers: false,
+        };
+        let shown = rows(std::slice::from_ref(&entry), &[], &HashSet::new(), "", now);
+        assert_eq!(titles(&shown), ["# Chats", "Fix the flaky scroll test in…"]);
+        for words in ["before the release", "SIDEBAR BEFORE", "scroll test in"] {
+            let found = rows(
+                std::slice::from_ref(&entry),
+                &[],
+                &HashSet::new(),
+                words,
+                now,
+            );
+            assert_eq!(titles(&found).len(), 2, "{words}");
+        }
+        assert!(rows(&[entry], &[], &HashSet::new(), "after the release", now).is_empty());
+    }
+
     #[test]
     fn an_expanded_session_lists_its_conversations() {
         let (sessions, now) = sample();
