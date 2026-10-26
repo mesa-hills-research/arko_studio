@@ -101,6 +101,39 @@ fn a_new_session_starts_as_settings_say(cx: &mut TestAppContext) {
     assert_eq!(mode, Mode::Agent);
 }
 
+/// Last used, the default, starts a new session in the mode the last one
+/// started or switched to, and in Agent before any.
+#[gpui_kit::test]
+fn last_used_starts_a_new_session_in_the_last_mode(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.mode),
+        prefs::NewSessionMode::Last
+    );
+    let (_, first) = open(cx, 1300.);
+    let mode = cx.read(|cx| first.read(cx).session_view().read(cx).draft().mode);
+    assert_eq!(mode, Mode::Agent);
+    assert_eq!(backend.defaults().mode, Mode::Agent);
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.new_sessions.last_mode = Some(prefs::NewSessionMode::Chat)
+        })
+    });
+    let (_, second) = open(cx, 1300.);
+    let mode = cx.read(|cx| second.read(cx).session_view().read(cx).draft().mode);
+    assert_eq!(mode, Mode::Chat);
+    assert_eq!(backend.defaults().mode, Mode::Chat);
+    // A mode chosen in Settings wins over the last one.
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.new_sessions.mode = prefs::NewSessionMode::Agent
+        })
+    });
+    let (_, third) = open(cx, 1300.);
+    let mode = cx.read(|cx| third.read(cx).session_view().read(cx).draft().mode);
+    assert_eq!(mode, Mode::Agent);
+}
+
 /// The default model and effort, changed in Settings while a window is
 /// open: its new session's chip names them, and the session starts on
 /// them.

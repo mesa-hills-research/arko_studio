@@ -176,6 +176,11 @@ fn a_first_message_starts_a_session_and_its_reply_arrives(cx: &mut TestAppContex
         Some("Count the pears.")
     );
     assert_eq!(app.composer_text(cx), "");
+    // Last used starts the next new session as this one started.
+    assert_eq!(
+        cx.read(|cx| crate::prefs::get(cx).new_sessions.last_mode),
+        Some(crate::prefs::NewSessionMode::Agent)
+    );
     app.wait_for_text(cx, "Seven pears.");
     assert!(mock.was_sent("Count the pears."));
     // The transcript shows the message and its reply.
@@ -1237,6 +1242,11 @@ fn an_agent_session_switches_to_chat_after_saying_what_it_costs(cx: &mut TestApp
     assert_eq!(
         arko::sessions::list(&app.root)[0].mode,
         arko::sessions::Mode::Chat
+    );
+    // Last used starts the next new session as a chat.
+    assert_eq!(
+        cx.read(|cx| crate::prefs::get(cx).new_sessions.last_mode),
+        Some(crate::prefs::NewSessionMode::Chat)
     );
     app.close_all(cx);
 }
