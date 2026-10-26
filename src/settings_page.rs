@@ -26,6 +26,7 @@ use crate::{fonts, menus, paths};
 mod accounts;
 mod extensions;
 mod fields;
+mod openrouter;
 mod profiles;
 mod sessions;
 mod web;

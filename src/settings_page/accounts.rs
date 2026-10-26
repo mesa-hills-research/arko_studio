@@ -17,6 +17,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::openrouter::OpenRouterPart;
 use crate::backend::account_words::{
     CACHE_1H_VARIABLE, ChatGptLogin, ClaudeCodeStatus, KeySource, KeyState, LoginSource,
     LoginState, Problem, outdated_text, source_words, tilde,
@@ -28,9 +29,9 @@ use crate::session_view::HomeFolder;
 use crate::workers::curly;
 
 /// The accounts the page has a row for, by the name the page points at
-/// them with: each provider's key as `/keys` names it, the ChatGPT login and
-/// Claude Code.
-pub const ACCOUNTS: [&str; 7] = [
+/// them with: each provider's key as `/keys` names it, the ChatGPT login,
+/// Claude Code and OpenRouter's routing settings.
+pub const ACCOUNTS: [&str; 8] = [
     "anthropic",
     "openai",
     "gemini",
@@ -38,9 +39,14 @@ pub const ACCOUNTS: [&str; 7] = [
     "voyage",
     CHATGPT,
     CLAUDE_CODE,
+    OPENROUTER_SETTINGS,
 ];
 pub const CHATGPT: &str = "chatgpt";
 pub const CLAUDE_CODE: &str = "claude-code";
+pub const OPENROUTER_SETTINGS: &str = "openrouter-settings";
+/// What opens the page at OpenRouter's routing settings, as a group of
+/// models would name what it needs.
+pub const OPENROUTER_WAY: &str = "OpenRouter settings";
 
 /// The account a group of models needs, by the group's name as arko's
 /// model list heads it: "OpenAI, with your API key" needs the OpenAI key,
@@ -57,6 +63,8 @@ pub fn account_for(way: &str) -> Option<&'static str> {
         "openai"
     } else if way.starts_with("Google") || way.starts_with("Gemini") {
         "gemini"
+    } else if way == OPENROUTER_WAY {
+        OPENROUTER_SETTINGS
     } else if way.starts_with("OpenRouter") {
         "openrouter"
     } else {
@@ -71,6 +79,8 @@ pub struct AccountsPage {
     /// The Model and Default workers' model settings.
     main_model: Entity<ModelSelect>,
     worker_model: Entity<ModelSelect>,
+    /// The OpenRouter group.
+    openrouter: Entity<OpenRouterPart>,
     /// The last session's main model: what "Last used" stands for.
     last_model: Option<String>,
     /// Claude Code is being checked again.
@@ -82,6 +92,7 @@ pub struct AccountsPage {
     /// Each account row's focus, by [`ACCOUNTS`] name.
     focus: Vec<(&'static str, FocusHandle)>,
     _load: Option<Task<()>>,
+    _openrouter: Subscription,
 }
 
 impl AccountsPage {
@@ -126,11 +137,14 @@ impl AccountsPage {
             select.set_models("Automatic", None, cx);
             select
         });
+        let openrouter = cx.new(|cx| OpenRouterPart::new(window, cx));
+        let observing = cx.observe(&openrouter, |_, _, cx| cx.notify());
         let mut this = Self {
             accounts: None,
             models: None,
             main_model,
             worker_model,
+            openrouter,
             last_model: None,
             checking: false,
             home: cx.global::<HomeFolder>().0.clone(),
@@ -140,6 +154,7 @@ impl AccountsPage {
                 .map(|account| (*account, cx.focus_handle()))
                 .collect(),
             _load: None,
+            _openrouter: observing,
         };
         this.refresh(cx);
         this
@@ -213,6 +228,7 @@ impl AccountsPage {
 
     /// Reads the accounts and the models again, in the background.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.openrouter.update(cx, |part, cx| part.read(cx));
         let backend = cx.global::<SharedBackend>().clone();
         let reading = cx.background_spawn(async move {
             let last = last_model(backend.data_root());
@@ -243,6 +259,10 @@ impl AccountsPage {
             })
             .ok();
         }));
+    }
+
+    pub fn openrouter(&self) -> &Entity<OpenRouterPart> {
+        &self.openrouter
     }
 
     pub fn accounts(&self) -> Option<&Accounts> {
@@ -392,6 +412,15 @@ impl AccountsPage {
             .groups([
                 self.keys_group(this)
                     .key(super::group_key("API keys", &revision)),
+                self.openrouter
+                    .read(cx)
+                    .group(
+                        &self.openrouter,
+                        self.focus_of(OPENROUTER_SETTINGS),
+                        self.target == Some(OPENROUTER_SETTINGS),
+                        cx,
+                    )
+                    .key(super::group_key("OpenRouter", &revision)),
                 self.logins_group(this)
                     .key(super::group_key("Logins", &revision)),
                 self.new_sessions_group(cx)

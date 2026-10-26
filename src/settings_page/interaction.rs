@@ -1053,7 +1053,7 @@ fn the_model_settings_find_a_model_and_browse_openrouter(cx: &mut TestAppContext
         .with_models(openrouter_models())
         .with_catalog(crate::backend::sample_catalog(SystemTime::now()));
     let backend = start_on(cx, backend, prefs::Prefs::default());
-    let (window, _, _) = settings_window(cx, ACCOUNTS_PAGE, 2000.);
+    let (window, _, _) = settings_window(cx, ACCOUNTS_PAGE, 2800.);
     let pick = super::profiles_tests::pick_model;
     pick(cx, window, "new-sessions-model-button", "sonnet");
     assert_eq!(
@@ -1090,4 +1090,58 @@ fn the_model_settings_find_a_model_and_browse_openrouter(cx: &mut TestAppContext
             Some("Default workers’ model, GLM 5 · OpenRouter")
         );
     });
+}
+
+/// OpenRouter's routing settings are saved through the backend as they're
+/// changed, zero data retention turning "No data collection" on for good,
+/// and Refresh fetches the models again.
+#[gpui_kit::test]
+fn the_openrouter_settings_are_saved_through_the_backend(cx: &mut TestAppContext) {
+    use arko::openrouter::{Precision, Region, Sort};
+    let backend = FakeBackend::sample("/arko", SystemTime::now())
+        .with_catalog(crate::backend::sample_catalog(SystemTime::now()));
+    let backend = start_on(cx, backend, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, ACCOUNTS_PAGE, 2400.);
+    let part = cx.read(|cx| settings.read(cx).accounts().read(cx).openrouter().clone());
+    let words = |cx: &mut TestAppContext| cx.read(|cx| part.read(cx).models_words());
+    assert_eq!(words(cx), "6 with tool use, updated 1 minute ago");
+
+    act(cx, window, |window, cx| window.click("openrouter-zdr", cx));
+    assert!(backend.openrouter().zdr());
+    assert!(cx.read(|cx| part.read(cx).settings().unwrap().data_collection_implied()));
+    // Region, Providers by and Precision, from their menus in the
+    // OpenRouter group (the second): each choice in arko's order.
+    for (item, choice) in [(2usize, 3usize), (3, 2), (4, 2)] {
+        act(cx, window, |window, cx| {
+            window
+                .within("group-1")
+                .within(format!("item-{item}"))
+                .click("btn", cx)
+        });
+        act(cx, window, |window, cx| {
+            window.within("popup-menu").click(choice, cx)
+        });
+    }
+    let saved = backend.openrouter();
+    assert_eq!(saved.region(), Region::UsOrEu);
+    assert_eq!(saved.sort(), Sort::Throughput);
+    assert_eq!(saved.precision(), Precision::Bf16);
+    assert!(saved.zdr(), "the changes before stay");
+
+    // The provider lists are saved on Enter, as Arko reads them.
+    let (only, _) = cx.read(|cx| part.read(cx).inputs());
+    act(cx, window, |window, cx| {
+        only.update(cx, |only, cx| only.focus(window, cx))
+    });
+    act(cx, window, |window, cx| {
+        window.input("Anthropic, google-vertex", cx)
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(backend.openrouter().only(), ["anthropic", "google-vertex"]);
+
+    act(cx, window, |window, cx| {
+        window.click("openrouter-refresh", cx)
+    });
+    assert_eq!(backend.catalog_fetches(), 1);
+    assert_eq!(words(cx), "6 with tool use, updated just now");
 }

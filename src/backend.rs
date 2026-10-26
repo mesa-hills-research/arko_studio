@@ -856,7 +856,7 @@ impl FakeBackend {
 
     /// A handful of sessions in two folders and two chats, one of them open
     /// in the terminal, all active in the week before `now`, so the sidebar
-    /// shows the same times on any day.
+    /// shows the same times on any day, and six of OpenRouter's models.
     pub fn sample(root: impl Into<PathBuf>, now: SystemTime) -> Self {
         let ago = |minutes: u64| now - Duration::from_secs(minutes * 60);
         let agent = |id: &str, title: &str, folder: &str, minutes: u64| SessionEntry {
@@ -922,7 +922,9 @@ impl FakeBackend {
             host: String::new(),
             since: chrono::DateTime::<chrono::Utc>::from(ago(60)),
         });
-        Self::new(root, sessions).with_default_model(Some("claude-opus-5-5".into()))
+        Self::new(root, sessions)
+            .with_default_model(Some("claude-opus-5-5".into()))
+            .with_catalog(sample_catalog(now))
     }
 
     /// Starts new sessions on `model`, from one group that needs nothing.
