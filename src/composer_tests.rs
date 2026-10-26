@@ -423,6 +423,14 @@ fn the_mode_chip_lists_the_models_and_picks_one(cx: &mut TestAppContext) {
         // The second model of the one group: Sonnet.
         window.click("model-0-1", cx);
     });
+    // The list stays open on Sonnet's efforts, and Esc closes it.
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("effort-high").is_some());
+        window.press("escape", cx);
+    });
+    act(cx, window, |window, _| {
+        assert!(window.try_find("model-list").is_none());
+    });
     assert_eq!(
         cx.read(|cx| view.read(cx).draft().model.clone()).as_deref(),
         Some("claude-sonnet-5-5")
@@ -1223,4 +1231,114 @@ fn opening_the_model_list_refreshes_a_stale_catalog(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| window.press("escape", cx));
     act(cx, window, |window, cx| window.click("mode-model", cx));
     assert_eq!(backend.catalog_fetches(), 1, "fresh now");
+}
+
+fn session_view(
+    workspace: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> Entity<crate::session_view::SessionView> {
+    cx.read(|cx| workspace.read(cx).session_view().clone())
+}
+
+/// Without an effort chosen, the model list marks the one a new session
+/// would start with: the model's last-used effort, else Settings' effort,
+/// else xhigh or the nearest the model takes. Choosing one makes it the
+/// chosen one.
+#[gpui_kit::test]
+fn the_effort_row_marks_the_effort_a_session_would_use(cx: &mut TestAppContext) {
+    use crate::session_view::{EffortFrom, fit_effort};
+    let backend = FakeBackend::sample("/arko", SystemTime::now())
+        .with_last_effort("claude-sonnet-5-5", "medium");
+    cx.update(|cx| crate::init(Startup::for_tests(Arc::new(backend)), cx));
+    let (window, workspace) = open(cx, 1300.);
+    let view = session_view(&workspace, cx);
+    let effort =
+        |model: &str, cx: &mut TestAppContext| cx.read(|cx| view.read(cx).effort_for(model, cx));
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    assert_eq!(
+        effort("claude-opus-5-5", cx),
+        Some(("xhigh".to_string(), EffortFrom::Default))
+    );
+    act(cx, window, |window, _| {
+        assert!(window.try_find("effort-xhigh").is_some());
+    });
+    // Sonnet last ran at medium.
+    act(cx, window, |window, cx| window.click("model-0-1", cx));
+    assert_eq!(
+        effort("claude-sonnet-5-5", cx),
+        Some(("medium".to_string(), EffortFrom::LastUsed))
+    );
+    // Settings' effort comes after the last-used one.
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.new_sessions.effort = Some("high".into())));
+    assert_eq!(
+        effort("claude-opus-5-5", cx),
+        Some(("high".to_string(), EffortFrom::Settings))
+    );
+    assert_eq!(
+        effort("claude-sonnet-5-5", cx),
+        Some(("medium".to_string(), EffortFrom::LastUsed))
+    );
+    // Clicking an effort chooses it and closes the list.
+    act(cx, window, |window, cx| window.click("effort-low", cx));
+    assert_eq!(
+        effort("claude-sonnet-5-5", cx),
+        Some(("low".to_string(), EffortFrom::Chosen))
+    );
+    act(cx, window, |window, _| {
+        assert!(window.try_find("model-list").is_none());
+    });
+    // An effort a model doesn't take falls to the highest it takes below.
+    let efforts = ["low", "medium", "high"].map(String::from);
+    assert_eq!(fit_effort(&efforts, "xhigh").as_deref(), Some("high"));
+    assert_eq!(fit_effort(&efforts, "medium").as_deref(), Some("medium"));
+    let gemini_pro = ["low", "high"].map(String::from);
+    assert_eq!(fit_effort(&gemini_pro, "medium").as_deref(), Some("low"));
+}
+
+/// A new session starts with the effort the list shows, chosen or not,
+/// and a model without efforts closes the list as it's clicked.
+#[gpui_kit::test]
+fn a_new_session_starts_with_the_effort_shown(cx: &mut TestAppContext) {
+    use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
+    let backend = FakeBackend::sample("/arko", SystemTime::now())
+        .with_models(ModelChoices {
+            groups: vec![ModelGroup {
+                name: "Anthropic API, billed per token".into(),
+                needs: None,
+                models: vec![
+                    ModelChoice {
+                        name: "claude-opus-5-5".into(),
+                        alias: "opus".into(),
+                    },
+                    ModelChoice {
+                        name: "local-model".into(),
+                        alias: String::new(),
+                    },
+                ],
+            }],
+            default: Some("claude-opus-5-5".into()),
+            note: None,
+        })
+        .with_last_effort("claude-opus-5-5", "high");
+    let backend = Arc::new(backend);
+    cx.update(|cx| crate::init(Startup::for_tests(backend.clone()), cx));
+    let (window, workspace) = open(cx, 1300.);
+    // Esc after choosing the model keeps the effort marked for it.
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("model-0-0", cx));
+    act(cx, window, |window, cx| window.press("escape", cx));
+    act(cx, window, |window, cx| window.input("Hello", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    let started = backend.new_sessions();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].model.as_deref(), Some("claude-opus-5-5"));
+    assert_eq!(started[0].effort.as_deref(), Some("high"));
+    // A model that takes no effort closes the list.
+    act(cx, window, |window, cx| window.press("secondary-n", cx));
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("model-0-1", cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("model-list").is_none());
+    });
+    assert_eq!(draft_model(&workspace, cx).as_deref(), Some("local-model"));
 }

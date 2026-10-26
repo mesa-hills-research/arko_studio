@@ -195,6 +195,41 @@ pub struct SessionView {
     /// What the model list knows of OpenRouter.
     openrouter: OpenRouterSeen,
     _openrouter: Option<Task<()>>,
+    /// The effort each model last ran at, as arko keeps it, by model.
+    last_efforts: std::collections::HashMap<String, Option<String>>,
+}
+
+/// Where the effort a new session starts with comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffortFrom {
+    /// Chosen in the model list or with `/model`.
+    Chosen,
+    /// The effort the model last ran at.
+    LastUsed,
+    /// The effort Settings set for new sessions.
+    Settings,
+    /// xhigh, or the nearest the model takes.
+    Default,
+}
+
+/// Arko's efforts, lowest first.
+const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// The effort of `efforts` (lowest first) a model runs at when `wanted`
+/// is asked for, as arko fits it: `wanted` when it's there, else the
+/// highest below it, else the lowest.
+pub fn fit_effort(efforts: &[String], wanted: &str) -> Option<String> {
+    if efforts.iter().any(|effort| effort == wanted) {
+        return Some(wanted.to_string());
+    }
+    let rank = |effort: &str| EFFORTS.iter().position(|known| *known == effort);
+    let wanted = rank(wanted);
+    efforts
+        .iter()
+        .filter(|effort| rank(effort) < wanted)
+        .max_by_key(|effort| rank(effort))
+        .or_else(|| efforts.first())
+        .cloned()
 }
 
 /// What the model list knows of OpenRouter: the models picked lately and
@@ -305,6 +340,7 @@ impl SessionView {
             returned_images: Vec::new(),
             openrouter: OpenRouterSeen::default(),
             _openrouter: None,
+            last_efforts: std::collections::HashMap::new(),
         };
         this.restore_draft(window, cx);
         this.sync_expanded(window, cx);
@@ -361,6 +397,7 @@ impl SessionView {
     }
 
     fn sync_image_model(&mut self, cx: &mut Context<Self>) {
+        self.see_last_effort(cx);
         let model = self.image_model(cx);
         self.composer
             .update(cx, |composer, cx| composer.set_image_model(model, cx));
@@ -498,10 +535,64 @@ impl SessionView {
             })
     }
 
-    /// The effort a new session would start with: the one chosen with its
-    /// model, else the one Settings set. `None`: its model's default.
+    /// The effort the chip names for a new session: the one it starts
+    /// with, unless that's merely the default.
     pub fn draft_effort(&self, cx: &App) -> Option<String> {
-        self.draft.effort.clone().or_else(|| settings_effort(cx))
+        let model = self.draft_model(cx)?;
+        self.effort_for(&model, cx)
+            .filter(|(_, from)| *from != EffortFrom::Default)
+            .map(|(effort, _)| effort)
+    }
+
+    /// The effort a new session on `model` starts with, and where it comes
+    /// from: the one chosen, else the one the model last ran at, else the
+    /// one Settings set, else xhigh, each as near as the model takes it.
+    /// `None` for a model that doesn't reason.
+    pub fn effort_for(&self, model: &str, cx: &App) -> Option<(String, EffortFrom)> {
+        let efforts =
+            arko::commands::dynamic_choices(&arko::remote::Reading::default(), "/model", &[model]);
+        if efforts.is_empty() {
+            return None;
+        }
+        let last = self.last_efforts.get(model).cloned().flatten();
+        let (wanted, from) = match (&self.draft.effort, last, settings_effort(cx)) {
+            (Some(chosen), _, _) => (chosen.clone(), EffortFrom::Chosen),
+            (None, Some(last), _) => (last, EffortFrom::LastUsed),
+            (None, None, Some(set)) => (set, EffortFrom::Settings),
+            (None, None, None) => ("xhigh".to_string(), EffortFrom::Default),
+        };
+        fit_effort(&efforts, &wanted).map(|effort| (effort, from))
+    }
+
+    /// Reads the effort the new session's model last ran at, in the
+    /// background, once per model.
+    fn see_last_effort(&mut self, cx: &mut Context<Self>) {
+        if self.session.is_some() {
+            return;
+        }
+        let Some(model) = self.draft_model(cx) else {
+            return;
+        };
+        if self.last_efforts.contains_key(&model) {
+            return;
+        }
+        self.last_efforts.insert(model.clone(), None);
+        let backend = cx.global::<SharedBackend>().clone();
+        let reading = cx.background_spawn({
+            let model = model.clone();
+            async move { backend.last_effort(&model) }
+        });
+        cx.spawn(async move |this, cx| {
+            let effort = reading.await;
+            if effort.is_some() {
+                this.update(cx, |this, cx| {
+                    this.last_efforts.insert(model, effort);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     /// Draws again when the model or effort Settings set for new sessions
@@ -1863,7 +1954,11 @@ impl SessionView {
             mode: self.draft.mode,
             folder,
             model: self.draft.model.clone(),
-            effort: self.draft.effort.clone(),
+            // What the model list shows is what runs.
+            effort: self
+                .draft_model(cx)
+                .and_then(|model| self.effort_for(&model, cx))
+                .map(|(effort, _)| effort),
         };
         let text = message.text.clone();
         let session = LiveSession::create(new, arko::Input::Message(message), cx);
@@ -2255,11 +2350,17 @@ impl SessionView {
                                 .label(label)
                                 .on_click(move |_, window, cx| {
                                     let name = name.clone();
+                                    // With its efforts to choose from, the
+                                    // list stays open on them.
+                                    let stays = !workers_only && reasons(&name);
                                     view.update(cx, |view, cx| {
                                         view.choose_model(name, workers_only, window, cx)
                                     })
                                     .ok();
-                                    popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+                                    if !stays {
+                                        popover
+                                            .update(cx, |popover, cx| popover.dismiss(window, cx));
+                                    }
                                 })
                         }))
                         .children(found.into_iter().enumerate().map(|(ix, model)| {
@@ -2280,11 +2381,15 @@ impl SessionView {
                                 .label(model.label.clone())
                                 .on_click(move |_, window, cx| {
                                     let name = model.name.clone();
+                                    let stays = !workers_only && reasons(&name);
                                     view.update(cx, |view, cx| {
                                         view.choose_model(name, workers_only, window, cx)
                                     })
                                     .ok();
-                                    popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+                                    if !stays {
+                                        popover
+                                            .update(cx, |popover, cx| popover.dismiss(window, cx));
+                                    }
                                 })
                         }))
                         .when(loading, |this| {
@@ -2331,8 +2436,11 @@ impl SessionView {
                     &[model.as_str()],
                 );
                 let chosen = match &self.session {
-                    None => self.draft_effort(cx),
-                    Some(session) => Some(session.read(cx).reading().models.main_effort.clone()),
+                    None => self.effort_for(&model, cx),
+                    Some(session) => Some((
+                        session.read(cx).reading().models.main_effort.clone(),
+                        EffortFrom::Chosen,
+                    )),
                 };
                 (model, efforts, chosen)
             })
@@ -2408,13 +2516,28 @@ impl SessionView {
                                 .child("Effort"),
                         )
                         .children(efforts.into_iter().map(move |effort| {
-                            let checked = chosen.as_deref() == Some(effort.as_str());
+                            // The one chosen is filled. One the session would
+                            // start with unless another is chosen is outlined,
+                            // saying why.
+                            let from = chosen
+                                .as_ref()
+                                .filter(|(shown, _)| *shown == effort)
+                                .map(|(_, from)| *from);
                             let view = view.clone();
+                            let popover = popover.clone();
                             let model = model.clone();
                             Button::new(SharedString::from(format!("effort-{effort}")))
                                 .xsmall()
-                                .when(checked, |this| this.primary())
-                                .when(!checked, |this| this.ghost())
+                                .map(|this| match from {
+                                    Some(EffortFrom::Chosen) => this.primary(),
+                                    Some(EffortFrom::LastUsed) => {
+                                        this.outline().tooltip(format!("{effort} - Last used"))
+                                    }
+                                    Some(EffortFrom::Settings | EffortFrom::Default) => {
+                                        this.outline().tooltip(format!("{effort} - Default"))
+                                    }
+                                    None => this.ghost(),
+                                })
                                 .disabled(started)
                                 .label(effort.clone())
                                 .on_click(move |_, window, cx| {
@@ -2423,6 +2546,7 @@ impl SessionView {
                                         view.choose_effort(model, effort, window, cx)
                                     })
                                     .ok();
+                                    popover.update(cx, |popover, cx| popover.dismiss(window, cx));
                                 })
                         })),
                 )
@@ -3146,6 +3270,12 @@ fn default_mode(cx: &App) -> Mode {
         prefs::NewSessionMode::Chat => Mode::Chat,
         prefs::NewSessionMode::Agent => Mode::Agent,
     }
+}
+
+/// Whether `model` takes an effort, so the model list offers its efforts.
+fn reasons(model: &str) -> bool {
+    !arko::commands::dynamic_choices(&arko::remote::Reading::default(), "/model", &[model])
+        .is_empty()
 }
 
 /// The main agent's model Settings set for new sessions, as the backend

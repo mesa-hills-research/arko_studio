@@ -365,6 +365,9 @@ pub trait Backend: Send + Sync + 'static {
     /// are stale or `refresh` says to. A fetch takes up to a few seconds.
     fn openrouter_models(&self, refresh: bool) -> Catalog;
 
+    /// The effort `model` last ran at, as arko keeps it.
+    fn last_effort(&self, model: &str) -> Option<String>;
+
     /// OpenRouter's models as arko keeps them in memory, without fetching.
     fn openrouter_models_kept(&self) -> Catalog;
 
@@ -653,6 +656,10 @@ impl Backend for ArkoBackend {
         arko::openrouter::catalog(&self.root)
     }
 
+    fn last_effort(&self, model: &str) -> Option<String> {
+        arko::models::last_effort(&self.root, model)
+    }
+
     fn openrouter(&self) -> OpenRouterSettings {
         OpenRouterSettings::load(&self.root)
     }
@@ -821,6 +828,10 @@ struct FakeState {
     catalog: Catalog,
     catalog_fetches: usize,
     openrouter: OpenRouterSettings,
+    /// The effort each model last ran at.
+    last_efforts: Vec<(String, String)>,
+    /// The new sessions started, as the app asked for them.
+    started: Vec<NewSession>,
     extensions: extensions::Extensions,
     profiles: profiles::Profiles,
 }
@@ -842,6 +853,8 @@ impl FakeBackend {
                 catalog: Catalog::default(),
                 catalog_fetches: 0,
                 openrouter: OpenRouterSettings::default(),
+                last_efforts: Vec::new(),
+                started: Vec::new(),
                 extensions: extensions::Extensions::sample(Path::new("/home/ada"), &root),
                 profiles: profiles::Profiles::default(),
             }),
@@ -963,6 +976,17 @@ impl FakeBackend {
     pub fn with_catalog(self, catalog: Catalog) -> Self {
         self.with_state(|state| state.catalog = catalog);
         self
+    }
+
+    /// Says `model` last ran at `effort`.
+    pub fn with_last_effort(self, model: &str, effort: &str) -> Self {
+        self.with_state(|state| state.last_efforts.push((model.into(), effort.into())));
+        self
+    }
+
+    /// The new sessions started, as the app asked for them.
+    pub fn new_sessions(&self) -> Vec<NewSession> {
+        self.with_state(|state| state.started.clone())
     }
 
     /// Starts with OpenRouter's routing set as `settings`.
@@ -1118,6 +1142,16 @@ impl Backend for FakeBackend {
         self.with_state(|state| state.catalog.clone())
     }
 
+    fn last_effort(&self, model: &str) -> Option<String> {
+        self.with_state(|state| {
+            state
+                .last_efforts
+                .iter()
+                .find(|(name, _)| name == model)
+                .map(|(_, effort)| effort.clone())
+        })
+    }
+
     fn openrouter(&self) -> OpenRouterSettings {
         self.with_state(|state| state.openrouter.clone())
     }
@@ -1146,6 +1180,7 @@ impl Backend for FakeBackend {
             }
             Start::New(new) => {
                 state.created += 1;
+                state.started.push(new.clone());
                 let entry = SessionEntry {
                     id: SessionId(format!("20261016-120000-new{}", state.created)),
                     title: "New session".into(),
