@@ -449,7 +449,7 @@ impl AccountsPage {
         SettingGroup::new()
             .title("New sessions")
             .description(
-                "What a new session starts on. Its composer can choose another model before the first message.",
+                "What a new session starts on. Before its first message, you can pick another model in the message box.",
             )
             .items([
                 super::choice(

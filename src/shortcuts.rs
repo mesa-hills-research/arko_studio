@@ -151,7 +151,7 @@ impl Render for ShortcutsView {
                                         .text_xs()
                                         .text_color(theme.muted_foreground)
                                         .child(
-                                            "With the Emacs or Vim keymap, Ctrl+F moves the caret in the composer. F3 opens Find from anywhere.",
+                                            "With the Emacs or Vim keymap, Ctrl+F moves the caret in the message box. F3 opens Find from anywhere.",
                                         ),
                                 )
                             })
@@ -202,7 +202,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(found("zoom"), ["Zoom In", "Zoom Out"]);
-        assert!(found("composer").contains(&"Stop"));
+        assert!(found("message box").contains(&"Stop"));
         assert!(found("f2").contains(&"Rename Session…"));
         // ↑ walks the history, Alt+↑ edits the last message.
         let edit = shortcuts

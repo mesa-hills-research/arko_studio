@@ -3480,9 +3480,9 @@ impl SessionView {
                                 None,
                             )
                             .accessibility_label(if expanded {
-                                "Shrink composer"
+                                "Shrink the message box"
                             } else {
-                                "Expand composer"
+                                "Expand the message box"
                             })
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(menus::ExpandComposer), cx)
