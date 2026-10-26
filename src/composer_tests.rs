@@ -364,8 +364,9 @@ fn the_placeholder_and_send_button_follow_the_state(cx: &mut TestAppContext) {
     });
 }
 
-/// Claude Mythos 5.1 says under its name in the model list that it needs
-/// access first, and the models without a note have none.
+/// Claude Mythos 5.1 has an (i) after its name in the model list, and its
+/// tooltip says it needs access first. Its row is as tall as the others,
+/// and the models without a note have none.
 #[gpui_kit::test]
 fn the_model_list_says_what_access_mythos_needs(cx: &mut TestAppContext) {
     use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
@@ -391,10 +392,25 @@ fn the_model_list_says_what_access_mythos_needs(cx: &mut TestAppContext) {
     cx.update(|cx| crate::init(Startup::for_tests(Arc::new(backend)), cx));
     let (window, _) = open(cx, 1300.);
     act(cx, window, |window, cx| window.click("mode-model", cx));
-    act(cx, window, |window, _| {
-        assert!(window.try_find("model-note-0-1").is_some());
-        assert!(window.try_find("model-note-0-0").is_none());
-    });
+    let info = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("model-note-0-0").is_none());
+            let height = |id: &'static str| window.find(id).bounds().size.height;
+            assert_eq!(height("model-0-1"), height("model-0-0"));
+            window.find("model-note-0-1").bounds().center()
+        })
+        .unwrap();
+    let cx = &mut gpui_kit::VisualTestContext::from_window(window, cx);
+    assert!(cx.debug_bounds("tooltip").is_none());
+    cx.simulate_mouse_move(info, None, gpui_kit::Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("tooltip").is_some());
 }
 
 #[gpui_kit::test]
