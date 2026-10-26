@@ -349,10 +349,11 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) {
             let live = session.read(cx);
             (
                 live.title().to_string(),
-                // The latest question, which is the news.
+                // The latest question, which is the news, or what an
+                // approval asks.
                 live.open_questions()
                     .last()
-                    .map(|question| question.question.clone()),
+                    .map(|question| crate::questions::text(question)),
             )
         };
         let Some(notice) = notice(

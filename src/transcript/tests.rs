@@ -4790,23 +4790,26 @@ fn every_note_not_read_yet_shows_in_every_view(cx: &mut TestAppContext) {
     notes_show_in_every_view(cx, window, &view, &feed);
 }
 
-/// A card of the agent's questions shows each question and what became of
-/// it, as a screen reader hears it too, and changes as that changes.
+/// A card of the agent's questions is one line while they are open (the
+/// answer panel has them), and each one settled joins the record under it
+/// with what became of it, numbered in its ask. The agent's ids, which go
+/// on across conversations, are never shown or heard.
 #[gpui_kit::test]
-fn a_question_card_shows_each_questions_state(cx: &mut TestAppContext) {
+fn a_question_card_is_a_line_until_its_questions_settle(cx: &mut TestAppContext) {
     use arko::questions::QuestionState;
 
     start(cx);
     let feed = Feed::new("main");
     feed.user("Tidy the parser.", Source::App, Delivery::Turn);
+    // A later conversation's questions: their ids go on from the first's.
     let card = crate::questions::ask(
         &feed,
         &[
-            ("q1", "Tabs or spaces?"),
-            ("q2", "Push now?"),
-            ("q3", "Which branch?"),
-            ("q4", "Keep the old API?"),
-            ("q5", "Rename the module?"),
+            ("q7", "Tabs or spaces?"),
+            ("q8", "Push now?"),
+            ("q9", "Which branch?"),
+            ("q10", "Keep the old API?"),
+            ("q11", "Rename the module?"),
         ],
         false,
     );
@@ -4817,38 +4820,84 @@ fn a_question_card_shows_each_questions_state(cx: &mut TestAppContext) {
         announced_as(cx, window, RowKey::Question(card))
             .1
             .as_deref(),
-        Some(
-            "Arko asks, 1. Tabs or spaces?, open, 2. Push now?, open, 3. Which branch?, open, 4. Keep the old API?, open, 5. Rename the module?, open"
-        )
+        Some("Arko asked 5 questions")
+    );
+    let shows = |cx: &mut TestAppContext, n: u64| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(("question", card * 8 + n)).is_some()
+        })
+        .unwrap()
+    };
+    assert!(
+        (0..5).all(|n| !shows(cx, n)),
+        "open questions are the panel's"
     );
     feed.set_question_state(
-        "q1",
+        "q7",
         QuestionState::Answered {
             answer: "Spaces".into(),
         },
     );
-    feed.set_question_state("q2", QuestionState::AnsweredInMessage);
+    feed.set_question_state("q8", QuestionState::AnsweredInMessage);
     feed.set_question_state(
-        "q3",
+        "q9",
         QuestionState::Closed {
             why: Some("Found it in the README".into()),
         },
     );
-    feed.set_question_state("q4", QuestionState::Dismissed);
+    feed.set_question_state("q10", QuestionState::Dismissed);
     settle(cx, window);
     assert_eq!(
         announced_as(cx, window, RowKey::Question(card)),
         (
             Some(gpui_kit::Role::ListItem),
             Some(
-                "Arko asks, 1. Tabs or spaces?, answered Spaces, 2. Push now?, answered in a message, 3. Which branch?, settled by Arko Found it in the README, 4. Keep the old API?, dismissed, 5. Rename the module?, open"
+                "Arko asked 5 questions, 1. Tabs or spaces?, Spaces, 2. Push now?, Answered in your message, 3. Which branch?, Arko closed it. Found it in the README, 4. Keep the old API?, Dismissed"
                     .into()
             )
         )
     );
+    assert!((0..4).all(|n| shows(cx, n)));
+    assert!(!shows(cx, 4), "still open");
 }
 
-/// The words of a question card are found, and copied as selected.
+/// The line of a card with questions open asks for the answer panel on
+/// that card, by a click or Enter. Once they are all settled it's text.
+#[gpui_kit::test]
+fn the_line_of_a_card_opens_the_answer_panel(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Tidy the parser.", Source::App, Delivery::Turn);
+    let card = crate::questions::ask(&feed, &[("q1", "Tabs or spaces?")], false);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    settle(cx, window);
+    let heard = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let _events = cx.update(|cx| {
+        let heard = heard.clone();
+        cx.subscribe(&view, move |_, event: &TranscriptEvent, _| {
+            heard.borrow_mut().push(event.clone())
+        })
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.click(("question-line", card), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(*heard.borrow(), [TranscriptEvent::OpenQuestions(card)]);
+    crate::questions::answer(&feed, "q1", "Spaces");
+    settle(cx, window);
+    heard.borrow_mut().clear();
+    cx.update_window(window, |_, window, cx| {
+        window.click(("question-line", card), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(heard.borrow().is_empty());
+}
+
+/// The words of a settled question are found, and copied as selected. An
+/// open one's are the answer panel's.
 #[gpui_kit::test]
 fn a_question_cards_words_are_found_and_copied(cx: &mut TestAppContext) {
     start(cx);
@@ -4856,6 +4905,12 @@ fn a_question_cards_words_are_found_and_copied(cx: &mut TestAppContext) {
     feed.user("Tidy the parser.", Source::App, Delivery::Turn);
     let card = crate::questions::ask(&feed, &[("q1", "Tabs or spaces?")], false);
     let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    settle(cx, window);
+    view.update(cx, |view, cx| view.find("spaces", cx));
+    settle(cx, window);
+    assert_eq!(cx.read(|cx| view.read(cx).find_status().total), 0);
+    feed.set_question_state("q1", arko::questions::QuestionState::Dismissed);
+    view.update(cx, |view, cx| view.find("", cx));
     settle(cx, window);
     view.update(cx, |view, cx| view.find("spaces", cx));
     settle(cx, window);

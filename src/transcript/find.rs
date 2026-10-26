@@ -691,12 +691,14 @@ impl TranscriptView {
                     .unwrap_or_else(|| item.text.clone());
                 vec![(Place::Text, title)]
             }
+            // The record's questions: the open ones are the answer panel's.
             Kind::Question if super::model::has_questions(item) => item
                 .questions
                 .iter()
                 .flatten()
                 .enumerate()
-                .map(|(n, question)| (Place::Question(n), question.question.trim().to_string()))
+                .filter(|(_, question)| !question.state.is_open())
+                .map(|(n, question)| (Place::Question(n), crate::questions::text(question)))
                 .collect(),
             Kind::Text | Kind::Reply | Kind::Message | Kind::Question | Kind::Thinking => {
                 let doc = self

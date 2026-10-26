@@ -493,28 +493,28 @@ impl TranscriptView {
     }
 
     /// The height of a card of the agent's questions, as [`Self::questions`]
-    /// lays it out: a label line, then each question's text and its state,
-    /// with a gap between questions.
+    /// lays it out: its line, then each settled question's text and what
+    /// became of it, with a gap between questions.
     fn question_height(&self, id: u64, column: f32, m: &Metrics) -> f32 {
         let rem = m.rem;
         let Some(questions) = self.item(id).and_then(|item| item.questions.as_ref()) else {
             return 0.;
         };
-        let mut height = m.line_xs + 0.25 * rem;
-        for (n, question) in questions.iter().enumerate() {
-            // The text, past its number.
+        let mut height = m.line_sm;
+        for question in questions {
+            let Some(outcome) = crate::questions::outcome(&question.state) else {
+                continue;
+            };
+            // The text and the outcome, past its number.
             let mut width = column;
-            if let Some(number) = crate::questions::number(n, questions.len()) {
-                let digits = number.to_string().len() as f32;
-                width -= digits * m.body.advance_at(rem) + 0.375 * rem;
+            if let Some(number) = question.number {
+                let chars = number.to_string().len() as f32 + 1.;
+                width -= (chars * m.body.advance_at(rem)).max(rem) + 0.375 * rem;
             }
-            let lines = super::height::hard_lines(question.question.trim());
-            height += m.body.text_lines(&lines, width) * m.line;
-            // Its state, small.
-            height += m.line_sm;
-            if n > 0 {
-                height += 0.75 * rem;
-            }
+            let lines = super::height::hard_lines(&crate::questions::text(question));
+            height += 0.5 * rem + m.body.text_lines(&lines, width) * m.line;
+            let lines = super::height::hard_lines(&outcome);
+            height += m.body_at(0.875).text_lines(&lines, width) * m.line_sm;
         }
         height
     }
@@ -980,7 +980,7 @@ impl TranscriptView {
             RowKey::Output(id) => self.output(id, cx),
             RowKey::Turn(id) => self.turn(id, view, cx),
             RowKey::Worker(id) => self.worker(id, view, cx),
-            RowKey::Question(id) => self.questions(id, cx),
+            RowKey::Question(id) => self.questions(id, view, cx),
             RowKey::Working(id) => self.working(id, cx),
         }
     }
@@ -1196,7 +1196,7 @@ impl TranscriptView {
                 .text_xs()
                 .text_color(theme.muted_foreground)
                 .child(Icon::new(Lucide::MessageCircleQuestionMark).xsmall())
-                .child("Question")
+                .child("Arko asked")
         });
         let from = (block == 0 && item.kind == Kind::Message)
             .then(|| item.from.clone())
@@ -1926,87 +1926,94 @@ impl TranscriptView {
         }
     }
 
-    /// A card of the agent's questions: "Question" over it, then each
-    /// question (its id where the agent gave one) with what became of it.
-    fn questions(&self, id: u64, cx: &App) -> AnyElement {
+    /// A card of the agent's questions: its line ("Arko asked 2
+    /// questions"), which opens the answer panel on those still open, then
+    /// the record of each settled one with what became of it. An open
+    /// question shows only in the panel.
+    fn questions(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
         let theme = cx.theme();
-        let Some(questions) = self.item(id).and_then(|item| item.questions.as_ref()) else {
+        let Some(item) = self.item(id) else {
             return div().into_any_element();
         };
-        let label = if questions.len() == 1 {
-            "Question"
-        } else {
-            "Questions"
-        };
-        v_flex()
-            .w_full()
-            .child(
+        let questions = item.questions.as_deref().unwrap_or_default();
+        let open = questions.iter().any(|question| question.state.is_open());
+        let view = view.downgrade();
+        let line = h_flex()
+            .id(("question-line", id))
+            .test_support()
+            .gap_1()
+            .text_sm()
+            .text_color(theme.muted_foreground)
+            .child(Icon::new(Lucide::MessageCircleQuestionMark).xsmall())
+            .child(item.text.clone())
+            .when(open, |this| {
+                this.role(Role::Button)
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(theme.foreground))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Answer")
+                            .action(&crate::questions::AnswerQuestions, None)
+                            .build(window, cx)
+                    })
+                    .on_click(move |_, _, cx| {
+                        view.update(cx, |_, cx| cx.emit(TranscriptEvent::OpenQuestions(id)))
+                            .ok();
+                    })
+            });
+        let record = questions.iter().enumerate().filter_map(|(n, question)| {
+            let outcome = crate::questions::outcome(&question.state)?;
+            let answered = matches!(
+                question.state,
+                arko::questions::QuestionState::Answered { .. }
+            );
+            Some(
                 h_flex()
-                    .gap_1()
-                    .pb_1()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(Icon::new(Lucide::MessageCircleQuestionMark).xsmall())
-                    .child(label),
-            )
-            .children(questions.iter().enumerate().map(|(n, question)| {
-                let (state, detail) = crate::questions::state_words(&question.state);
-                let open = question.state.is_open();
-                v_flex()
                     .id(("question", id * 8 + n as u64))
                     .test_support()
-                    .when(n > 0, |this| this.pt_3())
+                    .items_baseline()
+                    .gap_1p5()
+                    .pt_2()
+                    .when_some(question.number, |this, number| {
+                        // At least a rem, so the texts line up.
+                        this.child(
+                            div()
+                                .flex_none()
+                                .min_w(rems(1.))
+                                .text_color(theme.muted_foreground)
+                                .child(format!("{number}.")),
+                        )
+                    })
                     .child(
-                        h_flex()
-                            .items_baseline()
-                            .gap_1p5()
-                            .when_some(
-                                crate::questions::number(n, questions.len()),
-                                |this, number| {
-                                    this.child(
-                                        div()
-                                            .flex_none()
-                                            .text_color(theme.muted_foreground)
-                                            .child(number.to_string()),
-                                    )
-                                },
-                            )
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
                             .child(
                                 div()
                                     .id(("question-text", id * 8 + n as u64))
                                     .test_support()
-                                    .flex_1()
-                                    .min_w_0()
                                     .child(self.marked(
                                         ("question-words", id * 8 + n as u64),
                                         id,
                                         Place::Question(n),
-                                        question.question.trim().to_string(),
+                                        crate::questions::text(question),
                                         cx,
                                     )),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .id(("question-state", id * 8 + n as u64))
-                            .test_support()
-                            .gap_1p5()
-                            .text_sm()
+                            )
                             .child(
                                 div()
-                                    .flex_none()
-                                    .text_color(if open {
-                                        theme.warning
-                                    } else {
-                                        theme.muted_foreground
-                                    })
-                                    .child(state),
-                            )
-                            .when_some(detail, |this, detail| {
-                                this.child(div().min_w_0().truncate().child(detail))
-                            }),
-                    )
-            }))
+                                    .id(("question-outcome", id * 8 + n as u64))
+                                    .test_support()
+                                    .text_sm()
+                                    .when(!answered, |this| this.text_color(theme.muted_foreground))
+                                    .child(outcome),
+                            ),
+                    ),
+            )
+        });
+        v_flex()
+            .w_full()
+            .child(line)
+            .children(record)
             .into_any_element()
     }
 

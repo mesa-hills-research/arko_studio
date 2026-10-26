@@ -125,6 +125,13 @@ fn images_not_kept(count: usize) -> Option<String> {
 /// one of them shows it at once, where it was.
 const KEPT_TRANSCRIPTS: usize = 4;
 
+/// A session's answer panel, with what is filled in.
+struct KeptPanel {
+    session: WeakEntity<LiveSession>,
+    view: Entity<AnswerPanel>,
+    _events: Subscription,
+}
+
 /// A session's transcript, for the opening of its feed it shows.
 struct KeptTranscript {
     session: EntityId,
@@ -153,9 +160,9 @@ pub struct SessionView {
     composer: Entity<Composer>,
     composer_empty: bool,
     width: WidthClass,
-    /// The answer panel, while the session has open questions.
-    panel: Option<Entity<AnswerPanel>>,
-    _panel: Option<Subscription>,
+    /// Each session's answer panel, while it has open questions: what is
+    /// filled in waits there while the window shows another session.
+    panels: Vec<KeptPanel>,
     /// Whether the answer panel shows.
     panel_open: bool,
     /// Where the keyboard was before Alt+Q gave it to the panel: it goes
@@ -344,8 +351,7 @@ impl SessionView {
             composer,
             composer_empty: true,
             width: WidthClass::Wide,
-            panel: None,
-            _panel: None,
+            panels: Vec::new(),
             panel_open: false,
             panel_return: None,
             last_key: None,
@@ -805,8 +811,6 @@ impl SessionView {
         }
         self._session.clear();
         self.close_panel(window, cx);
-        self.panel = None;
-        self._panel = None;
         self.target = None;
         self.session = session;
         if let Some(session) = &self.session {
@@ -929,7 +933,16 @@ impl SessionView {
     /// The answer panel while it shows (tests and screenshots).
     #[doc(hidden)]
     pub fn answer_panel(&self) -> Option<&Entity<AnswerPanel>> {
-        self.panel.as_ref().filter(|_| self.panel_open)
+        self.panel().filter(|_| self.panel_open)
+    }
+
+    /// The shown session's answer panel, open or not.
+    fn panel(&self) -> Option<&Entity<AnswerPanel>> {
+        let session = self.session.as_ref()?.entity_id();
+        self.panels
+            .iter()
+            .find(|kept| kept.session.entity_id() == session)
+            .map(|kept| &kept.view)
     }
 
     /// The open questions attached to the composer, which the next message
@@ -943,7 +956,7 @@ impl SessionView {
 
     /// The open questions neither attached nor in the panel, which a chip
     /// above the composer stands for, and whether one of them is new.
-    fn waiting_questions(&self, cx: &App) -> (Vec<String>, bool) {
+    fn waiting_questions(&self, cx: &App) -> (Vec<arko::questions::AgentQuestion>, bool) {
         let Some(session) = &self.session else {
             return (Vec::new(), false);
         };
@@ -953,13 +966,13 @@ impl SessionView {
         let session = session.read(cx);
         let attached = session.attached_questions();
         let unseen = session.unseen_questions();
-        let waiting: Vec<String> = session
+        let waiting: Vec<arko::questions::AgentQuestion> = session
             .open_questions()
-            .iter()
-            .map(|question| question.id.clone())
-            .filter(|id| !attached.contains(id))
+            .into_iter()
+            .filter(|question| !attached.contains(&question.id))
+            .cloned()
             .collect();
-        let new = waiting.iter().any(|id| unseen.contains(id));
+        let new = waiting.iter().any(|question| unseen.contains(&question.id));
         (waiting, new)
     }
 
@@ -977,6 +990,12 @@ impl SessionView {
     /// Follows the session's open questions: the panel shows them, and opens
     /// by itself for new ones while the user isn't typing.
     fn sync_questions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The panels of sessions that ended go with them.
+        self.panels.retain(|kept| {
+            kept.session
+                .upgrade()
+                .is_some_and(|session| *session.read(cx).phase() != Phase::Ended)
+        });
         let Some(session) = self.session.clone() else {
             return;
         };
@@ -988,21 +1007,23 @@ impl SessionView {
             .collect();
         if open.is_empty() {
             self.close_panel(window, cx);
+            self.panels
+                .retain(|kept| kept.session.entity_id() != session.entity_id());
             return;
         }
-        let panel = match &self.panel {
+        let panel = match self.panel() {
             Some(panel) => panel.clone(),
             None => {
                 let panel = cx.new(|cx| AnswerPanel::new(window, cx));
-                self._panel = Some(cx.subscribe_in(&panel, window, Self::on_panel_event));
-                self.panel = Some(panel.clone());
+                self.panels.push(KeptPanel {
+                    session: session.downgrade(),
+                    view: panel.clone(),
+                    _events: cx.subscribe_in(&panel, window, Self::on_panel_event),
+                });
                 panel
             }
         };
-        let numbers = session.read(cx).question_numbers();
-        panel.update(cx, |panel, cx| {
-            panel.set_questions(open, numbers, window, cx)
-        });
+        panel.update(cx, |panel, cx| panel.set_questions(open, window, cx));
         if !self.panel_open && !session.read(cx).unseen_questions().is_empty() && !self.typing(cx) {
             self.panel_open = true;
             self.sync_composer(window, cx);
@@ -1015,6 +1036,18 @@ impl SessionView {
 
     /// Opens the answer panel, or gives it the keyboard (Alt+Q).
     pub fn answer_questions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_panel(None, window, cx);
+    }
+
+    /// Opens the answer panel on the open questions of the card `item`
+    /// (its line in the transcript was clicked), or on the first question,
+    /// and gives it the keyboard.
+    pub(crate) fn open_panel(
+        &mut self,
+        item: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let open = self
             .session
             .as_ref()
@@ -1026,12 +1059,17 @@ impl SessionView {
         self.panel_open = true;
         self.sync_questions(window, cx);
         self.sync_composer(window, cx);
-        let Some(panel) = self.panel.clone() else {
+        let Some(panel) = self.panel().cloned() else {
             return;
         };
         if !panel.read(cx).contains_focus(window, cx) {
             self.panel_return = window.focused(cx);
-            panel.update(cx, |panel, cx| panel.focus(window, cx));
+            if item.is_none() {
+                panel.update(cx, |panel, cx| panel.focus(window, cx));
+            }
+        }
+        if let Some(item) = item {
+            panel.update(cx, |panel, cx| panel.focus_card(item, window, cx));
         }
         cx.notify();
     }
@@ -1043,8 +1081,7 @@ impl SessionView {
         }
         self.panel_open = false;
         let had_focus = self
-            .panel
-            .as_ref()
+            .panel()
             .is_some_and(|panel| panel.read(cx).contains_focus(window, cx));
         let back = self.panel_return.take();
         if had_focus {
@@ -1058,17 +1095,15 @@ impl SessionView {
     }
 
     /// Closes the panel and attaches the open questions to the composer,
-    /// which the next message answers ("Answer in chat", Esc).
+    /// which the next message answers ("Answer in chat", Esc). The keyboard
+    /// goes to the composer, wherever the panel was opened from.
     fn answer_in_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(session) = &self.session {
             session.update(cx, |session, cx| session.attach_questions(cx));
         }
-        let back = self.panel_return.take();
+        self.panel_return = None;
         self.panel_open = false;
-        match back {
-            Some(back) => window.focus(&back, cx),
-            None => self.focus_composer(window, cx),
-        }
+        self.focus_composer(window, cx);
         self.sync_composer(window, cx);
         cx.notify();
     }
@@ -1080,12 +1115,12 @@ impl SessionView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
         match event {
             AnswerPanelEvent::Send => {
                 let answers = panel.read(cx).answers(cx);
-                let Some(session) = self.session.clone() else {
-                    return;
-                };
                 let ids = answers.ids();
                 let sent = session.update(cx, |session, cx| {
                     session.send(arko::Input::AnswerQuestions(answers), cx)
@@ -1098,6 +1133,22 @@ impl SessionView {
                     Err(why) => window.push_notification(why, cx),
                 }
             }
+            // An approval's Save or Don't save sends it with what else is
+            // filled in. The panel stays for the questions left.
+            AnswerPanelEvent::Choose { id, choice } => {
+                let answers = panel
+                    .read(cx)
+                    .answers_choosing(Some((id.as_str(), choice.as_str())), cx);
+                let ids = answers.ids();
+                let sent = session.update(cx, |session, cx| {
+                    session.send(arko::Input::AnswerQuestions(answers), cx)
+                });
+                match sent {
+                    Ok(()) => panel.update(cx, |panel, cx| panel.sent(&ids, window, cx)),
+                    Err(why) => window.push_notification(why, cx),
+                }
+                self.sync_questions(window, cx);
+            }
             AnswerPanelEvent::AnswerInChat => self.answer_in_chat(window, cx),
             AnswerPanelEvent::Close => self.close_panel(window, cx),
         }
@@ -1106,8 +1157,9 @@ impl SessionView {
     /// "Not now": the questions the chip stands for are dismissed, and the
     /// agent goes on with its defaults.
     fn dismiss_questions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (ids, _) = self.waiting_questions(cx);
-        let Some(session) = &self.session else {
+        let (shown, _) = self.waiting_questions(cx);
+        let ids: Vec<String> = shown.into_iter().map(|question| question.id).collect();
+        let Some(session) = self.session.as_ref().filter(|_| !ids.is_empty()) else {
             return;
         };
         if let Err(why) = session.update(cx, |session, cx| {
@@ -1283,6 +1335,7 @@ impl SessionView {
             TranscriptEvent::Regenerate => self.regenerate(window, cx),
             TranscriptEvent::Branch(item) => self.branch_from(Some(*item), window, cx),
             TranscriptEvent::Leave => self.focus_composer(window, cx),
+            TranscriptEvent::OpenQuestions(item) => self.open_panel(Some(*item), window, cx),
             TranscriptEvent::MoveToBackground(item) => {
                 if let Some(session) = &self.session {
                     session.update(cx, |session, cx| session.move_call(*item, cx));
@@ -3225,7 +3278,7 @@ impl SessionView {
         }
         let theme = cx.theme();
         let (label, color) = if new {
-            (crate::questions::asks_text(waiting.len()), theme.foreground)
+            (crate::questions::asks_text(&waiting), theme.foreground)
         } else {
             (
                 crate::questions::open_text(waiting.len()),
@@ -3433,7 +3486,7 @@ impl SessionView {
             .session
             .as_ref()
             .is_some_and(|session| session.read(cx).is_working());
-        let panel = self.panel.clone().filter(|_| self.panel_open).map(|panel| {
+        let panel = self.answer_panel().cloned().map(|panel| {
             // Above the composer, over the transcript's end.
             div()
                 .absolute()

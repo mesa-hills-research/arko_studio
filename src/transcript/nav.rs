@@ -108,9 +108,10 @@ impl TranscriptView {
             RowKey::Separator(_) | RowKey::Notice(_) | RowKey::Output(_) | RowKey::Turn(_) => {
                 first_line(&item.text)
             }
-            RowKey::Question(_) => {
-                crate::questions::card_label(item.questions.as_deref().unwrap_or_default())
-            }
+            RowKey::Question(_) => crate::questions::card_label(
+                &item.text,
+                item.questions.as_deref().unwrap_or_default(),
+            ),
             RowKey::Working(_) => "Working".to_string(),
         };
         label.into()
@@ -227,6 +228,17 @@ impl TranscriptView {
             }
             RowKey::Call(id) | RowKey::Group(id) => self.toggle(id, false, cx),
             RowKey::Count(id) => self.open_run(id, cx),
+            // The line of a card with questions open opens the answer panel.
+            RowKey::Question(id) => {
+                let open = self
+                    .model
+                    .entry(id)
+                    .and_then(|entry| entry.item.questions.as_ref())
+                    .is_some_and(|questions| questions.iter().any(|q| q.state.is_open()));
+                if open {
+                    cx.emit(TranscriptEvent::OpenQuestions(id));
+                }
+            }
             RowKey::Worker(id) => {
                 if let Some(worker) = self
                     .model

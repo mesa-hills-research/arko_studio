@@ -3387,15 +3387,17 @@ fn questions_sample() -> Vec<arko::questions::AgentQuestion> {
     [
         serde_json::json!({
             "id": "q1", "question": "Tabs or spaces for the new files?",
-            "choices": ["Tabs", "Spaces"], "default": "Spaces", "state": "open", "item": 7
+            "choices": ["Tabs", "Spaces"], "default": "Spaces", "state": "open", "item": 7,
+            "number": 1
         }),
         serde_json::json!({
             "id": "q2", "question": "Which tests should I run before I push?",
-            "choices": ["Unit", "Integration", "Screenshots"], "multiple": true, "state": "open", "item": 7
+            "choices": ["Unit", "Integration", "Screenshots"], "multiple": true, "state": "open",
+            "item": 7, "number": 2
         }),
         serde_json::json!({
             "id": "q3", "question": "Which branch should the change go to?",
-            "default": "main", "state": "open", "item": 7
+            "default": "main", "state": "open", "item": 7, "number": 3
         }),
     ]
     .into_iter()
@@ -3403,10 +3405,51 @@ fn questions_sample() -> Vec<arko::questions::AgentQuestion> {
     .collect()
 }
 
+/// Arko asks to approve a worker profile the agent wants to save, with
+/// instructions long enough to scroll.
+fn approval_sample() -> Vec<arko::questions::AgentQuestion> {
+    let instructions = [
+        "You judge 3D models against a reference image.",
+        "",
+        "1. Render the model from the reference's camera.",
+        "2. Compare silhouettes, proportions and materials.",
+        "3. Score each from 0 to 10, with one line on why.",
+        "4. Name the three changes that would help most.",
+        "",
+        "Be strict about proportions. Ignore lighting differences.",
+        "Report in a table, then the changes as a list.",
+        "Never edit the model yourself.",
+    ]
+    .join("\n");
+    vec![
+        serde_json::from_value(serde_json::json!({
+            "id": "x1a2b3c4d",
+            "question": "The main agent wants to save the worker profile 3d-judge.",
+            "choices": ["Save", "Don't save"], "state": "open", "waits": true, "item": 9,
+            "approval": {
+                "name": "3d-judge", "model": "sol", "effort": "high", "scope": "every project",
+                "description": "Judges 3D results against a reference image",
+                "instructions": instructions
+            }
+        }))
+        .unwrap(),
+    ]
+}
+
 /// A sample session asking the questions above, with `typed` in the
 /// composer as they come (the chip), or nothing (the panel opens), and with
 /// them `attached` to the composer.
 fn questions_window(mode: ThemeMode, typed: Option<&str>, attached: bool) -> Screenshot {
+    asking_window(mode, questions_sample(), typed, attached)
+}
+
+/// A sample session asking `questions`, as [`questions_window`] says.
+fn asking_window(
+    mode: ThemeMode,
+    questions: Vec<arko::questions::AgentQuestion>,
+    typed: Option<&str>,
+    attached: bool,
+) -> Screenshot {
     use gpui_kit::test::TestWindowExt as _;
 
     let mut app = ScreenshotApp::with_assets(Assets).unwrap();
@@ -3446,7 +3489,7 @@ fn questions_window(mode: ThemeMode, typed: Option<&str>, attached: bool) -> Scr
     app.update_window(window, |_, _, cx| {
         let session = workspace.read(cx).live_session().unwrap().clone();
         session.update(cx, |session, cx| {
-            session.show_questions(questions_sample(), cx);
+            session.show_questions(questions, cx);
             if attached {
                 session.attach_questions(cx);
             }
@@ -3470,6 +3513,22 @@ fn questions_panel_dark() {
     goldens().assert(
         "questions-panel-dark",
         &questions_window(ThemeMode::Dark, None, false),
+    );
+}
+
+#[test]
+fn questions_approval_light() {
+    goldens().assert(
+        "questions-approval-light",
+        &asking_window(ThemeMode::Light, approval_sample(), None, false),
+    );
+}
+
+#[test]
+fn questions_approval_dark() {
+    goldens().assert(
+        "questions-approval-dark",
+        &asking_window(ThemeMode::Dark, approval_sample(), None, false),
     );
 }
 
@@ -3505,8 +3564,9 @@ fn questions_replying_dark() {
     );
 }
 
-/// A card of the agent's questions in the transcript, a question in each
-/// state.
+/// A card of the agent's questions in the transcript: its line, and the
+/// record of the questions settled, one in each state. The open one is the
+/// answer panel's.
 fn question_card_window(mode: ThemeMode) -> Screenshot {
     use arko::questions::{AskedQuestion, QuestionState};
     use arko::remote::{Delivery, Feed, Source};

@@ -96,6 +96,13 @@ pub(super) fn every_kind(feed: &Feed) {
         &[("q1", &words.repeat(2)), ("q2", "Tabs or spaces?")],
         false,
     );
+    // Settled, so the record shows them: a long answer wraps too.
+    feed.set_question_state(
+        "q1",
+        arko::questions::QuestionState::Answered {
+            answer: words.repeat(2),
+        },
+    );
     feed.set_question_state(
         "q2",
         arko::questions::QuestionState::Answered {

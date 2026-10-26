@@ -14,7 +14,7 @@ use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
 use crate::Startup;
 use crate::backend::FakeBackend;
 use crate::live::LiveSession;
-use crate::questions::asked;
+use crate::questions::{asked, part};
 use crate::tests::{act, open};
 use crate::workspace::Workspace;
 
@@ -48,17 +48,34 @@ fn three() -> Vec<arko::questions::AgentQuestion> {
     vec![
         asked(serde_json::json!({
             "id": "q1", "question": "Tabs or spaces?", "choices": ["Tabs", "Spaces"],
-            "default": "Spaces", "state": "open", "item": 7
+            "default": "Spaces", "state": "open", "item": 7, "number": 1
         })),
         asked(serde_json::json!({
             "id": "q2", "question": "Which tests should I run?",
             "choices": ["Unit", "Integration", "Screenshots"], "multiple": true,
-            "state": "open", "item": 7
+            "state": "open", "item": 7, "number": 2
         })),
         asked(serde_json::json!({
-            "id": "q3", "question": "Which branch?", "default": "main", "state": "open", "item": 7
+            "id": "q3", "question": "Which branch?", "default": "main", "state": "open", "item": 7,
+            "number": 3
         })),
     ]
+}
+
+/// Arko asks to approve the worker profile `name`, as question `id`, the
+/// `number`th of its card (`None` alone).
+fn approval(id: &str, name: &str, number: Option<u32>) -> arko::questions::AgentQuestion {
+    asked(serde_json::json!({
+        "id": id,
+        "question": format!("The main agent wants to save the worker profile {name}."),
+        "choices": ["Save", "Don't save"], "state": "open", "waits": true, "item": 9,
+        "number": number,
+        "approval": {
+            "name": name, "model": "sol", "effort": "high", "scope": "every project",
+            "description": "Judges 3D results against a reference image",
+            "instructions": "You judge 3D models.\nCompare them with the reference."
+        }
+    }))
 }
 
 impl Window {
@@ -83,10 +100,30 @@ impl Window {
         .unwrap()
     }
 
-    fn label(&self, cx: &mut TestAppContext, id: &'static str) -> Option<String> {
+    fn label(&self, cx: &mut TestAppContext, id: impl Into<gpui_kit::ElementId>) -> Option<String> {
+        let id = id.into();
         cx.update_window(self.window, |_, window, cx| {
             window.render_frame(cx);
             window.find(id).label().map(str::to_string)
+        })
+        .unwrap()
+    }
+
+    /// What the panel's questions are heard as.
+    fn question_labels(&self, cx: &mut TestAppContext) -> Vec<String> {
+        let ids: Vec<String> = self.panel(cx).read_with(cx, |panel, _| {
+            panel.questions().iter().map(|q| q.id.clone()).collect()
+        });
+        ids.iter()
+            .filter_map(|id| self.label(cx, part("answer-question", id, 0)))
+            .collect()
+    }
+
+    /// The question whose field has the keyboard, by its id.
+    fn focused_question(&self, cx: &mut TestAppContext) -> Option<String> {
+        let panel = self.panel(cx);
+        cx.update_window(self.window, |_, window, cx| {
+            panel.read(cx).focused_question(window, cx)
         })
         .unwrap()
     }
@@ -159,16 +196,9 @@ fn questions_open_the_panel_while_the_user_isnt_typing(cx: &mut TestAppContext) 
     assert!(app.shows(cx, "answer-panel"));
     assert!(!app.shows(cx, "questions-chip"));
     // Numbered in their batch, without the agent's ids.
-    let labels: Vec<Option<String>> = (0..3usize)
-        .map(|question| {
-            cx.update_window(app.window, |_, window, _| {
-                window
-                    .find(("answer-question", question))
-                    .label()
-                    .map(str::to_string)
-            })
-            .unwrap()
-        })
+    let labels: Vec<Option<String>> = ["q1", "q2", "q3"]
+        .into_iter()
+        .map(|id| app.label(cx, part("answer-question", id, 0)))
         .collect();
     assert_eq!(
         labels,
@@ -227,13 +257,13 @@ fn the_panel_sends_what_is_filled_in(cx: &mut TestAppContext) {
     let app = start(cx);
     app.ask(cx, three());
     // q1: Tabs, then Spaces instead.
-    app.click(cx, ("answer-choice", 0usize));
-    app.click(cx, ("answer-choice", 1usize));
+    app.click(cx, part("answer-choice", "q1", 0));
+    app.click(cx, part("answer-choice", "q1", 1));
     // q2: Screenshots and Unit, both kept.
-    app.click(cx, ("answer-choice", 16usize + 2));
-    app.click(cx, ("answer-choice", 16usize));
+    app.click(cx, part("answer-choice", "q2", 2));
+    app.click(cx, part("answer-choice", "q2", 0));
     // q3: You decide, and q1 also says why.
-    app.click(cx, ("answer-you-decide", 2usize));
+    app.click(cx, part("answer-you-decide", "q3", 0));
     app.fill(cx, 0, "Two of them");
     app.fill(cx, 3, "Keep the old API one more release.");
     app.click(cx, "answer-send");
@@ -263,8 +293,8 @@ fn the_panel_sends_what_is_filled_in(cx: &mut TestAppContext) {
 fn a_partial_send_leaves_the_rest_open(cx: &mut TestAppContext) {
     let app = start(cx);
     app.ask(cx, three());
-    app.click(cx, ("answer-choice", 0usize));
-    app.click(cx, ("answer-you-decide", 0usize));
+    app.click(cx, part("answer-choice", "q1", 0));
+    app.click(cx, part("answer-you-decide", "q1", 0));
     app.click(cx, "answer-send");
     assert_eq!(
         app.sent(cx),
@@ -286,8 +316,8 @@ fn a_partial_send_leaves_the_rest_open(cx: &mut TestAppContext) {
     );
     // The panel shows the rest.
     app.click(cx, "questions-open");
-    assert!(!app.shows(cx, ("answer-question", 2usize)));
-    assert!(app.shows(cx, ("answer-question", 1usize)));
+    assert!(!app.shows(cx, part("answer-question", "q1", 0)));
+    assert!(app.shows(cx, part("answer-question", "q2", 0)));
 }
 
 /// "Answer in chat" closes the panel and attaches the questions to the
@@ -315,12 +345,16 @@ fn answer_in_chat_attaches_the_questions_to_the_next_message(cx: &mut TestAppCon
 }
 
 /// Esc in the panel does what "Answer in chat" does, and the keyboard goes
-/// back where it was before Alt+Q.
+/// to the message box.
 #[gpui_kit::test]
 fn escape_in_the_panel_attaches_the_questions(cx: &mut TestAppContext) {
     let app = start(cx);
     app.type_text(cx, "Half a thought");
     app.ask(cx, three());
+    // From the transcript.
+    act(cx, app.window, |window, cx| {
+        window.dispatch_action(Box::new(crate::transcript::FocusTranscript), cx)
+    });
     app.press(cx, "alt-q");
     assert!(app.panel_focused(cx));
     app.press(cx, "escape");
@@ -417,7 +451,7 @@ fn the_panel_follows_the_open_questions(cx: &mut TestAppContext) {
     let app = start(cx);
     app.ask(cx, three());
     app.ask(cx, three().into_iter().skip(1).collect());
-    assert!(!app.shows(cx, ("answer-question", 2usize)));
+    assert!(!app.shows(cx, part("answer-question", "q1", 0)));
     app.ask(cx, Vec::new());
     assert!(!app.shows(cx, "answer-panel"));
     assert!(!app.shows(cx, "questions-chip"));
@@ -430,4 +464,233 @@ fn the_panel_follows_the_open_questions(cx: &mut TestAppContext) {
         }))],
     );
     assert!(app.shows(cx, "answer-panel"));
+}
+
+/// The panel numbers each ask's questions from 1, as arko does, whatever
+/// the agent's ids: a question with id q7 in a later conversation is 1.
+/// A question asked alone has no number.
+#[gpui_kit::test]
+fn the_panel_numbers_questions_in_their_ask_without_ids(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(
+        cx,
+        vec![
+            asked(serde_json::json!({
+                "id": "q7", "question": "Tabs or spaces?", "state": "open", "item": 40, "number": 1
+            })),
+            asked(serde_json::json!({
+                "id": "q8", "question": "Push now?", "state": "open", "item": 40, "number": 2
+            })),
+            asked(serde_json::json!({
+                "id": "q9", "question": "Which branch?", "state": "open", "item": 44
+            })),
+        ],
+    );
+    assert_eq!(
+        app.question_labels(cx),
+        ["1. Tabs or spaces?", "2. Push now?", "Which branch?"]
+    );
+}
+
+/// "Not now" dismisses the questions its chip shows, and only those: the
+/// ones attached to the message box stay.
+#[gpui_kit::test]
+fn not_now_dismisses_only_the_questions_it_shows(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, three());
+    app.click(cx, "answer-in-chat");
+    app.type_text(cx, "Spaces");
+    let mut four = three();
+    four.push(asked(serde_json::json!({
+        "id": "q4", "question": "Push now?", "state": "open", "item": 8
+    })));
+    app.ask(cx, four);
+    assert_eq!(
+        app.label(cx, "questions-open").as_deref(),
+        Some("Arko asks a question")
+    );
+    app.click(cx, "questions-not-now");
+    assert_eq!(
+        app.sent(cx),
+        [arko::Input::DismissQuestions(vec!["q4".into()])]
+    );
+    assert!(app.shows(cx, "questions-replying"));
+}
+
+/// An approval shows what it would save, Save and Don't save without "You
+/// decide", and its instructions. Save sends Save at once.
+#[gpui_kit::test]
+fn an_approval_is_saved_with_save(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, vec![approval("x1a2b3c4d", "3d-judge", None)]);
+    assert!(app.shows(cx, "answer-panel"));
+    assert_eq!(
+        app.question_labels(cx),
+        ["Save the worker profile 3d-judge for every project?"]
+    );
+    assert!(app.shows(cx, part("answer-instructions", "x1a2b3c4d", 0)));
+    assert!(!app.shows(cx, part("answer-you-decide", "x1a2b3c4d", 0)));
+    app.click(cx, part("answer-choice", "x1a2b3c4d", 0));
+    assert_eq!(
+        app.sent(cx),
+        [arko::Input::AnswerQuestions(Answers {
+            answers: vec![QuestionAnswer::new(
+                "x1a2b3c4d",
+                Answer {
+                    choices: vec!["Save".into()],
+                    ..Answer::default()
+                }
+            )],
+            anything_else: None,
+        })]
+    );
+    assert!(!app.shows(cx, "answer-panel"));
+}
+
+/// Words typed for an approval go back to the agent as changes to make.
+#[gpui_kit::test]
+fn typed_words_ask_for_changes_to_an_approval(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, vec![approval("x1a2b3c4d", "3d-judge", None)]);
+    app.fill(cx, 0, "Run it on opus instead");
+    app.press(cx, "enter");
+    assert_eq!(
+        app.sent(cx),
+        [arko::Input::AnswerQuestions(Answers {
+            answers: vec![QuestionAnswer::new(
+                "x1a2b3c4d",
+                Answer {
+                    text: Some("Run it on opus instead".into()),
+                    ..Answer::default()
+                }
+            )],
+            anything_else: None,
+        })]
+    );
+}
+
+/// Two approvals asked together share a card, numbered, and each takes
+/// its own answer, with what else is filled in. The panel stays for the
+/// one left.
+#[gpui_kit::test]
+fn two_approvals_in_one_card_take_their_own_answers(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(
+        cx,
+        vec![
+            approval("x00000001", "3d-judge", Some(1)),
+            approval("x00000002", "linter", Some(2)),
+        ],
+    );
+    assert_eq!(
+        app.label(cx, "answer-panel-title").as_deref(),
+        Some("Arko asks to save 2 worker profiles")
+    );
+    assert_eq!(
+        app.question_labels(cx),
+        [
+            "1. Save the worker profile 3d-judge for every project?",
+            "2. Save the worker profile linter for every project?"
+        ]
+    );
+    app.fill(cx, 2, "Thanks");
+    // The second's Save.
+    app.click(cx, part("answer-choice", "x00000002", 0));
+    assert!(app.shows(cx, "answer-panel"));
+    assert_eq!(
+        app.question_labels(cx),
+        ["1. Save the worker profile 3d-judge for every project?"]
+    );
+    // The first's Don't save.
+    app.click(cx, part("answer-choice", "x00000001", 1));
+    let choice = |id: &str, choice: &str, anything_else: Option<&str>| {
+        arko::Input::AnswerQuestions(Answers {
+            answers: vec![QuestionAnswer::new(
+                id,
+                Answer {
+                    choices: vec![choice.into()],
+                    ..Answer::default()
+                },
+            )],
+            anything_else: anything_else.map(str::to_string),
+        })
+    };
+    assert_eq!(
+        app.sent(cx),
+        [
+            choice("x00000002", "Save", Some("Thanks")),
+            choice("x00000001", "Don't save", None)
+        ]
+    );
+    assert!(!app.shows(cx, "answer-panel"));
+}
+
+/// What is filled in for a session's questions waits while the window
+/// shows another session, and is sent when the user comes back to it.
+#[gpui_kit::test]
+fn the_panel_keeps_what_is_filled_in_for_each_session(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, three());
+    app.click(cx, part("answer-choice", "q1", 1));
+    app.fill(cx, 2, "main");
+    let other = cx.new(|cx| LiveSession::for_tests("s2", cx));
+    let show = |session: &Entity<LiveSession>, cx: &mut TestAppContext| {
+        act(cx, app.window, |window, cx| {
+            app.workspace.update(cx, |workspace, cx| {
+                workspace.show_session(session.clone(), window, cx)
+            })
+        });
+    };
+    show(&other, cx);
+    assert!(!app.shows(cx, "answer-panel"));
+    show(&app.session.clone(), cx);
+    app.click(cx, "questions-open");
+    app.click(cx, "answer-send");
+    let sent = app.sent(cx);
+    let [arko::Input::AnswerQuestions(answers)] = sent.as_slice() else {
+        panic!("{sent:?}");
+    };
+    assert_eq!(
+        answers.answers,
+        [
+            QuestionAnswer::new(
+                "q1",
+                Answer {
+                    choices: vec!["Spaces".into()],
+                    ..Answer::default()
+                }
+            ),
+            QuestionAnswer::new(
+                "q3",
+                Answer {
+                    text: Some("main".into()),
+                    ..Answer::default()
+                }
+            ),
+        ]
+    );
+}
+
+/// A card's line in the transcript opens the answer panel on that card's
+/// questions, with the keyboard in its first.
+#[gpui_kit::test]
+fn a_cards_line_opens_the_panel_on_that_card(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.type_text(cx, "About the split");
+    let mut four = three();
+    four.push(asked(serde_json::json!({
+        "id": "q4", "question": "Push now?", "state": "open", "item": 8
+    })));
+    app.ask(cx, four);
+    assert!(!app.shows(cx, "answer-panel"));
+    let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
+    act(cx, app.window, |window, cx| {
+        view.update(cx, |view, cx| view.open_panel(Some(8), window, cx))
+    });
+    assert!(app.shows(cx, "answer-panel"));
+    assert_eq!(app.focused_question(cx).as_deref(), Some("q4"));
+    act(cx, app.window, |window, cx| {
+        view.update(cx, |view, cx| view.open_panel(Some(7), window, cx))
+    });
+    assert_eq!(app.focused_question(cx).as_deref(), Some("q1"));
 }

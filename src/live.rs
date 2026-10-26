@@ -371,9 +371,9 @@ impl Questions {
         new
     }
 
-    /// The questions `input` answers, dismisses or replies to (of those
-    /// `open`) are settled here.
-    fn sent(&mut self, input: &arko::Input, open: &[AgentQuestion]) {
+    /// The questions `input` answers, dismisses or replies to are settled
+    /// here.
+    fn sent(&mut self, input: &arko::Input) {
         let ids: Vec<String> = match input {
             arko::Input::AnswerQuestions(answers) => answers
                 .answers
@@ -381,9 +381,6 @@ impl Questions {
                 .filter(|answer| !answer.answer.is_empty())
                 .map(|answer| answer.id.clone())
                 .collect(),
-            arko::Input::DismissQuestions(ids) if ids.is_empty() => {
-                open.iter().map(|question| question.id.clone()).collect()
-            }
             arko::Input::DismissQuestions(ids) => ids.clone(),
             arko::Input::Message(message) => message.answers.clone(),
             _ => Vec::new(),
@@ -1105,16 +1102,6 @@ impl LiveSession {
             .collect()
     }
 
-    /// The number each open question shows with, by its id: its place
-    /// among the questions asked with it ([`crate::questions::numbers`]).
-    pub fn question_numbers(&self) -> HashMap<String, usize> {
-        match &self.link {
-            // The feed has the questions answered meanwhile too.
-            Some(link) => crate::questions::numbers(&link.feed.questions()),
-            None => crate::questions::numbers(&self.reading.questions),
-        }
-    }
-
     /// The open questions attached to the message box, which the next
     /// message answers.
     pub fn attached_questions(&self) -> Vec<String> {
@@ -1207,7 +1194,7 @@ impl LiveSession {
 
     /// Sends `input` to the engine, or keeps it until the session opens.
     pub fn send(&mut self, input: arko::Input, cx: &mut Context<Self>) -> Result<(), String> {
-        self.questions.sent(&input, &self.reading.questions);
+        self.questions.sent(&input);
         self.touched_at = crate::figures::now_ms();
         self.changes();
         match (&self.phase, &self.link) {

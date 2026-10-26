@@ -157,6 +157,9 @@ pub enum TranscriptEvent {
     FindStatus(FindStatus),
     /// Esc on the rows: the keyboard goes back to the composer.
     Leave,
+    /// Open the answer panel on the open questions of the card `item` (its
+    /// line was clicked).
+    OpenQuestions(u64),
     /// Move the running call `item` to the background.
     MoveToBackground(u64),
     /// Stop the background job, by its ID.

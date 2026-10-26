@@ -447,8 +447,8 @@ fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
     app.wait_for_text(cx, "I’ll go on meanwhile.");
     wait_until(cx, "the answer panel", |cx| app.shows(cx, "answer-panel"));
     act(cx, app.window, |window, cx| {
-        window.click(("answer-choice", 1usize), cx);
-        window.click(("answer-you-decide", 1usize), cx);
+        window.click(crate::questions::part("answer-choice", "q1", 1), cx);
+        window.click(crate::questions::part("answer-you-decide", "q2", 0), cx);
     });
     let panel = cx
         .read(|cx| {
@@ -495,7 +495,7 @@ fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
                 answer: "Spaces".into()
             },
             arko::questions::QuestionState::Answered {
-                answer: "You decide (you said you'd assume: not yet)".into()
+                answer: "You decide".into()
             },
             arko::questions::QuestionState::Answered {
                 answer: "main".into()
@@ -530,6 +530,90 @@ fn the_next_message_answers_the_questions_attached(cx: &mut TestAppContext) {
     assert!(mock.was_sent("(This message answers q1 and q2.)"));
     wait_until(cx, "the questions to close", |cx| {
         !app.shows(cx, "questions-replying") && !app.shows(cx, "questions-chip")
+    });
+    app.close_all(cx);
+}
+
+/// While questions are open, the transcript shows only their card's line,
+/// which opens the answer panel. Answered, they join the record under it,
+/// and the session resumed shows the same record, with the user's message
+/// as typed, without Arko's labels.
+#[gpui_kit::test]
+fn a_question_card_is_a_line_then_a_record_that_a_resume_keeps(cx: &mut TestAppContext) {
+    let mock = asking(
+        serde_json::json!([{ "question": "Tabs or spaces?" }, { "question": "Push now?" }]),
+        false,
+    );
+    let app = start(cx, &mock);
+    app.send_and_rest(cx, "Indent the file.");
+    app.wait_for_text(cx, "I’ll go on meanwhile.");
+    wait_until(cx, "the answer panel", |cx| app.shows(cx, "answer-panel"));
+    act(cx, app.window, |window, cx| window.press("escape", cx));
+    let session = app.shown(cx).unwrap();
+    let card = cx.read(|cx| session.read(cx).feed().unwrap().questions()[0].item);
+    let shows = |cx: &mut TestAppContext, id: gpui_kit::ElementId| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    assert!(shows(cx, ("question-line", card).into()));
+    assert!(!shows(cx, ("question", card * 8).into()), "the panel's");
+    act(cx, app.window, |window, cx| {
+        window.click(("question-line", card), cx)
+    });
+    assert!(app.shows(cx, "answer-panel"));
+    act(cx, app.window, |window, cx| window.press("escape", cx));
+    app.send(cx, "Spaces, and not yet.");
+    app.wait_for_text(cx, "Thanks.");
+    wait_until(cx, "the record", |cx| {
+        shows(cx, ("question", card * 8 + 1).into())
+    });
+    let id = cx.read(|cx| session.read(cx).id().cloned()).unwrap();
+    app.close_all(cx);
+    act(cx, app.window, |window, cx| {
+        let workspace = app.workspace.clone();
+        workspace.update(cx, |workspace, cx| workspace.open_session(id, window, cx));
+    });
+    app.wait_for_text(cx, "Thanks.");
+    let resumed = app.shown(cx).unwrap();
+    let items = cx.read(|cx| {
+        resumed
+            .read(cx)
+            .feed()
+            .map(|feed| feed.subscribe().0.items)
+            .unwrap_or_default()
+    });
+    assert!(
+        items.iter().any(|item| item.text == "Spaces, and not yet."),
+        "{items:#?}"
+    );
+    assert!(
+        !items
+            .iter()
+            .any(|item| item.text.contains("This message answers"))
+    );
+    let card = items
+        .iter()
+        .find(|item| item.kind == arko::remote::Kind::Question)
+        .expect("the card");
+    let states: Vec<_> = card
+        .questions
+        .iter()
+        .flatten()
+        .map(|question| (question.number, question.state.clone()))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            (Some(1), arko::questions::QuestionState::AnsweredInMessage),
+            (Some(2), arko::questions::QuestionState::AnsweredInMessage)
+        ]
+    );
+    let card = card.id;
+    wait_until(cx, "the resumed record", |cx| {
+        shows(cx, ("question", card * 8 + 1).into())
     });
     app.close_all(cx);
 }
