@@ -1383,3 +1383,33 @@ fn a_listed_openrouter_model_is_found_by_its_shown_name(cx: &mut TestAppContext)
         assert!(window.try_find("model-found-0").is_none());
     });
 }
+
+/// The effort a model last ran at is read again as the model list opens
+/// and after a session starts, so a session run since, here or elsewhere,
+/// shows in the next new session.
+#[gpui_kit::test]
+fn the_last_used_effort_is_read_again(cx: &mut TestAppContext) {
+    use crate::session_view::EffortFrom;
+    let (backend, window, workspace) = start(cx);
+    let view = session_view(&workspace, cx);
+    let effort =
+        |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).effort_for("claude-opus-5-5", cx));
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    assert_eq!(effort(cx), Some(("xhigh".to_string(), EffortFrom::Default)));
+    act(cx, window, |window, cx| window.press("escape", cx));
+    // A session elsewhere ran Opus at low.
+    backend.set_last_effort("claude-opus-5-5", "low");
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    assert_eq!(effort(cx), Some(("low".to_string(), EffortFrom::LastUsed)));
+    act(cx, window, |window, cx| window.press("escape", cx));
+    // This window starts a session, which runs Opus at high, and comes back
+    // to a new one.
+    act(cx, window, |window, cx| window.input("Hello", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    backend.set_last_effort("claude-opus-5-5", "high");
+    act(cx, window, |window, cx| window.press("secondary-n", cx));
+    assert_eq!(
+        cx.read(|cx| view.read(cx).chip_label(cx)),
+        "Agent · Opus 5.5 · high"
+    );
+}

@@ -197,6 +197,11 @@ pub struct SessionView {
     _openrouter: Option<Task<()>>,
     /// The effort each model last ran at, as arko keeps it, by model.
     last_efforts: std::collections::HashMap<String, Option<String>>,
+    /// The latest read of each model's last effort since the model list
+    /// last opened, so an older read that ends later is dropped. A model
+    /// without one is read again.
+    last_effort_reads: std::collections::HashMap<String, u64>,
+    reads: u64,
 }
 
 /// Where the effort a new session starts with comes from.
@@ -280,6 +285,9 @@ impl SessionView {
                 if window.is_window_active() && this.models.is_some() {
                     this.list_models_again(cx);
                 }
+                if window.is_window_active() {
+                    this.forget_last_efforts(cx);
+                }
             }),
             cx.observe(&model_filter, |_, _, cx| cx.notify()),
             cx.on_release(|this, cx| this.window_closed(cx)),
@@ -341,6 +349,8 @@ impl SessionView {
             openrouter: OpenRouterSeen::default(),
             _openrouter: None,
             last_efforts: std::collections::HashMap::new(),
+            last_effort_reads: std::collections::HashMap::new(),
+            reads: 0,
         };
         this.restore_draft(window, cx);
         this.sync_expanded(window, cx);
@@ -565,7 +575,8 @@ impl SessionView {
     }
 
     /// Reads the effort the new session's model last ran at, in the
-    /// background, once per model.
+    /// background, unless it was read since the model list last opened.
+    /// The effort read before stays meanwhile.
     fn see_last_effort(&mut self, cx: &mut Context<Self>) {
         if self.session.is_some() {
             return;
@@ -573,10 +584,12 @@ impl SessionView {
         let Some(model) = self.draft_model(cx) else {
             return;
         };
-        if self.last_efforts.contains_key(&model) {
+        if self.last_effort_reads.contains_key(&model) {
             return;
         }
-        self.last_efforts.insert(model.clone(), None);
+        self.reads += 1;
+        let read = self.reads;
+        self.last_effort_reads.insert(model.clone(), read);
         let backend = cx.global::<SharedBackend>().clone();
         let reading = cx.background_spawn({
             let model = model.clone();
@@ -584,15 +597,23 @@ impl SessionView {
         });
         cx.spawn(async move |this, cx| {
             let effort = reading.await;
-            if effort.is_some() {
-                this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
+                let latest = this.last_effort_reads.get(&model) == Some(&read);
+                if latest && this.last_efforts.get(&model) != Some(&effort) {
                     this.last_efforts.insert(model, effort);
                     cx.notify();
-                })
-                .ok();
-            }
+                }
+            })
+            .ok();
         })
         .detach();
+    }
+
+    /// Reads the models' last efforts again from now on: a session ran
+    /// since, here or elsewhere.
+    fn forget_last_efforts(&mut self, cx: &mut Context<Self>) {
+        self.last_effort_reads.clear();
+        self.see_last_effort(cx);
     }
 
     /// Draws again when the model or effort Settings set for new sessions
@@ -1983,6 +2004,8 @@ impl SessionView {
         self.draft.effort = None;
         // The next new session starts as Settings say.
         self.set_draft_mode(default_mode(cx), cx);
+        // The session just started may change its model's last effort.
+        self.last_effort_reads.clear();
         cx.emit(SessionViewEvent::Created(session));
         Ok(())
     }
@@ -2084,8 +2107,16 @@ impl SessionView {
     /// are reached, then the effort of the chosen one.
     fn render_mode_chip(&self, cx: &mut Context<Self>) -> AnyElement {
         let view = cx.entity().downgrade();
+        let opening = view.clone();
         Popover::new("mode-popover")
             .anchor(Anchor::BottomLeft)
+            .on_open_change(move |open, _, cx| {
+                if *open {
+                    opening
+                        .update(cx, |view, cx| view.forget_last_efforts(cx))
+                        .ok();
+                }
+            })
             .trigger(
                 Button::new("mode-model")
                     .ghost()

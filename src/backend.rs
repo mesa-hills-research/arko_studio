@@ -984,6 +984,15 @@ impl FakeBackend {
         self
     }
 
+    /// Says `model` last ran at `effort` from now on, as a session that
+    /// just ran would.
+    pub fn set_last_effort(&self, model: &str, effort: &str) {
+        self.with_state(|state| {
+            state.last_efforts.retain(|(name, _)| name != model);
+            state.last_efforts.push((model.into(), effort.into()));
+        });
+    }
+
     /// The new sessions started, as the app asked for them.
     pub fn new_sessions(&self) -> Vec<NewSession> {
         self.with_state(|state| state.started.clone())
