@@ -1737,19 +1737,25 @@ impl SessionView {
                 Ok(true)
             }
             // A new session's model, before it starts: one of those listed,
-            // by its name or its alias, once the list is known.
+            // by its name or its alias, once the list is known, or any of
+            // OpenRouter's by its slug.
             (Some("/model"), Some(model), effort)
                 if self.session.is_none() && model != "worker" =>
             {
-                let name = match &self.models {
-                    Some((_, choices)) => choices
+                let listed = self.models.as_ref().map(|(_, choices)| {
+                    choices
                         .groups
                         .iter()
                         .flat_map(|group| &group.models)
                         .find(|choice| choice.name == model || choice.alias == model)
                         .map(|choice| choice.name.clone())
-                        .ok_or_else(|| format!("Arko has no model called “{model}”."))?,
-                    None => model.to_string(),
+                });
+                let name = match listed {
+                    Some(Some(name)) => name,
+                    Some(None) if crate::openrouter::slug(model).is_none() => {
+                        return Err(format!("Arko has no model called “{model}”."));
+                    }
+                    _ => model.to_string(),
                 };
                 self.set_draft_model(name, effort.map(str::to_string), cx);
                 Ok(true)

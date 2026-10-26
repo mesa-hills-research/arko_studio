@@ -29,6 +29,7 @@ pub mod menus;
 pub mod notifications;
 pub mod notifications_panel;
 pub mod notify;
+pub mod openrouter;
 pub mod palette;
 pub mod paths;
 pub mod prefs;

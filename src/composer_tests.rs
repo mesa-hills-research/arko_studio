@@ -454,6 +454,22 @@ fn the_mode_chip_lists_the_models_and_picks_one(cx: &mut TestAppContext) {
         Some("claude-opus-5-5")
     );
     assert_eq!(open_title(&workspace, cx), None);
+    // Any of OpenRouter's models is taken by its slug, listed or not.
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    act(cx, window, |window, cx| {
+        composer.update(cx, |composer, cx| composer.set_text("", window, cx))
+    });
+    act(cx, window, |window, cx| {
+        window.input("/model openrouter:z-ai/glm-5", cx)
+    });
+    act(cx, window, |window, cx| window.press("escape", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(
+        cx.read(|cx| view.read(cx).draft().model.clone()).as_deref(),
+        Some("openrouter:z-ai/glm-5")
+    );
+    assert_eq!(composer_text(&workspace, cx), "");
+    assert_eq!(open_title(&workspace, cx), None);
 }
 
 #[gpui_kit::test]
