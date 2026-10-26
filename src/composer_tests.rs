@@ -1342,3 +1342,44 @@ fn a_new_session_starts_with_the_effort_shown(cx: &mut TestAppContext) {
     });
     assert_eq!(draft_model(&workspace, cx).as_deref(), Some("local-model"));
 }
+
+/// A listed OpenRouter model is found by the name its row shows, which
+/// comes from OpenRouter, and isn't added a second time from the catalog.
+#[gpui_kit::test]
+fn a_listed_openrouter_model_is_found_by_its_shown_name(cx: &mut TestAppContext) {
+    use crate::backend::{Catalog, Listed, ModelChoice, ModelChoices, ModelGroup};
+    let catalog = Catalog {
+        models: vec![Listed {
+            name: "openrouter:vendor/model-123".into(),
+            label: "Useful Coder".into(),
+            context: Some(128_000),
+            input_price: Some(1.),
+            output_price: Some(2.),
+            zone: None,
+        }],
+        fetched: Some(SystemTime::now()),
+        problem: None,
+    };
+    let backend = FakeBackend::sample("/arko", SystemTime::now())
+        .with_models(ModelChoices {
+            groups: vec![ModelGroup {
+                name: "OpenRouter, billed per token".into(),
+                needs: None,
+                models: vec![ModelChoice {
+                    name: "openrouter:vendor/model-123".into(),
+                    alias: String::new(),
+                }],
+            }],
+            default: None,
+            note: None,
+        })
+        .with_catalog(catalog);
+    cx.update(|cx| crate::init(Startup::for_tests(Arc::new(backend)), cx));
+    let (window, workspace) = open(cx, 1300.);
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    find_model(&workspace, window, "useful", cx);
+    act(cx, window, |window, _| {
+        assert!(window.try_find("model-0-0").is_some());
+        assert!(window.try_find("model-found-0").is_none());
+    });
+}

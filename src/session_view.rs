@@ -2166,29 +2166,36 @@ impl SessionView {
             .iter()
             .enumerate()
             .filter_map(|(group_ix, group)| {
+                let openrouter = group.name.starts_with("OpenRouter");
                 let models: Vec<_> = group
                     .models
                     .iter()
                     .filter(|model| {
+                        // By the name its row shows too, OpenRouter's own
+                        // for its models.
+                        let shown = openrouter
+                            .then(|| self.openrouter_model(&model.name))
+                            .flatten()
+                            .map(|known| known.label.to_lowercase());
                         filter.is_empty()
                             || model.name.to_lowercase().contains(&filter)
                             || model.alias.to_lowercase().contains(&filter)
                             || arko::models::display_name(&model.name)
                                 .to_lowercase()
                                 .contains(&filter)
+                            || shown.is_some_and(|shown| shown.contains(&filter))
                     })
                     .cloned()
                     .collect();
-                let openrouter = group.name.starts_with("OpenRouter");
                 // A search also looks in OpenRouter's catalog: the first
-                // few models found that the group doesn't list join it.
+                // few models found that aren't rows already join the group.
                 let (found, unlisted, matching) = if openrouter && !filter.trim().is_empty() {
                     let catalog = &self.openrouter.catalog.models;
                     let matching = crate::openrouter::search(catalog, &filter);
                     let unlisted: Vec<_> = matching
                         .iter()
                         .map(|at| &catalog[*at])
-                        .filter(|model| !group.models.iter().any(|g| g.name == model.name))
+                        .filter(|model| !models.iter().any(|row| row.name == model.name))
                         .collect();
                     let found: Vec<_> = unlisted
                         .iter()
