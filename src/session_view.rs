@@ -202,6 +202,12 @@ pub struct SessionView {
     /// without one is read again.
     last_effort_reads: std::collections::HashMap<String, u64>,
     reads: u64,
+    /// The models the open session can switch to, listed off the UI thread
+    /// (it may run `claude`) for its status's models as they were then.
+    session_models: Option<(arko::remote::Models, ModelChoices)>,
+    /// What reaches the models changed since they were listed.
+    session_models_stale: bool,
+    _session_models: Option<(arko::remote::Models, Task<()>)>,
 }
 
 /// Where the effort a new session starts with comes from.
@@ -279,6 +285,7 @@ impl SessionView {
             // Settings. Coming back to the window, the terminal app may
             // have changed them.
             cx.observe_global::<crate::backend::AccountsSeen>(|this, cx| {
+                this.session_models_stale = true;
                 this.list_models_again(cx)
             }),
             cx.observe_window_activation(window, |this, window, cx| {
@@ -287,6 +294,7 @@ impl SessionView {
                 }
                 if window.is_window_active() {
                     this.forget_last_efforts(cx);
+                    this.session_models_stale = true;
                 }
             }),
             cx.observe(&model_filter, |_, _, cx| cx.notify()),
@@ -351,6 +359,9 @@ impl SessionView {
             last_efforts: std::collections::HashMap::new(),
             last_effort_reads: std::collections::HashMap::new(),
             reads: 0,
+            session_models: None,
+            session_models_stale: false,
+            _session_models: None,
         };
         this.restore_draft(window, cx);
         this.sync_expanded(window, cx);
@@ -607,6 +618,43 @@ impl SessionView {
             .ok();
         })
         .detach();
+    }
+
+    /// Lists the models the open session can switch to, in the background,
+    /// unless they're listed for `models` already. Those listed before
+    /// show meanwhile.
+    fn see_session_models(&mut self, models: &arko::remote::Models, cx: &mut Context<Self>) {
+        let listed = self
+            .session_models
+            .as_ref()
+            .is_some_and(|(listed, _)| listed == models);
+        if listed && !self.session_models_stale {
+            return;
+        }
+        let listing = self
+            ._session_models
+            .as_ref()
+            .is_some_and(|(listing, _)| listing == models);
+        if listing {
+            return;
+        }
+        self.session_models_stale = false;
+        let backend = cx.global::<SharedBackend>().clone();
+        let reading = cx.background_spawn({
+            let models = models.clone();
+            async move { backend.session_models(&models) }
+        });
+        let key = models.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let choices = reading.await;
+            this.update(cx, |this, cx| {
+                this.session_models = Some((key, choices));
+                this._session_models = None;
+                cx.notify();
+            })
+            .ok();
+        });
+        self._session_models = Some((models.clone(), task));
     }
 
     /// Reads the models' last efforts again from now on: a session ran
@@ -2151,6 +2199,13 @@ impl SessionView {
 
         // The models: the new session's, or the open session's from its
         // status (the workers' only, once its conversation started).
+        let session_models = self
+            .session
+            .as_ref()
+            .map(|session| session.read(cx).reading().models.clone());
+        if let Some(models) = &session_models {
+            self.see_session_models(models, cx);
+        }
         let (choices, current, workers_only) = match &self.session {
             None => (
                 self.models
@@ -2162,19 +2217,17 @@ impl SessionView {
             ),
             Some(session) => {
                 let models = session.read(cx).reading().models.clone();
-                let groups = arko::models::menu(&models, |name| {
-                    arko::models::needs(&models.reachable, name)
-                });
+                let choices = self
+                    .session_models
+                    .as_ref()
+                    .map(|(_, choices)| choices.clone())
+                    .unwrap_or_default();
                 let current = if started {
                     Some(models.workers.clone())
                 } else {
                     Some(models.main.clone())
                 };
-                (
-                    ModelChoices::from_arko(groups, None),
-                    current.filter(|model| !model.is_empty()),
-                    started,
-                )
+                (choices, current.filter(|model| !model.is_empty()), started)
             }
         };
         let has_workers = match &self.session {

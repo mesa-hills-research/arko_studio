@@ -1413,3 +1413,49 @@ fn the_last_used_effort_is_read_again(cx: &mut TestAppContext) {
         "Agent · Opus 5.5 · high"
     );
 }
+
+/// An open session's model list is made off the UI thread (it may run
+/// `claude`), once for its status's models, not each time it draws.
+#[gpui_kit::test]
+fn an_open_sessions_models_are_listed_once_per_status(cx: &mut TestAppContext) {
+    let (backend, window, workspace) = start(cx);
+    open_row(window, &workspace, "Split the engine out of main.rs", cx);
+    let session = cx.read(|cx| {
+        workspace
+            .read(cx)
+            .session_view()
+            .read(cx)
+            .live_session()
+            .unwrap()
+            .clone()
+    });
+    let status = |main: &str| arko::remote::Reading {
+        models: arko::remote::Models {
+            main: main.into(),
+            workers: main.into(),
+            reachable: vec!["anthropic".into()],
+            has_workers: true,
+            ..arko::remote::Models::default()
+        },
+        ..arko::remote::Reading::default()
+    };
+    session.update(cx, |session, cx| {
+        session.set_status(status("claude-opus-5-5"), Default::default(), cx)
+    });
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    assert_eq!(backend.session_menus(), 1);
+    act(cx, window, |window, _| {
+        assert!(window.try_find("model-0-0").is_some());
+    });
+    for _ in 0..3 {
+        act(cx, window, |window, _| window.refresh());
+    }
+    act(cx, window, |window, cx| window.press("escape", cx));
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    assert_eq!(backend.session_menus(), 1, "drawing lists nothing");
+    session.update(cx, |session, cx| {
+        session.set_status(status("claude-sonnet-5-5"), Default::default(), cx)
+    });
+    act(cx, window, |_, _| {});
+    assert_eq!(backend.session_menus(), 2, "a new status lists them again");
+}

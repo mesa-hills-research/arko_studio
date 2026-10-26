@@ -361,6 +361,14 @@ pub trait Backend: Send + Sync + 'static {
     /// chose one. May run `claude auth status`.
     fn models(&self, folder: Option<&Path>) -> ModelChoices;
 
+    /// The models an open session whose status says `models` can switch
+    /// to, and what each group needs. May run `claude`.
+    fn session_models(&self, models: &arko::remote::Models) -> ModelChoices {
+        let groups =
+            arko::models::menu(models, |name| arko::models::needs(&models.reachable, name));
+        ModelChoices::from_arko(groups, None)
+    }
+
     /// OpenRouter's models, fetched again when those arko keeps in memory
     /// are stale or `refresh` says to. A fetch takes up to a few seconds.
     fn openrouter_models(&self, refresh: bool) -> Catalog;
@@ -832,6 +840,8 @@ struct FakeState {
     last_efforts: Vec<(String, String)>,
     /// The new sessions started, as the app asked for them.
     started: Vec<NewSession>,
+    /// How many times an open session's models were listed.
+    session_menus: usize,
     extensions: extensions::Extensions,
     profiles: profiles::Profiles,
 }
@@ -855,6 +865,7 @@ impl FakeBackend {
                 openrouter: OpenRouterSettings::default(),
                 last_efforts: Vec::new(),
                 started: Vec::new(),
+                session_menus: 0,
                 extensions: extensions::Extensions::sample(Path::new("/home/ada"), &root),
                 profiles: profiles::Profiles::default(),
             }),
@@ -991,6 +1002,11 @@ impl FakeBackend {
             state.last_efforts.retain(|(name, _)| name != model);
             state.last_efforts.push((model.into(), effort.into()));
         });
+    }
+
+    /// How many times an open session's models were listed.
+    pub fn session_menus(&self) -> usize {
+        self.with_state(|state| state.session_menus)
     }
 
     /// The new sessions started, as the app asked for them.
@@ -1149,6 +1165,13 @@ impl Backend for FakeBackend {
 
     fn openrouter_models_kept(&self) -> Catalog {
         self.with_state(|state| state.catalog.clone())
+    }
+
+    fn session_models(&self, models: &arko::remote::Models) -> ModelChoices {
+        self.with_state(|state| state.session_menus += 1);
+        let groups =
+            arko::models::menu(models, |name| arko::models::needs(&models.reachable, name));
+        ModelChoices::from_arko(groups, None)
     }
 
     fn last_effort(&self, model: &str) -> Option<String> {
