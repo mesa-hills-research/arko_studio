@@ -266,6 +266,35 @@ fn settings_accounts_dark() {
     );
 }
 
+/// Models & accounts with zero data retention on: No data collection shows
+/// on and can't be turned off, since zero data retention covers it.
+fn settings_accounts_zdr(mode: ThemeMode) -> Screenshot {
+    let mut routing = arko_studio::backend::OpenRouterSettings::default();
+    routing.set_zdr(true);
+    settings_window_on(
+        FakeBackend::sample("/arko", SystemTime::now()).with_openrouter(routing),
+        mode,
+        1300.,
+        ACCOUNTS_PAGE,
+    )
+}
+
+#[test]
+fn settings_accounts_zdr_light() {
+    goldens().assert(
+        "settings-accounts-zdr-light",
+        &settings_accounts_zdr(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn settings_accounts_zdr_dark() {
+    goldens().assert(
+        "settings-accounts-zdr-dark",
+        &settings_accounts_zdr(ThemeMode::Dark),
+    );
+}
+
 #[test]
 fn settings_sessions_light() {
     goldens().assert(
