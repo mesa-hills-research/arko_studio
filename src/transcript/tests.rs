@@ -4791,7 +4791,8 @@ fn every_note_not_read_yet_shows_in_every_view(cx: &mut TestAppContext) {
 }
 
 /// A card of the agent's questions is one line while they are open (the
-/// answer panel has them), and each one settled joins the record under it
+/// answer panel has them). Once one settles, the card is a box with the
+/// line as its heading, and each settled question joins the record in it
 /// with what became of it, numbered in its ask. The agent's ids, which go
 /// on across conversations, are never shown or heard.
 #[gpui_kit::test]
@@ -4833,6 +4834,14 @@ fn a_question_card_is_a_line_until_its_questions_settle(cx: &mut TestAppContext)
         (0..5).all(|n| !shows(cx, n)),
         "open questions are the panel's"
     );
+    let line_x = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(("question-line", card)).bounds().origin.x
+        })
+        .unwrap()
+    };
+    let bare = line_x(cx);
     feed.set_question_state(
         "q7",
         QuestionState::Answered {
@@ -4860,6 +4869,8 @@ fn a_question_card_is_a_line_until_its_questions_settle(cx: &mut TestAppContext)
     );
     assert!((0..4).all(|n| shows(cx, n)));
     assert!(!shows(cx, 4), "still open");
+    // A box now, its line inside the padding.
+    assert!(line_x(cx) > bare + px(8.));
 }
 
 /// The line of a card with questions open asks for the answer panel on

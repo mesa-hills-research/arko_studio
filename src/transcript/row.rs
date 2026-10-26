@@ -493,14 +493,21 @@ impl TranscriptView {
     }
 
     /// The height of a card of the agent's questions, as [`Self::questions`]
-    /// lays it out: its line, then each settled question's text and what
-    /// became of it, with a gap between questions.
+    /// lays it out: its line, then, in a box once one has settled, each
+    /// settled question's text and what became of it.
     fn question_height(&self, id: u64, column: f32, m: &Metrics) -> f32 {
         let rem = m.rem;
         let Some(questions) = self.item(id).and_then(|item| item.questions.as_ref()) else {
             return 0.;
         };
         let mut height = m.line_sm;
+        let mut column = column;
+        if questions.iter().any(|question| !question.state.is_open()) {
+            // The box's padding (0.75 rem) and border (1 px) on each side.
+            let inset = 2. * (0.75 * rem + 1.);
+            height += inset;
+            column -= inset;
+        }
         for question in questions {
             let Some(outcome) = crate::questions::outcome(&question.state) else {
                 continue;
@@ -2010,8 +2017,17 @@ impl TranscriptView {
                     ),
             )
         });
+        // Once a question has settled, the card is a quiet box like the
+        // answer panel's, its line the heading of the record.
+        let settled = questions.iter().any(|question| !question.state.is_open());
         v_flex()
             .w_full()
+            .when(settled, |this| {
+                this.p_3()
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(theme.radius_lg)
+            })
             .child(line)
             .children(record)
             .into_any_element()

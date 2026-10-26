@@ -3617,7 +3617,7 @@ fn question_card_window(mode: ThemeMode) -> Screenshot {
     );
     feed.set_question_state("q4", QuestionState::Dismissed);
     let window = app
-        .open_window_with(size(px(900.), px(360.)), 1., |options, cx| {
+        .open_window_with(size(px(900.), px(400.)), 1., |options, cx| {
             gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| TranscriptView::new(&feed, AgentFilter::Main, window, cx))
             })
