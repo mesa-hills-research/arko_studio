@@ -700,15 +700,8 @@ impl Backend for ArkoBackend {
     }
 
     fn change_openrouter(&self, change: OpenRouterChange) -> Result<OpenRouterSettings, String> {
-        // One change at a time in this app, each to the file as it is.
-        static CHANGING: Mutex<()> = Mutex::new(());
-        let _changing = lock(&CHANGING);
-        let mut settings = OpenRouterSettings::read(&self.root)?;
-        change(&mut settings);
-        settings
-            .save(&self.root)
-            .map_err(|error| format!("Couldn’t save {} ({error}).", arko::openrouter::FILE))?;
-        Ok(settings)
+        // Under arko's lock, to the file as it is, for every Arko process.
+        OpenRouterSettings::update(&self.root, |settings| change(settings))
     }
 
     fn start(&self, start: Start, prompter: Arc<dyn arko::Prompter>) -> Launch {
