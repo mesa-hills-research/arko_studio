@@ -490,11 +490,14 @@ impl Workspace {
         if let Some(session) = &session {
             self._session
                 .push(cx.subscribe_in(session, window, Self::on_live_event));
-            // The title follows the session's name as the engine gives it.
+            // The title follows the session's name as the engine gives it, and
+            // so does the sidebar's row, which lists the name Arko's folder
+            // holds (a model's name can come after the turn ends).
             self._session
                 .push(cx.observe_in(session, window, |this, session, window, cx| {
                     if this.shown_title.as_ref() != Some(session.read(cx).title()) {
                         this.sync_chrome(window, cx);
+                        this.sidebar.update(cx, |sidebar, cx| sidebar.refresh(cx));
                     }
                 }));
         }

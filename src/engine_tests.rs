@@ -225,6 +225,22 @@ fn a_first_message_starts_a_session_and_its_reply_arrives(cx: &mut TestAppContex
         cx.read(|cx| crate::history::InputHistory::entries(cx).to_vec()),
         ["Count the pears."]
     );
+    // A name that comes while the session is open and idle (a model's, a
+    // rename) reaches the title bar and the sidebar's row.
+    let shown = app.shown(cx).unwrap();
+    cx.update(|cx| shown.update(cx, |session, cx| session.rename("Pears".into(), cx)));
+    assert_eq!(open_title(&app.workspace, cx).as_deref(), Some("Pears"));
+    wait_until(cx, "the sidebar to show the new name", |cx| {
+        cx.read(|cx| {
+            app.workspace
+                .read(cx)
+                .sidebar()
+                .read(cx)
+                .rows()
+                .iter()
+                .any(|row| matches!(row, Row::Session { title, .. } if title == "Pears"))
+        })
+    });
     app.close_all(cx);
     assert!(
         arko::sessions::list(&app.root)[0].holder.is_none(),
