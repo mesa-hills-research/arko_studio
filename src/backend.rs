@@ -291,6 +291,45 @@ impl ModelChoices {
     }
 }
 
+pub use arko::openrouter::{Catalog, Listed, Settings as OpenRouterSettings};
+
+/// Six of OpenRouter's models, fetched a minute before `now`, for tests
+/// and screenshots.
+pub fn sample_catalog(now: SystemTime) -> Catalog {
+    let model = |slug: &str, label: &str, context: u64, input: f64, output: f64| Listed {
+        name: format!("openrouter:{slug}"),
+        label: label.into(),
+        context: Some(context),
+        input_price: Some(input),
+        output_price: Some(output),
+        zone: None,
+    };
+    Catalog {
+        models: vec![
+            model(
+                "anthropic/claude-opus-5.5",
+                "Claude Opus 5.5",
+                1_000_000,
+                5.,
+                25.,
+            ),
+            model("deepseek/deepseek-v4", "DeepSeek V4", 164_000, 0.3, 1.2),
+            model(
+                "google/gemini-3.5-pro",
+                "Gemini 3.5 Pro",
+                1_048_576,
+                1.25,
+                10.,
+            ),
+            model("moonshotai/kimi-k3", "Kimi K3", 262_144, 0.6, 2.5),
+            model("qwen/qwen4-coder", "Qwen4 Coder", 262_144, 0.22, 0.95),
+            model("z-ai/glm-5", "GLM 5", 202_752, 0.45, 1.9),
+        ],
+        fetched: Some(now - Duration::from_secs(60)),
+        problem: None,
+    }
+}
+
 /// What Arko Studio needs from arko's engine to list, manage and start
 /// sessions.
 ///
@@ -321,6 +360,21 @@ pub trait Backend: Send + Sync + 'static {
     /// and the one arko chooses when neither the composer nor Settings
     /// chose one. May run `claude auth status`.
     fn models(&self, folder: Option<&Path>) -> ModelChoices;
+
+    /// OpenRouter's models, fetched again when those arko keeps in memory
+    /// are stale or `refresh` says to. A fetch takes up to a few seconds.
+    fn openrouter_models(&self, refresh: bool) -> Catalog;
+
+    /// OpenRouter's models as arko keeps them in memory, without fetching.
+    fn openrouter_models_kept(&self) -> Catalog;
+
+    /// How OpenRouter routes requests, as `openrouter.json` in Arko's
+    /// folder says, with the models picked lately.
+    fn openrouter(&self) -> OpenRouterSettings;
+
+    /// Saves how OpenRouter routes requests. Open sessions use it from
+    /// their next request. `Err` says why it wasn't saved.
+    fn set_openrouter(&self, settings: OpenRouterSettings) -> Result<(), String>;
 
     /// Starts a session, at once: it opens on threads of its own, asking
     /// `prompter` for what it lacks.
@@ -591,6 +645,24 @@ impl Backend for ArkoBackend {
         choices
     }
 
+    fn openrouter_models(&self, refresh: bool) -> Catalog {
+        arko::openrouter::refresh_blocking(&self.root, refresh)
+    }
+
+    fn openrouter_models_kept(&self) -> Catalog {
+        arko::openrouter::catalog(&self.root)
+    }
+
+    fn openrouter(&self) -> OpenRouterSettings {
+        OpenRouterSettings::load(&self.root)
+    }
+
+    fn set_openrouter(&self, settings: OpenRouterSettings) -> Result<(), String> {
+        settings
+            .save(&self.root)
+            .map_err(|error| format!("Couldn’t save {} ({error}).", arko::openrouter::FILE))
+    }
+
     fn start(&self, start: Start, prompter: Arc<dyn arko::Prompter>) -> Launch {
         // The options are made on a thread of their own, since making them
         // reads files, and that thread starts the session and hands it
@@ -745,6 +817,10 @@ struct FakeState {
     accounts: Accounts,
     /// How many times the accounts were read.
     accounts_read: usize,
+    /// OpenRouter's models, and how many times they were fetched again.
+    catalog: Catalog,
+    catalog_fetches: usize,
+    openrouter: OpenRouterSettings,
     extensions: extensions::Extensions,
     profiles: profiles::Profiles,
 }
@@ -763,6 +839,9 @@ impl FakeBackend {
                 keys: Vec::new(),
                 accounts: Accounts::sample(Path::new("/home/ada"), &root),
                 accounts_read: 0,
+                catalog: Catalog::default(),
+                catalog_fetches: 0,
+                openrouter: OpenRouterSettings::default(),
                 extensions: extensions::Extensions::sample(Path::new("/home/ada"), &root),
                 profiles: profiles::Profiles::default(),
             }),
@@ -876,6 +955,24 @@ impl FakeBackend {
     pub fn with_models(mut self, models: ModelChoices) -> Self {
         self.models = models;
         self
+    }
+
+    /// Lists `catalog` as OpenRouter's models.
+    pub fn with_catalog(self, catalog: Catalog) -> Self {
+        self.with_state(|state| state.catalog = catalog);
+        self
+    }
+
+    /// Starts with OpenRouter's routing set as `settings`.
+    pub fn with_openrouter(self, settings: OpenRouterSettings) -> Self {
+        self.with_state(|state| state.openrouter = settings);
+        self
+    }
+
+    /// How many times OpenRouter's models were fetched again (each is
+    /// answered from memory).
+    pub fn catalog_fetches(&self) -> usize {
+        self.with_state(|state| state.catalog_fetches)
     }
 
     /// Lets a group of models need nothing once the key of the provider
@@ -998,6 +1095,34 @@ impl Backend for FakeBackend {
             });
         }
         models
+    }
+
+    fn openrouter_models(&self, refresh: bool) -> Catalog {
+        self.with_state(|state| {
+            let fresh = state
+                .catalog
+                .fetched
+                .and_then(|fetched| fetched.elapsed().ok())
+                .is_some_and(|age| age < Duration::from_secs(300));
+            if refresh || !fresh {
+                state.catalog_fetches += 1;
+                state.catalog.fetched = Some(SystemTime::now());
+            }
+            state.catalog.clone()
+        })
+    }
+
+    fn openrouter_models_kept(&self) -> Catalog {
+        self.with_state(|state| state.catalog.clone())
+    }
+
+    fn openrouter(&self) -> OpenRouterSettings {
+        self.with_state(|state| state.openrouter.clone())
+    }
+
+    fn set_openrouter(&self, settings: OpenRouterSettings) -> Result<(), String> {
+        self.with_state(|state| state.openrouter = settings);
+        Ok(())
     }
 
     fn start(&self, start: Start, _: Arc<dyn arko::Prompter>) -> Launch {
