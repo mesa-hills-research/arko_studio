@@ -253,6 +253,122 @@ fn the_ways_are_turned_on_and_moved_and_each_change_is_written(cx: &mut TestAppC
     );
 }
 
+/// A way's checkbox and the two buttons that move it are named for the way
+/// to a screen reader, and the checkbox says whether the way is on. (A
+/// button's disabled state isn't in what the test window reads. The clicks
+/// at the ends in the test of moving ways show they do nothing.)
+#[gpui_kit::test]
+fn the_controls_of_a_way_are_named_for_it(cx: &mut TestAppContext) {
+    let backend = sample().with_session_names(&[Way::ClaudePlan, Way::ChatGptPlan], &[]);
+    let (_, window, _) = sessions_page(cx, backend);
+    act(cx, window, |window, _| {
+        let claude = window.find(("name-way", 0usize));
+        assert_eq!(claude.role(), Some(gpui_kit::Role::CheckBox));
+        assert_eq!(
+            claude.label(),
+            Some("Name sessions with Haiku 5.5 on the Claude plan")
+        );
+        assert_eq!(claude.checked(), Some(true));
+        let key = window.find(("name-way", 2usize));
+        assert_eq!(
+            key.label(),
+            Some("Name sessions with Haiku 5.5 with the Anthropic API key")
+        );
+        assert_eq!(key.checked(), Some(false));
+        let up = window.find(("name-up", 1usize));
+        assert_eq!(up.role(), Some(gpui_kit::Role::Button));
+        assert_eq!(
+            up.label(),
+            Some("Try GPT-6 Luna on the ChatGPT plan earlier")
+        );
+        assert_eq!(
+            window.find(("name-down", 0usize)).label(),
+            Some("Try Haiku 5.5 on the Claude plan later")
+        );
+    });
+}
+
+/// A reading of the setting that started before a change and comes back
+/// after it ended doesn't undo the change on screen, and a page that asks
+/// for no change shows what is read.
+#[gpui_kit::test]
+fn a_late_reading_does_not_undo_a_change(cx: &mut TestAppContext) {
+    let (backend, window, page) = sessions_page(cx, sample());
+    // A reading starts (the first one, say, of a slow Claude Code check) and
+    // is of the first words.
+    let (stale, started) = cx.read(|cx| {
+        let page = page.read(cx);
+        (page.naming(), page.names_revision())
+    });
+    assert!(!stale.0);
+    let before = backend.session_names();
+    // The user chooses a model, and the write ends.
+    choose(cx, window, &page, true);
+    assert_eq!(
+        backend.session_names().ways,
+        [Way::ClaudePlan, Way::ChatGptPlan]
+    );
+    // The late reading comes back with what the file held then.
+    act(cx, window, |_, cx| {
+        page.update(cx, |page, cx| {
+            page.adopt_names_read(before.clone(), started, cx)
+        })
+    });
+    let (by_model, list, _) = naming(cx, &page);
+    assert!(by_model, "the choice is still shown");
+    assert_eq!(list[0], (Way::ClaudePlan, true));
+    assert_eq!(
+        backend.session_names().ways,
+        [Way::ClaudePlan, Way::ChatGptPlan],
+        "and what is saved is as chosen"
+    );
+    // A reading that started after the change shows what it read.
+    let revision = cx.read(|cx| page.read(cx).names_revision());
+    let after = backend.session_names();
+    act(cx, window, |_, cx| {
+        page.update(cx, |page, cx| page.adopt_names_read(after, revision, cx))
+    });
+    assert!(naming(cx, &page).0);
+}
+
+/// Changes made before a write ends, and Settings closed before it ends,
+/// still end with the last choice saved: the queue that writes belongs to
+/// the app, not to the page.
+#[gpui_kit::test]
+fn the_last_change_is_written_after_settings_closes(cx: &mut TestAppContext) {
+    let backend = start_on(
+        cx,
+        sample().with_session_names(&[Way::ClaudePlan, Way::ChatGptPlan], &[]),
+        prefs::Prefs::default(),
+    );
+    let (window, workspace, settings) = settings_window(cx, SESSIONS_PAGE, 4000.);
+    let page = cx.read(|cx| settings.read(cx).sessions().clone());
+    // The Claude plan way goes off, and then the ChatGPT plan way, while
+    // the first write is still to run. Settings closes before either does.
+    act(cx, window, |_, cx| {
+        page.update(cx, |page, cx| page.set_way(0, false, cx));
+        page.update(cx, |page, cx| page.set_way(1, false, cx));
+        page.update(cx, |page, cx| page.set_way(2, true, cx));
+    });
+    drop((page, settings));
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert!(cx.read(|cx| workspace.read(cx).settings().is_none()));
+    cx.run_until_parked();
+    let saved = backend.saved_session_names();
+    assert_eq!(
+        saved.last(),
+        Some(&vec![Way::ClaudeKey]),
+        "the last choice is what is saved: {saved:?}"
+    );
+    // Opened again, it shows that.
+    let (window, _, settings) = settings_window(cx, SESSIONS_PAGE, 4000.);
+    let page = cx.read(|cx| settings.read(cx).sessions().clone());
+    act(cx, window, |_, _| {});
+    let (by_model, list, _) = naming(cx, &page);
+    assert!(by_model);
+    assert_eq!(list[0], (Way::ClaudeKey, true));
+}
+
 /// A write the backend refuses is said under the ways, and the list goes
 /// back to what is saved.
 #[gpui_kit::test]

@@ -22,7 +22,7 @@ pub mod profiles;
 
 pub use accounts::{Accounts, key_named};
 pub use defaults::{SessionDefaults, web_page_bind};
-pub use names::{SessionNames, Way};
+pub use names::{SessionNames, Way, write_names};
 
 /// Reading accounts in words, for Settings.
 pub mod account_words {

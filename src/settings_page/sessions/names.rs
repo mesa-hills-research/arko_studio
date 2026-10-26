@@ -11,14 +11,14 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable 
 use gpui_kit::*;
 
 use super::SessionsPage;
-use crate::backend::{SessionNames, SharedBackend, Way};
+use crate::backend::{SessionNames, SharedBackend, Way, write_names};
 use crate::workers::curly;
 
 /// The dropdown's two values.
 const WORDS: &str = "words";
 const MODEL: &str = "model";
 
-/// What the group shows and the writes in flight.
+/// What the group shows and the writes it waits for.
 pub(super) struct Names {
     /// What the backend said last, `None` until it did.
     read: Option<SessionNames>,
@@ -28,9 +28,14 @@ pub(super) struct Names {
     by_model: bool,
     /// Why the last write failed.
     error: Option<SharedString>,
-    /// A write is in flight, and a change came while it was.
-    saving: bool,
-    again: bool,
+    /// How many writes this page asked for that haven't ended. The
+    /// backend's queue (`write_names`) runs them, also after this page is
+    /// gone.
+    writes: usize,
+    /// How many times what the file holds changed, by a change here or a
+    /// write that ended. A reading that started before a change may have
+    /// what it was.
+    revision: usize,
     /// How many times the setting was read: only the last reading counts.
     reads: usize,
 }
@@ -42,8 +47,8 @@ impl Names {
             list: arko::session_names::arranged(&arko::session_names::default_ways()),
             by_model: false,
             error: None,
-            saving: false,
-            again: false,
+            writes: 0,
+            revision: 0,
             reads: 0,
         }
     }
@@ -53,14 +58,14 @@ impl SessionsPage {
     /// Reads the setting and what each way lacks, in the background.
     pub(super) fn refresh_names(&mut self, cx: &mut Context<Self>) {
         self.names.reads += 1;
-        let reading = self.names.reads;
+        let (reading, revision) = (self.names.reads, self.names.revision);
         let backend = cx.global::<SharedBackend>().clone();
         let read = cx.background_spawn(async move { backend.session_names() });
         cx.spawn(async move |this, cx| {
             let read = read.await;
             this.update(cx, |this, cx| {
                 if this.names.reads == reading {
-                    this.adopt_names(read);
+                    this.adopt_names(read, revision);
                     cx.notify();
                 }
             })
@@ -69,17 +74,39 @@ impl SessionsPage {
         .detach();
     }
 
-    /// Shows what the backend read. The list stays as the user arranged it
-    /// while a write is in flight.
-    fn adopt_names(&mut self, read: SessionNames) {
+    /// Shows what the backend read when the file held what `revision` says.
+    /// What each way lacks always shows. The ways are taken only if nothing
+    /// changed them since, here or by a write, and none waits, since the
+    /// reading may be of the list before the change, and showing it would
+    /// undo the change on screen.
+    fn adopt_names(&mut self, read: SessionNames, revision: usize) {
         let names = &mut self.names;
-        if !names.saving {
+        if names.writes == 0 && names.revision == revision {
             names.by_model = !read.ways.is_empty();
             if names.by_model {
                 names.list = arko::session_names::arranged(&read.ways);
             }
         }
         names.read = Some(read);
+    }
+
+    /// A reading of the setting that was started when the file held what
+    /// `revision` says, arriving now (tests).
+    #[cfg(test)]
+    pub fn adopt_names_read(
+        &mut self,
+        read: SessionNames,
+        revision: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.adopt_names(read, revision);
+        cx.notify();
+    }
+
+    /// How many times what the file holds changed (tests).
+    #[cfg(test)]
+    pub fn names_revision(&self) -> usize {
+        self.names.revision
     }
 
     /// The ways turned on, in order, as the setting holds them.
@@ -128,38 +155,40 @@ impl SessionsPage {
         }
     }
 
-    /// Writes the setting through the backend. A change that comes during a
-    /// write is written after it, so the last one stays.
+    /// Asks the backend's queue to write the setting. It writes the latest
+    /// list asked for, also when this page is gone by then (Settings was
+    /// closed), and tells the page how it ended while it is there.
     fn save_names(&mut self, cx: &mut Context<Self>) {
+        let names = &mut self.names;
+        names.revision += 1;
+        names.writes += 1;
+        names.error = None;
+        let page = cx.weak_entity();
+        write_names(
+            self.names_ways(),
+            move |result, cx| {
+                page.update(cx, |page, cx| page.names_written(result, cx))
+                    .ok();
+            },
+            cx,
+        );
         cx.notify();
-        if self.names.saving {
-            self.names.again = true;
-            return;
+    }
+
+    /// A write this page asked for ended with `result`, which is of the last
+    /// one when none is left. A write that failed is said, and what the
+    /// file holds is what shows.
+    fn names_written(&mut self, result: &Result<(), String>, cx: &mut Context<Self>) {
+        let names = &mut self.names;
+        names.writes = names.writes.saturating_sub(1);
+        names.revision += 1;
+        if names.writes == 0
+            && let Err(why) = result
+        {
+            names.error = Some(curly(why).into());
+            self.refresh_names(cx);
         }
-        self.names.saving = true;
-        self.names.error = None;
-        let ways = self.names_ways();
-        let backend = cx.global::<SharedBackend>().clone();
-        let saving = cx.background_spawn(async move { backend.set_session_names(&ways) });
-        cx.spawn(async move |this, cx| {
-            let saved = saving.await;
-            this.update(cx, |this, cx| {
-                this.names.saving = false;
-                match saved {
-                    Ok(()) if std::mem::take(&mut this.names.again) => this.save_names(cx),
-                    Ok(()) => {}
-                    Err(why) => {
-                        this.names.again = false;
-                        this.names.error = Some(curly(&why).into());
-                        // What the file holds is what shows.
-                        this.refresh_names(cx);
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        cx.notify();
     }
 
     /// The setting's group.
