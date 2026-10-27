@@ -142,6 +142,9 @@ pub(super) fn every_kind(feed: &Feed) {
     reply.push_str("---\n\nThe end.");
     feed.reply(&reply);
     feed.turn_ended("12 s · $0.034", None);
+    // A table is the final block both here and in each row's own text view.
+    feed.reply("| a | b |\n|---|---|\n| 1 | 2 |");
+    feed.turn_ended("1 s · $0.001", None);
     feed.user_with(
         "Line one\nLine two\nLine three",
         Source::App,

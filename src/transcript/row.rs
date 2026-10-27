@@ -598,7 +598,8 @@ impl TranscriptView {
                     let chrome = 1.5 * rem + 2.;
                     chrome + m.mono.text_lines(&lines[..shown], column - chrome) * m.line_mono
                 }
-                BlockFacts::Table(rows) => *rows as f32 * (line + 0.5 * rem + 1.) + 1. + rem,
+                // Each block has its own text view, so its table has no trailing gap.
+                BlockFacts::Table(rows) => *rows as f32 * (line + 0.5 * rem + 1.) + 1.,
                 BlockFacts::Rule => 2.,
                 BlockFacts::Other => line,
             }
