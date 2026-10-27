@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
-use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::tooltip::{ManagedTooltipExt as _, Tooltip};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _,
 };
@@ -909,7 +909,9 @@ impl Sidebar {
                     )
                     .when_some(path.clone(), |this, path| {
                         let path = SharedString::from(path.display().to_string());
-                        this.tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
+                        this.managed_tooltip(move |window, cx| {
+                            Tooltip::new(path.clone()).build(window, cx)
+                        })
                     })
                     .on_mouse_down(
                         MouseButton::Right,

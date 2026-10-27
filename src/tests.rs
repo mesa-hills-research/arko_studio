@@ -164,6 +164,63 @@ fn a_closed_folder_keeps_its_menu_and_the_menu_supports_keys(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
+fn a_folder_shows_no_tooltip_over_its_open_menu(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let row = folder_row(&workspace, "/home/ada/src/arko", cx);
+    let tooltip = |cx: &mut TestAppContext| {
+        gpui_kit::VisualTestContext::from_window(window, cx)
+            .debug_bounds("tooltip")
+            .is_some()
+    };
+    let menu_open = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, _| {
+            window.try_find("popup-menu").is_some()
+        })
+        .unwrap()
+    };
+    let rest = |cx: &mut TestAppContext| {
+        for _ in 0..10 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+            cx.run_until_parked();
+            cx.update_window(window, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+        }
+    };
+    let rest_on_folder = |cx: &mut TestAppContext| {
+        act(cx, window, |window, cx| window.hover(("row", row), cx));
+        rest(cx);
+    };
+    let rest_away = |cx: &mut TestAppContext| {
+        gpui_kit::VisualTestContext::from_window(window, cx).simulate_mouse_move(
+            gpui_kit::point(px(20.), px(680.)),
+            None,
+            gpui_kit::Modifiers::default(),
+        );
+        rest(cx);
+    };
+
+    rest_on_folder(cx);
+    assert!(tooltip(cx), "the folder shows its full path");
+    act(cx, window, |window, cx| {
+        window.right_click(("row", row), cx)
+    });
+    assert!(menu_open(cx));
+    assert!(!tooltip(cx), "opening the menu hides the path");
+    rest_away(cx);
+    rest_on_folder(cx);
+    assert!(menu_open(cx), "the menu stays open");
+    assert!(!tooltip(cx), "the path stays hidden over the menu");
+
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert!(!menu_open(cx));
+    rest_away(cx);
+    rest_on_folder(cx);
+    assert!(tooltip(cx), "closing the menu restores the path tooltip");
+}
+
+#[gpui_kit::test]
 fn chats_have_no_folder_menu(cx: &mut TestAppContext) {
     start(cx);
     let (window, _) = open(cx, 1300.);
