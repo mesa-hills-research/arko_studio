@@ -647,7 +647,6 @@ impl ProfileForm {
             TextareaState::new(window, cx)
                 .auto_grow(5, 12)
                 .placeholder("What every worker started with this profile is told.")
-                .smooth_caret(input.smooth_typing)
                 .keymap(crate::composer::text_keymap(input.keymap))
                 .default_value(profile.instructions.clone())
         });

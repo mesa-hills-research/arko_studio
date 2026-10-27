@@ -1014,6 +1014,30 @@ fn the_shortcuts_sheet_opens_on_mod_slash_and_searches(cx: &mut TestAppContext) 
     });
 }
 
+/// Smooth typing reaches every text field as it changes, the ones GPUI Kit
+/// builds for itself (the Settings search, number inputs, a Select's
+/// filter) included, which follow the kit's default for the app.
+#[gpui_kit::test]
+fn every_text_field_follows_smooth_typing(cx: &mut TestAppContext) {
+    use gpui_kit::component::input::{InputState, app_smooth_caret};
+
+    start(cx);
+    let (window, _) = open(cx, 1300.);
+    let field = cx
+        .update_window(window, |_, window, cx| {
+            cx.new(|cx| InputState::new(window, cx))
+        })
+        .unwrap();
+    let glides = |cx: &mut TestAppContext| {
+        cx.read(|cx| (app_smooth_caret(cx), field.read(cx).has_smooth_caret()))
+    };
+    assert_eq!(glides(cx), (Some(true), true));
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.input.smooth_typing = false));
+    assert_eq!(glides(cx), (Some(false), false));
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.input.smooth_typing = true));
+    assert_eq!(glides(cx), (Some(true), true));
+}
+
 #[gpui_kit::test]
 fn the_composer_follows_smooth_typing_and_keybindings(cx: &mut TestAppContext) {
     start(cx);
