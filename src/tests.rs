@@ -838,6 +838,34 @@ fn a_new_session_says_where_it_will_run_and_the_chip_switches_it(cx: &mut TestAp
     assert_eq!(line(cx), None);
 }
 
+/// A long draft folder stays in the session pane, with room for Change.
+#[gpui_kit::test]
+fn a_long_draft_folder_stays_inside_its_pane(cx: &mut TestAppContext) {
+    start(cx);
+    for width in [400., 700., 1100.] {
+        let (window, workspace) = open(cx, width);
+        let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+        view.update(cx, |view, cx| {
+            view.set_draft_folder(
+                "/home/ada/Desktop/arko-studio-work/scratch/studio-ui-1027/send-lag/probe/work".into(),
+                cx,
+            );
+        });
+        act(cx, window, |window, _| {
+            let pane = window.find("transcript").bounds();
+            let line = window.find("draft-line").bounds();
+            let folder = window.find("draft-folder").bounds();
+            let change = window.find("change-folder").bounds();
+            assert!(line.left() >= pane.left(), "{width}: {line:?} in {pane:?}");
+            assert!(line.right() <= pane.right(), "{width}: {line:?} in {pane:?}");
+            assert!(folder.left() >= line.left() && folder.right() <= change.left());
+            assert!(folder.size.width > px(0.));
+            assert!(change.left() >= pane.left() && change.right() <= pane.right());
+            assert!(change.size.width >= px(40.));
+        });
+    }
+}
+
 /// Opens the command palette, types `query` and takes the first match.
 fn run_from_palette(cx: &mut TestAppContext, window: AnyWindowHandle, query: &str) {
     act(cx, window, |window, cx| window.press("secondary-k", cx));

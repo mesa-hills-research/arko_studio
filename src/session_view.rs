@@ -3205,25 +3205,37 @@ impl SessionView {
         h_flex()
             .id("draft-line")
             .test_support()
+            .min_w_0()
+            .max_w_full()
             .gap_1()
             .text_sm()
             .text_color(theme.muted_foreground)
             .map(|this| match self.draft.mode {
                 Mode::Chat => this.child("New chat"),
                 Mode::Agent => this
-                    .child(match &folder {
+                    .child(div().flex_none().child(match &folder {
                         Some(_) => "New agent session in",
                         None => "New agent session",
-                    })
+                    }))
                     .when_some(folder.clone(), |this, folder| {
+                        let full_path: SharedString = folder.display().to_string().into();
                         this.child(
                             div()
+                                .id("draft-folder")
+                                .test_support()
+                                .min_w_0()
+                                .truncate()
+                                .text_ellipsis_middle()
                                 .text_color(theme.foreground)
-                                .child(shown_folder(&folder, home.as_deref())),
+                                .child(shown_folder(&folder, home.as_deref()))
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(full_path.clone()).build(window, cx)
+                                }),
                         )
                     })
                     .child(
                         Button::new("change-folder")
+                            .flex_none()
                             .link()
                             .small()
                             .label("Change…")
@@ -3262,6 +3274,8 @@ impl SessionView {
             // The first choice of a new session: Chat or Agent, then where.
             let view = cx.entity().downgrade();
             return v_flex()
+                .w_full()
+                .min_w_0()
                 .items_center()
                 .gap_3()
                 .child(self.render_mode_switch(

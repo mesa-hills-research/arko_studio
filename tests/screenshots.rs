@@ -50,6 +50,56 @@ fn new_window(mode: ThemeMode, width: f32) -> Screenshot {
     app.capture(window).unwrap()
 }
 
+/// An empty agent session with a long draft folder and Change visible.
+fn draft_folder_window(mode: ThemeMode, width: f32) -> Screenshot {
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(width), px(720.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, _, cx| {
+        let view = workspace.read(cx).session_view().clone();
+        view.update(cx, |view, cx| {
+            view.set_draft_folder(
+                "/home/ada/Desktop/arko-studio-work/scratch/studio-ui-1027/send-lag/probe/work".into(),
+                cx,
+            );
+        });
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn draft_folder_narrow_light() {
+    goldens().assert(
+        "draft-folder-narrow-light",
+        &draft_folder_window(ThemeMode::Light, 700.),
+    );
+}
+
+#[test]
+fn draft_folder_narrow_dark() {
+    goldens().assert(
+        "draft-folder-narrow-dark",
+        &draft_folder_window(ThemeMode::Dark, 700.),
+    );
+}
+
 /// A window `width` logical pixels wide on a session with a long title, in
 /// a folder with a long name, that had workers (so both layout buttons
 /// show). The folder's name gives way first, then the title.
