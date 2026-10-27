@@ -464,6 +464,7 @@ pub struct TranscriptView {
     /// The sizes the rows' heights are estimated with, for the theme and
     /// fonts of the last frame.
     metrics: Option<height::Metrics>,
+    measuring: Option<(height::Key, Task<()>)>,
     /// Blocks whose text grew since the last frame, by entry and index. The
     /// list counts their new height before it draws them again.
     grown: Vec<(u64, usize)>,
@@ -565,6 +566,7 @@ impl TranscriptView {
             drawing_row: Cell::new(0),
             drawn_runs: RefCell::default(),
             metrics: None,
+            measuring: None,
             grown: Vec::new(),
             streaming: HashSet::new(),
             estimates: true,
@@ -754,6 +756,33 @@ impl TranscriptView {
         }));
         self.image_copies.borrow_mut().clear();
         cx.notify();
+    }
+
+    fn measure_heights(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let key = height::Key::current(window, cx);
+        if self
+            .metrics
+            .as_ref()
+            .is_some_and(|metrics| metrics.matches(&key))
+            || self
+                .measuring
+                .as_ref()
+                .is_some_and(|(loading, _)| *loading == key)
+        {
+            return;
+        }
+        self.metrics = None;
+        let measured = height::Metrics::measure(key.clone(), window, cx);
+        let task = cx.spawn(async move |this, cx| {
+            let metrics = measured.await;
+            this.update(cx, |this, cx| {
+                this.metrics = Some(metrics);
+                this.measuring = None;
+                cx.notify();
+            })
+            .ok();
+        });
+        self.measuring = Some((key, task));
     }
 
     /// Counts rows the list hasn't drawn at the heights it last measured or
@@ -1866,7 +1895,7 @@ impl Render for TranscriptView {
             && self.cursor_index().is_none())
         .then(|| cx.theme().ring);
         // The sizes the heights of rows not drawn yet are estimated with.
-        self.metrics = Some(height::Metrics::current(self.metrics.take(), window, cx));
+        self.measure_heights(window, cx);
         // (The list holds the estimates for this frame only.)
         let estimate_view = cx.entity();
         let view = estimate_view.downgrade();
@@ -1875,10 +1904,11 @@ impl Render for TranscriptView {
             &self.list,
             new,
             move |ix, window, cx| row::render(&view, ix, window, cx),
-            self.estimates
-                .then_some(move |ix, width, window: &mut Window, cx: &mut App| {
+            (self.estimates && self.metrics.is_some()).then_some(
+                move |ix, width, window: &mut Window, cx: &mut App| {
                     row::estimate(&estimate_view, ix, width, window, cx)
-                }),
+                },
+            ),
             window,
             cx,
         );

@@ -157,31 +157,27 @@ pub fn picker_catalog_version(cx: &App) -> u64 {
         .map_or(0, |picker| picker.version)
 }
 
-/// How long after the start [`warm_up`] gets Settings' fonts ready, once
-/// the first window has drawn and the sessions are listed.
+/// How long [`warm_up`] waits before reading the font pickers' catalog,
+/// once the first window has drawn and the sessions are listed.
 pub const WARM_UP_AFTER: Duration = Duration::from_secs(2);
 
-/// A moment after the app starts, gets the fonts Settings shows ready in
-/// the background: the catalog its font pickers list, and the fonts its
-/// pages draw in. Settings then opens with its pickers at once the first
-/// time too, and draws its first frame sooner.
+/// Prepares the app's font weights in the background before a transcript
+/// needs them. The font pickers' catalog follows after the first window draws.
 pub fn warm_up(cx: &mut App) {
+    let fonts = app_fonts(cx.theme());
+    let text_system = cx.text_system().clone();
+    cx.background_spawn(async move { text_system.prewarm_fonts(&fonts) })
+        .detach();
     cx.spawn(async move |cx| {
         cx.background_executor().timer(WARM_UP_AFTER).await;
-        cx.update(|cx| {
-            load_picker_catalog(cx);
-            let fonts = settings_fonts(cx.theme());
-            let text_system = cx.text_system().clone();
-            cx.background_spawn(async move { text_system.prewarm_fonts(&fonts) })
-                .detach();
-        })
+        cx.update(load_picker_catalog)
     })
     .detach();
 }
 
-/// The fonts Settings draws in that the main window may not have used yet:
-/// the interface font's regular and medium, and the code font.
-fn settings_fonts(theme: &Theme) -> Vec<Font> {
+/// The interface weights used by Settings and transcript height estimates,
+/// and the code font.
+fn app_fonts(theme: &Theme) -> Vec<Font> {
     let interface = |weight| Font {
         weight,
         ..font(theme.font_family.clone())
@@ -193,6 +189,8 @@ fn settings_fonts(theme: &Theme) -> Vec<Font> {
     vec![
         interface(FontWeight::NORMAL),
         interface(FontWeight::MEDIUM),
+        interface(FontWeight::SEMIBOLD),
+        interface(FontWeight::BOLD),
         code,
     ]
 }
@@ -322,6 +320,29 @@ fn file_name(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_warm_up_includes_transcript_heading_weights() {
+        let theme = Theme::default();
+        let fonts = app_fonts(&theme);
+        for weight in [
+            FontWeight::NORMAL,
+            FontWeight::MEDIUM,
+            FontWeight::SEMIBOLD,
+            FontWeight::BOLD,
+        ] {
+            assert!(
+                fonts
+                    .iter()
+                    .any(|font| { font.family == theme.font_family && font.weight == weight })
+            );
+        }
+        assert!(
+            fonts
+                .iter()
+                .any(|font| font.family == theme.mono_font_family)
+        );
+    }
 
     #[test]
     fn a_file_that_isnt_a_font_is_refused_and_not_copied() {

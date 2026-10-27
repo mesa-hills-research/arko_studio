@@ -78,8 +78,7 @@ impl Font {
     }
 
     /// Measures the font `font` at `size` on [`SAMPLE`].
-    fn measure(font: gpui_kit::Font, size: Pixels, window: &Window) -> Self {
-        let text_system = window.text_system();
+    fn measure(font: gpui_kit::Font, size: Pixels, text_system: &WindowTextSystem) -> Self {
         let run = TextRun {
             len: SAMPLE.len(),
             font: font.clone(),
@@ -117,7 +116,7 @@ impl Font {
 
 /// What the sizes in the estimates depend on.
 #[derive(Debug, Clone, PartialEq)]
-struct Key {
+pub(super) struct Key {
     rem: Pixels,
     font_size: Pixels,
     mono_font_size: Pixels,
@@ -127,7 +126,7 @@ struct Key {
 }
 
 impl Key {
-    fn current(window: &Window, cx: &App) -> Self {
+    pub fn current(window: &Window, cx: &App) -> Self {
         let theme = cx.theme();
         Self {
             rem: window.rem_size(),
@@ -172,46 +171,51 @@ const HEADINGS: [(f32, FontWeight); 6] = [
 ];
 
 impl Metrics {
-    /// The metrics for the window's theme and fonts now: `last` when they
-    /// didn't change, else measured again.
-    pub fn current(last: Option<Self>, window: &Window, cx: &App) -> Self {
-        let key = Key::current(window, cx);
-        match last {
-            Some(last) if last.key == key => last,
-            _ => Self::measure(key, window, cx),
-        }
+    pub fn matches(&self, key: &Key) -> bool {
+        self.key == *key
     }
 
-    fn measure(key: Key, window: &Window, cx: &App) -> Self {
+    /// Resolving a new font weight can take a frame, so measure off the UI thread.
+    pub fn measure(key: Key, window: &Window, cx: &App) -> Task<Self> {
         let rem = f32::from(key.rem);
-        // As GPUI lays a line out, its height snapped to a device pixel.
         let snap = |size: f32| f32::from(window.pixel_snap(px(size * LINE_HEIGHT)));
-        let theme = cx.theme();
-        let body = Font::measure(font(theme.font_family.clone()), key.rem, window);
-        let mono_size = f32::from(theme.mono_font_size);
-        let mono = Font::measure(
-            font(theme.mono_font_family.clone()),
-            theme.mono_font_size,
-            window,
-        );
-        let headings = HEADINGS.map(|(size, weight)| {
-            let font = gpui_kit::Font {
-                weight,
-                ..font(theme.font_family.clone())
-            };
-            (Font::measure(font, px(size), window), snap(size))
-        });
-        Self {
-            rem,
-            line_xs: snap(rem * 0.75),
-            line_sm: snap(rem * 0.875),
-            line: snap(rem),
-            line_mono: snap(mono_size),
-            body,
-            mono,
-            headings,
-            key,
-        }
+        let line_xs = snap(rem * 0.75);
+        let line_sm = snap(rem * 0.875);
+        let line = snap(rem);
+        let line_mono = snap(f32::from(key.mono_font_size));
+        let heading_lines = HEADINGS.map(|(size, _)| snap(size));
+        let text_system = cx.text_system().clone();
+        cx.background_spawn(async move {
+            let text_system = WindowTextSystem::new(text_system);
+            let body = Font::measure(font(key.font_family.clone()), key.rem, &text_system);
+            let mono = Font::measure(
+                font(key.mono_font_family.clone()),
+                key.mono_font_size,
+                &text_system,
+            );
+            let headings = std::array::from_fn(|ix| {
+                let (size, weight) = HEADINGS[ix];
+                let font = gpui_kit::Font {
+                    weight,
+                    ..font(key.font_family.clone())
+                };
+                (
+                    Font::measure(font, px(size), &text_system),
+                    heading_lines[ix],
+                )
+            });
+            Self {
+                rem,
+                line_xs,
+                line_sm,
+                line,
+                line_mono,
+                body,
+                mono,
+                headings,
+                key,
+            }
+        })
     }
 
     /// The interface's font at `scale` rem.
