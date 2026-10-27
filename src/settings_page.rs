@@ -944,7 +944,7 @@ fn input_page(cx: &App) -> SettingPage {
                     defaults.suggestions,
                 )
                 .description(
-                    "Completes words from what you’ve typed in Arko Studio, never from pasted text or replies. Tab accepts.",
+                    "Completes words from what you’ve typed in Arko Studio. Excludes pasted text and replies. Tab accepts.",
                 )
                 .keywords(["autocomplete", "completion", "predictions"]),
                 choice(
