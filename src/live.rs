@@ -1102,6 +1102,34 @@ impl LiveSession {
             .collect()
     }
 
+    /// Why arko would refuse the answers `input` gives as too long for one
+    /// note to the agent, as the user reads it.
+    fn answer_refusal(&self, input: &arko::Input) -> Option<String> {
+        let open = &self.reading.questions;
+        match input {
+            arko::Input::AnswerQuestions(answers) => {
+                arko::questions::answers_refusal(open, answers)
+            }
+            // A message answers the questions attached to it, or else those
+            // the agent waits for.
+            arko::Input::Message(message) => {
+                let ids: Vec<String> = if message.answers.is_empty() {
+                    open.iter()
+                        .filter(|question| question.waits)
+                        .map(|question| question.id.clone())
+                        .collect()
+                } else {
+                    message.answers.clone()
+                };
+                if ids.is_empty() {
+                    return None;
+                }
+                arko::questions::reply_refusal(open, &ids, &message.text)
+            }
+            _ => None,
+        }
+    }
+
     /// The open questions attached to the message box, which the next
     /// message answers.
     pub fn attached_questions(&self) -> Vec<String> {
@@ -1193,7 +1221,12 @@ impl LiveSession {
     }
 
     /// Sends `input` to the engine, or keeps it until the session opens.
+    /// Answers too long to reach the agent are refused with the words to
+    /// show, before anything settles, so the drafts stay to be shortened.
     pub fn send(&mut self, input: arko::Input, cx: &mut Context<Self>) -> Result<(), String> {
+        if let Some(why) = self.answer_refusal(&input) {
+            return Err(why);
+        }
         self.questions.sent(&input);
         self.touched_at = crate::figures::now_ms();
         self.changes();

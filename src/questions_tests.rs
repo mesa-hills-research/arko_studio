@@ -765,3 +765,53 @@ fn choose_any_follows_a_question_that_takes_several(cx: &mut TestAppContext) {
         ["1. Which tests?, choose any", "2. Which files?"]
     );
 }
+
+impl Window {
+    fn notifications(&self, cx: &mut TestAppContext) -> usize {
+        cx.update_window(self.window, |_, window, cx| {
+            use gpui_kit::component::WindowExt as _;
+            window.notifications(cx).len()
+        })
+        .unwrap()
+    }
+}
+
+/// Answers too long to reach the agent in one note aren't sent. The panel
+/// says so and keeps them, to be shortened.
+#[gpui_kit::test]
+fn answers_too_long_to_send_stay_in_the_panel(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, three());
+    let long = "word ".repeat(3500);
+    let panel = app.panel(cx);
+    act(cx, app.window, |window, cx| {
+        panel.update(cx, |panel, cx| panel.set_field(0, &long, window, cx))
+    });
+    app.click(cx, "answer-send");
+    assert!(app.sent(cx).is_empty());
+    assert_eq!(app.notifications(cx), 1);
+    assert!(app.shows(cx, "answer-panel"));
+    let kept = app.panel(cx).read_with(cx, |panel, cx| panel.answers(cx));
+    assert_eq!(kept.answers[0].answer.text.as_deref(), Some(long.trim()));
+}
+
+/// A message too long to send as the answer to the questions attached
+/// isn't sent. It stays in the message box with the questions attached.
+#[gpui_kit::test]
+fn a_reply_too_long_to_send_stays_in_the_message_box(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, three());
+    app.click(cx, "answer-in-chat");
+    let long = "word ".repeat(3500);
+    let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
+    act(cx, app.window, |window, cx| {
+        let composer = view.read(cx).composer().clone();
+        composer.update(cx, |composer, cx| composer.set_text(&long, window, cx));
+    });
+    app.press(cx, "enter");
+    assert!(app.sent(cx).is_empty());
+    assert_eq!(app.notifications(cx), 1);
+    assert!(app.shows(cx, "questions-replying"));
+    let text = cx.read(|cx| view.read(cx).composer().read(cx).text(cx));
+    assert_eq!(text.trim(), long.trim());
+}

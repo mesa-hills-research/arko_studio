@@ -303,6 +303,15 @@ impl AnswerPanel {
         draft.other.update(cx, |field, cx| field.focus(window, cx));
     }
 
+    /// Puts `text` in question `index`'s field (tests).
+    #[cfg(test)]
+    pub fn set_field(&self, index: usize, text: &str, window: &mut Window, cx: &mut App) {
+        let draft = self.drafts.get(&self.questions[index].id).unwrap();
+        draft.other.update(cx, |field, cx| {
+            field.set_value(text.to_string(), window, cx)
+        });
+    }
+
     /// Whether the keyboard is in the panel.
     pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.focused_question(window, cx).is_some()
