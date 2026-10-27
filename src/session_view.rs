@@ -1396,7 +1396,10 @@ impl SessionView {
             folder: session
                 .workspace()
                 .map(|folder| shown_folder(folder, self.home.as_deref())),
-            when: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+            when: crate::figures::date_and_time(
+                crate::figures::now_ms(),
+                &crate::figures::Times::of(cx),
+            ),
             starts_partway: false,
         };
         let root = cx

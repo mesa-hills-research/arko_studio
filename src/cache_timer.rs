@@ -11,7 +11,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::*;
 
-use crate::figures::{self, clock, dollars, when};
+use crate::figures::{self, Times, clock, dollars, when};
 use crate::status_bar::tabular_figures;
 
 /// The cache timer, while idle with a known lifetime.
@@ -88,11 +88,11 @@ pub fn recache(cache: &CacheStatus) -> Option<String> {
 }
 
 /// The cache timer's tooltip.
-pub fn cache_tooltip(timer: CacheTimer, cache: &CacheStatus, now: i64) -> String {
+pub fn cache_tooltip(timer: CacheTimer, cache: &CacheStatus, now: i64, times: &Times) -> String {
     match timer {
         CacheTimer::Counting { .. } => {
             let until = expires_at(cache)
-                .map(|at| when(at.div_euclid(1000), now))
+                .map(|at| when(at.div_euclid(1000), now, times))
                 .unwrap_or_default();
             let mut text = format!("The prompt cache keeps this conversation until {until}.");
             if let Some(recache) = recache(cache) {
@@ -176,7 +176,7 @@ pub fn cache_timer(timer: CacheTimer, cache: &CacheStatus, now: i64, cx: &App) -
         .child(Icon::new(gpui_kit::assets::IconName::Timer).xsmall())
         .child(timer.label())
         .tooltip(move |window, cx| {
-            Tooltip::new(cache_tooltip(timer, &cache, now)).build(window, cx)
+            Tooltip::new(cache_tooltip(timer, &cache, now, &Times::of(cx))).build(window, cx)
         })
         .into_any_element()
 }
@@ -189,6 +189,8 @@ mod tests {
         CacheTimer, answer_choices, cache_tooltip, expiry_cost, recache, refresh_choices,
         requests_run,
     };
+    use crate::figures::{Times, Zone};
+    use crate::prefs::HourCycle;
     use arko::remote::{Activity, CacheStatus, Question};
     use std::time::Duration;
 
@@ -259,9 +261,26 @@ mod tests {
             refresh_choices(&cache),
             "Refresh ≈ $0.04 · Letting it expire re-caches ≈ $0.90"
         );
+        let times = Times {
+            hour_cycle: HourCycle::Twelve,
+            zone: Zone::Named(jiff::tz::TimeZone::get("America/Denver").unwrap()),
+        };
         assert_eq!(
-            cache_tooltip(CacheTimer::Expired, &cache, 400_000),
+            cache_tooltip(CacheTimer::Expired, &cache, 400_000, &times),
             "The next message re-caches about 180k tokens, ≈ $0.90."
+        );
+        // Refreshed at 2:00PM in Denver on Oct 16, 2026, for five minutes:
+        // a time ahead, so it names the zone.
+        let refreshed = 1_792_180_800_000;
+        let counting = cache_tooltip(
+            CacheTimer::Counting { left: 300_000 },
+            &self::cache(5, refreshed),
+            refreshed,
+            &times,
+        );
+        assert!(
+            counting.starts_with("The prompt cache keeps this conversation until 2:05PM MDT."),
+            "{counting}"
         );
         cache.miss_cost = None;
         cache.refresh_cost = None;

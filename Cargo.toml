@@ -30,6 +30,10 @@ caseless = "0.2.2"
 chrono = "0.4"
 # Lists an agent's folder for @-mentions as git sees it (.gitignore and the like).
 ignore = "0.4"
+# The user's time zone and what it calls the time ("MDT", "MST"), which chrono can't name. It
+# finds the zone on Linux, macOS and Windows, and reads the system's time zone database (a bundled
+# copy on Windows).
+jiff = "0.2"
 # Parse fragment boundaries before joining replies in an export.
 markdown = "1"
 # The pixels of images the app draws itself, and the PNG of the window icon on Linux (GPUI's
@@ -60,6 +64,8 @@ arko_agents = "0.3.0"
 arko_workflows = "0.4.0"
 # A session's saved conversation, for tests that reopen its transcript.
 arko_ai = "0.2.2"
+# The time zone database built in, so tests of times in a named zone pass on any machine.
+jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 
 # The golden-screenshot harness, at the kit's mhr-gpui release. Its goldens are drawn by Mesa's
 # software Vulkan driver, on Linux.
