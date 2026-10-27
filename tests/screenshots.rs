@@ -2893,7 +2893,18 @@ fn notifications_window(
     width: f32,
     entries: Vec<arko_studio::notifications::Entry>,
 ) -> Screenshot {
+    notifications_window_on(mode, width, entries, None, false)
+}
+
+fn notifications_window_on(
+    mode: ThemeMode,
+    width: f32,
+    entries: Vec<arko_studio::notifications::Entry>,
+    session: Option<SessionId>,
+    all: bool,
+) -> Screenshot {
     use arko_studio::cache_reminders::ReminderClock;
+    use gpui_kit::test::TestWindowExt as _;
 
     let mut app = ScreenshotApp::with_assets(Assets).unwrap();
     let mut settings = Prefs::default();
@@ -2908,16 +2919,48 @@ fn notifications_window(
         arko_studio::init(startup, cx);
         cx.set_global(ReminderClock(std::rc::Rc::new(|| NOTIFICATIONS_NOW)));
     });
+    let mut opened = None;
     let window = app
         .open_window_with(size(px(width), px(800.)), 1., |options, cx| {
-            workspace::open_window(options, cx).map(|(window, _)| window)
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
         })
         .unwrap();
+    app.run_until_parked();
+    let workspace = opened.unwrap();
+    if let Some(session) = session {
+        app.update_window(window, |_, window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.open_session(session.clone(), window, cx)
+            });
+        })
+        .unwrap();
+        app.run_until_parked();
+        app.update(|cx| {
+            arko_studio::notifications::record(
+                Some(&session),
+                "Split the engine out of main.rs",
+                "Arko finished its turn.",
+                false,
+                cx,
+            );
+        });
+    }
     app.update_window(window, |_, window, cx| {
         window.dispatch_action(Box::new(arko_studio::menus::ToggleNotifications), cx)
     })
     .unwrap();
     app.run_until_parked();
+    if all {
+        app.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(("notifications-scope", 1_usize), cx);
+        })
+        .unwrap();
+        app.run_until_parked();
+    }
     app.capture(window).unwrap()
 }
 
@@ -2966,6 +3009,46 @@ fn notifications_sheet_dark() {
     goldens().assert(
         "notifications-sheet-dark",
         &notifications_window(ThemeMode::Dark, 640., notification_entries()),
+    );
+}
+
+fn notifications_session(mode: ThemeMode, all: bool) -> Screenshot {
+    let session = SessionId("20261016-091200-a1b2".into());
+    let mut entries = notification_entries();
+    entries[0].session = Some(session.0.clone());
+    entries[3].session = Some(session.0.clone());
+    notifications_window_on(mode, 1300., entries, Some(session), all)
+}
+
+#[test]
+fn notifications_session_light() {
+    goldens().assert(
+        "notifications-session-light",
+        &notifications_session(ThemeMode::Light, false),
+    );
+}
+
+#[test]
+fn notifications_session_dark() {
+    goldens().assert(
+        "notifications-session-dark",
+        &notifications_session(ThemeMode::Dark, false),
+    );
+}
+
+#[test]
+fn notifications_all_light() {
+    goldens().assert(
+        "notifications-all-light",
+        &notifications_session(ThemeMode::Light, true),
+    );
+}
+
+#[test]
+fn notifications_all_dark() {
+    goldens().assert(
+        "notifications-all-dark",
+        &notifications_session(ThemeMode::Dark, true),
     );
 }
 

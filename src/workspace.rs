@@ -349,8 +349,15 @@ impl Workspace {
         self.workers
             .update(cx, |panel, cx| panel.set_shown(workers_open, cx));
         let notifications_open = self.is_notifications_open();
-        self.notifications
-            .update(cx, |panel, cx| panel.set_shown(notifications_open, cx));
+        let notification_session = self
+            .session
+            .as_ref()
+            .filter(|_| self.settings.is_none())
+            .and_then(|session| session.read(cx).id().cloned());
+        self.notifications.update(cx, |panel, cx| {
+            panel.set_session(notification_session, cx);
+            panel.set_shown(notifications_open, cx);
+        });
         self.title_bar.update(cx, |bar, cx| {
             bar.set_session(Some(title.clone()), folder, cx);
             bar.set_sidebar_open(open, cx);
@@ -1086,6 +1093,7 @@ impl Workspace {
             }
         };
         settings.read(cx).focus_handle(cx).focus(window, cx);
+        self.sync_chrome(window, cx);
         cx.notify();
         settings
     }
@@ -1158,6 +1166,7 @@ impl Workspace {
     fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.take().is_some() {
             self.focus_composer(window, cx);
+            self.sync_chrome(window, cx);
             cx.notify();
         }
     }

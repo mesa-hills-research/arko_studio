@@ -15,7 +15,9 @@ use std::time::Duration;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    h_flex,
+    tab::{Tab, TabBar},
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -64,6 +66,8 @@ pub struct NotificationsPanel {
     /// The notification the keyboard is on.
     cursor: Option<u64>,
     shown: bool,
+    session: Option<SessionId>,
+    all: bool,
     scroll: ScrollHandle,
     clock: Option<Clock>,
     /// Draws the times again while the panel shows.
@@ -89,7 +93,7 @@ impl NotificationsPanel {
             cx.observe(&sidebar, |_, _, cx| cx.notify()),
             cx.on_focus_in(&focus_handle, window, |this, _, cx| {
                 if this.cursor.is_none() {
-                    this.cursor = notifications::entries(cx).last().map(|entry| entry.id);
+                    this.cursor = this.order(cx).first().copied();
                     cx.notify();
                 }
             }),
@@ -99,6 +103,8 @@ impl NotificationsPanel {
             focus_handle,
             cursor: None,
             shown: false,
+            session: None,
+            all: false,
             scroll: ScrollHandle::new(),
             clock: None,
             ticker: None,
@@ -106,7 +112,30 @@ impl NotificationsPanel {
         }
     }
 
-    /// Says whether the panel shows: its times move on only then.
+    /// Follows the session in the main column. Without one, shows All.
+    pub fn set_session(&mut self, session: Option<SessionId>, cx: &mut Context<Self>) {
+        if self.session != session {
+            self.session = session;
+            self.reset_cursor(cx);
+            cx.notify();
+        }
+    }
+
+    fn scoped_session(&self) -> Option<&SessionId> {
+        self.session.as_ref().filter(|_| !self.all)
+    }
+
+    fn includes(&self, entry: &Entry) -> bool {
+        self.scoped_session()
+            .is_none_or(|session| entry.session.as_deref() == Some(session.as_str()))
+    }
+
+    fn reset_cursor(&mut self, cx: &App) {
+        self.cursor = self.order(cx).first().copied();
+        self.scroll.scroll_to_item(0);
+    }
+
+    /// Says whether the panel shows, so its times move on only then.
     pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
         if self.shown == shown {
             return;
@@ -143,7 +172,7 @@ impl NotificationsPanel {
     /// Gives the list the keyboard.
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.cursor.is_none() {
-            self.cursor = notifications::entries(cx).last().map(|entry| entry.id);
+            self.cursor = self.order(cx).first().copied();
             cx.notify();
         }
         self.focus_handle.focus(window, cx);
@@ -158,6 +187,7 @@ impl NotificationsPanel {
         notifications::entries(cx)
             .iter()
             .rev()
+            .filter(|entry| self.includes(entry))
             .map(|entry| entry.id)
             .collect()
     }
@@ -185,7 +215,7 @@ impl NotificationsPanel {
     fn open(&mut self, id: u64, cx: &mut Context<Self>) {
         let Some(entry) = notifications::entries(cx)
             .iter()
-            .find(|entry| entry.id == id)
+            .find(|entry| entry.id == id && self.includes(entry))
             .cloned()
         else {
             return;
@@ -272,7 +302,51 @@ impl NotificationsPanel {
             .child(close_button())
     }
 
-    /// Mark all read and Clear all, over the list.
+    fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entries = notifications::entries(cx);
+        let session_unread = entries
+            .iter()
+            .filter(|entry| {
+                !entry.read
+                    && self
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| entry.session.as_deref() == Some(session.as_str()))
+            })
+            .count();
+        let all_unread = notifications::unread(cx);
+        let tab = |index: usize, name: &str, unread: usize| {
+            Tab::new()
+                .flex_1()
+                .aria_label(format!("{name}, {unread} unread"))
+                .child(
+                    div()
+                        .id(("notifications-scope", index))
+                        .test_support()
+                        .child(if unread > 0 {
+                            format!("{name} {unread}")
+                        } else {
+                            name.to_string()
+                        }),
+                )
+        };
+        div().px_2().py_1().child(
+            TabBar::new("notifications-scope")
+                .segmented()
+                .xsmall()
+                .w_full()
+                .selected_index(usize::from(self.scoped_session().is_none()))
+                .on_click(cx.listener(|this, index: &usize, _, cx| {
+                    this.all = *index == 1;
+                    this.reset_cursor(cx);
+                    cx.notify();
+                }))
+                .child(tab(0, "Session", session_unread).disabled(self.session.is_none()))
+                .child(tab(1, "All", all_unread)),
+        )
+    }
+
+    /// Mark all read and Clear all act on the selected tab.
     fn render_actions(&self, unread: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         h_flex()
@@ -288,7 +362,10 @@ impl NotificationsPanel {
                     .xsmall()
                     .label("Mark all read")
                     .disabled(unread == 0)
-                    .on_click(|_, _, cx| notifications::mark_all_read(cx)),
+                    .on_click(cx.listener(|this, _, _, cx| match this.scoped_session() {
+                        Some(session) => notifications::mark_session_read(session, cx),
+                        None => notifications::mark_all_read(cx),
+                    })),
             )
             .child(
                 Button::new("notifications-clear")
@@ -296,7 +373,10 @@ impl NotificationsPanel {
                     .xsmall()
                     .label("Clear all")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        notifications::clear(cx);
+                        match this.scoped_session() {
+                            Some(session) => notifications::clear_session(session, cx),
+                            None => notifications::clear(cx),
+                        }
                         this.cursor = None;
                     })),
             )
@@ -403,8 +483,13 @@ impl NotificationsPanel {
 
     fn render_list(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let empty = notifications::entries(cx).is_empty();
-        if empty {
+        let entries: Vec<Entry> = notifications::entries(cx)
+            .iter()
+            .rev()
+            .filter(|entry| self.includes(entry))
+            .cloned()
+            .collect();
+        if entries.is_empty() {
             return div()
                 .id("notifications-empty")
                 .test_support()
@@ -417,7 +502,6 @@ impl NotificationsPanel {
         }
         let now = self.now(cx);
         let focused = self.focus_handle.contains_focused(window, cx);
-        let entries: Vec<Entry> = notifications::entries(cx).iter().rev().cloned().collect();
         let existing = self.existing(cx);
         let rows: Vec<AnyElement> = entries
             .iter()
@@ -483,8 +567,11 @@ impl Render for NotificationsPanel {
         crate::testing::rendered("NotificationsPanel");
         let theme = cx.theme();
         let (background, foreground) = (theme.sidebar, theme.sidebar_foreground);
-        let entries = notifications::entries(cx);
-        let unread = notifications::unread(cx);
+        let entries: Vec<_> = notifications::entries(cx)
+            .iter()
+            .filter(|entry| self.includes(entry))
+            .collect();
+        let unread = entries.iter().filter(|entry| !entry.read).count();
         let any = !entries.is_empty();
         v_flex()
             .id("notifications-panel")
@@ -493,6 +580,7 @@ impl Render for NotificationsPanel {
             .bg(background)
             .text_color(foreground)
             .child(self.render_header(cx))
+            .child(self.render_tabs(cx))
             .when(any, |this| this.child(self.render_actions(unread, cx)))
             .child(self.render_list(window, cx))
     }
@@ -861,6 +949,92 @@ mod tests {
         panel.open(cx);
         assert!(panel.is_open(cx));
         assert!(!cx.read(|cx| panel.workspace.read(cx).is_workers_open()));
+    }
+
+    #[gpui_kit::test]
+    fn session_is_the_default_and_tabs_filter_the_keyboard_order(cx: &mut TestAppContext) {
+        let panel = start(history(), 1300., cx);
+        act(cx, panel.window, |window, cx| {
+            panel.workspace.update(cx, |workspace, cx| {
+                workspace.open_session(crate::backend::SessionId(SPLIT.into()), window, cx)
+            });
+        });
+        panel.open(cx);
+        assert_eq!(cx.read(|cx| panel.panel.read(cx).order(cx)), [4, 1]);
+        assert!(!panel.shows(cx, row(2)));
+        panel.click(cx, ("notifications-scope", 1_usize));
+        assert_eq!(cx.read(|cx| panel.panel.read(cx).order(cx)), [4, 3, 2, 1]);
+        panel.click(cx, ("notifications-scope", 0_usize));
+        assert_eq!(cx.read(|cx| panel.panel.read(cx).order(cx)), [4, 1]);
+    }
+
+    #[gpui_kit::test]
+    fn session_actions_leave_other_sessions_unread_and_kept(cx: &mut TestAppContext) {
+        let panel = start(history(), 1300., cx);
+        act(cx, panel.window, |window, cx| {
+            panel.workspace.update(cx, |workspace, cx| {
+                workspace.open_session(crate::backend::SessionId(SPLIT.into()), window, cx)
+            });
+        });
+        cx.update(|cx| {
+            notifications::record(
+                Some(&crate::backend::SessionId(SPLIT.into())),
+                "Split the engine out of main.rs",
+                "Arko finished its turn.",
+                false,
+                cx,
+            );
+        });
+        panel.open(cx);
+        assert_eq!(cx.read(notifications::unread), 3);
+        panel.click(cx, "notifications-mark-read");
+        assert_eq!(cx.read(notifications::unread), 2);
+        panel.click(cx, "notifications-clear");
+        assert!(panel.shows(cx, "notifications-empty"));
+        assert_eq!(
+            cx.read(|cx| notifications::entries(cx)
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>()),
+            [2, 3]
+        );
+        panel.click(cx, ("notifications-scope", 1_usize));
+        assert_eq!(cx.read(|cx| panel.panel.read(cx).order(cx)), [3, 2]);
+        panel.click(cx, "notifications-mark-read");
+        assert_eq!(cx.read(notifications::unread), 0);
+        panel.click(cx, "notifications-clear");
+        assert!(cx.read(|cx| notifications::entries(cx).is_empty()));
+    }
+
+    #[gpui_kit::test]
+    fn no_shown_session_uses_all_and_session_scope_follows_the_main_column(
+        cx: &mut TestAppContext,
+    ) {
+        let panel = start(history(), 1300., cx);
+        panel.open(cx);
+        assert_eq!(cx.read(|cx| panel.panel.read(cx).order(cx)), [4, 3, 2, 1]);
+        act(cx, panel.window, |window, cx| {
+            panel.workspace.update(cx, |workspace, cx| {
+                workspace.open_session(crate::backend::SessionId(SPLIT.into()), window, cx)
+            });
+        });
+        assert_eq!(cx.read(|cx| panel.panel.read(cx).order(cx)), [4, 1]);
+        act(cx, panel.window, |window, cx| {
+            window.dispatch_action(Box::new(crate::menus::OpenSettings), cx);
+        });
+        assert_eq!(cx.read(|cx| panel.panel.read(cx).order(cx)), [4, 3, 2, 1]);
+        panel.click(cx, "close-settings");
+        assert_eq!(cx.read(|cx| panel.panel.read(cx).order(cx)), [4, 1]);
+        act(cx, panel.window, |window, cx| {
+            panel.workspace.update(cx, |workspace, cx| {
+                workspace.open_session(crate::backend::SessionId(FONTS.into()), window, cx)
+            });
+        });
+        assert_eq!(cx.read(|cx| panel.panel.read(cx).order(cx)), [2]);
+        panel.click(cx, ("notifications-scope", 1_usize));
+        panel.open(cx);
+        panel.open(cx);
+        assert_eq!(cx.read(|cx| panel.panel.read(cx).order(cx)), [4, 3, 2, 1]);
     }
 
     /// The commands are in the palette and the View menu.
