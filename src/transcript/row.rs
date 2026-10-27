@@ -574,8 +574,9 @@ impl TranscriptView {
                     } else {
                         lines.len().min(CODE_LINES)
                     };
-                    // Inside its padding, long lines wrapped.
-                    1.5 * rem + m.mono.text_lines(&lines[..shown], column - 1.5 * rem) * m.line_mono
+                    // Inside its padding and the hairline around it, long lines wrapped.
+                    let chrome = 1.5 * rem + 2.;
+                    chrome + m.mono.text_lines(&lines[..shown], column - chrome) * m.line_mono
                 }
                 BlockFacts::Table(rows) => *rows as f32 * (line + 0.5 * rem + 1.) + 1. + rem,
                 BlockFacts::Rule => 2.,
@@ -888,8 +889,9 @@ fn local_images_only(uri: &SharedUri) -> ImageSource {
     }
 }
 
-/// How the rows' Markdown looks: the theme's text style, with tables that
-/// scroll sideways inside their row rather than squeeze their columns.
+/// How the rows' Markdown looks: the theme's text style, with code blocks on
+/// the editor surface and a hairline, as in GPUI Kit's own Markdown, and tables
+/// that scroll sideways inside their row rather than squeeze their columns.
 pub(super) fn text_style(cx: &App) -> TextViewStyle {
     let theme = cx.theme();
     let radius = theme.semantic_tokens().radius.md;
@@ -905,7 +907,8 @@ pub(super) fn text_style(cx: &App) -> TextViewStyle {
         .with_muted_foreground(theme.muted_foreground)
         .with_link(theme.link)
         .with_selection(theme.selection)
-        .with_code_background(theme.muted)
+        .with_code_background(theme.editor_background())
+        .with_code_border(theme.border)
         .with_border(theme.border)
         .with_code_block(rounded)
         .with_table(table)

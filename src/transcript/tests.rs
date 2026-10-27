@@ -661,6 +661,20 @@ fn tables_scroll_sideways_in_their_row(cx: &mut TestAppContext) {
     });
 }
 
+#[gpui_kit::test]
+fn code_blocks_sit_on_the_editor_surface_with_a_hairline(cx: &mut TestAppContext) {
+    use gpui_kit::component::ActiveTheme as _;
+    start(cx);
+    for mode in [prefs::ThemeMode::Dark, prefs::ThemeMode::Light] {
+        cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.theme_mode = mode));
+        cx.update(|cx| {
+            let style = super::row::text_style(cx);
+            assert_eq!(style.code_background(), cx.theme().editor_background());
+            assert_eq!(style.code_border(), Some(cx.theme().border));
+        });
+    }
+}
+
 /// The ids of the entries of `kind`, oldest first.
 fn ids_of(feed: &Feed, kind: Kind) -> Vec<u64> {
     item_ids(feed)
