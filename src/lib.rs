@@ -35,6 +35,7 @@ pub mod palette;
 pub mod paths;
 pub mod prefs;
 pub mod prompts;
+pub mod questions;
 pub mod quit;
 pub mod session_info;
 pub mod session_view;
@@ -58,6 +59,8 @@ mod composer_tests;
 mod engine_tests;
 #[cfg(test)]
 mod key_tests;
+#[cfg(test)]
+mod questions_tests;
 #[cfg(test)]
 mod sharing_tests;
 #[cfg(test)]

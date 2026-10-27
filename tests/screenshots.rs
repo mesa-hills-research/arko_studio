@@ -3380,3 +3380,265 @@ fn model_popover_light() {
 fn model_popover_dark() {
     goldens().assert("model-popover-dark", &model_popover(ThemeMode::Dark));
 }
+
+/// The agent's questions: one choice with a default, several choices, and
+/// one without choices.
+fn questions_sample() -> Vec<arko::questions::AgentQuestion> {
+    [
+        serde_json::json!({
+            "id": "q1", "question": "Tabs or spaces for the new files?",
+            "choices": ["Tabs", "Spaces"], "default": "Spaces", "state": "open", "item": 7,
+            "number": 1
+        }),
+        serde_json::json!({
+            "id": "q2", "question": "Which tests should I run before I push?",
+            "choices": ["Unit", "Integration", "Screenshots"], "multiple": true, "state": "open",
+            "item": 7, "number": 2
+        }),
+        serde_json::json!({
+            "id": "q3", "question": "Which branch should the change go to?",
+            "default": "main", "state": "open", "item": 7, "number": 3
+        }),
+    ]
+    .into_iter()
+    .map(|json| serde_json::from_value(json).unwrap())
+    .collect()
+}
+
+/// Arko asks to approve a worker profile the agent wants to save, with
+/// instructions long enough to scroll.
+fn approval_sample() -> Vec<arko::questions::AgentQuestion> {
+    let instructions = [
+        "You judge 3D models against a reference image.",
+        "",
+        "1. Render the model from the reference's camera.",
+        "2. Compare silhouettes, proportions and materials.",
+        "3. Score each from 0 to 10, with one line on why.",
+        "4. Name the three changes that would help most.",
+        "",
+        "Be strict about proportions. Ignore lighting differences.",
+        "Report in a table, then the changes as a list.",
+        "Never edit the model yourself.",
+    ]
+    .join("\n");
+    vec![
+        serde_json::from_value(serde_json::json!({
+            "id": "x1a2b3c4d",
+            "question": "The main agent wants to save the worker profile 3d-judge.",
+            "choices": ["Save", "Don't save"], "state": "open", "waits": true, "item": 9,
+            "approval": {
+                "name": "3d-judge", "model": "sol", "effort": "high", "scope": "every project",
+                "description": "Judges 3D results against a reference image",
+                "instructions": instructions
+            }
+        }))
+        .unwrap(),
+    ]
+}
+
+/// A sample session asking the questions above, with `typed` in the
+/// composer as they come (the chip), or nothing (the panel opens), and with
+/// them `attached` to the composer.
+fn questions_window(mode: ThemeMode, typed: Option<&str>, attached: bool) -> Screenshot {
+    asking_window(mode, questions_sample(), typed, attached)
+}
+
+/// A sample session asking `questions`, as [`questions_window`] says.
+fn asking_window(
+    mode: ThemeMode,
+    questions: Vec<arko::questions::AgentQuestion>,
+    typed: Option<&str>,
+    attached: bool,
+) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(900.), px(800.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, window, cx| {
+        let id = SessionId("20261016-091200-a1b2".into());
+        workspace.update(cx, |workspace, cx| workspace.open_session(id, window, cx));
+    })
+    .unwrap();
+    app.run_until_parked();
+    if let Some(typed) = typed {
+        app.update_window(window, |_, window, cx| {
+            let view = workspace.read(cx).session_view().clone();
+            view.update(cx, |view, cx| view.focus_composer(window, cx));
+            window.input(typed, cx);
+        })
+        .unwrap();
+        app.run_until_parked();
+    }
+    app.update_window(window, |_, _, cx| {
+        let session = workspace.read(cx).live_session().unwrap().clone();
+        session.update(cx, |session, cx| {
+            session.show_questions(questions, cx);
+            if attached {
+                session.attach_questions(cx);
+            }
+        });
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn questions_panel_light() {
+    goldens().assert(
+        "questions-panel-light",
+        &questions_window(ThemeMode::Light, None, false),
+    );
+}
+
+#[test]
+fn questions_panel_dark() {
+    goldens().assert(
+        "questions-panel-dark",
+        &questions_window(ThemeMode::Dark, None, false),
+    );
+}
+
+#[test]
+fn questions_approval_light() {
+    goldens().assert(
+        "questions-approval-light",
+        &asking_window(ThemeMode::Light, approval_sample(), None, false),
+    );
+}
+
+#[test]
+fn questions_approval_dark() {
+    goldens().assert(
+        "questions-approval-dark",
+        &asking_window(ThemeMode::Dark, approval_sample(), None, false),
+    );
+}
+
+#[test]
+fn questions_chip_light() {
+    goldens().assert(
+        "questions-chip-light",
+        &questions_window(ThemeMode::Light, Some("About the split"), false),
+    );
+}
+
+#[test]
+fn questions_chip_dark() {
+    goldens().assert(
+        "questions-chip-dark",
+        &questions_window(ThemeMode::Dark, Some("About the split"), false),
+    );
+}
+
+#[test]
+fn questions_replying_light() {
+    goldens().assert(
+        "questions-replying-light",
+        &questions_window(ThemeMode::Light, Some("Spaces, all of them, main."), true),
+    );
+}
+
+#[test]
+fn questions_replying_dark() {
+    goldens().assert(
+        "questions-replying-dark",
+        &questions_window(ThemeMode::Dark, Some("Spaces, all of them, main."), true),
+    );
+}
+
+/// A card of the agent's questions in the transcript: its line, and the
+/// record of the questions settled, one in each state. The open one is the
+/// answer panel's.
+fn question_card_window(mode: ThemeMode) -> Screenshot {
+    use arko::questions::{AskedQuestion, QuestionState};
+    use arko::remote::{Delivery, Feed, Source};
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let feed = Feed::new("main");
+    feed.user("Tidy the parser module.", Source::App, Delivery::Turn);
+    let asked: Vec<AskedQuestion> = [
+        "Tabs or spaces for the new files?",
+        "Push the branch now?",
+        "Which branch should the change go to?",
+        "Keep the old API for one more release?",
+        "Rename the module to parse?",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(n, question)| AskedQuestion {
+        id: format!("q{}", n + 1),
+        question: arko_agents::questions::Question {
+            question: question.to_string(),
+            ..Default::default()
+        },
+    })
+    .collect();
+    feed.ask_questions(&asked, false);
+    feed.set_question_state(
+        "q1",
+        QuestionState::Answered {
+            answer: "Spaces".into(),
+        },
+    );
+    feed.set_question_state("q2", QuestionState::AnsweredInMessage);
+    feed.set_question_state(
+        "q3",
+        QuestionState::Closed {
+            why: Some("Found it in the README".into()),
+        },
+    );
+    feed.set_question_state("q4", QuestionState::Dismissed);
+    let window = app
+        .open_window_with(size(px(900.), px(400.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| TranscriptView::new(&feed, AgentFilter::Main, window, cx))
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn transcript_question_card_light() {
+    goldens().assert(
+        "transcript-question-card-light",
+        &question_card_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn transcript_question_card_dark() {
+    goldens().assert(
+        "transcript-question-card-dark",
+        &question_card_window(ThemeMode::Dark),
+    );
+}

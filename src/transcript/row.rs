@@ -366,6 +366,7 @@ impl TranscriptView {
             RowKey::User(id) => self.user_height(id, column, m),
             RowKey::Call(id) => self.call_height(id, column, m, cx),
             RowKey::Notice(id) => self.notice_height(id, column, m),
+            RowKey::Question(id) => self.question_height(id, column, m),
             RowKey::Output(id) => {
                 let lines = self.ui.get(&id).map_or(&[][..], |ui| &ui.lines);
                 // Inside its border and left padding.
@@ -491,6 +492,40 @@ impl TranscriptView {
         m.body_at(0.875).text_lines(lines, width) * m.line_sm
     }
 
+    /// The height of a card of the agent's questions, as [`Self::questions`]
+    /// lays it out: its line, then, in a box once one has settled, each
+    /// settled question's text and what became of it.
+    fn question_height(&self, id: u64, column: f32, m: &Metrics) -> f32 {
+        let rem = m.rem;
+        let Some(questions) = self.item(id).and_then(|item| item.questions.as_ref()) else {
+            return 0.;
+        };
+        let mut height = m.line_sm;
+        let mut column = column;
+        if questions.iter().any(|question| !question.state.is_open()) {
+            // The box's padding (0.75 rem) and border (1 px) on each side.
+            let inset = 2. * (0.75 * rem + 1.);
+            height += inset;
+            column -= inset;
+        }
+        for question in questions {
+            let Some(outcome) = crate::questions::outcome(&question.state) else {
+                continue;
+            };
+            // The text and the outcome, past its number.
+            let mut width = column;
+            if let Some(number) = question.number {
+                let chars = number.to_string().len() as f32 + 1.;
+                width -= (chars * m.body.advance_at(rem)).max(rem) + 0.375 * rem;
+            }
+            let lines = super::height::hard_lines(&crate::questions::text(question));
+            height += 0.5 * rem + m.body.text_lines(&lines, width) * m.line;
+            let lines = super::height::hard_lines(&outcome);
+            height += m.body_at(0.875).text_lines(&lines, width) * m.line_sm;
+        }
+        height
+    }
+
     fn block_height(&self, id: u64, block: usize, source: bool, column: f32, m: &Metrics) -> f32 {
         use super::height::BlockFacts;
         let rem = m.rem;
@@ -588,6 +623,7 @@ pub(super) fn element_id(key: RowKey) -> ElementId {
         RowKey::Output(id) => ("output", id),
         RowKey::Turn(id) => ("turn", id),
         RowKey::Worker(id) => ("worker", id),
+        RowKey::Question(id) => ("questions", id),
         RowKey::Working(id) => ("working", id),
     };
     (name, id).into()
@@ -951,6 +987,7 @@ impl TranscriptView {
             RowKey::Output(id) => self.output(id, cx),
             RowKey::Turn(id) => self.turn(id, view, cx),
             RowKey::Worker(id) => self.worker(id, view, cx),
+            RowKey::Question(id) => self.questions(id, view, cx),
             RowKey::Working(id) => self.working(id, cx),
         }
     }
@@ -1166,7 +1203,7 @@ impl TranscriptView {
                 .text_xs()
                 .text_color(theme.muted_foreground)
                 .child(Icon::new(Lucide::MessageCircleQuestionMark).xsmall())
-                .child("Question")
+                .child("Arko asked")
         });
         let from = (block == 0 && item.kind == Kind::Message)
             .then(|| item.from.clone())
@@ -1894,6 +1931,106 @@ impl TranscriptView {
             Some(parent) => format!("{} (under {parent})", item.agent),
             None => item.agent.clone(),
         }
+    }
+
+    /// A card of the agent's questions: its line ("Arko asked 2
+    /// questions"), which opens the answer panel on those still open, then
+    /// the record of each settled one with what became of it. An open
+    /// question shows only in the panel.
+    fn questions(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
+        let theme = cx.theme();
+        let Some(item) = self.item(id) else {
+            return div().into_any_element();
+        };
+        let questions = item.questions.as_deref().unwrap_or_default();
+        let open = questions.iter().any(|question| question.state.is_open());
+        let view = view.downgrade();
+        let line = h_flex()
+            .id(("question-line", id))
+            .test_support()
+            .gap_1()
+            .text_sm()
+            .text_color(theme.muted_foreground)
+            .child(Icon::new(Lucide::MessageCircleQuestionMark).xsmall())
+            .child(item.text.clone())
+            .when(open, |this| {
+                this.role(Role::Button)
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(theme.foreground))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Answer")
+                            .action(&crate::questions::AnswerQuestions, None)
+                            .build(window, cx)
+                    })
+                    .on_click(move |_, _, cx| {
+                        view.update(cx, |_, cx| cx.emit(TranscriptEvent::OpenQuestions(id)))
+                            .ok();
+                    })
+            });
+        let record = questions.iter().enumerate().filter_map(|(n, question)| {
+            let outcome = crate::questions::outcome(&question.state)?;
+            let answered = matches!(
+                question.state,
+                arko::questions::QuestionState::Answered { .. }
+            );
+            Some(
+                h_flex()
+                    .id(("question", id * 8 + n as u64))
+                    .test_support()
+                    .items_baseline()
+                    .gap_1p5()
+                    .pt_2()
+                    .when_some(question.number, |this, number| {
+                        // At least a rem, so the texts line up.
+                        this.child(
+                            div()
+                                .flex_none()
+                                .min_w(rems(1.))
+                                .text_color(theme.muted_foreground)
+                                .child(format!("{number}.")),
+                        )
+                    })
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .id(("question-text", id * 8 + n as u64))
+                                    .test_support()
+                                    .child(self.marked(
+                                        ("question-words", id * 8 + n as u64),
+                                        id,
+                                        Place::Question(n),
+                                        crate::questions::text(question),
+                                        cx,
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .id(("question-outcome", id * 8 + n as u64))
+                                    .test_support()
+                                    .text_sm()
+                                    .when(!answered, |this| this.text_color(theme.muted_foreground))
+                                    .child(outcome),
+                            ),
+                    ),
+            )
+        });
+        // Once a question has settled, the card is a quiet box like the
+        // answer panel's, its line the heading of the record.
+        let settled = questions.iter().any(|question| !question.state.is_open());
+        v_flex()
+            .w_full()
+            .when(settled, |this| {
+                this.p_3()
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(theme.radius_lg)
+            })
+            .child(line)
+            .children(record)
+            .into_any_element()
     }
 
     fn notice(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {

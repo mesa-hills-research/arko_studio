@@ -157,6 +157,9 @@ pub enum TranscriptEvent {
     FindStatus(FindStatus),
     /// Esc on the rows: the keyboard goes back to the composer.
     Leave,
+    /// Open the answer panel on the open questions of the card `item` (its
+    /// line was clicked).
+    OpenQuestions(u64),
     /// Move the running call `item` to the background.
     MoveToBackground(u64),
     /// Stop the background job, by its ID.
@@ -1161,13 +1164,27 @@ impl TranscriptView {
             RowKey::Call(_) if self.row_expanded(key) == Some(true) => {
                 places = [Some(Place::Parameters), Some(Place::Output)];
             }
+            RowKey::Question(_) => {}
             _ => return,
         }
         let frame = self.renders;
+        // A card of questions has a run for each question's text.
+        let questions = match key {
+            RowKey::Question(id) => self
+                .model
+                .entry(id)
+                .and_then(|entry| entry.item.questions.as_ref())
+                .map_or(0, Vec::len),
+            _ => 0,
+        };
         let Some(ui) = self.ui.get_mut(&key.entry()) else {
             return;
         };
-        for place in places.into_iter().flatten() {
+        let places = places
+            .into_iter()
+            .flatten()
+            .chain((0..questions).map(Place::Question));
+        for place in places {
             let run = ui.runs.entry(place).or_insert_with(|| {
                 self.runs_made += 1;
                 Run {
@@ -1936,11 +1953,16 @@ impl TranscriptView {
         let part = match place {
             Place::Parameters => 1,
             Place::Output => 2,
+            // A card's questions, in order (an agent asks a few at a time).
+            Place::Question(n) => (n as u64).min(PARTS - 1),
             _ => 0,
         };
-        self.drawing_row.get() as u64 * 4 + part
+        self.drawing_row.get() as u64 * PARTS + part
     }
 }
+
+/// The parts a row's texts may have in the window's selection, in order.
+const PARTS: u64 = 16;
 
 /// "screenshot.png · 240 KB": an image's label and size.
 fn image_caption(label: &str, bytes: usize) -> String {

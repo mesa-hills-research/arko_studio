@@ -101,7 +101,7 @@ fn export_writes_the_conversation_where_the_user_chooses(cx: &mut TestAppContext
                 .send(
                     arko::Input::Message(arko::Message {
                         text: "And the figs?".into(),
-                        images: Vec::new(),
+                        ..Default::default()
                     }),
                     cx,
                 )
@@ -193,7 +193,7 @@ fn export_writes_the_conversation_where_the_user_chooses(cx: &mut TestAppContext
             .send(
                 arko::Input::Message(arko::Message {
                     text: "/new".into(),
-                    images: Vec::new(),
+                    ..Default::default()
                 }),
                 cx,
             )

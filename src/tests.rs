@@ -868,7 +868,7 @@ fn the_command_palette_runs_commands_in_the_window(cx: &mut TestAppContext) {
     act(cx, window, |window, _| {
         assert!(window.try_find("command-palette").is_none())
     });
-    run_from_palette(cx, window, "expand composer");
+    run_from_palette(cx, window, "expand the message box");
     assert!(cx.read(|cx| prefs::get(cx).input.composer_expanded));
     assert!(cx.read(|cx| workspace.read(cx).settings().is_none()));
 }

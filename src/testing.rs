@@ -121,7 +121,7 @@ pub fn create_session(root: &Path, workspace: &Path, message: &str) -> SessionId
         seam.input
             .send(arko::Input::Message(arko::Message {
                 text: message.into(),
-                images: Vec::new(),
+                ..Default::default()
             }))
             .unwrap();
         tokio::time::timeout(WAIT, async {

@@ -91,7 +91,24 @@ pub(super) fn every_kind(feed: &Feed) {
         vec![image(1), image(2), image(3)],
     );
     feed.output("output line 1\noutput line 2");
-    feed.question(&words.repeat(2));
+    crate::questions::ask(
+        feed,
+        &[("q1", &words.repeat(2)), ("q2", "Tabs or spaces?")],
+        false,
+    );
+    // Settled, so the record shows them: a long answer wraps too.
+    feed.set_question_state(
+        "q1",
+        arko::questions::QuestionState::Answered {
+            answer: words.repeat(2),
+        },
+    );
+    feed.set_question_state(
+        "q2",
+        arko::questions::QuestionState::Answered {
+            answer: "Spaces".into(),
+        },
+    );
     feed.user("A note", Source::App, Delivery::Note);
 }
 
@@ -127,7 +144,7 @@ fn height(view: &TranscriptView, ix: usize, cx: &gpui_kit::App) -> (RowKey, f32,
     let row = view.rows[ix];
     let metrics = view.metrics.clone().unwrap();
     let prose = match row.key {
-        RowKey::User(_) | RowKey::Notice(_) => true,
+        RowKey::User(_) | RowKey::Notice(_) | RowKey::Question(_) => true,
         RowKey::Block { id, block, .. } => view
             .ui
             .get(&id)

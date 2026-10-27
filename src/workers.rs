@@ -49,15 +49,6 @@ pub fn models_about(choice: ModelChoice) -> String {
     ))
 }
 
-/// Whether `question` is the main agent's request to save a worker profile,
-/// as `arko::profiles::approval_text` words it. It puts each fact on a
-/// line of its own and shows the instructions as written, which Markdown
-/// would run together and format, so the question card shows it as plain
-/// text.
-pub fn is_profile_approval(question: &str) -> bool {
-    question.starts_with("The main agent wants to save the worker profile ")
-}
-
 /// How long the worker has worked, including runs before the session
 /// reopened. A worker waiting for its first run has no time yet.
 pub fn run_time_ms(worker: &WorkerSummary, now: i64) -> Option<i64> {
@@ -364,21 +355,6 @@ mod tests {
         summary.ran_ms = started.zip(ended).map_or(0, |(s, e)| (e - s).max(0) as u64);
         summary.running_since = started.filter(|_| state == WorkerState::Running);
         summary
-    }
-
-    /// The question the agent's save of a profile asks is recognized in all
-    /// three places, and an ordinary question isn't.
-    #[test]
-    fn the_agents_request_to_save_a_profile_is_recognized() {
-        use arko::profiles::{Place, Profile};
-        let mut profile = Profile::new("3d-judge", "Judges 3D results");
-        profile.instructions = "Compare the render.\nBe brief.".into();
-        for place in Place::ALL {
-            let question = arko::profiles::approval_text(&profile, place);
-            assert!(is_profile_approval(&question), "{question}");
-        }
-        assert!(!is_profile_approval("Tabs or spaces?"));
-        assert!(!is_profile_approval("Shall I save the worker profile?"));
     }
 
     #[test]

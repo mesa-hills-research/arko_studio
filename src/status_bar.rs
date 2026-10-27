@@ -317,7 +317,7 @@ pub fn next_change(reading: &Reading, activity: &Activity, now: i64) -> Option<i
 pub(crate) fn run(session: &Entity<LiveSession>, command: &str, window: &mut Window, cx: &mut App) {
     let input = arko::Input::Message(arko::Message {
         text: command.to_string(),
-        images: Vec::new(),
+        ..Default::default()
     });
     if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
         window.push_notification(why, cx);

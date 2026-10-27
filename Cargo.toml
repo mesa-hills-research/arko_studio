@@ -56,8 +56,8 @@ arko = { package = "arko-tui", version = "0.12.0", default-features = false, fea
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # The feed's events as arko gets them from the framework, for tests that
 # drive a feed the way a session does.
-arko_agents = "0.2.2"
-arko_workflows = "0.3.1"
+arko_agents = "0.3.0"
+arko_workflows = "0.4.0"
 # A session's saved conversation, for tests that reopen its transcript.
 arko_ai = "0.2.1"
 

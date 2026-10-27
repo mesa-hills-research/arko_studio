@@ -395,205 +395,252 @@ fn escape_stops_a_turn_and_send_comes_back(cx: &mut TestAppContext) {
     app.close_all(cx);
 }
 
-#[gpui_kit::test]
-fn the_agents_question_is_answered_from_the_composer(cx: &mut TestAppContext) {
-    let mock = Mock::start(|_, body| {
-        if body.contains("Two spaces.") {
-            answer("Indented with two spaces.", Duration::ZERO)
+/// A mock model that asks `questions` (with `wait` when given) in its first
+/// turn and goes on, and answers "Thanks." once the user's answer comes.
+fn asking(questions: serde_json::Value, wait: bool) -> Mock {
+    Mock::start(move |_, body| {
+        // (The tool's description has examples of its own, of q3 and q4.)
+        if body.contains("The user answered q1") || body.contains("This message answers q1") {
+            answer("Thanks.", Duration::ZERO)
+        } else if body.contains("Asked q1") {
+            answer("I’ll go on meanwhile.", Duration::ZERO)
         } else {
-            let call = arko::testing::tool_call(
-                "q1",
-                "ask_user",
-                serde_json::json!({ "questions": "Tabs or spaces?" }),
-            );
+            let mut parameters = serde_json::json!({ "questions": questions.clone() });
+            if wait {
+                parameters["wait"] = true.into();
+            }
+            let call = arko::testing::tool_call("t1", "ask_user", parameters);
             Box::pin(async move { call })
         }
-    });
-    let app = start(cx, &mock);
-    app.send(cx, "Indent the file.");
-    wait_until(cx, "the question card", |cx| {
-        cx.update_window(app.window, |_, window, cx| {
+    })
+}
+
+impl App {
+    /// Sends `text`, then lets the keys rest, so the user no longer counts
+    /// as typing when the agent's questions come.
+    fn send_and_rest(&self, cx: &mut TestAppContext, text: &str) {
+        self.send(cx, text);
+        cx.executor().advance_clock(Duration::from_secs(3));
+    }
+
+    /// Draws the window and says whether it shows `id`.
+    fn shows(&self, cx: &mut TestAppContext, id: &'static str) -> bool {
+        cx.update_window(self.window, |_, window, cx| {
             window.render_frame(cx);
-            window.try_find("question-card").is_some()
+            window.try_find(id).is_some()
         })
         .unwrap()
+    }
+}
+
+/// Questions that come while the message box is empty open the answer
+/// panel by itself. Its choices, "You decide" and "Other" reach the agent
+/// as one note, and the card in the transcript says what became of each
+/// question.
+#[gpui_kit::test]
+fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
+    let mock = asking(
+        serde_json::json!([
+            { "question": "Tabs or spaces?", "choices": ["Tabs", "Spaces"], "default": "Spaces" },
+            { "question": "Push now?", "default": "not yet" },
+            { "question": "Which branch?" },
+        ]),
+        false,
+    );
+    let app = start(cx, &mock);
+    app.send_and_rest(cx, "Indent the file.");
+    app.wait_for_text(cx, "I’ll go on meanwhile.");
+    wait_until(cx, "the answer panel", |cx| app.shows(cx, "answer-panel"));
+    act(cx, app.window, |window, cx| {
+        window.click(crate::questions::part("answer-choice", "q1", 1), cx);
+        window.click(crate::questions::part("answer-you-decide", "q2", 0), cx);
     });
+    let panel = cx
+        .read(|cx| {
+            app.workspace
+                .read(cx)
+                .session_view()
+                .read(cx)
+                .answer_panel()
+                .cloned()
+        })
+        .unwrap();
+    act(cx, app.window, |window, cx| {
+        panel.update(cx, |panel, cx| panel.focus_field(2, window, cx));
+        window.input("main", cx);
+    });
+    act(cx, app.window, |window, cx| window.click("answer-send", cx));
+    app.wait_for_text(cx, "Thanks.");
+    assert!(mock.was_sent("The user answered q1, q2 and q3."));
+    assert!(mock.was_sent("q1 Tabs or spaces? Spaces"));
+    assert!(mock.was_sent("q2 Push now? You decide (you said you'd assume: not yet)"));
+    assert!(mock.was_sent("q3 Which branch? main"));
+    assert!(!app.shows(cx, "answer-panel"));
+    assert!(!app.shows(cx, "questions-chip"));
+    let session = app.shown(cx).unwrap();
+    let card = cx.read(|cx| {
+        session
+            .read(cx)
+            .feed()
+            .unwrap()
+            .questions()
+            .into_iter()
+            .map(|question| question.state)
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        card,
+        [
+            arko::questions::QuestionState::Answered {
+                answer: "Spaces".into()
+            },
+            arko::questions::QuestionState::Answered {
+                answer: "You decide".into()
+            },
+            arko::questions::QuestionState::Answered {
+                answer: "main".into()
+            },
+        ]
+    );
+    app.close_all(cx);
+}
+
+/// Esc from the message box closes the panel and attaches the questions
+/// to the message box, and the next message answers them.
+#[gpui_kit::test]
+fn the_next_message_answers_the_questions_attached(cx: &mut TestAppContext) {
+    let mock = asking(
+        serde_json::json!([{ "question": "Tabs or spaces?" }, { "question": "Push now?" }]),
+        false,
+    );
+    let app = start(cx, &mock);
+    app.send_and_rest(cx, "Indent the file.");
+    app.wait_for_text(cx, "I’ll go on meanwhile.");
+    wait_until(cx, "the answer panel", |cx| app.shows(cx, "answer-panel"));
+    act(cx, app.window, |window, cx| window.press("escape", cx));
+    assert!(!app.shows(cx, "answer-panel"));
+    assert!(app.shows(cx, "questions-replying"));
     let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
     assert_eq!(
         cx.read(|cx| view.read(cx).placeholder(cx)),
-        "Answer the question above"
+        "Answer Arko’s questions"
     );
-    // Later folds it into the composer's footer, and the composer still answers.
-    act(cx, app.window, |window, cx| {
-        window.click("question-later", cx)
-    });
-    act(cx, app.window, |window, _| {
-        assert!(window.try_find("question-card").is_none());
-        assert!(window.try_find("question-chip").is_some());
-    });
-    app.send(cx, "Two spaces.");
-    app.wait_for_text(cx, "Indented with two spaces.");
-    // The window follows the session a frame later.
-    wait_until(cx, "the question to close", |cx| {
-        cx.update_window(app.window, |_, window, cx| {
-            window.render_frame(cx);
-            window.try_find("question-chip").is_none()
-        })
-        .unwrap()
+    app.send(cx, "Spaces, and not yet.");
+    app.wait_for_text(cx, "Thanks.");
+    assert!(mock.was_sent("(This message answers q1 and q2.)"));
+    wait_until(cx, "the questions to close", |cx| {
+        !app.shows(cx, "questions-replying") && !app.shows(cx, "questions-chip")
     });
     app.close_all(cx);
 }
 
-/// The question's words can be selected and copied with the keyboard. Esc
-/// then gives the keyboard back to the composer, the question still asked,
-/// and the answer goes as usual.
+/// While questions are open, the transcript shows only their card's line,
+/// which opens the answer panel. Answered, they join the record under it,
+/// and the session resumed shows the same record, with the user's message
+/// as typed, without Arko's labels.
 #[gpui_kit::test]
-fn the_agents_question_can_be_selected_and_copied(cx: &mut TestAppContext) {
-    let mock = Mock::start(|_, body| {
-        if body.contains("Two spaces.") {
-            answer("Indented with two spaces.", Duration::ZERO)
-        } else {
-            let call = arko::testing::tool_call(
-                "q1",
-                "ask_user",
-                serde_json::json!({ "questions": "Tabs or spaces?" }),
-            );
-            Box::pin(async move { call })
-        }
-    });
+fn a_question_card_is_a_line_then_a_record_that_a_resume_keeps(cx: &mut TestAppContext) {
+    let mock = asking(
+        serde_json::json!([{ "question": "Tabs or spaces?" }, { "question": "Push now?" }]),
+        false,
+    );
     let app = start(cx, &mock);
-    app.send(cx, "Indent the file.");
-    wait_until(cx, "the question card", |cx| {
-        cx.update_window(app.window, |_, window, cx| {
-            window.render_frame(cx);
-            window.try_find("question-text").is_some()
-        })
-        .unwrap()
-    });
-    act(cx, app.window, |window, cx| {
-        let text = window.find("question-text").bounds();
-        let middle = text.size.height / 2.;
-        window.drag(
-            text.origin + gpui_kit::point(gpui_kit::px(1.), middle),
-            text.origin + gpui_kit::point(text.size.width - gpui_kit::px(1.), middle),
-            cx,
-        );
-        window.press("secondary-c", cx);
-    });
-    let copied = cx
-        .read_from_clipboard()
-        .and_then(|item| item.text())
-        .unwrap_or_default();
-    assert_eq!(copied, "Tabs or spaces?");
+    app.send_and_rest(cx, "Indent the file.");
+    app.wait_for_text(cx, "I’ll go on meanwhile.");
+    wait_until(cx, "the answer panel", |cx| app.shows(cx, "answer-panel"));
     act(cx, app.window, |window, cx| window.press("escape", cx));
-    use gpui_kit::Focusable as _;
-    let composer = cx.read(|cx| {
-        let view = app.workspace.read(cx).session_view().clone();
-        view.read(cx).composer().read(cx).textarea().clone()
-    });
+    let session = app.shown(cx).unwrap();
+    let card = cx.read(|cx| session.read(cx).feed().unwrap().questions()[0].item);
+    let shows = |cx: &mut TestAppContext, id: gpui_kit::ElementId| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    assert!(shows(cx, ("question-line", card).into()));
+    assert!(!shows(cx, ("question", card * 8).into()), "the panel's");
     act(cx, app.window, |window, cx| {
-        assert!(composer.read(cx).focus_handle(cx).is_focused(window));
-        assert!(window.try_find("question-card").is_some(), "still asked");
+        window.click(("question-line", card), cx)
     });
-    app.send(cx, "Two spaces.");
-    app.wait_for_text(cx, "Indented with two spaces.");
+    assert!(app.shows(cx, "answer-panel"));
+    act(cx, app.window, |window, cx| window.press("escape", cx));
+    app.send(cx, "Spaces, and not yet.");
+    app.wait_for_text(cx, "Thanks.");
+    wait_until(cx, "the record", |cx| {
+        shows(cx, ("question", card * 8 + 1).into())
+    });
+    let id = cx.read(|cx| session.read(cx).id().cloned()).unwrap();
     app.close_all(cx);
-}
-
-#[gpui_kit::test]
-fn a_long_question_scrolls_inside_its_card(cx: &mut TestAppContext) {
-    let mock = Mock::start(|_, _| {
-        let plan: Vec<String> = (1..=60).map(|step| format!("{step}. A step.")).collect();
-        let call = arko::testing::tool_call(
-            "q1",
-            "ask_user",
-            serde_json::json!({ "questions": format!("Shall I go ahead?\n\n{}", plan.join("\n")) }),
-        );
-        Box::pin(async move { call })
+    act(cx, app.window, |window, cx| {
+        let workspace = app.workspace.clone();
+        workspace.update(cx, |workspace, cx| workspace.open_session(id, window, cx));
     });
-    let app = start(cx, &mock);
-    app.send(cx, "Plan the work.");
-    wait_until(cx, "the question card", |cx| {
-        cx.update_window(app.window, |_, window, cx| {
-            window.render_frame(cx);
-            window.try_find("question-text").is_some()
-        })
-        .unwrap()
+    app.wait_for_text(cx, "Thanks.");
+    let resumed = app.shown(cx).unwrap();
+    let items = cx.read(|cx| {
+        resumed
+            .read(cx)
+            .feed()
+            .map(|feed| feed.subscribe().0.items)
+            .unwrap_or_default()
     });
-    act(cx, app.window, |window, _| {
-        let tallest = window.rem_size() * crate::session_view::QUESTION_MAX_HEIGHT;
-        let height = window.find("question-text").bounds().size.height;
-        assert!(height <= tallest + gpui_kit::px(0.5), "{height:?}");
-        // The composer is still on screen below it.
-        let composer = window.find("composer-field").bounds();
-        assert!(composer.bottom() <= window.viewport_size().height);
-    });
-    app.close_all(cx);
-}
-
-/// The agent's request to save a worker profile shows as it is written,
-/// not as Markdown that would run its lines together, and long instructions
-/// scroll inside the card without pushing the composer off the window.
-#[gpui_kit::test]
-fn a_request_to_save_a_profile_shows_its_instructions_and_scrolls(cx: &mut TestAppContext) {
-    let mut profile = arko::profiles::Profile::new("3d-judge", "Judges 3D results");
-    profile.model = Some("sol".into());
-    profile.instructions = (1..=60)
-        .map(|line| format!("Check that the render matches the reference, point {line}."))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let question = arko::profiles::approval_text(&profile, arko::profiles::Place::User);
-    assert!(question.lines().count() > 60, "the whole profile is in it");
-    let mock = Mock::start(move |_, _| {
-        let call = arko::testing::tool_call(
-            "q1",
-            "ask_user",
-            serde_json::json!({ "questions": question.clone() }),
-        );
-        Box::pin(async move { call })
-    });
-    let app = start(cx, &mock);
-    app.send(cx, "Save a judge profile.");
-    wait_until(cx, "the question card", |cx| {
-        cx.update_window(app.window, |_, window, cx| {
-            window.render_frame(cx);
-            window.try_find("question-text").is_some()
-        })
-        .unwrap()
-    });
-    act(cx, app.window, |window, _| {
-        assert!(window.try_find("question-plain").is_some());
-        let tallest = window.rem_size() * crate::session_view::QUESTION_MAX_HEIGHT;
-        let height = window.find("question-text").bounds().size.height;
-        assert!(height <= tallest + gpui_kit::px(0.5), "{height:?}");
-        let composer = window.find("composer-field").bounds();
-        assert!(composer.bottom() <= window.viewport_size().height);
-        // The plain text is the long one: far taller than the card.
-        let text = window.find("question-plain").bounds().size.height;
-        assert!(text > tallest * 4., "{text:?} in {tallest:?}");
+    assert!(
+        items.iter().any(|item| item.text == "Spaces, and not yet."),
+        "{items:#?}"
+    );
+    assert!(
+        !items
+            .iter()
+            .any(|item| item.text.contains("This message answers"))
+    );
+    let card = items
+        .iter()
+        .find(|item| item.kind == arko::remote::Kind::Question)
+        .expect("the card");
+    let states: Vec<_> = card
+        .questions
+        .iter()
+        .flatten()
+        .map(|question| (question.number, question.state.clone()))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            (Some(1), arko::questions::QuestionState::AnsweredInMessage),
+            (Some(2), arko::questions::QuestionState::AnsweredInMessage)
+        ]
+    );
+    let card = card.id;
+    wait_until(cx, "the resumed record", |cx| {
+        shows(cx, ("question", card * 8 + 1).into())
     });
     app.close_all(cx);
 }
 
+/// A command typed while the agent waits for an answer runs, and the
+/// question stays open. A long question scrolls inside the panel, which
+/// leaves the message box on screen.
 #[gpui_kit::test]
-fn a_command_typed_while_a_question_waits_runs_and_the_question_stays(cx: &mut TestAppContext) {
-    let mock = Mock::start(|_, body| {
-        if body.contains("Two spaces.") {
-            answer("Indented with two spaces.", Duration::ZERO)
-        } else {
-            let call = arko::testing::tool_call(
-                "q1",
-                "ask_user",
-                serde_json::json!({ "questions": "Tabs or spaces?" }),
-            );
-            Box::pin(async move { call })
-        }
-    });
+fn a_command_typed_while_the_agent_waits_runs_and_the_question_stays(cx: &mut TestAppContext) {
+    let plan: Vec<String> = (1..=60).map(|step| format!("{step}. A step.")).collect();
+    let mock = asking(
+        serde_json::json!(format!("Shall I go ahead?\n\n{}", plan.join("\n"))),
+        true,
+    );
     let app = start(cx, &mock);
-    app.send(cx, "Indent the file.");
+    app.send_and_rest(cx, "Plan the work.");
     let session = app.shown(cx).unwrap();
     wait_until(cx, "the question", |cx| {
         cx.read(|cx| session.read(cx).question().is_some())
+    });
+    wait_until(cx, "the answer panel", |cx| app.shows(cx, "answer-panel"));
+    act(cx, app.window, |window, _| {
+        let panel = window.find("answer-panel").bounds();
+        assert!(panel.size.height <= window.viewport_size().height * 0.6 + gpui_kit::px(0.5));
+        let composer = window.find("composer-field").bounds();
+        assert!(composer.bottom() <= window.viewport_size().height);
+        assert!(panel.bottom() <= composer.top());
     });
     app.send(cx, "/cost");
     wait_until(cx, "the cost", |cx| {
@@ -604,15 +651,11 @@ fn a_command_typed_while_a_question_waits_runs_and_the_question_stays(cx: &mut T
         "still asked"
     );
     assert!(!mock.was_sent("/cost"), "not an answer");
-    // Esc folds the question card, and the turn goes on.
     act(cx, app.window, |window, cx| window.press("escape", cx));
-    act(cx, app.window, |window, _| {
-        assert!(window.try_find("question-card").is_none());
-        assert!(window.try_find("question-chip").is_some());
-    });
+    assert!(app.shows(cx, "questions-replying"));
     assert!(cx.read(|cx| session.read(cx).is_working()));
-    app.send(cx, "Two spaces.");
-    app.wait_for_text(cx, "Indented with two spaces.");
+    app.send(cx, "Go ahead.");
+    app.wait_for_text(cx, "Thanks.");
     app.close_all(cx);
 }
 

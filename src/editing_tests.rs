@@ -547,7 +547,7 @@ fn turn_from_elsewhere(app: &App, cx: &mut TestAppContext, text: &str) {
             session.send(
                 arko::Input::Message(arko::Message {
                     text: text.into(),
-                    images: Vec::new(),
+                    ..Default::default()
                 }),
                 cx,
             )

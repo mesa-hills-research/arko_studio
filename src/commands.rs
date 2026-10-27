@@ -44,7 +44,7 @@ impl Group {
         match self {
             Group::General => "General",
             Group::Sessions => "Sessions",
-            Group::Composer => "Composer",
+            Group::Composer => "Message Box",
             Group::Transcript => "Transcript",
             Group::Workers => "Workers",
             Group::Notifications => "Notifications",
@@ -278,15 +278,19 @@ pub fn commands() -> Vec<Command> {
             .keys(&["alt-up"])
             .context(crate::composer::CONTEXT)
             .not_in_palette(),
+        // Option+Q on macOS. Free in every keymap, and in the terminal.
         Command::new(
             Composer,
-            "Back to the Composer from a Question",
-            crate::session_view::LeaveQuestion,
+            "Answer Questions",
+            crate::questions::AnswerQuestions,
         )
-        .keys(&["escape"])
-        .context(crate::session_view::QUESTION_CONTEXT)
-        .not_in_palette(),
-        Command::new(Composer, "Expand Composer", ExpandComposer).keys(&["secondary-shift-e"]),
+        .keys(&["alt-q"]),
+        Command::new(Composer, "Answer in Chat", crate::questions::AnswerInChat)
+            .keys(&["escape"])
+            .context(crate::questions::PANEL_CONTEXT)
+            .not_in_palette(),
+        Command::new(Composer, "Expand the Message Box", ExpandComposer)
+            .keys(&["secondary-shift-e"]),
         Command::new(Composer, "Stop", StopTurn).keys(&["secondary-."]),
         // Esc stops a turn from the composer too (it handles that key itself).
         Command::new(Composer, "Move to Background", MoveToBackground).keys(&["ctrl-b"]),
@@ -357,10 +361,14 @@ pub fn commands() -> Vec<Command> {
         .keys(&["enter"])
         .context(crate::transcript::CONTEXT)
         .not_in_palette(),
-        Command::new(Transcript, "Back to the Composer", crate::transcript::Leave)
-            .keys(&["escape"])
-            .context(crate::transcript::CONTEXT)
-            .not_in_palette(),
+        Command::new(
+            Transcript,
+            "Back to the Message Box",
+            crate::transcript::Leave,
+        )
+        .keys(&["escape"])
+        .context(crate::transcript::CONTEXT)
+        .not_in_palette(),
         // The workers panel's list, and a worker's view in it.
         Command::new(Workers, "Previous Worker", workers_panel::SelectPrevious)
             .keys(&["up"])
@@ -394,7 +402,7 @@ pub fn commands() -> Vec<Command> {
             .keys(&["enter"])
             .context(workers_panel::LIST_CONTEXT)
             .not_in_palette(),
-        Command::new(Workers, "Back to the Composer", workers_panel::Back)
+        Command::new(Workers, "Back to the Message Box", workers_panel::Back)
             .keys(&["escape"])
             .context(workers_panel::LIST_CONTEXT)
             .not_in_palette(),
@@ -453,7 +461,7 @@ pub fn commands() -> Vec<Command> {
         .not_in_palette(),
         Command::new(
             Notifications,
-            "Back to the Composer",
+            "Back to the Message Box",
             notifications_panel::Back,
         )
         .keys(&["escape"])

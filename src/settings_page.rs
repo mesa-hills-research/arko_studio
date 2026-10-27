@@ -959,7 +959,7 @@ fn input_page(cx: &App) -> SettingPage {
                     defaults.keymap,
                 )
                 .description(
-                    "Move and edit in the composer with your platform’s keys, Emacs’s or Vim’s.",
+                    "Move and edit in the message box with your platform’s keys, Emacs’s or Vim’s.",
                 )
                 .keywords(["keymap", "vim", "emacs", "shortcuts"]),
             ]),

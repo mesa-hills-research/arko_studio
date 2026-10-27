@@ -237,7 +237,7 @@ mod tests {
             [
                 "General",
                 "Sessions",
-                "Composer",
+                "Message Box",
                 "Transcript",
                 "Notifications",
                 "View",

@@ -930,7 +930,7 @@ impl WorkersPanel {
                             .ghost()
                             .xsmall()
                             .label("Message")
-                            .tooltip(format!("Write to {id} in the composer"))
+                            .tooltip(format!("Write to {id} in the message box"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.message(message_id.clone(), cx)
                             })),
