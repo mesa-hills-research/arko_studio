@@ -140,6 +140,60 @@ fn narrow_dark() {
     goldens().assert("narrow-dark", &new_window(ThemeMode::Dark, 600.));
 }
 
+fn folder_menu_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::sidebar::Row;
+    use gpui_kit::test::TestWindowExt as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    app.update(|cx| {
+        arko_studio::init(
+            Startup::for_tests(backend)
+                .with_prefs(settings)
+                .with_fonts(fonts::bundled()),
+            cx,
+        );
+    });
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(900.), px(600.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    app.run_until_parked();
+    app.update_window(window, |_, window, cx| {
+        let row = opened
+            .unwrap()
+            .read(cx)
+            .sidebar()
+            .read(cx)
+            .rows()
+            .iter()
+            .position(|row| matches!(row, Row::Group { title, .. } if title == "arko"))
+            .unwrap();
+        window.render_frame(cx);
+        window.right_click(("row", row), cx);
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn folder_menu_light() {
+    goldens().assert("folder-menu-light", &folder_menu_window(ThemeMode::Light));
+}
+
+#[test]
+fn folder_menu_dark() {
+    goldens().assert("folder-menu-dark", &folder_menu_window(ThemeMode::Dark));
+}
+
 /// Settings' page `page` in a window `width` wide, on the sample sessions
 /// and accounts.
 fn settings_window(mode: ThemeMode, width: f32, page: usize) -> Screenshot {

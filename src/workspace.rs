@@ -848,6 +848,14 @@ impl Workspace {
                 .is_some_and(|session| session.read(cx).id() == Some(id))
         };
         match event {
+            SidebarEvent::NewSession(folder) => {
+                self.show(None, window, cx);
+                self.session_view.update(cx, |view, cx| {
+                    view.set_draft_mode(crate::backend::Mode::Agent, cx);
+                    view.set_draft_folder(folder.clone(), cx);
+                });
+                self.after_choosing(window, cx);
+            }
             SidebarEvent::Open(id) => self.open_session(id.clone(), window, cx),
             SidebarEvent::OpenConversation(id, number) => {
                 self.open_conversation(id.clone(), *number, window, cx)

@@ -82,6 +82,99 @@ pub(crate) fn row_of(workspace: &Entity<Workspace>, title: &str, cx: &mut TestAp
     })
 }
 
+fn folder_row(workspace: &Entity<Workspace>, folder: &str, cx: &mut TestAppContext) -> usize {
+    cx.read(|cx| {
+        workspace
+            .read(cx)
+            .sidebar()
+            .read(cx)
+            .rows()
+            .iter()
+            .position(|row| matches!(row, Row::Group { path: Some(path), .. } if path == std::path::Path::new(folder)))
+            .expect("folder in the sidebar")
+    })
+}
+
+#[gpui_kit::test]
+fn a_folder_menu_starts_an_agent_session_in_that_folder(cx: &mut TestAppContext) {
+    use crate::backend::Mode;
+
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    // Leave a chat and Settings through the same new-session flow.
+    let fonts = row_of(&workspace, "Variable fonts and the wght axis", cx);
+    act(cx, window, |window, cx| window.click(("row", fonts), cx));
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(menus::OpenSettings), cx)
+    });
+    let folder = "/home/ada/src/arko";
+    let row = folder_row(&workspace, folder, cx);
+    act(cx, window, |window, cx| {
+        window.right_click(("row", row), cx)
+    });
+    act(cx, window, |window, cx| {
+        let mut menu = window.within("popup-menu");
+        assert_eq!(menu.find(0_usize).label(), Some("New Session"));
+        assert_eq!(menu.find(1_usize).label(), Some("Open Folder"));
+        menu.click(0_usize, cx);
+    });
+    assert_eq!(open_title(&workspace, cx), None);
+    cx.read(|cx| {
+        let view = workspace.read(cx).session_view().read(cx);
+        assert_eq!(view.draft().mode, Mode::Agent);
+        assert_eq!(
+            view.draft_folder().as_deref(),
+            Some(std::path::Path::new(folder))
+        );
+    });
+    act(cx, window, |window, _| {
+        assert!(window.try_find("close-settings").is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn a_closed_folder_keeps_its_menu_and_the_menu_supports_keys(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let folder = "/home/ada/src/gpui_kit";
+    let row = folder_row(&workspace, folder, cx);
+    act(cx, window, |window, cx| window.click(("row", row), cx));
+    act(cx, window, |window, cx| {
+        window.right_click(("row", row), cx)
+    });
+    assert!(cx.read(|cx| {
+        prefs::get(cx)
+            .sidebar
+            .collapsed
+            .contains(&folder.to_string())
+    }));
+    act(cx, window, |window, cx| window.press("down", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    cx.read(|cx| {
+        assert_eq!(
+            workspace
+                .read(cx)
+                .session_view()
+                .read(cx)
+                .draft_folder()
+                .as_deref(),
+            Some(std::path::Path::new(folder))
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn chats_have_no_folder_menu(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, _) = open(cx, 1300.);
+    act(cx, window, |window, cx| {
+        window.right_click(("row", 0_usize), cx)
+    });
+    act(cx, window, |window, _| {
+        assert!(window.try_find("popup-menu").is_none())
+    });
+}
+
 #[gpui_kit::test]
 fn clicking_a_session_opens_it(cx: &mut TestAppContext) {
     start(cx);
