@@ -217,9 +217,9 @@ dependencies = [
 
 [[package]]
 name = "arko-tui"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f77202034d78b093d588d929a1bb68d00ce02e96ab7f3549d6ec1b4dc35f8260"
+checksum = "7d1cea684483059f2464cfd0cdc782d8f01a84904b6674290fa4d78010913c8a"
 dependencies = [
  "arko_agents",
  "arko_ai",
@@ -238,10 +238,36 @@ dependencies = [
  "ignore",
  "libc",
  "log",
+ "mesquite",
+ "mesquite_bash",
+ "mesquite_c",
+ "mesquite_c_sharp",
+ "mesquite_cpp",
+ "mesquite_css",
+ "mesquite_diff",
+ "mesquite_go",
+ "mesquite_html",
+ "mesquite_java",
+ "mesquite_javascript",
+ "mesquite_json",
+ "mesquite_kotlin",
+ "mesquite_lua",
+ "mesquite_make",
+ "mesquite_php",
+ "mesquite_python",
+ "mesquite_ruby",
+ "mesquite_rust",
+ "mesquite_sql",
+ "mesquite_swift",
+ "mesquite_toml",
+ "mesquite_typescript",
+ "mesquite_yaml",
+ "pulldown-cmark",
  "qrcodegen",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "subtle",
  "tokio",
  "unicode-segmentation",
@@ -251,9 +277,9 @@ dependencies = [
 
 [[package]]
 name = "arko_agents"
-version = "0.2.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6eccb090b342acbadee4855d386ff6e9f76cedfa27fb23ad1741d45d78983bf9"
+checksum = "c2a04200bd56e785c75ef3a20d57b9cede646565712b9107a8ca09e97b3d94f7"
 dependencies = [
  "arko_ai",
  "async-trait",
@@ -279,9 +305,9 @@ dependencies = [
 
 [[package]]
 name = "arko_ai"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "504bdacfea4831285665d681db16b76963fd4647dfbdb9bb54e2e4a9850f4f62"
+checksum = "07f7dd3ba3bd82ef7e0e3a3622865556e1cb5fa1537703c4345c64f481f61b59"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -408,9 +434,9 @@ dependencies = [
 
 [[package]]
 name = "arko_workflows"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d820ac3a6291809d234d8de18f7e020f53e7b8eb123b3613f5f98900e7c5bae"
+checksum = "a5b672484ec5de4674e8b57d69c2578cb3174d0839e26793fefff9a18addf7f4"
 dependencies = [
  "arko_agents",
  "arko_ai",
@@ -6580,6 +6606,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
+dependencies = [
+ "bitflags 2.13.2",
+ "memchr",
+ "unicase",
 ]
 
 [[package]]
