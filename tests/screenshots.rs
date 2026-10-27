@@ -1485,7 +1485,7 @@ fn transcript_narrow_dark() {
 fn ended_turn_app(
     mode: ThemeMode,
     width: f32,
-    replied: bool,
+    reply: Option<&str>,
 ) -> (ScreenshotApp, gpui_kit::AnyWindowHandle) {
     use arko::remote::{Delivery, Feed, Item, Kind, Level, Source};
     use arko_studio::transcript::{AgentFilter, TranscriptView};
@@ -1504,11 +1504,8 @@ fn ended_turn_app(
     message.message_index = Some(0);
     message.source = Some(Source::App);
     message.delivery = Some(Delivery::Turn);
-    let ending = if replied {
-        Item::new(
-            Kind::Reply,
-            "An apple. Kept cool and dry, it lasts for months.",
-        )
+    let ending = if let Some(reply) = reply {
+        Item::new(Kind::Reply, reply)
     } else {
         Item::new(Kind::Notice, "Stopped.").level(Level::Warn)
     };
@@ -1549,7 +1546,8 @@ fn ended_turn_window(
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{Modifiers, MouseMoveEvent, PlatformInput, point};
 
-    let (mut app, window) = ended_turn_app(mode, width, replied);
+    let reply = replied.then_some("An apple. Kept cool and dry, it lasts for months.");
+    let (mut app, window) = ended_turn_app(mode, width, reply);
     // The pointer at the row's left, in the window's margin, away from its
     // buttons.
     app.update_window(window, |_, window, cx| {
@@ -1572,7 +1570,11 @@ fn ended_turn_window(
 fn reply_menu_window(mode: ThemeMode, width: f32) -> Screenshot {
     use gpui_kit::test::TestWindowExt as _;
 
-    let (mut app, window) = ended_turn_app(mode, width, true);
+    let (mut app, window) = ended_turn_app(
+        mode,
+        width,
+        Some("An apple. Kept cool and dry, it lasts for months."),
+    );
     app.update_window(window, |_, window, cx| {
         window.click(("reply-menu", 2u64), cx)
     })
@@ -1581,7 +1583,39 @@ fn reply_menu_window(mode: ThemeMode, width: f32) -> Screenshot {
     app.capture(window).unwrap()
 }
 
-/// The latest reply, under the pointer: Regenerate is alone at the right
+/// A reply ending in a code block, with its actions under the pointer.
+fn code_actions_window(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+
+    let (mut app, window) = ended_turn_app(
+        mode,
+        900.,
+        Some("Keep apples cool and dry.\n\n```rust\nlet fruit = \"apple\";\nstore(fruit);\n```"),
+    );
+    app.update_window(window, |_, window, cx| {
+        window.hover(("copy-reply", 2u64), cx);
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn transcript_code_actions_light() {
+    goldens().assert(
+        "transcript-code-actions-light",
+        &code_actions_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn transcript_code_actions_dark() {
+    goldens().assert(
+        "transcript-code-actions-dark",
+        &code_actions_window(ThemeMode::Dark),
+    );
+}
+
+/// The latest reply, under the pointer, has Regenerate alone at the right
 /// end of its actions.
 #[test]
 fn transcript_regenerate_light() {

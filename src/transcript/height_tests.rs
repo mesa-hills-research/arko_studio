@@ -381,6 +381,63 @@ fn rows_are_estimated_at_the_height_they_measure(cx: &mut TestAppContext) {
     assert_close(&heights(cx, window, &view), 800.);
 }
 
+/// Reply actions have their own gap after every kind of final block,
+/// including source text, and the height estimate includes that gap.
+#[gpui_kit::test]
+fn reply_actions_keep_the_same_gap_after_every_block(cx: &mut TestAppContext) {
+    use gpui_kit::AppContext as _;
+    use gpui_kit::test::TestWindowExt as _;
+
+    start(cx);
+    for ending in [
+        "A paragraph.",
+        "```rust\nfn main() {}\n```",
+        "| Name | Value |\n|---|---|\n| one | two |",
+        "- First\n- Last",
+        "> A quote.",
+        "## A heading",
+        "---",
+        "![A local image](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=)",
+        // Studio has no math extension, so this is a paragraph.
+        "$$\nx^2 + y^2 = z^2\n$$",
+    ] {
+        let feed = Feed::new("main");
+        feed.user("Show the result.", Source::App, Delivery::Turn);
+        feed.reply(ending);
+        let reply = item_ids(&feed)
+            .into_iter()
+            .find(|(_, kind)| *kind == Kind::Reply)
+            .unwrap()
+            .0;
+        let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+        let check = |cx: &mut TestAppContext| {
+            let rows = super::tests::keys(&view, cx);
+            let actions = rows
+                .iter()
+                .position(|row| *row == RowKey::Actions(reply))
+                .unwrap();
+            cx.update_window(window, |_, window, _| {
+                let block = window
+                    .find(super::row::element_id(rows[actions - 1]))
+                    .bounds();
+                let copy = window.find(("copy-reply", reply)).bounds();
+                let gap = copy.top() - block.bottom();
+                assert_eq!(gap, window.rem_size() * 0.5, "{ending}");
+            })
+            .unwrap();
+            let (_, measured, estimated, _) = cx.read(|cx| height(view.read(cx), actions, cx));
+            assert!(
+                (estimated - measured).abs() < 1.,
+                "{ending}: {estimated} vs {measured}"
+            );
+        };
+        check(cx);
+        view.update(cx, |view, cx| view.toggle_source(reply, cx));
+        settle(cx, window);
+        check(cx);
+    }
+}
+
 /// The scroll range the scrollbar has now, what the list counts for its
 /// rows past the screen.
 fn range(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> f32 {
