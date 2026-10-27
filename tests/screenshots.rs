@@ -50,6 +50,56 @@ fn new_window(mode: ThemeMode, width: f32) -> Screenshot {
     app.capture(window).unwrap()
 }
 
+/// An empty agent session with a long draft folder and Change visible.
+fn draft_folder_window(mode: ThemeMode, width: f32) -> Screenshot {
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(width), px(720.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, _, cx| {
+        let view = workspace.read(cx).session_view().clone();
+        view.update(cx, |view, cx| {
+            view.set_draft_folder(
+                "/home/ada/Desktop/arko-studio-work/scratch/studio-ui-1027/send-lag/probe/work".into(),
+                cx,
+            );
+        });
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn draft_folder_narrow_light() {
+    goldens().assert(
+        "draft-folder-narrow-light",
+        &draft_folder_window(ThemeMode::Light, 700.),
+    );
+}
+
+#[test]
+fn draft_folder_narrow_dark() {
+    goldens().assert(
+        "draft-folder-narrow-dark",
+        &draft_folder_window(ThemeMode::Dark, 700.),
+    );
+}
+
 /// A window `width` logical pixels wide on a session with a long title, in
 /// a folder with a long name, that had workers (so both layout buttons
 /// show). The folder's name gives way first, then the title.
@@ -1485,7 +1535,7 @@ fn transcript_narrow_dark() {
 fn ended_turn_app(
     mode: ThemeMode,
     width: f32,
-    replied: bool,
+    reply: Option<&str>,
 ) -> (ScreenshotApp, gpui_kit::AnyWindowHandle) {
     use arko::remote::{Delivery, Feed, Item, Kind, Level, Source};
     use arko_studio::transcript::{AgentFilter, TranscriptView};
@@ -1504,11 +1554,8 @@ fn ended_turn_app(
     message.message_index = Some(0);
     message.source = Some(Source::App);
     message.delivery = Some(Delivery::Turn);
-    let ending = if replied {
-        Item::new(
-            Kind::Reply,
-            "An apple. Kept cool and dry, it lasts for months.",
-        )
+    let ending = if let Some(reply) = reply {
+        Item::new(Kind::Reply, reply)
     } else {
         Item::new(Kind::Notice, "Stopped.").level(Level::Warn)
     };
@@ -1549,7 +1596,8 @@ fn ended_turn_window(
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{Modifiers, MouseMoveEvent, PlatformInput, point};
 
-    let (mut app, window) = ended_turn_app(mode, width, replied);
+    let reply = replied.then_some("An apple. Kept cool and dry, it lasts for months.");
+    let (mut app, window) = ended_turn_app(mode, width, reply);
     // The pointer at the row's left, in the window's margin, away from its
     // buttons.
     app.update_window(window, |_, window, cx| {
@@ -1572,7 +1620,11 @@ fn ended_turn_window(
 fn reply_menu_window(mode: ThemeMode, width: f32) -> Screenshot {
     use gpui_kit::test::TestWindowExt as _;
 
-    let (mut app, window) = ended_turn_app(mode, width, true);
+    let (mut app, window) = ended_turn_app(
+        mode,
+        width,
+        Some("An apple. Kept cool and dry, it lasts for months."),
+    );
     app.update_window(window, |_, window, cx| {
         window.click(("reply-menu", 2u64), cx)
     })
@@ -1581,7 +1633,39 @@ fn reply_menu_window(mode: ThemeMode, width: f32) -> Screenshot {
     app.capture(window).unwrap()
 }
 
-/// The latest reply, under the pointer: Regenerate is alone at the right
+/// A reply ending in a code block, with its actions under the pointer.
+fn code_actions_window(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+
+    let (mut app, window) = ended_turn_app(
+        mode,
+        900.,
+        Some("Keep apples cool and dry.\n\n```rust\nlet fruit = \"apple\";\nstore(fruit);\n```"),
+    );
+    app.update_window(window, |_, window, cx| {
+        window.hover(("copy-reply", 2u64), cx);
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn transcript_code_actions_light() {
+    goldens().assert(
+        "transcript-code-actions-light",
+        &code_actions_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn transcript_code_actions_dark() {
+    goldens().assert(
+        "transcript-code-actions-dark",
+        &code_actions_window(ThemeMode::Dark),
+    );
+}
+
+/// The latest reply, under the pointer, has Regenerate alone at the right
 /// end of its actions.
 #[test]
 fn transcript_regenerate_light() {
@@ -3450,11 +3534,23 @@ fn asking_window(
     typed: Option<&str>,
     attached: bool,
 ) -> Screenshot {
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    asking_window_with(settings, questions, typed, attached, |_, _| {})
+}
+
+/// A sample session asking `questions` with `settings`, as
+/// [`questions_window`] says, once `change` has acted on the window.
+fn asking_window_with(
+    mut settings: Prefs,
+    questions: Vec<arko::questions::AgentQuestion>,
+    typed: Option<&str>,
+    attached: bool,
+    change: impl FnOnce(&mut ScreenshotApp, gpui_kit::AnyWindowHandle),
+) -> Screenshot {
     use gpui_kit::test::TestWindowExt as _;
 
     let mut app = ScreenshotApp::with_assets(Assets).unwrap();
-    let mut settings = Prefs::default();
-    settings.appearance.theme_mode = mode;
     settings.appearance.motion = Motion::Off;
     let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
     let startup = Startup::for_tests(backend)
@@ -3497,7 +3593,51 @@ fn asking_window(
     })
     .unwrap();
     app.run_until_parked();
+    change(&mut app, window);
+    app.run_until_parked();
     app.capture(window).unwrap()
+}
+
+/// The answer panel with choices chosen: Spaces, two of the tests, and
+/// "You decide" for the branch. Each chosen chip is outlined in the text's
+/// color.
+fn questions_chosen_window(mode: ThemeMode) -> Screenshot {
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    asking_window_with(settings, questions_sample(), None, false, choose_sample)
+}
+
+/// Chooses Spaces, Unit and Screenshots, and "You decide" for the branch
+/// in the answer panel of `window`.
+fn choose_sample(app: &mut ScreenshotApp, window: gpui_kit::AnyWindowHandle) {
+    use gpui_kit::test::TestWindowExt as _;
+
+    let part = |name: &str, id: &str, n: usize| -> gpui_kit::ElementId {
+        (gpui_kit::SharedString::from(format!("{name}-{id}")), n).into()
+    };
+    app.update_window(window, |_, window, cx| {
+        window.click(part("answer-choice", "q1", 1), cx);
+        window.click(part("answer-choice", "q2", 0), cx);
+        window.click(part("answer-choice", "q2", 2), cx);
+        window.click(part("answer-you-decide", "q3", 0), cx);
+    })
+    .unwrap();
+}
+
+#[test]
+fn questions_chosen_light() {
+    goldens().assert(
+        "questions-chosen-light",
+        &questions_chosen_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn questions_chosen_dark() {
+    goldens().assert(
+        "questions-chosen-dark",
+        &questions_chosen_window(ThemeMode::Dark),
+    );
 }
 
 #[test]
@@ -3566,7 +3706,8 @@ fn questions_replying_dark() {
 
 /// A card of the agent's questions in the transcript: its line, and the
 /// record of the questions settled, one in each state. The open one is the
-/// answer panel's.
+/// answer panel's. The answers given in the panel are a bubble of the
+/// user's under the card, and an answer typed in the message box follows.
 fn question_card_window(mode: ThemeMode) -> Screenshot {
     use arko::questions::{AskedQuestion, QuestionState};
     use arko::remote::{Delivery, Feed, Source};
@@ -3590,6 +3731,7 @@ fn question_card_window(mode: ThemeMode) -> Screenshot {
         "Which branch should the change go to?",
         "Keep the old API for one more release?",
         "Rename the module to parse?",
+        "Squash the commits before the merge?",
     ]
     .iter()
     .enumerate()
@@ -3616,8 +3758,15 @@ fn question_card_window(mode: ThemeMode) -> Screenshot {
         },
     );
     feed.set_question_state("q4", QuestionState::Dismissed);
+    feed.set_question_state(
+        "q5",
+        QuestionState::Answered {
+            answer: "Yes, and keep a re-export under the old name".into(),
+        },
+    );
+    feed.user("Not yet, after the review.", Source::App, Delivery::Answer);
     let window = app
-        .open_window_with(size(px(900.), px(400.)), 1., |options, cx| {
+        .open_window_with(size(px(900.), px(640.)), 1., |options, cx| {
             gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| TranscriptView::new(&feed, AgentFilter::Main, window, cx))
             })

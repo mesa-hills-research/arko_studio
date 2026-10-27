@@ -764,7 +764,7 @@ pub(crate) enum Gap {
     None,
     /// Between calls of a run.
     Tight,
-    /// Under a disclosure, before the turn's footer.
+    /// Under a disclosure, before reply actions or the turn's footer.
     Small,
     /// Between paragraphs, and between prose and activity.
     Section,
@@ -796,7 +796,7 @@ fn gap(previous: Option<Class>, next: Class) -> Gap {
         return Gap::None;
     };
     match (previous, next) {
-        (_, Class::Actions) => Gap::None,
+        (_, Class::Actions) => Gap::Small,
         (_, Class::Footer) => Gap::Small,
         (Class::Separator, Class::User) => Gap::Section,
         // After a user's message's actions, as after a reply's.
@@ -1707,7 +1707,7 @@ mod tests {
                 Gap::Small,
                 Gap::Tight,
                 Gap::Section,
-                Gap::None,
+                Gap::Small,
                 Gap::Small,
                 Gap::Turn
             ]

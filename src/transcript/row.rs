@@ -41,6 +41,12 @@ const COLUMN: f32 = 46.;
 /// The width, in rem, a user's message may take even when that is more than
 /// half the column, the width of a comfortable line.
 const USER_BUBBLE_WIDTH: f32 = 17.5;
+/// The tag of the user's answers to the agent's questions, typed or given
+/// in the answer panel.
+const ANSWER_TAG: &str = "Answer";
+/// The space, in rem, between a card of questions and the bubble of the
+/// answers given in the answer panel under it.
+const ANSWERS_GAP: f32 = 0.5;
 /// The least room, in rem, between a reply's other actions and Regenerate.
 const REGENERATE_GAP: f32 = 2.;
 /// What the Regenerate buttons' tooltips say.
@@ -384,9 +390,7 @@ impl TranscriptView {
         let Some(item) = self.item(id) else {
             return 0.;
         };
-        // The bubble is at most half the column, or a comfortable line when
-        // that's more, and at most the column.
-        let bubble = column.min((column * 0.5).max(USER_BUBBLE_WIDTH * rem));
+        let bubble = bubble_width(column, rem);
         let border = if item.pending { 2. } else { 0. };
         let inside = bubble - 1.5 * rem - border;
         let lines = self.ui.get(&id).map_or(&[][..], |ui| &ui.lines);
@@ -494,34 +498,55 @@ impl TranscriptView {
 
     /// The height of a card of the agent's questions, as [`Self::questions`]
     /// lays it out: its line, then, in a box once one has settled, each
-    /// settled question's text and what became of it.
+    /// settled question's text and what became of it, and under the box the
+    /// bubble of the answers given in the answer panel.
     fn question_height(&self, id: u64, column: f32, m: &Metrics) -> f32 {
         let rem = m.rem;
         let Some(questions) = self.item(id).and_then(|item| item.questions.as_ref()) else {
             return 0.;
         };
+        // The room a question's number takes before its text, past the gap.
+        let number_room = |number: Option<u32>| {
+            number.map_or(0., |number| {
+                let chars = number.to_string().len() as f32 + 1.;
+                (chars * m.body.advance_at(rem)).max(rem) + 0.375 * rem
+            })
+        };
         let mut height = m.line_sm;
-        let mut column = column;
+        let mut inside = column;
         if questions.iter().any(|question| !question.state.is_open()) {
             // The box's padding (0.75 rem) and border (1 px) on each side.
             let inset = 2. * (0.75 * rem + 1.);
             height += inset;
-            column -= inset;
+            inside -= inset;
         }
+        let mut answers = Vec::new();
         for question in questions {
-            let Some(outcome) = crate::questions::outcome(&question.state) else {
+            if question.state.is_open() {
                 continue;
-            };
-            // The text and the outcome, past its number.
-            let mut width = column;
-            if let Some(number) = question.number {
-                let chars = number.to_string().len() as f32 + 1.;
-                width -= (chars * m.body.advance_at(rem)).max(rem) + 0.375 * rem;
             }
+            // The text and the outcome, past its number.
+            let width = inside - number_room(question.number);
             let lines = super::height::hard_lines(&crate::questions::text(question));
             height += 0.5 * rem + m.body.text_lines(&lines, width) * m.line;
-            let lines = super::height::hard_lines(&outcome);
-            height += m.body_at(0.875).text_lines(&lines, width) * m.line_sm;
+            match crate::questions::answer(&question.state) {
+                Some(answer) => answers.push((question.number, answer)),
+                None => {
+                    let outcome = crate::questions::outcome(&question.state).unwrap_or_default();
+                    let lines = super::height::hard_lines(&outcome);
+                    height += m.body_at(0.875).text_lines(&lines, width) * m.line_sm;
+                }
+            }
+        }
+        if !answers.is_empty() {
+            // The gap above the bubble, its padding, and its tag.
+            let inside = bubble_width(column, rem) - 1.5 * rem;
+            height += ANSWERS_GAP * rem + rem + m.line_xs;
+            for (number, answer) in answers {
+                let lines = super::height::hard_lines(answer);
+                height += 0.25 * rem
+                    + m.body.text_lines(&lines, inside - number_room(number)) * m.line;
+            }
         }
         height
     }
@@ -839,7 +864,7 @@ fn user_tags(item: &Item) -> Vec<String> {
     let mut tags = Vec::new();
     match item.delivery {
         Some(Delivery::Note) if item.pending => tags.push("Pending".into()),
-        Some(Delivery::Answer) => tags.push("Answer".into()),
+        Some(Delivery::Answer) => tags.push(ANSWER_TAG.into()),
         Some(Delivery::Queued) => tags.push("Queued".into()),
         // A turn, a read note, a command, a refresh, and a delivery a later
         // arko adds.
@@ -1123,61 +1148,19 @@ impl TranscriptView {
                     .into_any_element()
             }),
         };
-        // The message is a bubble at the right of the column, as wide as its
-        // words up to half the column. The space at its left gives way first
-        // as the column narrows, so a narrow column gives the bubble the
-        // width of a comfortable line and a very narrow one all of it. Its
-        // actions keep their room under it, shown or not, so showing them
-        // moves nothing.
-        h_flex()
-            .w_full()
-            .items_start()
-            .child(
-                div()
-                    .flex_grow(1000.)
-                    .flex_basis(px(0.))
-                    .max_w(relative(0.5)),
-            )
-            .child(
-                v_flex()
-                    .flex_grow(1.)
-                    .flex_basis(rems(USER_BUBBLE_WIDTH))
-                    .min_w_0()
-                    .items_end()
-                    .gap_1()
-                    .child(
-                        h_flex().w_full().justify_end().child(
-                            v_flex()
-                                .id(("user-message", id))
-                                .test_support()
-                                .min_w_0()
-                                .gap_1()
-                                .px_3()
-                                .py_2()
-                                .rounded(theme.radius)
-                                .map(|this| {
-                                    // A note the agent hasn't read is an
-                                    // outline in muted text until it is.
-                                    if item.pending {
-                                        this.border_1().border_color(theme.border).text_color(muted)
-                                    } else {
-                                        this.bg(bubble_color(theme)).text_color(theme.foreground)
-                                    }
-                                })
-                                .when(!tags.is_empty(), |this| {
-                                    this.child(
-                                        div().text_xs().text_color(muted).child(tags.join(" · ")),
-                                    )
-                                })
-                                .children(self.thumbnails(item, view, cx))
-                                // As wide as its words on one line, up to the
-                                // bubble's widest, where it wraps.
-                                .child(self.marked(("user-text", id), id, Place::Text, text, cx)),
-                        ),
-                    )
-                    .child(actions),
-            )
-            .into_any_element()
+        // Its actions keep their room under it, shown or not, so showing
+        // them moves nothing.
+        let bubble = bubble(item.pending, theme)
+            .id(("user-message", id))
+            .test_support()
+            .when(!tags.is_empty(), |this| {
+                this.child(div().text_xs().text_color(muted).child(tags.join(" · ")))
+            })
+            .children(self.thumbnails(item, view, cx))
+            // As wide as its words on one line, up to the bubble's widest,
+            // where it wraps.
+            .child(self.marked(("user-text", id), id, Place::Text, text, cx));
+        at_right(bubble, Some(actions.into_any_element())).into_any_element()
     }
 
     fn block(
@@ -1939,7 +1922,8 @@ impl TranscriptView {
     /// A card of the agent's questions: its line ("Arko asked 2
     /// questions"), which opens the answer panel on those still open, then
     /// the record of each settled one with what became of it. An open
-    /// question shows only in the panel.
+    /// question shows only in the panel, and the answers given in the panel
+    /// show in a bubble of the user's under the card.
     fn questions(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
         let theme = cx.theme();
         let Some(item) = self.item(id) else {
@@ -1970,12 +1954,13 @@ impl TranscriptView {
                             .ok();
                     })
             });
+        let muted = theme.muted_foreground;
         let record = questions.iter().enumerate().filter_map(|(n, question)| {
             let outcome = crate::questions::outcome(&question.state)?;
-            let answered = matches!(
-                question.state,
-                arko::questions::QuestionState::Answered { .. }
-            );
+            // The user's own answer is in the bubble under the card.
+            let outcome = crate::questions::answer(&question.state)
+                .is_none()
+                .then_some(outcome);
             Some(
                 h_flex()
                     .id(("question", id * 8 + n as u64))
@@ -1989,7 +1974,7 @@ impl TranscriptView {
                             div()
                                 .flex_none()
                                 .min_w(rems(1.))
-                                .text_color(theme.muted_foreground)
+                                .text_color(muted)
                                 .child(format!("{number}.")),
                         )
                     })
@@ -2009,21 +1994,74 @@ impl TranscriptView {
                                         cx,
                                     )),
                             )
-                            .child(
+                            .children(outcome.map(|outcome| {
                                 div()
                                     .id(("question-outcome", id * 8 + n as u64))
                                     .test_support()
                                     .text_sm()
-                                    .when(!answered, |this| this.text_color(theme.muted_foreground))
-                                    .child(outcome),
-                            ),
+                                    .text_color(muted)
+                                    .child(outcome)
+                            })),
                     ),
             )
+        });
+        // The answers given in the answer panel are the user's words, so
+        // they are a bubble like the user's messages, tagged as a typed
+        // answer is, each numbered as its question when the ask numbered
+        // them.
+        let answers: Vec<AnyElement> = questions
+            .iter()
+            .enumerate()
+            .filter_map(|(n, question)| {
+                let answer = crate::questions::answer(&question.state)?;
+                Some(
+                    h_flex()
+                        .id(("answer", id * 8 + n as u64))
+                        .test_support()
+                        // The number and the words are in the same font, so
+                        // their first lines line up.
+                        .items_start()
+                        .gap_1p5()
+                        .when_some(question.number, |this, number| {
+                            this.child(
+                                div()
+                                    .id(("answer-number", id * 8 + n as u64))
+                                    .test_support()
+                                    .flex_none()
+                                    .min_w(rems(1.))
+                                    .text_color(muted)
+                                    .child(format!("{number}.")),
+                            )
+                        })
+                        .child(
+                            div()
+                                .id(("answer-text", id * 8 + n as u64))
+                                .test_support()
+                                .min_w_0()
+                                .child(self.marked(
+                                    ("answer-words", id * 8 + n as u64),
+                                    id,
+                                    Place::Answer(n),
+                                    answer.to_string(),
+                                    cx,
+                                )),
+                        )
+                        .into_any_element(),
+                )
+            })
+            .collect();
+        let answers = (!answers.is_empty()).then(|| {
+            let bubble = bubble(false, theme)
+                .id(("question-answers", id))
+                .test_support()
+                .child(div().text_xs().text_color(muted).child(ANSWER_TAG))
+                .children(answers);
+            at_right(bubble, None).pt(rems(ANSWERS_GAP))
         });
         // Once a question has settled, the card is a quiet box like the
         // answer panel's, its line the heading of the record.
         let settled = questions.iter().any(|question| !question.state.is_open());
-        v_flex()
+        let card = v_flex()
             .w_full()
             .when(settled, |this| {
                 this.p_3()
@@ -2032,7 +2070,11 @@ impl TranscriptView {
                     .rounded(theme.radius_lg)
             })
             .child(line)
-            .children(record)
+            .children(record);
+        v_flex()
+            .w_full()
+            .child(card)
+            .children(answers)
             .into_any_element()
     }
 
@@ -2548,6 +2590,60 @@ impl RenderOnce for HoverActions {
             .opacity(if shown { 1. } else { 0. })
             .child((self.build)(shown))
     }
+}
+
+/// The bubble of the user's words: a message, or the answers given in the
+/// answer panel. A note the agent hasn't read (`pending`) is an outline in
+/// muted text until it is.
+fn bubble(pending: bool, theme: &Theme) -> Div {
+    v_flex()
+        .min_w_0()
+        .gap_1()
+        .px_3()
+        .py_2()
+        .rounded(theme.radius)
+        .map(|this| {
+            if pending {
+                this.border_1()
+                    .border_color(theme.border)
+                    .text_color(theme.muted_foreground)
+            } else {
+                this.bg(bubble_color(theme)).text_color(theme.foreground)
+            }
+        })
+}
+
+/// `bubble` at the right of the column, as wide as its words up to half
+/// the column, with `below` under it at its right edge. The space at its
+/// left gives way first as the column narrows, so a narrow column gives the
+/// bubble the width of a comfortable line and a very narrow one all of it.
+fn at_right(bubble: impl IntoElement, below: Option<AnyElement>) -> Div {
+    h_flex()
+        .w_full()
+        .items_start()
+        .child(
+            div()
+                .flex_grow(1000.)
+                .flex_basis(px(0.))
+                .max_w(relative(0.5)),
+        )
+        .child(
+            v_flex()
+                .flex_grow(1.)
+                .flex_basis(rems(USER_BUBBLE_WIDTH))
+                .min_w_0()
+                .items_end()
+                .gap_1()
+                .child(h_flex().w_full().justify_end().child(bubble))
+                .children(below),
+        )
+}
+
+/// The widest a bubble grows in a reading column `column` pixels wide: half
+/// the column, or a comfortable line when that's more, and at most the
+/// column.
+fn bubble_width(column: f32, rem: f32) -> f32 {
+    column.min((column * 0.5).max(USER_BUBBLE_WIDTH * rem))
 }
 
 /// How far a user's message's bubble moves from the background toward the

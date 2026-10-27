@@ -81,10 +81,17 @@ pub fn markdown(header: &Header, items: &[Item]) -> String {
                 }
             }
             // The agent's questions, numbered in their batch as the card
-            // shows them, each with what became of it.
+            // shows them, each with what became of it. The answers given in
+            // the answer panel follow as the user's, as the bubble under the
+            // card shows them.
             Kind::Question if item.questions.as_ref().is_some_and(|q| !q.is_empty()) => {
+                let asked = item.questions.as_deref().unwrap_or_default();
                 section(&mut out, "Arko");
-                out.push_str(&questions(item.questions.as_deref().unwrap_or_default()));
+                out.push_str(&questions(asked));
+                if let Some(answers) = answers(asked) {
+                    section(&mut out, "You");
+                    out.push_str(&format!("\n{answers}\n"));
+                }
             }
             Kind::Text | Kind::Reply | Kind::Question => {
                 if item.text.trim().is_empty() {
@@ -462,23 +469,50 @@ pub fn folder(workspace: Option<&Path>, home: Option<&Path>) -> PathBuf {
 mod engine_tests;
 
 /// A card of the agent's questions in Markdown: each question (numbered
-/// in its ask when it came with others), and what became of it in italics.
+/// in its ask when it came with others), and what became of it in italics
+/// unless the user answered it in the answer panel ([`answers`]).
 fn questions(questions: &[arko::questions::AgentQuestion]) -> String {
     let mut out = String::new();
     for question in questions {
         let text = closed(trimmed(&crate::questions::text(question)));
-        let outcome =
-            crate::questions::outcome(&question.state).unwrap_or_else(|| "Open".to_string());
+        let outcome = crate::questions::answer(&question.state)
+            .is_none()
+            .then(|| crate::questions::outcome(&question.state).unwrap_or_else(|| "Open".into()));
         match question.number {
             Some(number) => {
                 let indent = " ".repeat(number.to_string().len() + 2);
                 let text = text.replace('\n', &format!("\n{indent}"));
-                out.push_str(&format!("\n{number}. {text}\n\n{indent}*{outcome}*\n"));
+                out.push_str(&format!("\n{number}. {text}\n"));
+                if let Some(outcome) = outcome {
+                    out.push_str(&format!("\n{indent}*{outcome}*\n"));
+                }
             }
-            None => out.push_str(&format!("\n{text}\n\n*{outcome}*\n")),
+            None => {
+                out.push_str(&format!("\n{text}\n"));
+                if let Some(outcome) = outcome {
+                    out.push_str(&format!("\n*{outcome}*\n"));
+                }
+            }
         }
     }
     out
+}
+
+/// The answers given in the answer panel to a card's questions, as typed,
+/// each on its own line with its question's number when the ask numbered
+/// them. `None` when there are none.
+fn answers(questions: &[arko::questions::AgentQuestion]) -> Option<String> {
+    let lines: Vec<String> = questions
+        .iter()
+        .filter_map(|question| {
+            let answer = crate::questions::answer(&question.state)?;
+            Some(match question.number {
+                Some(number) => format!("{number}. {answer}"),
+                None => answer.to_string(),
+            })
+        })
+        .collect();
+    (!lines.is_empty()).then(|| as_typed(&lines.join("\n")))
 }
 
 #[cfg(test)]
@@ -488,7 +522,9 @@ mod tests {
     };
 
     /// A card of questions exports as a list numbered in its ask, with
-    /// what became of each, without the agent's ids.
+    /// what became of each, without the agent's ids. The answers given in
+    /// the answer panel follow as the user's words, numbered as their
+    /// questions, as the transcript shows them.
     #[test]
     fn questions_export_numbered_with_their_states() {
         let questions: Vec<arko::questions::AgentQuestion> = [
@@ -499,23 +535,42 @@ mod tests {
             serde_json::json!({
                 "id": "q4", "question": "Push now?", "state": "dismissed", "number": 2
             }),
-            serde_json::json!({ "id": "q5", "question": "Which branch?", "state": "open" }),
+            serde_json::json!({
+                "id": "q5", "question": "Which branch?", "state": "answered", "answer": "main",
+                "number": 3
+            }),
+            serde_json::json!({ "id": "q6", "question": "Which branch?", "state": "open" }),
+            serde_json::json!({
+                "id": "q7", "question": "Rename it?", "state": "answered", "answer": "Yes"
+            }),
         ]
         .into_iter()
         .map(|json| serde_json::from_value(json).unwrap())
         .collect();
         assert_eq!(
-            super::questions(&questions[..2]),
-            "\n1. Tabs or spaces?\n\n   *Spaces*\n\n2. Push now?\n\n   *Dismissed*\n"
+            super::questions(&questions[..3]),
+            "\n1. Tabs or spaces?\n\n2. Push now?\n\n   *Dismissed*\n\n3. Which branch?\n"
         );
         assert_eq!(
-            super::questions(&questions[2..]),
+            super::questions(&questions[3..4]),
             "\nWhich branch?\n\n*Open*\n"
         );
-        let mut card = Item::new(Kind::Question, "Arko asked 2 questions");
-        card.questions = Some(questions);
+        // As typed, so the numbers stay the questions' own.
+        assert_eq!(
+            super::answers(&questions[..3]).as_deref(),
+            Some("1\\. Spaces\\\n3\\. main")
+        );
+        assert_eq!(super::answers(&questions[3..4]), None);
+        assert_eq!(super::answers(&questions[4..]).as_deref(), Some("Yes"));
+        let mut card = Item::new(Kind::Question, "Arko asked 3 questions");
+        card.questions = Some(questions[..3].to_vec());
         let text = markdown(&Header::default(), &[card]);
-        assert!(text.contains("1. Tabs or spaces?"), "{text}");
+        assert!(
+            text.ends_with(
+                "## Arko\n\n1. Tabs or spaces?\n\n2. Push now?\n\n   *Dismissed*\n\n3. Which branch?\n\n## You\n\n1\\. Spaces\\\n3\\. main\n"
+            ),
+            "{text}"
+        );
         assert!(!text.contains("q3"), "{text}");
     }
     use arko::remote::{CallStatus, Item, Kind, Level};

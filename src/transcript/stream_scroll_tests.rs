@@ -600,7 +600,7 @@ fn dragging_the_thumb_down_while_a_block_streams_moves_the_view_down() {
             scene.delta(&deltas[next]);
             next += 1;
             scene.between_frames();
-            y += 3.;
+            y = (y + 3.).min(grab.y + travel);
             scene.pointer(x, y, true);
             let thumb = scene.frames.last().unwrap().thumb;
             assert_eq!(

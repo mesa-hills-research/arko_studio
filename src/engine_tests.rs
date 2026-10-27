@@ -435,8 +435,8 @@ impl App {
 
 /// Questions that come while the message box is empty open the answer
 /// panel by itself. Its choices, "You decide" and "Other" reach the agent
-/// as one note, and the card in the transcript says what became of each
-/// question.
+/// as one note. The answers stay in a user bubble below the questions,
+/// including after the session resumes.
 #[gpui_kit::test]
 fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
     let mock = asking(
@@ -502,6 +502,28 @@ fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
             },
         ]
     );
+    let bubble_shows = |cx: &mut TestAppContext| {
+        let session = app.shown(cx).unwrap();
+        let card = cx.read(|cx| session.read(cx).feed().unwrap().questions()[0].item);
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(("question-answers", card)).is_some()
+                && (0..3).all(|n| {
+                    window.try_find(("answer", card * 8 + n)).is_some()
+                        && window.try_find(("question-outcome", card * 8 + n)).is_none()
+                })
+        })
+        .unwrap()
+    };
+    wait_until(cx, "the answer bubble", bubble_shows);
+    let id = cx.read(|cx| session.read(cx).id().cloned()).unwrap();
+    app.close_all(cx);
+    act(cx, app.window, |window, cx| {
+        let workspace = app.workspace.clone();
+        workspace.update(cx, |workspace, cx| workspace.open_session(id, window, cx));
+    });
+    app.wait_for_text(cx, "Thanks.");
+    wait_until(cx, "the resumed answer bubble", bubble_shows);
     app.close_all(cx);
 }
 

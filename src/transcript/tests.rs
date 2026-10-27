@@ -1513,7 +1513,7 @@ fn working_shows_while_the_agent_waits_on_the_model(cx: &mut TestAppContext) {
     crate::questions::ask(&feed, &[("q1", "Release or debug?")], true);
     settle(cx, window);
     assert_eq!(working_row(&view, cx), None);
-    crate::questions::answer(&feed, "q1", "Release.");
+    crate::questions::answer_in_message(&feed, "q1", "Release.");
     settle(cx, window);
     let answer = *ids_of(&feed, Kind::User).last().unwrap();
     assert!(
@@ -1587,7 +1587,7 @@ fn working_is_announced_once_for_a_turn(cx: &mut TestAppContext) {
     // An answer to a question starts the agent again, and that is said.
     crate::questions::ask(&feed, &[("q1", "Release or debug?")], true);
     settle(cx, window);
-    crate::questions::answer(&feed, "q1", "Release.");
+    crate::questions::answer_in_message(&feed, "q1", "Release.");
     settle(cx, window);
     let answer = *ids_of(&feed, Kind::User).last().unwrap();
     assert_eq!(working_row(&view, cx), Some(RowKey::Working(answer)));
@@ -4885,6 +4885,133 @@ fn a_question_card_is_a_line_until_its_questions_settle(cx: &mut TestAppContext)
     assert!(!shows(cx, 4), "still open");
     // A box now, its line inside the padding.
     assert!(line_x(cx) > bare + px(8.));
+    // The answer given in the answer panel is the user's bubble under the
+    // card, and the other outcomes stay in it.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("question-outcome", card * 8)).is_none());
+        assert!(window.try_find(("question-outcome", card * 8 + 1)).is_some());
+        assert!(window.try_find(("answer", card * 8)).is_some());
+        assert!(window.try_find(("answer", card * 8 + 1)).is_none());
+    })
+    .unwrap();
+}
+
+/// The answers given in the answer panel are a bubble of the user's under
+/// the card, at the column's right like the user's messages and tagged
+/// like a typed answer. Each carries its question's number when the ask
+/// numbered them, and an answer to a lone question has none.
+#[gpui_kit::test]
+fn answers_given_in_the_panel_are_a_bubble_under_the_card(cx: &mut TestAppContext) {
+    use arko::questions::QuestionState;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Tidy the parser.", Source::App, Delivery::Turn);
+    let card = crate::questions::ask(
+        &feed,
+        &[
+            ("q1", "Tabs or spaces?"),
+            ("q2", "Push now?"),
+            ("q3", "Which branch?"),
+        ],
+        false,
+    );
+    let lone = crate::questions::ask(&feed, &[("q4", "Rename the module?")], false);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    settle(cx, window);
+    let answered = |id: &str, answer: &str| {
+        feed.set_question_state(
+            id,
+            QuestionState::Answered {
+                answer: answer.into(),
+            },
+        )
+    };
+    answered("q1", "Spaces");
+    feed.set_question_state("q2", QuestionState::Dismissed);
+    answered("q3", "main, then a pull request against the release branch");
+    answered("q4", "Yes");
+    settle(cx, window);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let message = window.find(("user-message", ids_of(&feed, Kind::User)[0]));
+        let bubble = window.find(("question-answers", card)).bounds();
+        let record = window.find(("question", card * 8)).bounds();
+        // At the right edge of the column, as the user's message is, and
+        // under the card.
+        assert!(
+            (bubble.right() - message.bounds().right()).abs() < px(1.),
+            "{bubble:?}"
+        );
+        assert!(bubble.left() > record.left() + px(100.), "{bubble:?}");
+        assert!(bubble.top() > record.bottom());
+        // Numbered as their questions, past the one dismissed.
+        assert!(window.try_find(("answer-number", card * 8)).is_some());
+        assert!(window.try_find(("answer", card * 8 + 1)).is_none());
+        assert!(window.try_find(("answer-number", card * 8 + 2)).is_some());
+        // A lone question's answer has no number.
+        assert!(window.try_find(("answer", lone * 8)).is_some());
+        assert!(window.try_find(("answer-number", lone * 8)).is_none());
+        view.update(cx, |view, cx| view.focus_rows(window, cx));
+    })
+    .unwrap();
+    // Each card and its answers remain one keyboard stop.
+    for (key, expected) in [
+        ("up", RowKey::Question(card)),
+        ("up", RowKey::User(ids_of(&feed, Kind::User)[0])),
+        ("down", RowKey::Question(card)),
+        ("down", RowKey::Question(lone)),
+    ] {
+        cx.update_window(window, |_, window, cx| window.press(key, cx))
+            .unwrap();
+        settle(cx, window);
+        assert_eq!(cx.read(|cx| view.read(cx).cursor), Some(expected));
+    }
+}
+
+/// The answers given in the answer panel are found, and copied as
+/// selected, as the user's words are.
+#[gpui_kit::test]
+fn answers_given_in_the_panel_are_found_and_copied(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Tidy the parser.", Source::App, Delivery::Turn);
+    let card = crate::questions::ask(&feed, &[("q1", "Which branch?")], false);
+    feed.set_question_state(
+        "q1",
+        arko::questions::QuestionState::Answered {
+            answer: "The release branch".into(),
+        },
+    );
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    settle(cx, window);
+    view.update(cx, |view, cx| view.find("release", cx));
+    settle(cx, window);
+    assert_eq!(cx.read(|cx| view.read(cx).find_status().total), 1);
+    // The question's words come first, then the answer under them.
+    view.update(cx, |view, cx| view.find("branch", cx));
+    settle(cx, window);
+    let status = cx.read(|cx| view.read(cx).find_status());
+    assert_eq!(status.total, 2);
+    view.update(cx, |view, cx| view.find("", cx));
+    settle(cx, window);
+    cx.update_window(window, |_, window, cx| {
+        let text = window.find(("answer-text", card * 8)).bounds();
+        let middle = text.size.height / 2.;
+        window.drag(
+            text.origin + gpui_kit::point(px(1.), middle),
+            text.origin + gpui_kit::point(text.size.width - px(1.), middle),
+            cx,
+        );
+        window.press("secondary-c", cx);
+    })
+    .unwrap();
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert_eq!(copied, "The release branch");
 }
 
 /// The line of a card with questions open asks for the answer panel on
@@ -4910,7 +5037,7 @@ fn the_line_of_a_card_opens_the_answer_panel(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
     assert_eq!(*heard.borrow(), [TranscriptEvent::OpenQuestions(card)]);
-    crate::questions::answer(&feed, "q1", "Spaces");
+    crate::questions::answer_in_message(&feed, "q1", "Spaces");
     settle(cx, window);
     heard.borrow_mut().clear();
     cx.update_window(window, |_, window, cx| {

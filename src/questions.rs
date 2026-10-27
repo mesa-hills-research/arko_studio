@@ -89,6 +89,15 @@ pub fn outcome(state: &QuestionState) -> Option<String> {
     })
 }
 
+/// The user's answer to a question given in the answer panel, which the
+/// transcript shows as the user's words, under the question's card.
+pub fn answer(state: &QuestionState) -> Option<&str> {
+    match state {
+        QuestionState::Answered { answer } => Some(answer.trim()),
+        _ => None,
+    }
+}
+
 /// A question's words without its number: an approval says what it
 /// approves.
 pub fn text(question: &AgentQuestion) -> String {
@@ -153,15 +162,25 @@ impl EventEmitter<AnswerPanelEvent> for AnswerPanel {}
 /// "Other" field and "You decide", and Send. An approval of a worker
 /// profile shows the profile, Save and Don't save, an Other field for
 /// changes, and its instructions.
-#[derive(Default)]
 pub struct AnswerPanel {
     questions: Vec<AgentQuestion>,
     drafts: HashMap<String, Draft>,
     /// The questions' list, which scrolls to a card's questions.
     scroll: ScrollHandle,
+    /// Where the keyboard goes when a click beside a field takes it out of
+    /// the field, so that the panel's keys still work.
+    focus: FocusHandle,
 }
 
 impl AnswerPanel {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        Self {
+            questions: Vec::new(),
+            drafts: HashMap::new(),
+            scroll: ScrollHandle::default(),
+            focus: cx.focus_handle(),
+        }
+    }
     /// Shows `questions`, keeping what was filled in for those it showed.
     pub fn set_questions(
         &mut self,
@@ -314,7 +333,16 @@ impl AnswerPanel {
 
     /// Whether the keyboard is in the panel.
     pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
-        self.focused_question(window, cx).is_some()
+        self.focus.contains_focused(window, cx) || self.focused_question(window, cx).is_some()
+    }
+
+    /// A click on a choice takes the keyboard out of the field it is in,
+    /// as a click on the panel's empty space does. A key that pressed it
+    /// leaves the keyboard on it.
+    fn leave_field(&self, click: &ClickEvent, window: &mut Window, cx: &mut App) {
+        if !click.is_keyboard() && self.focused_question(window, cx).is_some() {
+            window.focus(&self.focus, cx);
+        }
     }
 
     /// The question whose field has the keyboard, by its id.
@@ -376,6 +404,10 @@ impl AnswerPanel {
         let id: SharedString = question.id.clone().into();
         let approval = question.approval.as_ref();
         let changes = !draft.other.read(cx).value().trim().is_empty();
+        // A chosen chip is outlined in the text's color, which stands out
+        // from the other chips' outlines in every theme, as the kit's own
+        // fill for a chosen outline button is faint in some.
+        let chosen_outline = theme.foreground;
         let chips = question.choices.iter().enumerate().map(|(n, choice)| {
             let chosen = draft.choices.contains(choice);
             let (id, choice) = (id.clone(), choice.clone());
@@ -406,7 +438,11 @@ impl AnswerPanel {
                 .outline()
                 .selected(chosen)
                 .toggled(chosen)
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle_choice(&id, &choice, cx)))
+                .when(chosen, |this| this.border_color(chosen_outline))
+                .on_click(cx.listener(move |this, click, window, cx| {
+                    this.leave_field(click, window, cx);
+                    this.toggle_choice(&id, &choice, cx)
+                }))
                 .into_any_element()
         });
         let you_decide = approval.is_none().then(|| {
@@ -421,6 +457,7 @@ impl AnswerPanel {
                 .outline()
                 .selected(chosen)
                 .toggled(chosen)
+                .when(chosen, |this| this.border_color(chosen_outline))
                 .accessibility_label(spoken)
                 .child(h_flex().gap_1().child("You decide").when_some(
                     question.default.clone(),
@@ -432,7 +469,10 @@ impl AnswerPanel {
                         )
                     },
                 ))
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle_you_decide(&id, cx)))
+                .on_click(cx.listener(move |this, click, window, cx| {
+                    this.leave_field(click, window, cx);
+                    this.toggle_you_decide(&id, cx)
+                }))
         });
         // Another ask's questions start below a line. One whose card isn't
         // there yet (item 0) stands on its own.
@@ -583,6 +623,9 @@ impl Render for AnswerPanel {
             .id("answer-panel")
             .test_support()
             .key_context(PANEL_CONTEXT)
+            // A click on its empty space or its words takes the keyboard
+            // out of a field to the panel.
+            .track_focus(&self.focus)
             .occlude()
             .on_action(
                 cx.listener(|_, _: &AnswerInChat, _, cx| cx.emit(AnswerPanelEvent::AnswerInChat)),
@@ -697,16 +740,11 @@ pub(crate) fn ask(feed: &arko::remote::Feed, questions: &[(&str, &str)], waits: 
     feed.ask_questions(&asked, waits)
 }
 
-/// The user answers the question `id` with `text` in the answer panel, as
-/// the feed shows it (tests).
+/// The user answers the question `id`, which the agent waits for, with
+/// `text` typed in the message box, as the feed shows it (tests).
 #[cfg(test)]
-pub(crate) fn answer(feed: &arko::remote::Feed, id: &str, text: &str) {
-    feed.set_question_state(
-        id,
-        QuestionState::Answered {
-            answer: text.to_string(),
-        },
-    );
+pub(crate) fn answer_in_message(feed: &arko::remote::Feed, id: &str, text: &str) {
+    feed.set_question_state(id, QuestionState::AnsweredInMessage);
     feed.user(
         text,
         arko::remote::Source::App,
