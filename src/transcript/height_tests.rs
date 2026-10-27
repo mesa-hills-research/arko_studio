@@ -93,10 +93,15 @@ pub(super) fn every_kind(feed: &Feed) {
     feed.output("output line 1\noutput line 2");
     crate::questions::ask(
         feed,
-        &[("q1", &words.repeat(2)), ("q2", "Tabs or spaces?")],
+        &[
+            ("q1", &words.repeat(2)),
+            ("q2", "Tabs or spaces?"),
+            ("q3", "Push now?"),
+        ],
         false,
     );
-    // Settled, so the record shows them: a long answer wraps too.
+    // Settled, so the record shows them: a long answer wraps too, in the
+    // bubble under the card.
     feed.set_question_state(
         "q1",
         arko::questions::QuestionState::Answered {
@@ -107,6 +112,15 @@ pub(super) fn every_kind(feed: &Feed) {
         "q2",
         arko::questions::QuestionState::Answered {
             answer: "Spaces".into(),
+        },
+    );
+    feed.set_question_state("q3", arko::questions::QuestionState::Dismissed);
+    // A lone question, its answer unnumbered.
+    crate::questions::ask(feed, &[("q4", "Rename the module?")], false);
+    feed.set_question_state(
+        "q4",
+        arko::questions::QuestionState::Answered {
+            answer: "Yes".into(),
         },
     );
     feed.user("A note", Source::App, Delivery::Note);

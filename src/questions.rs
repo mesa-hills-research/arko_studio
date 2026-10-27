@@ -89,6 +89,15 @@ pub fn outcome(state: &QuestionState) -> Option<String> {
     })
 }
 
+/// The user's answer to a question given in the answer panel, which the
+/// transcript shows as the user's words, under the question's card.
+pub fn answer(state: &QuestionState) -> Option<&str> {
+    match state {
+        QuestionState::Answered { answer } => Some(answer.trim()),
+        _ => None,
+    }
+}
+
 /// A question's words without its number: an approval says what it
 /// approves.
 pub fn text(question: &AgentQuestion) -> String {
@@ -697,16 +706,11 @@ pub(crate) fn ask(feed: &arko::remote::Feed, questions: &[(&str, &str)], waits: 
     feed.ask_questions(&asked, waits)
 }
 
-/// The user answers the question `id` with `text` in the answer panel, as
-/// the feed shows it (tests).
+/// The user answers the question `id`, which the agent waits for, with
+/// `text` typed in the message box, as the feed shows it (tests).
 #[cfg(test)]
-pub(crate) fn answer(feed: &arko::remote::Feed, id: &str, text: &str) {
-    feed.set_question_state(
-        id,
-        QuestionState::Answered {
-            answer: text.to_string(),
-        },
-    );
+pub(crate) fn answer_in_message(feed: &arko::remote::Feed, id: &str, text: &str) {
+    feed.set_question_state(id, QuestionState::AnsweredInMessage);
     feed.user(
         text,
         arko::remote::Source::App,

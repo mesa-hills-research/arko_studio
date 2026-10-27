@@ -1168,22 +1168,28 @@ impl TranscriptView {
             _ => return,
         }
         let frame = self.renders;
-        // A card of questions has a run for each question's text.
-        let questions = match key {
+        // A card of questions has a run for each question's text, and one
+        // for each answer given in the answer panel.
+        let questions: Vec<Place> = match key {
             RowKey::Question(id) => self
                 .model
                 .entry(id)
                 .and_then(|entry| entry.item.questions.as_ref())
-                .map_or(0, Vec::len),
-            _ => 0,
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .flat_map(|(n, question)| {
+                    let answered = crate::questions::answer(&question.state).is_some();
+                    [Some(Place::Question(n)), answered.then_some(Place::Answer(n))]
+                })
+                .flatten()
+                .collect(),
+            _ => Vec::new(),
         };
         let Some(ui) = self.ui.get_mut(&key.entry()) else {
             return;
         };
-        let places = places
-            .into_iter()
-            .flatten()
-            .chain((0..questions).map(Place::Question));
+        let places = places.into_iter().flatten().chain(questions);
         for place in places {
             let run = ui.runs.entry(place).or_insert_with(|| {
                 self.runs_made += 1;
@@ -1953,8 +1959,10 @@ impl TranscriptView {
         let part = match place {
             Place::Parameters => 1,
             Place::Output => 2,
-            // A card's questions, in order (an agent asks a few at a time).
-            Place::Question(n) => (n as u64).min(PARTS - 1),
+            // A card's questions, in order (an agent asks a few at a time),
+            // then their answers in the bubble under it.
+            Place::Question(n) => (n as u64).min(PARTS / 2 - 1),
+            Place::Answer(n) => (PARTS / 2 + n as u64).min(PARTS - 1),
             _ => 0,
         };
         self.drawing_row.get() as u64 * PARTS + part

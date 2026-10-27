@@ -48,6 +48,9 @@ pub(crate) enum Place {
     Unready,
     /// Question `n` of a card of the agent's questions.
     Question(usize),
+    /// The answer to question `n` of a card, given in the answer panel, in
+    /// the bubble under the card.
+    Answer(usize),
 }
 
 /// One match.
@@ -691,15 +694,20 @@ impl TranscriptView {
                     .unwrap_or_else(|| item.text.clone());
                 vec![(Place::Text, title)]
             }
-            // The record's questions: the open ones are the answer panel's.
-            Kind::Question if super::model::has_questions(item) => item
-                .questions
-                .iter()
-                .flatten()
-                .enumerate()
-                .filter(|(_, question)| !question.state.is_open())
-                .map(|(n, question)| (Place::Question(n), crate::questions::text(question)))
-                .collect(),
+            // The record's questions, then the answers given in the answer
+            // panel, in the bubble under it. The open ones are the panel's.
+            Kind::Question if super::model::has_questions(item) => {
+                let questions = item.questions.iter().flatten().enumerate();
+                let answers = questions.clone().filter_map(|(n, question)| {
+                    let answer = crate::questions::answer(&question.state)?;
+                    Some((Place::Answer(n), answer.to_string()))
+                });
+                questions
+                    .filter(|(_, question)| !question.state.is_open())
+                    .map(|(n, question)| (Place::Question(n), crate::questions::text(question)))
+                    .chain(answers)
+                    .collect()
+            }
             Kind::Text | Kind::Reply | Kind::Message | Kind::Question | Kind::Thinking => {
                 let doc = self
                     .ui

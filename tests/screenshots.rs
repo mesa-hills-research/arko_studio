@@ -3566,7 +3566,8 @@ fn questions_replying_dark() {
 
 /// A card of the agent's questions in the transcript: its line, and the
 /// record of the questions settled, one in each state. The open one is the
-/// answer panel's.
+/// answer panel's. The answers given in the panel are a bubble of the
+/// user's under the card, and an answer typed in the message box follows.
 fn question_card_window(mode: ThemeMode) -> Screenshot {
     use arko::questions::{AskedQuestion, QuestionState};
     use arko::remote::{Delivery, Feed, Source};
@@ -3590,6 +3591,7 @@ fn question_card_window(mode: ThemeMode) -> Screenshot {
         "Which branch should the change go to?",
         "Keep the old API for one more release?",
         "Rename the module to parse?",
+        "Squash the commits before the merge?",
     ]
     .iter()
     .enumerate()
@@ -3616,8 +3618,15 @@ fn question_card_window(mode: ThemeMode) -> Screenshot {
         },
     );
     feed.set_question_state("q4", QuestionState::Dismissed);
+    feed.set_question_state(
+        "q5",
+        QuestionState::Answered {
+            answer: "Yes, and keep a re-export under the old name".into(),
+        },
+    );
+    feed.user("Not yet, after the review.", Source::App, Delivery::Answer);
     let window = app
-        .open_window_with(size(px(900.), px(400.)), 1., |options, cx| {
+        .open_window_with(size(px(900.), px(640.)), 1., |options, cx| {
             gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| TranscriptView::new(&feed, AgentFilter::Main, window, cx))
             })
