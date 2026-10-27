@@ -1033,7 +1033,7 @@ impl SessionView {
         let panel = match self.panel() {
             Some(panel) => panel.clone(),
             None => {
-                let panel = cx.new(|_| AnswerPanel::default());
+                let panel = cx.new(AnswerPanel::new);
                 self.panels.push(KeptPanel {
                     session: session.downgrade(),
                     view: panel.clone(),

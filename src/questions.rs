@@ -162,15 +162,25 @@ impl EventEmitter<AnswerPanelEvent> for AnswerPanel {}
 /// "Other" field and "You decide", and Send. An approval of a worker
 /// profile shows the profile, Save and Don't save, an Other field for
 /// changes, and its instructions.
-#[derive(Default)]
 pub struct AnswerPanel {
     questions: Vec<AgentQuestion>,
     drafts: HashMap<String, Draft>,
     /// The questions' list, which scrolls to a card's questions.
     scroll: ScrollHandle,
+    /// Where the keyboard goes when a click beside a field takes it out of
+    /// the field, so that the panel's keys still work.
+    focus: FocusHandle,
 }
 
 impl AnswerPanel {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        Self {
+            questions: Vec::new(),
+            drafts: HashMap::new(),
+            scroll: ScrollHandle::default(),
+            focus: cx.focus_handle(),
+        }
+    }
     /// Shows `questions`, keeping what was filled in for those it showed.
     pub fn set_questions(
         &mut self,
@@ -323,7 +333,16 @@ impl AnswerPanel {
 
     /// Whether the keyboard is in the panel.
     pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
-        self.focused_question(window, cx).is_some()
+        self.focus.contains_focused(window, cx) || self.focused_question(window, cx).is_some()
+    }
+
+    /// A click on a choice takes the keyboard out of the field it is in,
+    /// as a click on the panel's empty space does. A key that pressed it
+    /// leaves the keyboard on it.
+    fn leave_field(&self, click: &ClickEvent, window: &mut Window, cx: &mut App) {
+        if !click.is_keyboard() && self.focused_question(window, cx).is_some() {
+            window.focus(&self.focus, cx);
+        }
     }
 
     /// The question whose field has the keyboard, by its id.
@@ -415,7 +434,10 @@ impl AnswerPanel {
                 .outline()
                 .selected(chosen)
                 .toggled(chosen)
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle_choice(&id, &choice, cx)))
+                .on_click(cx.listener(move |this, click, window, cx| {
+                    this.leave_field(click, window, cx);
+                    this.toggle_choice(&id, &choice, cx)
+                }))
                 .into_any_element()
         });
         let you_decide = approval.is_none().then(|| {
@@ -441,7 +463,10 @@ impl AnswerPanel {
                         )
                     },
                 ))
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle_you_decide(&id, cx)))
+                .on_click(cx.listener(move |this, click, window, cx| {
+                    this.leave_field(click, window, cx);
+                    this.toggle_you_decide(&id, cx)
+                }))
         });
         // Another ask's questions start below a line. One whose card isn't
         // there yet (item 0) stands on its own.
@@ -592,6 +617,9 @@ impl Render for AnswerPanel {
             .id("answer-panel")
             .test_support()
             .key_context(PANEL_CONTEXT)
+            // A click on its empty space or its words takes the keyboard
+            // out of a field to the panel.
+            .track_focus(&self.focus)
             .occlude()
             .on_action(
                 cx.listener(|_, _: &AnswerInChat, _, cx| cx.emit(AnswerPanelEvent::AnswerInChat)),

@@ -444,6 +444,69 @@ fn alt_q_opens_and_focuses_the_panel(cx: &mut TestAppContext) {
     assert!(app.panel_focused(cx));
 }
 
+/// A click beside a field takes the keyboard out of it: on the panel's
+/// empty space, on a question's words, or on a choice. The keyboard stays
+/// in the panel, whose keys still work, so Esc answers in chat.
+#[gpui_kit::test]
+fn a_click_beside_a_field_takes_the_keyboard_out_of_it(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, three());
+    let left = |app: &Window, cx: &mut TestAppContext| {
+        app.focused_question(cx).is_none() && app.panel_focused(cx)
+    };
+    app.fill(cx, 0, "Both");
+    assert_eq!(app.focused_question(cx).as_deref(), Some("q1"));
+    app.click(cx, "answer-panel-title");
+    assert!(left(&app, cx));
+    // The words of the first question, at their start.
+    app.fill(cx, 0, "");
+    act(cx, app.window, |window, cx| {
+        window.click_at(
+            part("answer-question", "q1", 0),
+            gpui_kit::point(gpui_kit::px(24.), gpui_kit::px(6.)),
+            cx,
+        )
+    });
+    assert!(left(&app, cx));
+    app.fill(cx, 2, "");
+    app.click(cx, part("answer-choice", "q1", 1));
+    assert!(left(&app, cx));
+    app.fill(cx, 2, "");
+    app.click(cx, part("answer-you-decide", "q2", 0));
+    assert!(left(&app, cx));
+    // What was typed and chosen stays.
+    let panel = app.panel(cx);
+    let answers = cx.read(|cx| panel.read(cx).answers(cx));
+    assert_eq!(answers.answers[0].answer.text.as_deref(), Some("Both"));
+    assert_eq!(answers.answers[0].answer.choices, ["Spaces"]);
+    assert!(answers.answers[1].answer.you_decide);
+    app.press(cx, "escape");
+    assert!(!app.shows(cx, "answer-panel"));
+    assert!(app.shows(cx, "questions-replying"));
+    assert!(app.composer_focused(cx));
+}
+
+/// A choice pressed with a key keeps the keyboard on it.
+#[gpui_kit::test]
+fn a_choice_pressed_with_a_key_keeps_the_keyboard(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, three());
+    app.fill(cx, 0, "");
+    // "You decide" comes before the field.
+    act(cx, app.window, |window, cx| window.focus_prev(cx));
+    app.press(cx, "space");
+    let panel = app.panel(cx);
+    let answers = cx.read(|cx| panel.read(cx).answers(cx));
+    assert!(answers.answers[0].answer.you_decide);
+    let focused = cx
+        .update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(part("answer-you-decide", "q1", 0)).focused()
+        })
+        .unwrap();
+    assert_eq!(focused, Some(true));
+}
+
 /// The panel follows the questions: one answered elsewhere leaves it, and
 /// it closes when none is open.
 #[gpui_kit::test]
