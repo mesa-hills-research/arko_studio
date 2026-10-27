@@ -3450,11 +3450,23 @@ fn asking_window(
     typed: Option<&str>,
     attached: bool,
 ) -> Screenshot {
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    asking_window_with(settings, questions, typed, attached, |_, _| {})
+}
+
+/// A sample session asking `questions` with `settings`, as
+/// [`questions_window`] says, once `change` has acted on the window.
+fn asking_window_with(
+    mut settings: Prefs,
+    questions: Vec<arko::questions::AgentQuestion>,
+    typed: Option<&str>,
+    attached: bool,
+    change: impl FnOnce(&mut ScreenshotApp, gpui_kit::AnyWindowHandle),
+) -> Screenshot {
     use gpui_kit::test::TestWindowExt as _;
 
     let mut app = ScreenshotApp::with_assets(Assets).unwrap();
-    let mut settings = Prefs::default();
-    settings.appearance.theme_mode = mode;
     settings.appearance.motion = Motion::Off;
     let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
     let startup = Startup::for_tests(backend)
@@ -3497,7 +3509,51 @@ fn asking_window(
     })
     .unwrap();
     app.run_until_parked();
+    change(&mut app, window);
+    app.run_until_parked();
     app.capture(window).unwrap()
+}
+
+/// The answer panel with choices chosen: Spaces, two of the tests, and
+/// "You decide" for the branch. Each chosen chip is outlined in the text's
+/// color.
+fn questions_chosen_window(mode: ThemeMode) -> Screenshot {
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    asking_window_with(settings, questions_sample(), None, false, choose_sample)
+}
+
+/// Chooses Spaces, Unit and Screenshots, and "You decide" for the branch
+/// in the answer panel of `window`.
+fn choose_sample(app: &mut ScreenshotApp, window: gpui_kit::AnyWindowHandle) {
+    use gpui_kit::test::TestWindowExt as _;
+
+    let part = |name: &str, id: &str, n: usize| -> gpui_kit::ElementId {
+        (gpui_kit::SharedString::from(format!("{name}-{id}")), n).into()
+    };
+    app.update_window(window, |_, window, cx| {
+        window.click(part("answer-choice", "q1", 1), cx);
+        window.click(part("answer-choice", "q2", 0), cx);
+        window.click(part("answer-choice", "q2", 2), cx);
+        window.click(part("answer-you-decide", "q3", 0), cx);
+    })
+    .unwrap();
+}
+
+#[test]
+fn questions_chosen_light() {
+    goldens().assert(
+        "questions-chosen-light",
+        &questions_chosen_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn questions_chosen_dark() {
+    goldens().assert(
+        "questions-chosen-dark",
+        &questions_chosen_window(ThemeMode::Dark),
+    );
 }
 
 #[test]

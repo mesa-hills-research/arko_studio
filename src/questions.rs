@@ -404,6 +404,10 @@ impl AnswerPanel {
         let id: SharedString = question.id.clone().into();
         let approval = question.approval.as_ref();
         let changes = !draft.other.read(cx).value().trim().is_empty();
+        // A chosen chip is outlined in the text's color, which stands out
+        // from the other chips' outlines in every theme, as the kit's own
+        // fill for a chosen outline button is faint in some.
+        let chosen_outline = theme.foreground;
         let chips = question.choices.iter().enumerate().map(|(n, choice)| {
             let chosen = draft.choices.contains(choice);
             let (id, choice) = (id.clone(), choice.clone());
@@ -434,6 +438,7 @@ impl AnswerPanel {
                 .outline()
                 .selected(chosen)
                 .toggled(chosen)
+                .when(chosen, |this| this.border_color(chosen_outline))
                 .on_click(cx.listener(move |this, click, window, cx| {
                     this.leave_field(click, window, cx);
                     this.toggle_choice(&id, &choice, cx)
@@ -452,6 +457,7 @@ impl AnswerPanel {
                 .outline()
                 .selected(chosen)
                 .toggled(chosen)
+                .when(chosen, |this| this.border_color(chosen_outline))
                 .accessibility_label(spoken)
                 .child(h_flex().gap_1().child("You decide").when_some(
                     question.default.clone(),
