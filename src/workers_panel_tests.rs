@@ -647,6 +647,67 @@ fn stop_all_workers_is_in_the_headers_menu(cx: &mut TestAppContext) {
     );
 }
 
+/// The More button's tooltip would cover Stop all workers. While the menu is
+/// open, the pointer leaving the button and coming back shows no tooltip,
+/// and once the menu closes the tooltip shows again.
+#[gpui_kit::test]
+fn the_headers_more_button_shows_no_tooltip_over_its_open_menu(cx: &mut TestAppContext) {
+    let panel = open(cx);
+    let window = panel.window;
+    let tooltip = |cx: &mut TestAppContext| {
+        gpui_kit::VisualTestContext::from_window(window, cx)
+            .debug_bounds("tooltip")
+            .is_some()
+    };
+    let menu_open = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, _| {
+            window.try_find("popup-menu").is_some()
+        })
+        .unwrap()
+    };
+    // Longer than a tooltip's show delay and its grace period.
+    let rest = |cx: &mut TestAppContext| {
+        for _ in 0..10 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+            cx.run_until_parked();
+            cx.update_window(window, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+        }
+    };
+    let rest_on_button = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| window.hover("workers-menu", cx))
+            .unwrap();
+        rest(cx);
+    };
+    // Down in the empty part of the panel.
+    let rest_away = |cx: &mut TestAppContext| {
+        gpui_kit::VisualTestContext::from_window(window, cx).simulate_mouse_move(
+            gpui_kit::point(px(20.), px(680.)),
+            None,
+            gpui_kit::Modifiers::default(),
+        );
+        rest(cx);
+    };
+
+    rest_on_button(cx);
+    assert!(tooltip(cx), "the button shows its tooltip");
+
+    panel.click(cx, "workers-menu");
+    assert!(menu_open(cx));
+    assert!(!tooltip(cx), "opening the menu hides the tooltip");
+    rest_away(cx);
+    rest_on_button(cx);
+    assert!(menu_open(cx), "the menu stays open");
+    assert!(!tooltip(cx), "and the button shows no tooltip over it");
+
+    panel.press(cx, "escape");
+    assert!(!menu_open(cx));
+    rest_away(cx);
+    rest_on_button(cx);
+    assert!(tooltip(cx), "with the menu closed, the tooltip shows again");
+}
+
 /// On the real engine: while the composer writes to a worker, what is sent
 /// goes as `/message r1 …`, and Esc goes back to the main agent.
 #[gpui_kit::test]
