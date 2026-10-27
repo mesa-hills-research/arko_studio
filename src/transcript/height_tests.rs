@@ -3,13 +3,71 @@
 
 use arko::images::ImageRef;
 use arko::remote::{Delivery, Feed, Kind, Level, Source, WorkerChange};
-use gpui_kit::{AnyWindowHandle, Entity, TestAppContext, px};
+use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, px};
 
 use super::height::BlockFacts;
 use super::model::RowKey;
 use super::tests::{call, item_ids, load_all, open, result, say, settle, start, think};
 use super::{AgentFilter, TranscriptView};
 use crate::prefs;
+
+#[gpui_kit::test]
+fn height_estimates_wait_for_background_font_measurements(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("A message", Source::App, Delivery::Turn);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 500.);
+    let rows = cx.read(|cx| view.read(cx).rows.clone());
+    cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.metrics = None;
+            view.measure_heights(window, cx);
+            assert!(view.metrics.is_none());
+            assert!(view.measuring.is_some());
+            // A second frame shares the pending measurement.
+            view.measure_heights(window, cx);
+            assert!(view.metrics.is_none());
+            assert_eq!(view.rows, rows);
+        });
+    })
+    .unwrap();
+    settle(cx, window);
+    cx.read(|cx| {
+        let view = view.read(cx);
+        assert!(view.metrics.is_some());
+        assert!(view.measuring.is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn a_font_change_replaces_pending_height_measurements(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 500.);
+    cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.metrics = None;
+            view.measure_heights(window, cx);
+            let before = view.measuring.as_ref().unwrap().0.clone();
+            window.set_rem_size(px(20.));
+            view.measure_heights(window, cx);
+            assert_ne!(view.measuring.as_ref().unwrap().0, before);
+        });
+    })
+    .unwrap();
+    settle(cx, window);
+    cx.update_window(window, |_, window, cx| {
+        let view = view.read(cx);
+        assert!(
+            view.metrics
+                .as_ref()
+                .unwrap()
+                .matches(&super::height::Key::current(window, cx))
+        );
+        assert!(view.measuring.is_none());
+    })
+    .unwrap();
+}
 
 /// An image the feed only names. Its tile has the same size either way.
 fn image(id: u64) -> ImageRef {

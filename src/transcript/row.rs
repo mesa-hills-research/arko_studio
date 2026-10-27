@@ -321,13 +321,8 @@ pub(super) fn estimate(
     let Some(row) = this.rows.get(ix).copied() else {
         return px(0.);
     };
-    let measured;
-    let metrics = match &this.metrics {
-        Some(metrics) => metrics,
-        None => {
-            measured = Metrics::current(None, window, cx);
-            &measured
-        }
+    let Some(metrics) = &this.metrics else {
+        return window.rem_size() * 2.;
     };
     px(this.row_height(row, f32::from(width), metrics, cx))
 }
