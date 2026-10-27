@@ -3552,6 +3552,7 @@ impl SessionView {
             .border_color(theme.input)
             .rounded(theme.radius_lg)
             .bg(theme.background)
+            .shadow_sm()
             .children(panel)
             .child(
                 h_flex()

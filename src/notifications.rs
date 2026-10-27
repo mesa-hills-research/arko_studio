@@ -312,6 +312,29 @@ pub fn mark_all_read(cx: &mut App) {
     schedule_save(cx);
 }
 
+/// Forgets the notifications and news of one session.
+pub fn clear_session(session: &SessionId, cx: &mut App) {
+    let Some(history) = cx.try_global::<NotificationHistory>() else {
+        return;
+    };
+    if !history.news.contains_key(session.as_str())
+        && !history
+            .entries
+            .iter()
+            .any(|entry| entry.session.as_deref() == Some(session.as_str()))
+    {
+        return;
+    }
+    cx.update_global::<NotificationHistory, _>(|history, _| {
+        history
+            .entries
+            .retain(|entry| entry.session.as_deref() != Some(session.as_str()));
+        history.news.remove(session.as_str());
+        history.changed = true;
+    });
+    schedule_save(cx);
+}
+
 /// Forgets every notification, and every session's news.
 pub fn clear(cx: &mut App) {
     let Some(history) = cx.try_global::<NotificationHistory>() else {
@@ -453,6 +476,31 @@ mod tests {
         // A new one gets a number no earlier one had.
         let id = cx.update(|cx| record(None, "New session", "Arko asks you something.", false, cx));
         assert_eq!(id, 4);
+    }
+
+    #[gpui_kit::test]
+    fn clearing_one_session_keeps_other_notifications_and_news(cx: &mut TestAppContext) {
+        let folder = tempfile::tempdir().unwrap();
+        let path = file(folder.path());
+        let (one, two) = (SessionId("s1".into()), SessionId("s2".into()));
+        cx.update(|cx| {
+            init(Saved::default(), Some(path.clone()), cx);
+            record(Some(&one), "One", "Finished", false, cx);
+            record(Some(&two), "Two", "Finished", false, cx);
+            record(None, "New session", "Finished", false, cx);
+            mark_news(&one, cx);
+            mark_news(&two, cx);
+            clear_session(&one, cx);
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(SAVE_DELAY);
+        cx.run_until_parked();
+        let saved = load(&path);
+        assert_eq!(saved.entries.len(), 2);
+        assert_eq!(saved.entries[0].session.as_deref(), Some("s2"));
+        assert_eq!(saved.entries[1].session, None);
+        assert_eq!(saved.news.keys().collect::<Vec<_>>(), ["s2"]);
+        assert_eq!(cx.read(unread), 2);
     }
 
     #[gpui_kit::test]

@@ -51,6 +51,8 @@ actions!(
 /// What the sidebar asks of the window.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SidebarEvent {
+    /// Start an agent session in this folder.
+    NewSession(PathBuf),
     Open(SessionId),
     OpenConversation(SessionId, u32),
     OpenInNewWindow(SessionId),
@@ -905,15 +907,52 @@ impl Sidebar {
                                 this.child(news_dot(("group-news", index), theme.info))
                             }),
                     )
-                    .when_some(path, |this, path| {
+                    .when_some(path.clone(), |this, path| {
                         let path = SharedString::from(path.display().to_string());
                         this.tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
                     })
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, _, window, cx| {
+                            this.cursor = this.rows.get(index).map(Row::key);
+                            this.focus_handle.focus(window, cx);
+                            cx.notify();
+                        }),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.cursor = this.rows.get(index).map(Row::key);
                         this.open_row(index, cx);
                     }))
-                    .into_any_element()
+                    .map(|this| {
+                        let Some(folder) = path else {
+                            return this.into_any_element();
+                        };
+                        let sidebar = cx.entity().downgrade();
+                        let focus = self.focus_handle.clone();
+                        this.context_menu(move |menu, _, _| {
+                            let new_folder = folder.clone();
+                            let open_folder = folder.clone();
+                            let sidebar = sidebar.clone();
+                            menu.action_context(focus.clone())
+                                .item(PopupMenuItem::new("New Session").on_click(
+                                    move |_, _, cx| {
+                                        sidebar
+                                            .update(cx, |_, cx| {
+                                                cx.emit(SidebarEvent::NewSession(
+                                                    new_folder.clone(),
+                                                ))
+                                            })
+                                            .ok();
+                                    },
+                                ))
+                                .item(PopupMenuItem::new("Open Folder").on_click(
+                                    move |_, _, cx| {
+                                        cx.open_with_system(&open_folder);
+                                    },
+                                ))
+                        })
+                        .into_any_element()
+                    })
             }
             Row::Session {
                 id,

@@ -2164,11 +2164,13 @@ impl TranscriptView {
         div()
             .relative()
             .w_full()
-            .px_2()
             .text_xs()
             .text_color(theme.muted_foreground)
+            // At the column's edge, where the reply's text starts.
             .child(
                 div()
+                    .id(("turn-text", id))
+                    .test_support()
                     .truncate()
                     .when(regenerate.is_some(), |this| this.pr(rems(REGENERATE_ROOM)))
                     .child(self.marked_plain(id, Place::Text, item.text.clone(), cx)),

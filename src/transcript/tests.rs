@@ -4495,6 +4495,35 @@ fn column_right(width: f32, rem: Pixels) -> Pixels {
     px((width + column) / 2.)
 }
 
+/// The left edge of the reading column's text, as [`column_right`] has it.
+fn column_left(width: f32, rem: Pixels) -> Pixels {
+    let rem = f32::from(rem);
+    let column = width.min(46. * rem) - 2. * rem;
+    px((width - column) / 2.)
+}
+
+/// The line after a turn (its time and cost) starts at the column's edge,
+/// where the reply's text does, also with Regenerate at its right.
+#[gpui_kit::test]
+fn the_line_after_a_turn_starts_where_the_reply_does(cx: &mut TestAppContext) {
+    start(cx);
+    for (replied, changeable) in [(true, false), (false, true)] {
+        let feed = ended_turn(replied, changeable);
+        let footer = ids_of(&feed, Kind::Turn)[0];
+        let (window, _) = open(cx, &feed, AgentFilter::Main, 600.);
+        cx.update_window(window, |_, window, _| {
+            let rem = window.rem_size();
+            let text = window.find(("turn-text", footer)).bounds();
+            assert_eq!(text.left(), column_left(800., rem), "{replied}");
+            if changeable {
+                let regenerate = window.find(("regenerate", footer)).bounds();
+                assert_eq!(regenerate.right(), column_right(800., rem));
+            }
+        })
+        .unwrap();
+    }
+}
+
 /// Regenerate sits alone at the right end of the latest reply's actions,
 /// away from Copy and the menu, in a wide window and in a narrow one. The message it sends again offers it no longer.
 #[gpui_kit::test]
