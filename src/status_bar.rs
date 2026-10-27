@@ -493,7 +493,7 @@ impl StatusBar {
 
     fn render_plan(&self, reading: &Reading, now: i64, cx: &App) -> Option<AnyElement> {
         let (_, window) = figures::plan_alert(&reading.plans)?;
-        let tooltip = figures::plans_tooltip(&reading.plans, now);
+        let tooltip = figures::plans_tooltip(&reading.plans, now, &figures::Times::of(cx));
         Some(
             div()
                 .id("status-plan")
@@ -810,7 +810,11 @@ impl RenderOnce for CostDetails {
                             .text_xs()
                             .text_color(muted)
                             .whitespace_normal()
-                            .child(figures::plans_tooltip(&report.plans, figures::now_ms()))
+                            .child(figures::plans_tooltip(
+                                &report.plans,
+                                figures::now_ms(),
+                                &figures::Times::of(cx),
+                            ))
                             .into_any_element(),
                     );
                 }

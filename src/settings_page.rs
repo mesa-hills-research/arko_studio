@@ -19,7 +19,7 @@ use gpui_kit::component::{
 use gpui_kit::*;
 use serde::Serialize;
 
-use crate::prefs::{self, Keymap, Motion, SendKey, Suggestions, ThemeMode};
+use crate::prefs::{self, HourCycle, Keymap, Motion, SendKey, Suggestions, ThemeMode};
 use crate::theme_picker::ThemePicker;
 use crate::{fonts, menus, paths};
 
@@ -543,6 +543,7 @@ impl SettingsPage {
                 ),
             ),
             group_key("Motion", &shown.motion),
+            group_key("Clock", &shown.hour_cycle),
         ];
         let light = self.light_theme.clone();
         let dark = self.dark_theme.clone();
@@ -723,6 +724,19 @@ impl SettingsPage {
                         .default_value("system"),
                     )
                     .description("System follows your computer’s reduce-motion setting. Off stops animations, smooth typing included."),
+                ),
+                SettingGroup::new().key(keys[6]).item(
+                    switch(
+                        "24-hour clock",
+                        "Shows times as 20:00 instead of 8:00PM.",
+                        |prefs| prefs.appearance.hour_cycle == HourCycle::TwentyFour,
+                        |prefs, on| {
+                            prefs.appearance.hour_cycle =
+                                if on { HourCycle::TwentyFour } else { HourCycle::Twelve }
+                        },
+                        defaults.hour_cycle == HourCycle::TwentyFour,
+                    )
+                    .keywords(["time", "clock", "12-hour", "AM", "PM"]),
                 ),
             ])
     }

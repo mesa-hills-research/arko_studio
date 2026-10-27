@@ -79,7 +79,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use gpui_kit::component::ThemeConfig;
-use gpui_kit::component::input::ContextMenuStyle;
+use gpui_kit::component::input::{ContextMenuStyle, set_app_smooth_caret};
 use gpui_kit::{App, QuitMode};
 
 use crate::appearance::ThemesFolder;
@@ -216,6 +216,11 @@ impl Startup {
     }
 }
 
+/// Keeps every text field's caret in step with Smooth typing.
+fn follow_smooth_typing(cx: &mut App) {
+    set_app_smooth_caret(prefs::get(cx).input.smooth_typing, cx);
+}
+
 /// Sets the app up, before its first window.
 pub fn init(startup: Startup, cx: &mut App) {
     use gpui_kit::AppContext as _;
@@ -231,6 +236,9 @@ pub fn init(startup: Startup, cx: &mut App) {
     cx.set_quit_mode(QuitMode::Default);
     fonts::init(startup.bundled_fonts, startup.added_fonts, cx);
     prefs::init(startup.prefs, cx);
+    follow_smooth_typing(cx);
+    cx.observe_global::<PrefsStore>(follow_smooth_typing)
+        .detach();
     cx.set_global(SharedBackend(startup.backend));
     backend::follow_prefs(cx);
     cx.set_global(session_view::HomeFolder(startup.home));

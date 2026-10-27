@@ -101,7 +101,6 @@ impl SessionsPage {
             TextareaState::new(window, cx)
                 .auto_grow(4, 12)
                 .placeholder("Answer briefly, and in British English.")
-                .smooth_caret(input.smooth_typing)
                 .keymap(crate::composer::text_keymap(input.keymap))
                 .spell_checker(writing.spell_checker())
                 .default_value(new.chat_instructions.clone())
@@ -192,14 +191,10 @@ impl SessionsPage {
         this
     }
 
-    /// Types in the chat instructions as Settings › Input says, as it
-    /// changes: smooth typing, the keys, spell check.
+    /// Follows the keybindings and spell check settings for chat instructions.
     fn follow_input(&mut self, cx: &mut Context<Self>) {
         let input = prefs::get(cx).input.clone();
         self.chat_instructions.update(cx, |field, cx| {
-            if field.has_smooth_caret() != input.smooth_typing {
-                field.set_smooth_caret(input.smooth_typing, cx);
-            }
             let keymap = crate::composer::text_keymap(input.keymap);
             if field.current_keymap() != keymap {
                 field.set_keymap(keymap, cx);

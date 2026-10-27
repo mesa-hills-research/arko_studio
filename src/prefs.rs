@@ -423,6 +423,17 @@ pub enum Motion {
     Off,
 }
 
+/// How a time of day reads: "8:00PM" on a 12-hour clock, "20:00" on a
+/// 24-hour one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HourCycle {
+    #[default]
+    #[serde(rename = "12-hour")]
+    Twelve,
+    #[serde(rename = "24-hour")]
+    TwentyFour,
+}
+
 pub const DEFAULT_LIGHT_THEME: &str = "macOS Classic Light";
 pub const DEFAULT_DARK_THEME: &str = "macOS Classic Dark";
 pub const DEFAULT_UI_FONT: &str = gpui_kit::assets::fonts::WORK_SANS_FAMILY;
@@ -454,6 +465,8 @@ pub struct Appearance {
     pub expand_thinking: bool,
     /// The code font joins characters such as `->` into ligatures.
     pub code_ligatures: bool,
+    /// The clock times of day are shown on.
+    pub hour_cycle: HourCycle,
 }
 
 impl Default for Appearance {
@@ -472,6 +485,7 @@ impl Default for Appearance {
             stream_fade: false,
             expand_thinking: false,
             code_ligatures: true,
+            hour_cycle: HourCycle::Twelve,
         }
     }
 }
@@ -1381,6 +1395,26 @@ mod tests {
             write_atomically(&path, &text).unwrap();
             assert_eq!(Prefs::load(&path).web_page.address.as_deref(), address);
         }
+    }
+
+    /// Times read on a 12-hour clock until the 24-hour one is chosen, which
+    /// reads back as saved.
+    #[test]
+    fn the_clock_is_12_hour_until_chosen_and_reads_back() {
+        assert_eq!(Prefs::default().appearance.hour_cycle, HourCycle::Twelve);
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("studio.json");
+        let mut prefs = Prefs::default();
+        prefs.appearance.hour_cycle = HourCycle::TwentyFour;
+        let text = serde_json::to_string_pretty(&prefs).unwrap();
+        assert!(text.contains(r#""hour_cycle": "24-hour""#), "{text}");
+        write_atomically(&path, &text).unwrap();
+        assert_eq!(Prefs::load(&path), prefs);
+        let (read, _) = read_fields(&serde_json::json!({
+            "appearance": { "hour_cycle": "36-hour", "zoom": 1.25 }
+        }));
+        assert_eq!(read.appearance.hour_cycle, HourCycle::Twelve);
+        assert_eq!(read.appearance.zoom, 1.25);
     }
 
     #[test]

@@ -382,21 +382,20 @@ impl NotificationsPanel {
             )
     }
 
-    /// A notification's row: the session's title and when, with what was
-    /// said under them. The marker, and the title in a heavier weight, show
-    /// that it is unread.
+    /// A notification's row: the session's title and `when` it came, with
+    /// what was said under them. The marker, and the title in a heavier
+    /// weight, show that it is unread.
     fn render_row(
         &self,
         index: usize,
         entry: &Entry,
         openable: bool,
         selected: bool,
-        now: i64,
+        when: String,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme();
         let unread = !entry.read;
-        let when = figures::ago(entry.at, now);
         let title = if entry.title.is_empty() {
             "Session".to_string()
         } else {
@@ -501,6 +500,7 @@ impl NotificationsPanel {
                 .into_any_element();
         }
         let now = self.now(cx);
+        let times = figures::Times::of(cx);
         let focused = self.focus_handle.contains_focused(window, cx);
         let existing = self.existing(cx);
         let rows: Vec<AnyElement> = entries
@@ -511,7 +511,8 @@ impl NotificationsPanel {
                     .session_id()
                     .is_some_and(|session| existing.contains(&session));
                 let selected = focused && self.cursor == Some(entry.id);
-                self.render_row(index, entry, openable, selected, now, cx)
+                let when = figures::ago(entry.at, now, &times);
+                self.render_row(index, entry, openable, selected, when, cx)
             })
             .collect();
         v_flex()

@@ -411,7 +411,6 @@ impl Composer {
             TextareaState::new(window, cx)
                 .auto_grow(1, MAX_ROWS)
                 .placeholder("Message Arko")
-                .smooth_caret(input.smooth_typing)
                 .keymap(text_keymap(input.keymap))
                 .submit_keys(submit_keys(input.send_key))
                 .spell_checker(writing.spell_checker())
@@ -455,9 +454,6 @@ impl Composer {
     fn follow_prefs(&mut self, cx: &mut Context<Self>) {
         let input = prefs::get(cx).input.clone();
         self.textarea.update(cx, |textarea, cx| {
-            if textarea.has_smooth_caret() != input.smooth_typing {
-                textarea.set_smooth_caret(input.smooth_typing, cx);
-            }
             let keymap = text_keymap(input.keymap);
             if textarea.current_keymap() != keymap {
                 textarea.set_keymap(keymap, cx);

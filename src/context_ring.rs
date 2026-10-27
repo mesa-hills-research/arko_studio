@@ -314,6 +314,7 @@ impl RenderOnce for ContextDetails {
                 figures::tokens(written.unwrap_or(0))
             )),
         };
+        let times = figures::Times::of(cx);
         let plans: Vec<AnyElement> = reading
             .plans
             .iter()
@@ -332,8 +333,10 @@ impl RenderOnce for ContextDetails {
                         .value_text(figures::percent(window.used_percent))
                         .when(window.used_percent >= 80., |bar| bar.color(theme.warning))
                         .when_some(window.resets_at, |bar, at| {
-                            let over = figures::starts_over(at, self.now);
-                            bar.description(format!("Starts over {over}"))
+                            bar.description(format!(
+                                "Resets {}",
+                                figures::resets(at, self.now, &times)
+                            ))
                         })
                     }))
                     // A ChatGPT plan's credits, and the logins set aside.
