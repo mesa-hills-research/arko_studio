@@ -27,9 +27,17 @@ fn goldens() -> Goldens {
 /// A window as it opens, on a new session, `width` logical pixels wide, with
 /// the sample sessions in the sidebar.
 fn new_window(mode: ThemeMode, width: f32) -> Screenshot {
+    new_window_themed(mode, width, None)
+}
+
+fn new_window_themed(mode: ThemeMode, width: f32, theme: Option<&str>) -> Screenshot {
     let mut app = ScreenshotApp::with_assets(Assets).unwrap();
     let mut settings = Prefs::default();
     settings.appearance.theme_mode = mode;
+    if let Some(theme) = theme {
+        settings.appearance.light_theme = theme.into();
+        settings.appearance.dark_theme = theme.into();
+    }
     // The harness draws animations at their end, and so does the app then.
     settings.appearance.motion = Motion::Off;
     let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
@@ -3031,7 +3039,7 @@ fn notifications_window(
     width: f32,
     entries: Vec<arko_studio::notifications::Entry>,
 ) -> Screenshot {
-    notifications_window_on(mode, width, entries, None, false)
+    notifications_window_on(mode, width, entries, None, false, None)
 }
 
 fn notifications_window_on(
@@ -3040,6 +3048,7 @@ fn notifications_window_on(
     entries: Vec<arko_studio::notifications::Entry>,
     session: Option<SessionId>,
     all: bool,
+    theme: Option<&str>,
 ) -> Screenshot {
     use arko_studio::cache_reminders::ReminderClock;
     use gpui_kit::test::TestWindowExt as _;
@@ -3049,6 +3058,10 @@ fn notifications_window_on(
     settings.appearance.theme_mode = mode;
     settings.appearance.motion = Motion::Off;
     let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    if let Some(theme) = theme {
+        settings.appearance.light_theme = theme.into();
+        settings.appearance.dark_theme = theme.into();
+    }
     let startup = Startup::for_tests(backend)
         .with_prefs(settings)
         .with_notifications(entries)
@@ -3100,6 +3113,40 @@ fn notifications_window_on(
         app.run_until_parked();
     }
     app.capture(window).unwrap()
+}
+
+#[test]
+fn segmented_selectors_across_themes() {
+    for (theme, mode, name) in [
+        (
+            "macOS Classic Light",
+            ThemeMode::Light,
+            "macos-classic-light",
+        ),
+        ("macOS Classic Dark", ThemeMode::Dark, "macos-classic-dark"),
+        ("Beacon Light", ThemeMode::Light, "beacon-light"),
+        ("Tokyo Night", ThemeMode::Dark, "tokyo-night"),
+    ] {
+        goldens().assert(
+            &format!("segmented-{name}-chat-agent"),
+            &new_window_themed(mode, 1100., Some(theme)),
+        );
+        for shown in [false, true] {
+            let session = shown.then(|| SessionId("20261016-091200-a1b2".into()));
+            let state = if shown { "session" } else { "no-session" };
+            goldens().assert(
+                &format!("segmented-{name}-notifications-{state}"),
+                &notifications_window_on(
+                    mode,
+                    1300.,
+                    notification_entries(),
+                    session,
+                    false,
+                    Some(theme),
+                ),
+            );
+        }
+    }
 }
 
 #[test]
@@ -3155,7 +3202,7 @@ fn notifications_session(mode: ThemeMode, all: bool) -> Screenshot {
     let mut entries = notification_entries();
     entries[0].session = Some(session.0.clone());
     entries[3].session = Some(session.0.clone());
-    notifications_window_on(mode, 1300., entries, Some(session), all)
+    notifications_window_on(mode, 1300., entries, Some(session), all, None)
 }
 
 #[test]

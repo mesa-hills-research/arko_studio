@@ -938,11 +938,17 @@ fn a_new_session_picks_chat_or_agent_in_its_empty_transcript(cx: &mut TestAppCon
     act(cx, window, |window, _| {
         assert!(window.try_find("empty-mode-switch").is_some());
         assert!(window.try_find("empty-mode-about").is_some());
+        assert_eq!(window.find("empty-mode-agent").selected(), Some(true));
+        assert_eq!(window.find("empty-mode-chat").selected(), Some(false));
     });
     act(cx, window, |window, cx| window.click("empty-mode-chat", cx));
     assert_eq!(line(cx).as_deref(), Some("New chat"));
     // ←/→ switch while the switch has focus.
-    act(cx, window, |window, cx| window.press("right", cx));
+    act(cx, window, |window, cx| {
+        assert_eq!(window.find("empty-mode-chat").selected(), Some(true));
+        assert_eq!(window.find("empty-mode-agent").selected(), Some(false));
+        window.press("right", cx);
+    });
     assert_eq!(line(cx).as_deref(), Some("New agent session in ~/src/arko"));
     act(cx, window, |window, cx| window.press("left", cx));
     assert_eq!(line(cx).as_deref(), Some("New chat"));

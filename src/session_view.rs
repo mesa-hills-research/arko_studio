@@ -3066,8 +3066,8 @@ impl SessionView {
         }
     }
 
-    /// Chat | Agent: an outlined track with the chosen mode filled, each
-    /// with its icon, and a line on what the chosen mode does. ←/→ switch
+    /// Chat | Agent uses an inset track and an outline on the chosen mode,
+    /// with an icon and a line on what the mode does. ←/→ switch
     /// while it has focus. `on_pick` hears the mode chosen. An open session
     /// switches between turns only.
     fn render_mode_switch(
@@ -3091,12 +3091,10 @@ impl SessionView {
             }
         };
         let focused = focus.is_focused(window) && window.last_input_was_keyboard();
-        // The chosen mode stands out from the track: the window's background
-        // on a light theme, lighter than the track on a dark one.
-        let chosen = if theme.is_dark() {
-            theme.foreground.opacity(0.16)
+        let foreground = if can_switch {
+            theme.foreground
         } else {
-            theme.background
+            theme.muted_foreground.opacity(0.65)
         };
         let segment = |value: Mode, label: &'static str, icon: gpui_kit::assets::IconName| {
             let checked = mode == value;
@@ -3126,19 +3124,13 @@ impl SessionView {
                 .text_sm()
                 .child(Icon::new(icon).small())
                 .child(label)
-                .map(|this| {
-                    if checked {
-                        this.bg(chosen)
-                            .border_color(theme.border)
-                            .text_color(theme.foreground)
-                            .font_medium()
-                            .shadow_xs()
-                    } else {
-                        this.border_color(theme.transparent)
-                            .text_color(theme.muted_foreground)
-                    }
+                .text_color(foreground)
+                .border_color(if checked {
+                    foreground
+                } else {
+                    theme.transparent
                 })
-                .when(!can_switch, |this| this.opacity(0.6))
+                .when(checked, |this| this.font_medium())
                 .when(can_switch && !checked, |this| {
                     this.cursor_pointer()
                         .hover(|style| style.text_color(theme.foreground))
@@ -3152,15 +3144,15 @@ impl SessionView {
                 h_flex()
                     .id(SharedString::from(format!("{prefix}-switch")))
                     .test_support()
-                    .track_focus(focus)
+                    .when(can_switch, |this| this.track_focus(focus))
                     .role(Role::RadioGroup)
                     .aria_label("Mode")
                     .p(px(2.))
                     .gap(px(2.))
                     .rounded(theme.radius + px(2.))
                     .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.muted)
+                    .border_color(theme.transparent)
+                    .bg(theme.tokens.tab_bar_segmented)
                     .on_key_down({
                         let on_pick = on_pick.clone();
                         move |event: &KeyDownEvent, window, cx| {

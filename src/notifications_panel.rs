@@ -331,18 +331,19 @@ impl NotificationsPanel {
                 )
         };
         div().px_2().py_1().child(
-            TabBar::new("notifications-scope")
-                .segmented()
-                .xsmall()
-                .w_full()
-                .selected_index(usize::from(self.scoped_session().is_none()))
-                .on_click(cx.listener(|this, index: &usize, _, cx| {
-                    this.all = *index == 1;
-                    this.reset_cursor(cx);
-                    cx.notify();
-                }))
-                .child(tab(0, "Session", session_unread).disabled(self.session.is_none()))
-                .child(tab(1, "All", all_unread)),
+            div().id("notifications-selector").test_support().child(
+                TabBar::new("notifications-scope")
+                    .segmented()
+                    .w_full()
+                    .selected_index(usize::from(self.scoped_session().is_none()))
+                    .on_click(cx.listener(|this, index: &usize, _, cx| {
+                        this.all = *index == 1;
+                        this.reset_cursor(cx);
+                        cx.notify();
+                    }))
+                    .child(tab(0, "Session", session_unread).disabled(self.session.is_none()))
+                    .child(tab(1, "All", all_unread)),
+            ),
         )
     }
 
@@ -1005,6 +1006,46 @@ mod tests {
         assert_eq!(cx.read(notifications::unread), 0);
         panel.click(cx, "notifications-clear");
         assert!(cx.read(|cx| notifications::entries(cx).is_empty()));
+    }
+
+    #[gpui_kit::test]
+    fn notifications_and_mode_selectors_have_the_same_height(cx: &mut TestAppContext) {
+        let panel = start(history(), 1300., cx);
+        panel.open(cx);
+        act(cx, panel.window, |window, _| {
+            let notifications = window.find("notifications-selector").bounds();
+            let mode = window.find("empty-mode-switch").bounds();
+            assert_eq!(notifications.size.height, mode.size.height);
+            assert_eq!(mode.size.height, gpui_kit::px(34.));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn session_cannot_be_selected_without_a_shown_session(cx: &mut TestAppContext) {
+        let panel = start(history(), 1300., cx);
+        panel.open(cx);
+        panel.click(cx, ("notifications-scope", 1_usize));
+        panel.click(cx, ("notifications-scope", 0_usize));
+        assert!(cx.read(|cx| panel.panel.read(cx).all));
+        assert!(cx.read(|cx| panel.panel.read(cx).scoped_session().is_none()));
+
+        act(cx, panel.window, |window, cx| {
+            panel.workspace.update(cx, |workspace, cx| {
+                workspace.open_session(crate::backend::SessionId(SPLIT.into()), window, cx)
+            });
+        });
+        panel.click(cx, ("notifications-scope", 0_usize));
+        assert!(!cx.read(|cx| panel.panel.read(cx).all));
+        assert_eq!(cx.read(|cx| panel.panel.read(cx).order(cx)), [4, 1]);
+
+        act(cx, panel.window, |window, cx| {
+            window.dispatch_action(Box::new(crate::menus::OpenSettings), cx);
+        });
+        panel.click(cx, ("notifications-scope", 1_usize));
+        panel.click(cx, ("notifications-scope", 0_usize));
+        assert!(cx.read(|cx| panel.panel.read(cx).all));
+        assert!(cx.read(|cx| panel.panel.read(cx).session.is_none()));
+        assert_eq!(cx.read(|cx| panel.panel.read(cx).order(cx)), [4, 3, 2, 1]);
     }
 
     #[gpui_kit::test]
