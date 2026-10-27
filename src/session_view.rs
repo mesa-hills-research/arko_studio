@@ -2039,6 +2039,7 @@ impl SessionView {
                 .map(|(effort, _)| effort),
         };
         let text = message.text.clone();
+        remember_mode(new.mode, cx);
         let session = LiveSession::create(new, arko::Input::Message(message), cx);
         drafts::set(drafts::NEW_SESSION, "", cx);
         // Should it not open, the first message comes back to the composer.
@@ -2740,8 +2741,11 @@ impl SessionView {
         cx: &mut Context<Self>,
     ) {
         let switching = session.update(cx, |session, cx| session.switch_mode(to, folder, cx));
-        cx.spawn_in(window, async move |_, cx| {
-            if let Err(why) = switching.await {
+        cx.spawn_in(window, async move |_, cx| match switching.await {
+            Ok(_) => {
+                cx.update(|_, cx| remember_mode(to, cx)).ok();
+            }
+            Err(why) => {
                 cx.update(|window, cx| window.push_notification(why, cx))
                     .ok();
             }
@@ -3379,12 +3383,24 @@ fn browse(view: WeakEntity<SessionView>, cx: &mut App) {
     .detach();
 }
 
+/// Keeps `mode` as the last one a session started or switched to, which
+/// Last used starts the next new session in.
+fn remember_mode(mode: Mode, cx: &mut App) {
+    let mode = match mode {
+        Mode::Chat => prefs::NewSessionMode::Chat,
+        Mode::Agent => prefs::NewSessionMode::Agent,
+    };
+    if prefs::get(cx).new_sessions.last_mode != Some(mode) {
+        prefs::update(cx, |prefs| prefs.new_sessions.last_mode = Some(mode));
+    }
+}
+
 /// How a new session works until the user picks: as Settings › Models &
-/// accounts says.
+/// accounts says, or as the last session started for Last used.
 fn default_mode(cx: &App) -> Mode {
-    match prefs::get(cx).new_sessions.mode {
+    match prefs::get(cx).new_sessions.starting_mode() {
         prefs::NewSessionMode::Chat => Mode::Chat,
-        prefs::NewSessionMode::Agent => Mode::Agent,
+        _ => Mode::Agent,
     }
 }
 

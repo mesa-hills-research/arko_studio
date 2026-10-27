@@ -455,6 +455,7 @@ impl AccountsPage {
                 super::choice(
                     "Mode",
                     &[
+                        (NewSessionMode::Last, "Last used"),
                         (NewSessionMode::Agent, "Agent"),
                         (NewSessionMode::Chat, "Chat"),
                     ],
@@ -463,9 +464,9 @@ impl AccountsPage {
                     defaults.mode,
                 )
                 .description(
-                    "Agent works in a folder with tools and workers. Chat has no tools.",
+                    "Agent works in a folder with tools and workers. Chat has no tools. Last used starts as the last session did.",
                 )
-                .keywords(["default mode", "chat", "agent"]),
+                .keywords(["default mode", "chat", "agent", "last used"]),
                 SettingItem::new("Model", {
                     let select = self.main_model.clone();
                     SettingField::render(move |_, _, _| select.clone()).on_reset(

@@ -127,6 +127,15 @@ impl WebPagePrefs {
 /// default), becomes `ip` when it names another address or automatic
 /// sharing is on. An inactive local default follows the new default.
 fn migrate(file: &mut Value) {
+    // Agent was the default mode before Last used was. A file saved before
+    // has no `last_mode`, and its Agent becomes Last used, which starts in
+    // Agent until a chat is started.
+    if let Some(new) = file.get_mut("new_sessions").and_then(Value::as_object_mut)
+        && !new.contains_key("last_mode")
+        && new.get("mode").and_then(Value::as_str) == Some("agent")
+    {
+        new.insert("mode".into(), Value::String("last".into()));
+    }
     let Some(page) = file.get_mut("web_page").and_then(Value::as_object_mut) else {
         return;
     };
@@ -174,8 +183,10 @@ impl Default for SessionPrefs {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NewSessionMode {
-    Chat,
+    /// As the session started last (Agent before any).
     #[default]
+    Last,
+    Chat,
     Agent,
 }
 
@@ -211,6 +222,9 @@ pub enum ProjectInstructions {
 #[serde(default)]
 pub struct NewSessions {
     pub mode: NewSessionMode,
+    /// The mode the session started last began in, Chat or Agent, which
+    /// [`NewSessionMode::Last`] takes.
+    pub last_mode: Option<NewSessionMode>,
     /// The main agent's model, as `/model` takes it. `None`: the last
     /// session's, else one the credentials allow.
     pub model: Option<String>,
@@ -263,10 +277,25 @@ pub struct NewSessions {
     pub chat_instructions: String,
 }
 
+impl NewSessions {
+    /// The mode a new session starts in, Chat or Agent: the one chosen, or
+    /// for Last used the last session's.
+    pub fn starting_mode(&self) -> NewSessionMode {
+        match self.mode {
+            NewSessionMode::Last => match self.last_mode {
+                Some(NewSessionMode::Chat) => NewSessionMode::Chat,
+                _ => NewSessionMode::Agent,
+            },
+            mode => mode,
+        }
+    }
+}
+
 impl Default for NewSessions {
     fn default() -> Self {
         Self {
-            mode: NewSessionMode::Agent,
+            mode: NewSessionMode::Last,
+            last_mode: None,
             model: None,
             effort: None,
             worker_model: None,
@@ -980,6 +1009,42 @@ fn schedule_save(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    /// A file saved when Agent was the default mode gets Last used, once.
+    /// A chat, or Agent chosen after Last used came, stays.
+    #[test]
+    fn the_old_default_mode_becomes_last_used() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("studio.json");
+        for (file, mode) in [
+            (
+                serde_json::json!({"new_sessions": {"mode": "agent"}}),
+                NewSessionMode::Last,
+            ),
+            (
+                serde_json::json!({"new_sessions": {"mode": "chat"}}),
+                NewSessionMode::Chat,
+            ),
+            (
+                serde_json::json!({"new_sessions": {"mode": "agent", "last_mode": null}}),
+                NewSessionMode::Agent,
+            ),
+            (serde_json::json!({}), NewSessionMode::Last),
+        ] {
+            std::fs::write(&path, file.to_string()).unwrap();
+            assert_eq!(Prefs::load(&path).new_sessions.mode, mode, "{file}");
+        }
+    }
+
+    #[test]
+    fn last_used_starts_in_the_last_sessions_mode_else_agent() {
+        let mut new = NewSessions::default();
+        assert_eq!(new.starting_mode(), NewSessionMode::Agent);
+        new.last_mode = Some(NewSessionMode::Chat);
+        assert_eq!(new.starting_mode(), NewSessionMode::Chat);
+        new.mode = NewSessionMode::Agent;
+        assert_eq!(new.starting_mode(), NewSessionMode::Agent);
+    }
+
     #[test]
     fn an_unreadable_sharing_restriction_falls_back_to_this_computer() {
         let (prefs, _) = read_fields(&serde_json::json!({

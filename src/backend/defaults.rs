@@ -74,9 +74,9 @@ impl SessionDefaults {
         let effort = |effort: &Option<String>| effort.as_deref().and_then(|e| e.parse().ok());
         let instructions = new.chat_instructions.trim();
         Self {
-            mode: match new.mode {
+            mode: match new.starting_mode() {
                 prefs::NewSessionMode::Chat => Mode::Chat,
-                prefs::NewSessionMode::Agent => Mode::Agent,
+                _ => Mode::Agent,
             },
             model: new.model.clone().filter(|model| !model.trim().is_empty()),
             effort: effort(&new.effort),
