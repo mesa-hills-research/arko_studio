@@ -405,10 +405,7 @@ fn asking(questions: serde_json::Value, wait: bool) -> Mock {
         } else if body.contains("Asked q1") {
             answer("I’ll go on meanwhile.", Duration::ZERO)
         } else {
-            let mut parameters = serde_json::json!({ "questions": questions.clone() });
-            if wait {
-                parameters["wait"] = true.into();
-            }
+            let parameters = serde_json::json!({ "questions": questions.clone(), "wait": wait });
             let call = arko::testing::tool_call("t1", "ask_user", parameters);
             Box::pin(async move { call })
         }
