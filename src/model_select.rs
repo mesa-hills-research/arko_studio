@@ -257,6 +257,8 @@ enum Row {
     Model {
         name: SharedString,
         label: SharedString,
+        /// How it is billed, for a model billed per token: "API, $5/$25".
+        billing: Option<SharedString>,
         /// What a screen reader says for it: its name, its way and
         /// whether it can be used.
         spoken: SharedString,
@@ -289,6 +291,7 @@ fn sections(
         rows: vec![Row::Model {
             name: SharedString::default(),
             label: first.clone(),
+            billing: None,
             spoken: first.clone(),
             found_by: String::new(),
         }],
@@ -306,19 +309,28 @@ fn sections(
             None => group.name.clone(),
         };
         let way = way(&group.name);
-        let spoken = |label: &str| match group.needs {
-            Some(_) => format!("{label}, {way}, can’t be used yet"),
-            None => format!("{label}, {way}"),
+        let spoken = |label: &str, billing: Option<&String>| {
+            let label = match billing {
+                Some(billing) => format!("{label}, {way}, {billing}"),
+                None => format!("{label}, {way}"),
+            };
+            match group.needs {
+                Some(_) => format!("{label}, can’t be used yet"),
+                None => label,
+            }
         };
+        let billing = |name: &str| models.and_then(|models| models.billing(name));
         let mut rows: Vec<Row> = group
             .models
             .iter()
             .map(|model| {
                 let label = arko::models::display_name(&model.name);
+                let billing = billing(&model.name);
                 Row::Model {
                     name: model.name.clone().into(),
-                    spoken: spoken(&label).into(),
+                    spoken: spoken(&label, billing.as_ref()).into(),
                     label: label.into(),
+                    billing: billing.map(SharedString::from),
                     found_by: format!("{} {} {way}", model.name, model.alias).to_lowercase(),
                 }
             })
@@ -326,10 +338,12 @@ fn sections(
         if openrouter {
             if !placed && crate::openrouter::slug(chosen).is_some() {
                 let label = openrouter_name(chosen, known);
+                let billing = billing(chosen);
                 rows.push(Row::Model {
                     name: chosen.to_string().into(),
-                    spoken: spoken(&label).into(),
+                    spoken: spoken(&label, billing.as_ref()).into(),
                     label: label.into(),
+                    billing: billing.map(SharedString::from),
                     found_by: format!("{chosen} {way}").to_lowercase(),
                 });
                 placed = true;
@@ -347,6 +361,7 @@ fn sections(
         sections[0].rows.push(Row::Model {
             name: chosen.to_string().into(),
             label: chosen.to_string().into(),
+            billing: None,
             spoken: chosen.to_string().into(),
             found_by: chosen.to_lowercase(),
         });
@@ -510,10 +525,26 @@ impl ListDelegate for ModelList {
             Row::Model {
                 name,
                 label,
+                billing,
                 spoken,
                 ..
             } => ListItem::new(id)
-                .child(label.clone())
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .justify_between()
+                        .child(label.clone())
+                        .when_some(billing.clone(), |this, billing| {
+                            this.child(
+                                div()
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(billing),
+                            )
+                        }),
+                )
                 .accessibility_label(spoken.clone())
                 .confirmed(*name == self.chosen)
                 .check_icon(IconName::Check),

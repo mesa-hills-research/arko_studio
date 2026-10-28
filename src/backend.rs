@@ -291,7 +291,27 @@ impl ModelChoices {
             group.needs.is_none() && group.models.iter().any(|model| model.name == name)
         })
     }
+
+    /// How the model `name` is billed, for a list to show beside it, as
+    /// Arko says it for an open session: `API, $5/$25` (per million input
+    /// and output tokens) for a model billed per token, `None` for one on
+    /// the user's plans. OpenAI's models are billed per token when the list
+    /// reaches them by API key.
+    pub fn billing(&self, name: &str) -> Option<String> {
+        let by_key = self.groups.iter().any(|group| group.name == OPENAI_BY_KEY);
+        let models = arko::remote::Models {
+            openai_auth: by_key.then(|| OPENAI_KEY_AUTH.to_string()),
+            ..Default::default()
+        };
+        arko::models::billing(&models, name)
+    }
 }
+
+/// Arko's name for the group of OpenAI models reached by API key.
+const OPENAI_BY_KEY: &str = "OpenAI, with your API key";
+
+/// How a session's status says it reaches OpenAI by API key.
+const OPENAI_KEY_AUTH: &str = "OpenAI API key";
 
 pub use arko::openrouter::{Catalog, Listed, Settings as OpenRouterSettings};
 
@@ -1600,6 +1620,43 @@ impl FakeBackend {
 
 #[cfg(test)]
 mod tests {
+    /// A new session's list says how a model is billed as an open session's
+    /// does: a model billed per token has its price, and the plans' models
+    /// have nothing. OpenAI's are billed per token when Arko's menu reaches
+    /// them by API key.
+    #[test]
+    fn a_new_sessions_models_are_billed_as_an_open_sessions() {
+        use arko::remote::Models;
+
+        let menu = |auth: &str| {
+            let models = Models {
+                openai_auth: Some(auth.to_string()),
+                ..Models::default()
+            };
+            let choices = ModelChoices::from_arko(arko::models::menu(&models, |_| None), None);
+            (models, choices)
+        };
+        for auth in [super::OPENAI_KEY_AUTH, "ChatGPT login"] {
+            let (models, choices) = menu(auth);
+            for name in ["claude-opus-5-5", "cc:claude-opus-5-5", "gpt-6.1-sol"] {
+                assert_eq!(
+                    choices.billing(name),
+                    arko::models::billing(&models, name),
+                    "{auth} {name}"
+                );
+            }
+        }
+        let (_, by_key) = menu(super::OPENAI_KEY_AUTH);
+        assert!(
+            by_key
+                .billing("gpt-6.1-sol")
+                .is_some_and(|label| label.starts_with("API, $"))
+        );
+        assert_eq!(by_key.billing("cc:claude-opus-5-5"), None);
+        let (_, by_login) = menu("ChatGPT login");
+        assert_eq!(by_login.billing("gpt-6.1-sol"), None);
+    }
+
     /// A change to OpenRouter's settings is made to the file as it is:
     /// a model picked since the settings were read stays among the recent
     /// ones, and a file Arko can't read is left as it is.
