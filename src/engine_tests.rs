@@ -524,6 +524,60 @@ fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
     app.close_all(cx);
 }
 
+/// When worker billing asks first, a worker the main agent starts on a
+/// model billed per token waits for the user's OK, which Arko asks in the
+/// answer panel with its three choices. Allow starts it, and its report
+/// reaches the agent.
+#[gpui_kit::test]
+fn a_worker_billed_per_token_starts_once_allowed_in_the_panel(cx: &mut TestAppContext) {
+    const RUN: &str = "You are agent run";
+    let mock = Mock::start(|_, body| {
+        if body.contains(&format!("{RUN} r1")) {
+            let done = arko::testing::complete("w1", "Indented.");
+            return Box::pin(async move { done });
+        }
+        if body.contains("Indented.") {
+            return reply("m3", "Done.");
+        }
+        if body.contains("call_m1") {
+            return reply("m2", "Started it.");
+        }
+        let call = arko::testing::tool_call(
+            "m1",
+            "start_agent",
+            serde_json::json!({ "agent": "worker", "task": "Indent it." }),
+        );
+        Box::pin(async move { call })
+    });
+    let app = start(cx, &mock);
+    cx.update(|cx| {
+        crate::prefs::update(cx, |prefs| {
+            prefs.new_sessions.worker_billing = Some(arko::WorkerBilling::Ask)
+        })
+    });
+    app.send_and_rest(cx, "Indent the file.");
+    wait_until(cx, "the answer panel", |cx| app.shows(cx, "answer-panel"));
+    let session = app.shown(cx).unwrap();
+    let question = cx.read(|cx| session.read(cx).reading().questions[0].clone());
+    assert!(
+        question.question.starts_with("Start a worker on ")
+            && question.question.contains("billed per token"),
+        "{}",
+        question.question
+    );
+    assert_eq!(question.choices.len(), 3);
+    assert_eq!(question.choices[0], "Allow");
+    assert!(!mock.was_sent(&format!("{RUN} r1")), "it waits for the OK");
+    act(cx, app.window, |window, cx| {
+        window.click(crate::questions::part("answer-choice", &question.id, 0), cx);
+    });
+    act(cx, app.window, |window, cx| window.click("answer-send", cx));
+    app.wait_for_text(cx, "Done.");
+    assert!(mock.was_sent(&format!("{RUN} r1")));
+    assert!(!app.shows(cx, "answer-panel"));
+    app.close_all(cx);
+}
+
 /// Esc from the message box closes the panel and attaches the questions
 /// to the message box, and the next message answers them.
 #[gpui_kit::test]
