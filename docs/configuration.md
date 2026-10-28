@@ -71,6 +71,10 @@ have a switch for all of them and one for each. A session opened or resumed afte
 and a session already open keeps its skills. A switch you haven't used leaves its part to Arko's
 `ARKO_BUILTIN_SKILLS` and `ARKO_BUILTIN_SKILLS_OFF` settings.
 
+Each open Agent session runs its own copy of every MCP server, so close the sessions you aren't
+using. Chat sessions run none. A launcher such as `npx -y` adds a wrapper process to each copy, so
+`node path/to/server.js` is lighter.
+
 **Settings › Notifications** chooses which events notify and whether a sound plays. Each one names
 its session, and clicking it shows that session. Every notification that is on is also kept in a
 history, even when the window was in front and nothing popped up. Open the history from the unread
