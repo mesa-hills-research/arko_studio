@@ -11,7 +11,7 @@ use std::sync::Arc;
 use arko::details::{IndexFacts, IndexWatch, McpFacts, SessionFacts, SkillsFacts};
 use arko::kept_notes::{KeptNotes, Note};
 use arko::remote::Reading;
-use arko::{ExtraRules, ModelChoice, ProjectFiles};
+use arko::{ExtraRules, ModelChoice, ProjectFiles, WorkerBilling};
 use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
@@ -28,7 +28,9 @@ use crate::backend::Mode;
 use crate::live::LiveSession;
 use crate::session_view::{HomeFolder, shown_folder};
 use crate::status_bar::run;
-use crate::workers::{copies_about, curly, depth_effect, models_about};
+use crate::workers::{
+    billing_about, budget_about, copies_about, curly, depth_effect, models_about,
+};
 use arko::workers;
 
 /// Why some settings can't change any more.
@@ -67,6 +69,8 @@ fn current(control: &str, settings: &arko::remote::LiveSettings) -> Option<Strin
         "extra-rules" => Some(settings.extra_rules.name().to_string()),
         "project-instructions" => Some(settings.project_instructions.name().to_string()),
         "worker-models" => Some(settings.worker_models.name().to_string()),
+        "worker-billing" => Some(settings.worker_billing.name().to_string()),
+        "api-budget" => switch(settings.api_budget.is_some()),
         "worker-depth" => Some(settings.worker_depth.to_string()),
         "message-copies" => switch(settings.message_copies),
         "worker-retry-cap" => switch(settings.worker_retry_cap.is_some()),
@@ -885,6 +889,32 @@ impl Render for SessionInfo {
                     }
                 })
         };
+        let worker_billing = {
+            let choose = WorkerBilling::ALL
+                .map(|billing| choose("worker-billing", billing.name(), billing.command()));
+            let current = WorkerBilling::ALL
+                .into_iter()
+                .find(|billing| billing.name() == shown("worker-billing"))
+                .unwrap_or(settings.worker_billing);
+            ToggleGroup::new("worker-billing")
+                .segmented()
+                .small()
+                .children(WorkerBilling::ALL.map(|billing| {
+                    Toggle::new(SharedString::from(format!(
+                        "worker-billing-{}",
+                        billing.name()
+                    )))
+                    .label(billing.label())
+                    .checked(billing == current)
+                }))
+                .on_click(move |checks, window, cx| {
+                    if let Some(ix) =
+                        clicked(checks, WorkerBilling::ALL.map(|billing| billing == current))
+                    {
+                        choose[ix](window, cx)
+                    }
+                })
+        };
         let worker_depth = {
             let depths: [u32; workers::MAX_DEPTH as usize] =
                 std::array::from_fn(|ix| ix as u32 + 1);
@@ -1089,6 +1119,13 @@ impl Render for SessionInfo {
                         .worker_retry_cap
                         .unwrap_or(workers::DEFAULT_RETRY_CAP)
                 });
+                let billing = WorkerBilling::ALL
+                    .into_iter()
+                    .find(|billing| billing.name() == shown("worker-billing"))
+                    .unwrap_or(settings.worker_billing);
+                // On, the session's own budget, or the one `on` sets.
+                let budget = (shown("api-budget") == "on")
+                    .then(|| settings.api_budget.unwrap_or(workers::DEFAULT_BUDGET));
                 body = body
                     .child(row(
                         narrow,
@@ -1101,6 +1138,41 @@ impl Render for SessionInfo {
                                 .text_color(muted)
                                 .child(models_about(chosen)),
                         ),
+                        cx,
+                    ))
+                    .child(row(
+                        narrow,
+                        workers::BILLING_NAME,
+                        v_flex().gap_1().child(worker_billing).child(
+                            div()
+                                .id("worker-billing-about")
+                                .test_support()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(billing_about(billing)),
+                        ),
+                        cx,
+                    ))
+                    .child(row(
+                        narrow,
+                        workers::BUDGET_NAME,
+                        v_flex()
+                            .gap_1()
+                            .child(h_flex().child(switch(
+                                "api-budget",
+                                workers::BUDGET_NAME,
+                                false,
+                                workers::budget_command(true),
+                                workers::budget_command(false),
+                            )))
+                            .child(
+                                div()
+                                    .id("api-budget-about")
+                                    .test_support()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(budget_about(budget)),
+                            ),
                         cx,
                     ))
                     .child(row(
@@ -2262,18 +2334,21 @@ mod view_tests {
         assert!(!tooltip_on(cx, false, "extra-rules-fixed"));
     }
 
-    /// Who chooses the workers' models, how deep workers go, the retry cap
-    /// and message copies send the commands of the terminal, and show the
-    /// choice at once. A session with no workers lists none of them.
+    /// Who chooses the workers' models, worker billing, the daily API
+    /// budget, how deep workers go, the retry cap and message copies send
+    /// the commands of the terminal, and show the choice at once. A session
+    /// with no workers lists none of them.
     #[gpui_kit::test]
     fn the_worker_settings_send_the_terminals_commands(cx: &mut TestAppContext) {
-        use arko::{ModelChoice, workers};
+        use arko::{ModelChoice, WorkerBilling, workers};
 
         start(cx);
         let (window, workspace) = open(cx, 1300.);
         let reading = |has_workers| Reading {
             settings: LiveSettings {
                 worker_models: ModelChoice::Agent,
+                worker_billing: WorkerBilling::Ask,
+                api_budget: None,
                 worker_depth: 2,
                 worker_retry_cap: Some(5),
                 message_copies: true,
@@ -2309,34 +2384,46 @@ mod view_tests {
         };
         show(cx, &alone);
         assert!(!shows(window, cx, "worker-models"));
+        assert!(!shows(window, cx, "worker-billing"));
+        assert!(!shows(window, cx, "api-budget"));
         assert!(!shows(window, cx, "worker-depth"));
         assert!(!shows(window, cx, "message-copies"));
         assert!(!shows(window, cx, "worker-retry-cap"));
         show(cx, &session);
-        // The rows are past the first screenful of the info.
-        for _ in 0..40 {
-            let seen = cx
-                .update_window(window, |_, window, cx| {
-                    window.render_frame(cx);
-                    window
-                        .try_find("message-copies")
-                        .is_some_and(|found| found.visible())
-                })
-                .unwrap();
-            if seen {
-                break;
+        // The rows are past the first screenful of the info, and more of
+        // them than a screenful: each is scrolled to before a click.
+        let click = |cx: &mut TestAppContext, id: &'static str| {
+            for _ in 0..40 {
+                let toward = cx
+                    .update_window(window, |_, window, cx| {
+                        window.render_frame(cx);
+                        let info = window.find("session-info").bounds();
+                        let found = window.find(id).bounds();
+                        if found.top() < info.top() {
+                            120.
+                        } else if found.bottom() > info.bottom() {
+                            -120.
+                        } else {
+                            0.
+                        }
+                    })
+                    .unwrap();
+                if toward == 0. {
+                    break;
+                }
+                act(cx, window, |window, cx| {
+                    window.scroll(
+                        "session-info",
+                        gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                            gpui_kit::px(0.),
+                            gpui_kit::px(toward),
+                        )),
+                        cx,
+                    )
+                });
             }
-            act(cx, window, |window, cx| {
-                window.scroll(
-                    "session-info",
-                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
-                        gpui_kit::px(0.),
-                        gpui_kit::px(-120.),
-                    )),
-                    cx,
-                )
-            });
-        }
+            act(cx, window, |window, cx| window.click(id, cx));
+        };
         let checked = |cx: &mut TestAppContext, id: &'static str| {
             cx.update_window(window, |_, window, cx| {
                 window.render_frame(cx);
@@ -2346,31 +2433,38 @@ mod view_tests {
         };
         assert_eq!(checked(cx, "worker-models-agent"), Some(true));
         assert_eq!(checked(cx, "worker-models-profiles"), Some(false));
+        assert_eq!(checked(cx, "worker-billing-ask"), Some(true));
+        assert_eq!(checked(cx, "worker-billing-plans"), Some(false));
+        assert_eq!(checked(cx, "api-budget"), Some(false));
         assert_eq!(checked(cx, "worker-depth-2"), Some(true));
         assert_eq!(checked(cx, "message-copies"), Some(true));
         assert_eq!(checked(cx, "worker-retry-cap"), Some(true));
-        act(cx, window, |window, cx| {
-            window.click("worker-models-profiles", cx)
-        });
-        act(cx, window, |window, cx| window.click("worker-depth-3", cx));
+        click(cx, "worker-models-profiles");
+        click(cx, "worker-billing-plans");
+        click(cx, "api-budget");
+        click(cx, "worker-depth-3");
         // The choice shows at once, and the one chosen already sends nothing.
         assert_eq!(checked(cx, "worker-models-profiles"), Some(true));
         assert_eq!(checked(cx, "worker-models-agent"), Some(false));
+        assert_eq!(checked(cx, "worker-billing-plans"), Some(true));
+        assert_eq!(checked(cx, "worker-billing-ask"), Some(false));
+        assert_eq!(checked(cx, "api-budget"), Some(true));
         assert_eq!(checked(cx, "worker-depth-3"), Some(true));
-        act(cx, window, |window, cx| window.click("worker-depth-3", cx));
-        act(cx, window, |window, cx| window.click("worker-depth-1", cx));
+        click(cx, "worker-billing-plans");
+        click(cx, "worker-depth-3");
+        click(cx, "worker-depth-1");
         // Message copies are a switch.
-        act(cx, window, |window, cx| window.click("message-copies", cx));
+        click(cx, "message-copies");
         assert_eq!(checked(cx, "message-copies"), Some(false));
         // So is the retry cap, which applies to the running workers at once.
-        act(cx, window, |window, cx| {
-            window.click("worker-retry-cap", cx)
-        });
+        click(cx, "worker-retry-cap");
         assert_eq!(checked(cx, "worker-retry-cap"), Some(false));
         assert_eq!(
             sent(&session, cx),
             [
                 "/worker-models profiles",
+                "/worker-billing plans",
+                "/api-budget on",
                 workers::depth_command(3).as_str(),
                 "/worker-depth 1",
                 workers::copies_command(false).as_str(),
@@ -2384,6 +2478,8 @@ mod view_tests {
         session.update(cx, |session, cx| {
             let mut next = reading(true);
             next.settings.worker_models = ModelChoice::Session;
+            next.settings.worker_billing = WorkerBilling::Api;
+            next.settings.api_budget = Some(20.0);
             next.settings.worker_depth = 4;
             next.settings.message_copies = false;
             next.settings.worker_retry_cap = None;
@@ -2392,6 +2488,8 @@ mod view_tests {
         cx.executor().advance_clock(super::HOLD);
         cx.run_until_parked();
         assert_eq!(checked(cx, "worker-models-session"), Some(true));
+        assert_eq!(checked(cx, "worker-billing-api"), Some(true));
+        assert_eq!(checked(cx, "api-budget"), Some(true));
         assert_eq!(checked(cx, "worker-depth-4"), Some(true));
         assert_eq!(checked(cx, "message-copies"), Some(false));
         assert_eq!(checked(cx, "worker-retry-cap"), Some(false));

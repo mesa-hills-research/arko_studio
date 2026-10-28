@@ -1,8 +1,8 @@
 //! Where a list shows each worker and how its figures read.
 
-use arko::ModelChoice;
 use arko::remote::{WorkerState, WorkerSummary};
-use arko::workers::{MODELS_ABOUT, MODELS_APPLIES};
+use arko::workers::{BILLING_ABOUT, MODELS_ABOUT, MODELS_APPLIES};
+use arko::{ModelChoice, WorkerBilling};
 
 /// A worker that ended stays among the others this long, then moves to the
 /// "Finished" group at the bottom of the list.
@@ -47,6 +47,21 @@ pub fn models_about(choice: ModelChoice) -> String {
         "{MODELS_ABOUT} {} {MODELS_APPLIES}",
         choice.about()
     ))
+}
+
+/// What the "Worker billing" setting does and what `billing` means, in
+/// Arko's words.
+pub fn billing_about(billing: WorkerBilling) -> String {
+    curly(&format!(
+        "{BILLING_ABOUT} {} {MODELS_APPLIES}",
+        billing.about()
+    ))
+}
+
+/// What the "Daily API budget" setting does with `budget` in dollars, or
+/// off, in Arko's words.
+pub fn budget_about(budget: Option<f64>) -> String {
+    curly(&arko::workers::budget_about(budget))
 }
 
 /// How long the worker has worked, including runs before the session
@@ -450,6 +465,26 @@ mod tests {
             assert!(arko::commands::find(&copies_command(on)).is_some());
         }
         assert_eq!(copies_command(false), "/message-copies off");
+    }
+
+    /// Worker billing and the daily API budget say what they do in Arko's
+    /// words, and their commands are Arko's.
+    #[test]
+    fn worker_billing_and_the_budget_read_in_arkos_words() {
+        use arko::workers::{BUDGET_NAME, budget_command};
+        assert_eq!(
+            billing_about(WorkerBilling::Ask),
+            "Whether workers may run on models billed per token. A worker on a model billed per token starts only once you allow it. A change applies to the next worker started."
+        );
+        assert_eq!(BUDGET_NAME, "Daily API budget");
+        assert!(budget_about(None).starts_with("No daily limit."));
+        assert!(budget_about(Some(20.0)).starts_with("Once $20 is billed per token today"));
+        for billing in WorkerBilling::ALL {
+            assert!(arko::commands::find(&billing.command()).is_some());
+        }
+        for on in [true, false] {
+            assert!(arko::commands::find(&budget_command(on)).is_some());
+        }
     }
 
     #[test]
