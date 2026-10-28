@@ -391,8 +391,8 @@ fn entry_words(entry: &Entry, models: Option<&ModelChoices>) -> String {
         words.push("Fast mode.".into());
     }
     match profile.cache {
-        Some(Cache::FiveMinutes) => words.push("Keeps its prompt cache 5 minutes.".into()),
-        Some(Cache::OneHour) => words.push("Keeps its prompt cache an hour.".into()),
+        Some(Cache::FiveMinutes) => words.push("Short prompt cache.".into()),
+        Some(Cache::OneHour) => words.push("Long prompt cache.".into()),
         _ => {}
     }
     if profile.nested {
@@ -935,7 +935,7 @@ fn note(id: &'static str, text: impl Into<SharedString>, color: Hsla) -> impl In
 
 /// What the editor says under its fields.
 const FAST_ABOUT: &str = "For models that have it. On a model other than the session’s worker model, a worker is fast only when this is on.";
-const CACHE_ABOUT: &str = "For Claude models on an API key that take a choice.";
+const CACHE_ABOUT: &str = "Long keeps it an hour on Claude models and 12 hours on OpenAI models with an API key, instead of 5 or 30 minutes. Other models keep their own.";
 const NESTED_ABOUT: &str = "Down to the session’s worker depth.";
 const INSTRUCTIONS_ABOUT: &str =
     "Every worker started with this profile gets these, after the project’s instructions.";
@@ -949,8 +949,8 @@ impl ProfileForm {
             "Prompt cache",
             vec![
                 ("".into(), "The session’s choice".into()),
-                (Cache::FiveMinutes.as_str().into(), "5 minutes".into()),
-                (Cache::OneHour.as_str().into(), "1 hour".into()),
+                (Cache::FiveMinutes.as_str().into(), "Short".into()),
+                (Cache::OneHour.as_str().into(), "Long".into()),
             ],
             SharedString::from(cache.map(Cache::as_str).unwrap_or_default()),
             move |value, _, cx| {

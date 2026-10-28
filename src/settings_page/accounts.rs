@@ -543,7 +543,7 @@ impl AccountsPage {
                 )
                 .keywords(["workers", "reasoning"]),
                 SettingItem::new(
-                    "1-hour cache",
+                    "Long prompt cache",
                     SettingField::switch(
                         move |cx: &App| {
                             prefs::get(cx)
@@ -561,9 +561,17 @@ impl AccountsPage {
                     ),
                 )
                 .description(format!(
-                    "Claude models by API key keep their prompt cache an hour instead of 5 minutes, and writing it costs 2× the input price instead of 1.25×. Until it’s set here, {CACHE_1H_VARIABLE} decides."
+                    "Claude models keep their prompt cache an hour instead of 5 minutes, and OpenAI models with an API key 12 hours instead of 30. Other models keep their own. A long cache costs 2× the input price to write on Claude and 2.5× on OpenAI, instead of 1.25×. Until it’s set here, {CACHE_1H_VARIABLE} decides."
                 ))
-                .keywords(["prompt cache", "anthropic", CACHE_1H_VARIABLE]),
+                .keywords([
+                    "prompt cache",
+                    "long cache",
+                    "1 hour",
+                    "12 hours",
+                    "anthropic",
+                    "openai",
+                    CACHE_1H_VARIABLE,
+                ]),
             ])
     }
 

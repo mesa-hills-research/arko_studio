@@ -206,7 +206,7 @@ pub fn web_page_bind(page: &prefs::WebPagePrefs) -> Option<arko::remote::Bind> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_first_session_keeps_its_hour_cache_preference() {
+    fn the_first_session_keeps_its_long_cache_preference() {
         let mut prefs = Prefs::default();
         prefs.new_sessions.cache_1h = Some(true);
         let mut options = arko::Options::default();

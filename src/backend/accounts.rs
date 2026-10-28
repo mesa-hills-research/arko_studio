@@ -8,8 +8,8 @@ pub use arko::accounts::{
     key_states_in, outdated_text,
 };
 
-/// The variable that turns Anthropic's 1-hour prompt cache on for the
-/// sessions arko starts.
+/// The variable that turns the long prompt cache on for the sessions arko
+/// starts (an hour on Claude, 12 hours on OpenAI with an API key).
 pub const CACHE_1H_VARIABLE: &str = "ARKO_CACHE_1H";
 
 /// What can reach the models, as it is now.
@@ -22,7 +22,7 @@ pub struct Accounts {
     /// own, while none is set.
     pub chatgpt: Vec<ChatGptLogin>,
     pub claude_code: ClaudeCodeStatus,
-    /// The 1-hour cache as `ARKO_CACHE_1H` sets it, in the environment or
+    /// The long cache as `ARKO_CACHE_1H` sets it, in the environment or
     /// a `.env` file. `None` where it isn't set.
     pub cache_1h: Option<bool>,
 }

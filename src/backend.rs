@@ -1886,7 +1886,7 @@ mod tests {
         let backend = ArkoBackend::new(&root).with_configure(Arc::new(|options| {
             options.session = arko::SessionChoice::Resume("none".into())
         }));
-        // The 1-hour cache makes the options ask for the last model.
+        // The long cache makes the options ask for the last model.
         let mut prefs = crate::prefs::Prefs::default();
         prefs.new_sessions.cache_1h = Some(true);
         backend.set_defaults(SessionDefaults::from_prefs(&prefs));

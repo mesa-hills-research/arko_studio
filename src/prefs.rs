@@ -236,8 +236,9 @@ pub struct NewSessions {
     pub worker_model: Option<String>,
     /// `None`: the main agent's effort.
     pub worker_effort: Option<String>,
-    /// Anthropic's 1-hour prompt cache, for Claude by API key. `None`: as
-    /// `ARKO_CACHE_1H` in the environment or a `.env` file says, else off.
+    /// The long prompt cache, an hour on Claude models and 12 hours on
+    /// OpenAI models with an API key. `None`: as `ARKO_CACHE_1H` in the
+    /// environment or a `.env` file says, else off.
     pub cache_1h: Option<bool>,
     /// The main agent's handover size, in tokens. `None`: its model's own.
     pub handover_at: Option<usize>,
