@@ -13,11 +13,13 @@ use crate::writing::WritingAids;
 
 mod names;
 
-use crate::workers::{copies_about, curly, depth_about, models_about, retry_cap_about};
-use arko::ModelChoice;
+use crate::workers::{
+    billing_about, budget_about, copies_about, curly, depth_about, models_about, retry_cap_about,
+};
 use arko::commands::MIN_HANDOVER_SIZE;
 use arko::monitors::Wakes;
 use arko::workers;
+use arko::{ModelChoice, WorkerBilling};
 
 /// arko's own time before a command moves to the background, in seconds.
 pub const DEFAULT_BACKGROUND_AFTER: u64 = 600;
@@ -261,6 +263,8 @@ impl SessionsPage {
             ),
             (
                 new.worker_models,
+                new.worker_billing,
+                new.api_budget,
                 new.worker_depth,
                 new.worker_retry_cap,
                 new.message_copies,
@@ -317,6 +321,30 @@ impl SessionsPage {
                 )
                 .description(models_about(new.worker_models))
                 .keywords(["workers", "profiles", "model", "worker-models", "agent chooses"]),
+                super::choice_of(
+                    workers::BILLING_NAME,
+                    WorkerBilling::ALL
+                        .map(|billing| (billing, SharedString::from(billing.label())))
+                        .to_vec(),
+                    |prefs| prefs.new_sessions.worker_billing.unwrap_or_default(),
+                    |prefs, billing| prefs.new_sessions.worker_billing = Some(billing),
+                    WorkerBilling::default(),
+                )
+                .description(billing_about(new.worker_billing.unwrap_or_default()))
+                .keywords(["workers", "billing", "api", "per token", "plans", "worker-billing"]),
+                super::switch(
+                    workers::BUDGET_NAME,
+                    "",
+                    |prefs| prefs.new_sessions.api_budget.unwrap_or(false),
+                    |prefs, on| prefs.new_sessions.api_budget = Some(on),
+                    false,
+                )
+                .description(budget_about(
+                    new.api_budget
+                        .unwrap_or(false)
+                        .then_some(workers::DEFAULT_BUDGET),
+                ))
+                .keywords(["workers", "budget", "api", "spend", "dollars", "api-budget"]),
                 super::choice_of(
                     workers::DEPTH_NAME,
                     (1..=workers::MAX_DEPTH)

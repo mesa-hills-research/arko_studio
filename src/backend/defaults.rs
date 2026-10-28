@@ -31,6 +31,12 @@ pub struct SessionDefaults {
     pub monitor_wakes: Option<arko::monitors::Wakes>,
     /// Who chooses the workers' models.
     pub worker_models: arko::ModelChoice,
+    /// Whether workers may run on models billed per token. `None`: as
+    /// `ARKO_WORKER_BILLING` says.
+    pub worker_billing: Option<arko::WorkerBilling>,
+    /// Whether the daily API budget is on, at Arko's default amount.
+    /// `None`: as `ARKO_API_BUDGET` says.
+    pub api_budget: Option<bool>,
     /// How many levels of workers, when it is a depth a session can have.
     pub worker_depth: Option<u32>,
     /// Whether a worker fails after Arko's number of failed model requests
@@ -94,6 +100,8 @@ impl SessionDefaults {
                 .as_deref()
                 .and_then(|wakes| arko::monitors::parse_wakes(wakes).ok()),
             worker_models: new.worker_models,
+            worker_billing: new.worker_billing,
+            api_budget: new.api_budget,
             worker_depth: arko::workers::check_depth(new.worker_depth).ok(),
             worker_retry_cap: new.worker_retry_cap,
             message_copies: new.message_copies,
@@ -170,6 +178,10 @@ impl SessionDefaults {
         options.background_after = self.background_after;
         options.monitor_wakes = self.monitor_wakes;
         options.worker_models = Some(self.worker_models);
+        options.worker_billing = self.worker_billing;
+        options.api_budget = self
+            .api_budget
+            .map(|on| on.then_some(arko::workers::DEFAULT_BUDGET));
         options.worker_depth = self.worker_depth;
         options.worker_retry_cap = self
             .worker_retry_cap
@@ -360,6 +372,38 @@ mod tests {
         let mut options = new_options();
         defaults.apply(&mut options, None);
         assert_eq!(options.message_copies, None);
+    }
+
+    /// Worker billing and the daily API budget are left to Arko (its
+    /// environment, else ask first and no budget) until the preferences
+    /// choose them. On, the budget is Arko's default amount. A resumed
+    /// session keeps its own.
+    #[test]
+    fn worker_billing_and_the_budget_are_arkos_until_chosen() {
+        let mut prefs = Prefs::default();
+        let mut options = new_options();
+        SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent));
+        assert_eq!(options.worker_billing, None);
+        assert_eq!(options.api_budget, None);
+        prefs.new_sessions.worker_billing = Some(arko::WorkerBilling::Plans);
+        prefs.new_sessions.api_budget = Some(true);
+        let defaults = SessionDefaults::from_prefs(&prefs);
+        let mut options = new_options();
+        defaults.apply(&mut options, Some(Mode::Agent));
+        assert_eq!(options.worker_billing, Some(arko::WorkerBilling::Plans));
+        assert_eq!(
+            options.api_budget,
+            Some(Some(arko::workers::DEFAULT_BUDGET))
+        );
+        let mut options = new_options();
+        defaults.apply(&mut options, None);
+        assert_eq!(options.worker_billing, None);
+        assert_eq!(options.api_budget, None);
+        // Off is passed on, over ARKO_API_BUDGET.
+        prefs.new_sessions.api_budget = Some(false);
+        let mut options = new_options();
+        SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent));
+        assert_eq!(options.api_budget, Some(None));
     }
 
     /// The model chosen in the composer wins over the default.

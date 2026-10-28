@@ -253,6 +253,14 @@ pub struct NewSessions {
     pub monitor_wakes: Option<String>,
     /// Who chooses the workers' models, as `/worker-models` takes it.
     pub worker_models: arko::ModelChoice,
+    /// Whether workers may run on models billed per token, as
+    /// `/worker-billing` takes it. `None`: as `ARKO_WORKER_BILLING` says,
+    /// else ask first.
+    pub worker_billing: Option<arko::WorkerBilling>,
+    /// Whether the daily API budget is on, at Arko's default amount, as
+    /// `/api-budget on` sets it. `None`: as `ARKO_API_BUDGET` says, else
+    /// off.
+    pub api_budget: Option<bool>,
     /// How many levels of workers the session allows, 1 to 4, as
     /// `/worker-depth` takes it.
     pub worker_depth: u32,
@@ -307,6 +315,8 @@ impl Default for NewSessions {
             background_after: None,
             monitor_wakes: None,
             worker_models: arko::ModelChoice::default(),
+            worker_billing: None,
+            api_budget: None,
             worker_depth: arko::workers::DEFAULT_DEPTH,
             worker_retry_cap: false,
             message_copies: false,

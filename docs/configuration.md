@@ -50,10 +50,14 @@ asks you first when git would track the folder, when the project isn't in a git 
 the profile is for every project. See
 [Arko's documentation](https://github.com/mesa-hills-research/arko) for the file format.
 
-**Settings › Sessions** sets who chooses the workers' models, how many levels of workers a new
-session allows, whether a worker fails after 10 failed model requests in a row (**Worker retry
-cap**, off by default), and whether the agent that started a worker gets a copy of your messages to
-it (**Message copies**, off by default), along with the other defaults for new sessions.
+**Settings › Sessions** sets who chooses the workers' models, whether workers may run on models
+billed per token (**Worker billing**, which asks you first by default), whether new workers on API
+models stop starting once a day's API spend reaches $10 (**Daily API budget**, off by default), how
+many levels of workers a new session allows, whether a worker fails after 10 failed model requests
+in a row (**Worker retry cap**, off by default), and whether the agent that started a worker gets a
+copy of your messages to it (**Message copies**, off by default), along with the other defaults for
+new sessions. Until you set worker billing or the budget there, Arko's `ARKO_WORKER_BILLING` and
+`ARKO_API_BUDGET` settings decide.
 
 Under **Names**, **Session names** chooses how a new session is named. **First words** uses the start
 of its first message, cut to 30 display columns. **Named by a model** asks a model in the background,

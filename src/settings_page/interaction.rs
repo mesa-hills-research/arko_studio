@@ -498,17 +498,20 @@ fn typed_session_defaults_are_checked_and_saved(cx: &mut TestAppContext) {
     assert_eq!(typed[2].as_ref(), "off");
 }
 
-/// Sessions lists who chooses the workers' models and how deep workers go
-/// in Arko's words, shows the saved choice, and the choice made there is
-/// what the backend starts new sessions with.
+/// Sessions lists who chooses the workers' models, worker billing, the
+/// daily API budget and how deep workers go in Arko's words, shows the
+/// saved choice, and the choice made there is what the backend starts new
+/// sessions with.
 #[gpui_kit::test]
 fn the_worker_settings_are_chosen_and_passed_on(cx: &mut TestAppContext) {
+    use arko::WorkerBilling;
+
     let mut settings = prefs::Prefs::default();
     settings.new_sessions.worker_models = arko::ModelChoice::Profiles;
     let backend = start_with(cx, settings);
     let (window, _, _) = settings_window(cx, SESSIONS_PAGE, 900.);
     // The group's items: handover size, workers' handover size, models for
-    // workers, worker depth.
+    // workers, worker billing, daily API budget, worker depth.
     let label = |cx: &mut TestAppContext, item: usize| {
         let mut label = None;
         act(cx, window, |window, _| {
@@ -521,16 +524,38 @@ fn the_worker_settings_are_chosen_and_passed_on(cx: &mut TestAppContext) {
         });
         label
     };
+    let budget_on = |cx: &mut TestAppContext| {
+        let mut checked = None;
+        act(cx, window, |window, _| {
+            checked = window
+                .within("group-0")
+                .within("item-4")
+                .find("check")
+                .checked();
+        });
+        checked.unwrap()
+    };
     let started_with = || {
         let mut options = arko::Options::default();
         backend.defaults().apply(&mut options, Some(Mode::Agent));
-        (options.worker_models, options.worker_depth)
+        (
+            options.worker_models,
+            options.worker_billing,
+            options.api_budget,
+            options.worker_depth,
+        )
     };
     assert_eq!(label(cx, 2).as_deref(), Some("Profiles only"));
-    assert_eq!(label(cx, 3).as_deref(), Some("2"));
-    assert_eq!(started_with(), (Some(arko::ModelChoice::Profiles), Some(2)));
+    // Billing shows Arko's default, and leaves it to Arko.
+    assert_eq!(label(cx, 3).as_deref(), Some("Ask before API"));
+    assert!(!budget_on(cx));
+    assert_eq!(label(cx, 5).as_deref(), Some("2"));
+    assert_eq!(
+        started_with(),
+        (Some(arko::ModelChoice::Profiles), None, None, Some(2))
+    );
     // Choosing from the menus: Arko's labels, in its order.
-    for (item, choice) in [(2, 2usize), (3, 3usize)] {
+    for (item, choice) in [(2, 2usize), (3, 0usize), (5, 3usize)] {
         act(cx, window, |window, cx| {
             window
                 .within("group-0")
@@ -541,24 +566,49 @@ fn the_worker_settings_are_chosen_and_passed_on(cx: &mut TestAppContext) {
             window.within("popup-menu").click(choice, cx)
         });
     }
+    act(cx, window, |window, cx| {
+        window.within("group-0").within("item-4").click("check", cx)
+    });
     assert_eq!(
         cx.read(|cx| prefs::get(cx).new_sessions.worker_models),
         arko::ModelChoice::Session
     );
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.worker_billing),
+        Some(WorkerBilling::Plans)
+    );
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.api_budget),
+        Some(true)
+    );
     assert_eq!(cx.read(|cx| prefs::get(cx).new_sessions.worker_depth), 4);
     assert_eq!(label(cx, 2).as_deref(), Some("Session’s worker model"));
-    assert_eq!(label(cx, 3).as_deref(), Some("4"));
-    assert_eq!(started_with(), (Some(arko::ModelChoice::Session), Some(4)));
+    assert_eq!(label(cx, 3).as_deref(), Some("Plans only"));
+    assert!(budget_on(cx));
+    assert_eq!(label(cx, 5).as_deref(), Some("4"));
+    assert_eq!(
+        started_with(),
+        (
+            Some(arko::ModelChoice::Session),
+            Some(WorkerBilling::Plans),
+            Some(Some(arko::workers::DEFAULT_BUDGET)),
+            Some(4)
+        )
+    );
     // A choice made elsewhere shows at once.
     cx.update(|cx| {
         prefs::update(cx, |prefs| {
             prefs.new_sessions.worker_models = arko::ModelChoice::Agent;
+            prefs.new_sessions.worker_billing = Some(WorkerBilling::Api);
+            prefs.new_sessions.api_budget = Some(false);
             prefs.new_sessions.worker_depth = 1;
         })
     });
     act(cx, window, |_, _| {});
     assert_eq!(label(cx, 2).as_deref(), Some("Main agent chooses"));
-    assert_eq!(label(cx, 3).as_deref(), Some("1"));
+    assert_eq!(label(cx, 3).as_deref(), Some("API allowed"));
+    assert!(!budget_on(cx));
+    assert_eq!(label(cx, 5).as_deref(), Some("1"));
 }
 
 /// The chat instructions type as Settings › Input says, as it changes
