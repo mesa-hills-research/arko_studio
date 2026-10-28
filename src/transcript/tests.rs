@@ -21,7 +21,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::model::RowKey;
-use super::{AgentFilter, TranscriptEvent, TranscriptView};
+use super::{AgentFilter, TranscriptEvent, TranscriptView, image_caption};
 use crate::Startup;
 use crate::backend::FakeBackend;
 use crate::prefs::{self, TranscriptView as View};
@@ -2110,6 +2110,57 @@ fn image_copies_keep_the_latest_within_their_budget() {
     copies.get(11, &lookup);
     let kept: Vec<u64> = copies.images.iter().map(|(id, _)| *id).collect();
     assert_eq!(kept, [5, 6, 7, 8, 9, 10, 3, 11]);
+}
+
+#[test]
+fn a_label_that_ends_with_the_size_says_it_once() {
+    // How `read_file` and Claude Code's `Read` label an image.
+    assert_eq!(
+        image_caption("chart.png, 457 KB", 467_200),
+        "chart.png, 457 KB"
+    );
+    assert_eq!(
+        image_caption("photo.jpg, 3.3 MB", 3_500_000),
+        "photo.jpg, 3.3 MB"
+    );
+    // They round anything under 1 KB up to a kilobyte.
+    assert_eq!(image_caption("dot.png, 1 KB", 70), "dot.png, 1 KB");
+    assert_eq!(image_caption("empty.png, 0 KB", 0), "empty.png, 0 KB");
+    // As Studio says it.
+    assert_eq!(image_caption("dot.png · 70 B", 70), "dot.png · 70 B");
+}
+
+#[test]
+fn a_label_without_a_size_gets_one() {
+    assert_eq!(image_caption("chart.png", 12_000), "chart.png · 12 KB");
+    assert_eq!(image_caption("chart.png", 1_048_575), "chart.png · 1024 KB");
+    assert_eq!(image_caption("photo.jpg", 3_500_000), "photo.jpg · 3.3 MB");
+    assert_eq!(image_caption("image", 70), "image · 70 B");
+}
+
+#[test]
+fn an_empty_label_is_the_size() {
+    assert_eq!(image_caption("", 512), "512 B");
+    assert_eq!(image_caption("", 12_000), "12 KB");
+    assert_eq!(image_caption("", 3_500_000), "3.3 MB");
+}
+
+#[test]
+fn a_label_that_ends_with_another_size_gets_the_size() {
+    assert_eq!(
+        image_caption("chart.png, 457 KB", 20_480),
+        "chart.png, 457 KB · 20 KB"
+    );
+    // The size has to start a number, so "20 KB" doesn't end "120 KB".
+    assert_eq!(
+        image_caption("chart.png, 120 KB", 20_480),
+        "chart.png, 120 KB · 20 KB"
+    );
+    assert_eq!(
+        image_caption("photo.jpg, 12.2 MB", 2_306_867),
+        "photo.jpg, 12.2 MB · 2.2 MB"
+    );
+    assert_eq!(image_caption("dot.png, 2 KB", 70), "dot.png, 2 KB · 70 B");
 }
 
 #[gpui_kit::test]

@@ -2002,15 +2002,31 @@ impl TranscriptView {
 /// The parts a row's texts may have in the window's selection, in order.
 const PARTS: u64 = 16;
 
-/// "screenshot.png · 240 KB": an image's label and size.
+/// "screenshot.png · 240 KB": an image's label and size. A label that
+/// already ends with the size says it once. `read_file` and Claude Code's
+/// `Read` label an image "path, 240 KB", and round anything under 1 KB up
+/// to "1 KB" where this says its bytes.
 fn image_caption(label: &str, bytes: usize) -> String {
-    let size = match bytes {
-        0..1024 => format!("{bytes} B"),
-        1024..1_048_576 => format!("{} KB", bytes.div_ceil(1024)),
-        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.),
+    let rounded = if bytes < 1_048_576 {
+        format!("{} KB", bytes.div_ceil(1024))
+    } else {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.)
+    };
+    let size = if bytes < 1024 {
+        format!("{bytes} B")
+    } else {
+        rounded.clone()
+    };
+    // The size starts a word, so "20 KB" doesn't end "120 KB".
+    let ends_with = |size: &str| {
+        label
+            .strip_suffix(size)
+            .is_some_and(|before| !before.ends_with(|c: char| c.is_ascii_digit() || c == '.'))
     };
     if label.is_empty() {
         size
+    } else if ends_with(&size) || ends_with(&rounded) {
+        label.to_string()
     } else {
         format!("{label} · {size}")
     }
