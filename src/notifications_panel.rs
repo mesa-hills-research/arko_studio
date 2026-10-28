@@ -1016,7 +1016,7 @@ mod tests {
             let notifications = window.find("notifications-selector").bounds();
             let mode = window.find("empty-mode-switch").bounds();
             assert_eq!(notifications.size.height, mode.size.height);
-            assert_eq!(mode.size.height, gpui_kit::px(34.));
+            assert_eq!(mode.size.height, gpui_kit::px(32.));
         });
     }
 

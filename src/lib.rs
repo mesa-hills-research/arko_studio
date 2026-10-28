@@ -37,6 +37,7 @@ pub mod prefs;
 pub mod prompts;
 pub mod questions;
 pub mod quit;
+mod segmented;
 pub mod session_info;
 pub mod session_view;
 pub mod settings_page;

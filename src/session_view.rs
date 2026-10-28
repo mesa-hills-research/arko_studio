@@ -34,7 +34,7 @@ use crate::layout::WidthClass;
 use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase, PromptKind};
 use crate::questions::{AnswerPanel, AnswerPanelEvent};
 use crate::transcript::{AgentFilter, FindStatus, TranscriptEvent, TranscriptView};
-use crate::{drafts, menus, prefs};
+use crate::{drafts, menus, prefs, segmented};
 
 /// How many recent folders Change… offers.
 const RECENT_FOLDERS: usize = 8;
@@ -3094,10 +3094,11 @@ impl SessionView {
         }
     }
 
-    /// Chat | Agent uses an inset track and an outline on the chosen mode,
-    /// with an icon and a line on what the mode does. ←/→ switch
-    /// while it has focus. `on_pick` hears the mode chosen. An open session
-    /// switches between turns only.
+    /// Chat | Agent looks like the kit's segmented tabs, an outlined track
+    /// with the chosen mode filled and outlined, each mode with its icon, and
+    /// a line on what the chosen mode does. ←/→ switch while it has focus.
+    /// `on_pick` hears the mode chosen. An open session switches between
+    /// turns only.
     fn render_mode_switch(
         &self,
         prefix: &'static str,
@@ -3119,11 +3120,6 @@ impl SessionView {
             }
         };
         let focused = focus.is_focused(window) && window.last_input_was_keyboard();
-        let foreground = if can_switch {
-            theme.foreground
-        } else {
-            theme.muted_foreground.opacity(0.65)
-        };
         let segment = |value: Mode, label: &'static str, icon: gpui_kit::assets::IconName| {
             let checked = mode == value;
             let on_pick = on_pick.clone();
@@ -3142,26 +3138,14 @@ impl SessionView {
                 })
                 .aria_selected(checked)
                 .when(checked, |this| this.aria_active_descendant())
-                .h(rems(1.75))
-                .px_3()
                 .gap_1p5()
                 .items_center()
                 .justify_center()
-                .rounded(theme.radius)
-                .border_1()
-                .text_sm()
+                .map(|this| segmented::segment_style(this, checked, !can_switch, cx))
                 .child(Icon::new(icon).small())
-                .child(label)
-                .text_color(foreground)
-                .border_color(if checked {
-                    foreground
-                } else {
-                    theme.transparent
-                })
-                .when(checked, |this| this.font_medium())
+                .child(segmented::segment_label(label))
                 .when(can_switch && !checked, |this| {
                     this.cursor_pointer()
-                        .hover(|style| style.text_color(theme.foreground))
                         .on_click(move |_, window, cx| on_pick(value, window, cx))
                 })
         };
@@ -3175,12 +3159,7 @@ impl SessionView {
                     .when(can_switch, |this| this.track_focus(focus))
                     .role(Role::RadioGroup)
                     .aria_label("Mode")
-                    .p(px(2.))
-                    .gap(px(2.))
-                    .rounded(theme.radius + px(2.))
-                    .border_1()
-                    .border_color(theme.transparent)
-                    .bg(theme.tokens.tab_bar_segmented)
+                    .map(|this| segmented::track_style(this, cx))
                     .on_key_down({
                         let on_pick = on_pick.clone();
                         move |event: &KeyDownEvent, window, cx| {
