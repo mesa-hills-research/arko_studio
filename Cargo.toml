@@ -80,6 +80,9 @@ winresource = "0.1"
 [profile.release]
 codegen-units = 1
 lto = "thin"
+# The symbol table is about 19 MB of the binary. Without it, a backtrace
+# shows addresses instead of function names.
+strip = true
 
 # GPUI's layout, text and drawing crates are slow unoptimized. Optimizing them
 # keeps debug builds responsive while the app's own code stays quick to build.
