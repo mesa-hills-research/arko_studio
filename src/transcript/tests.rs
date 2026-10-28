@@ -4068,10 +4068,10 @@ fn a_reopened_sessions_turns_for_news_show_as_notices(cx: &mut TestAppContext) {
     assert_eq!(
         notices,
         [
-            "⇠ a monitor alerted, and its alert goes to the agent",
-            "⇠ a monitor ends in 25 min, and the agent is asked whether to keep it",
-            "⇠ a background job finished, and its update goes to the agent",
-            "⇠ the workers' news goes to the agent",
+            "Monitor alerted",
+            "Monitor ends in 25 min",
+            "Job finished",
+            "News from workers",
         ]
     );
     // Alt+↑ edits the user's first message, the one that started a turn of

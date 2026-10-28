@@ -53,7 +53,8 @@ impl Mock {
     }
 
     /// Gives every session the server's client. A new one runs luna with
-    /// plain-text replies.
+    /// plain-text replies, and its workers start on luna's API key without
+    /// asking, unless the preferences choose another worker billing.
     pub fn configure(&self) -> Configure {
         let client = Arc::new(self.server.as_ref().unwrap().client());
         Arc::new(move |options: &mut arko::Options| {
@@ -63,6 +64,9 @@ impl Mock {
                 options.openai_auth = Some(arko::OpenAiAuth::ApiKey);
                 options.cache_1h = Some(false);
                 options.text_replies = Some(true);
+                options
+                    .worker_billing
+                    .get_or_insert(arko::WorkerBilling::Api);
             }
         })
     }
