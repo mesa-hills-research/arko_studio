@@ -1039,7 +1039,7 @@ fn notifications_page(cx: &App) -> SettingPage {
             .keywords(["subagent", "report", "failed", "error", "notify", "unfocused"]),
             switch(
                 "Cache reminders",
-                "5 minutes before a session’s prompt cache expires (for an hour-long cache), and at 1 minute with a countdown and Refresh.",
+                "5 minutes before a session’s prompt cache expires (for a cache of 15 minutes or more), and at 1 minute with a countdown and Refresh.",
                 |prefs| prefs.notifications.cache_reminders,
                 |prefs, on| prefs.notifications.cache_reminders = on,
                 defaults.cache_reminders,

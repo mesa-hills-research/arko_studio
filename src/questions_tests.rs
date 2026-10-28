@@ -609,6 +609,52 @@ fn an_approval_is_saved_with_save(cx: &mut TestAppContext) {
     assert!(!app.shows(cx, "answer-panel"));
 }
 
+/// The question Arko asks before a worker starts on a model billed per
+/// token is a plain question with its three choices. The choice picked is
+/// its answer, as for the agent's own questions.
+#[gpui_kit::test]
+fn a_worker_billed_per_token_is_allowed_with_a_choice(cx: &mut TestAppContext) {
+    let app = start(cx);
+    let question = "Start a worker on Opus 5.5, billed per token? It costs $5 per million input tokens and $25 per million output tokens. The task is “Review the parser.”";
+    let choices = ["Allow", "Allow Opus 5.5 for this session", "Deny"];
+    let id = "x5e6f7a8b";
+    app.ask(
+        cx,
+        vec![asked(serde_json::json!({
+            "id": id, "question": question, "choices": choices,
+            "state": "open", "waits": true, "item": 12
+        }))],
+    );
+    assert!(app.shows(cx, "answer-panel"));
+    assert_eq!(
+        app.label(cx, "answer-panel-title").as_deref(),
+        Some("Arko asks a question")
+    );
+    assert_eq!(app.question_labels(cx), [question]);
+    for (n, choice) in choices.into_iter().enumerate() {
+        assert_eq!(
+            app.label(cx, part("answer-choice", id, n)).as_deref(),
+            Some(choice)
+        );
+    }
+    assert!(!app.shows(cx, part("answer-choice", id, 3)));
+    app.click(cx, part("answer-choice", id, 1));
+    app.click(cx, "answer-send");
+    assert_eq!(
+        app.sent(cx),
+        [arko::Input::AnswerQuestions(Answers {
+            answers: vec![QuestionAnswer::new(
+                id,
+                Answer {
+                    choices: vec!["Allow Opus 5.5 for this session".into()],
+                    ..Answer::default()
+                }
+            )],
+        })]
+    );
+    assert!(!app.shows(cx, "answer-panel"));
+}
+
 /// Words typed for an approval go back to the agent as changes to make.
 #[gpui_kit::test]
 fn typed_words_ask_for_changes_to_an_approval(cx: &mut TestAppContext) {

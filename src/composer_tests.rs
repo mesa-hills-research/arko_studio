@@ -413,6 +413,49 @@ fn the_model_list_says_what_access_mythos_needs(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("tooltip").is_some());
 }
 
+/// A model billed per token says how at the end of its row, as Arko's
+/// picker does, and a screen reader hears it after the name. The models on
+/// a plan say nothing.
+#[gpui_kit::test]
+fn the_model_list_says_how_a_model_is_billed(cx: &mut TestAppContext) {
+    use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
+    let group = |name: &str, model: &str, alias: &str| ModelGroup {
+        name: name.into(),
+        needs: None,
+        models: vec![ModelChoice {
+            name: model.into(),
+            alias: alias.into(),
+        }],
+    };
+    let choices = ModelChoices {
+        groups: vec![
+            group(
+                "Claude Code, on your Claude plan",
+                "cc:claude-opus-5-5",
+                "cc:opus",
+            ),
+            group("Anthropic API, billed per token", "claude-opus-5-5", "opus"),
+        ],
+        default: Some("cc:claude-opus-5-5".into()),
+        note: None,
+    };
+    let billing = choices.billing("claude-opus-5-5").unwrap();
+    assert!(billing.starts_with("API"));
+    let backend = FakeBackend::sample("/arko", SystemTime::now()).with_models(choices);
+    cx.update(|cx| crate::init(Startup::for_tests(Arc::new(backend)), cx));
+    let (window, _) = open(cx, 1300.);
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("model-billing-0-0").is_none());
+        assert!(window.try_find("model-billing-1-0").is_some());
+        assert_eq!(window.find("model-0-0").label(), Some("Opus 5.5"));
+        assert_eq!(
+            window.find("model-1-0").label(),
+            Some(format!("Opus 5.5. {billing}").as_str())
+        );
+    });
+}
+
 #[gpui_kit::test]
 fn the_mode_chip_lists_the_models_and_picks_one(cx: &mut TestAppContext) {
     let (_, window, workspace) = start(cx);

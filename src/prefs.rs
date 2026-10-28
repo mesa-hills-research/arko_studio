@@ -236,8 +236,9 @@ pub struct NewSessions {
     pub worker_model: Option<String>,
     /// `None`: the main agent's effort.
     pub worker_effort: Option<String>,
-    /// Anthropic's 1-hour prompt cache, for Claude by API key. `None`: as
-    /// `ARKO_CACHE_1H` in the environment or a `.env` file says, else off.
+    /// The long prompt cache, an hour on Claude models and 12 hours on
+    /// OpenAI models with an API key. `None`: as `ARKO_CACHE_1H` in the
+    /// environment or a `.env` file says, else off.
     pub cache_1h: Option<bool>,
     /// The main agent's handover size, in tokens. `None`: its model's own.
     pub handover_at: Option<usize>,
@@ -252,6 +253,14 @@ pub struct NewSessions {
     pub monitor_wakes: Option<String>,
     /// Who chooses the workers' models, as `/worker-models` takes it.
     pub worker_models: arko::ModelChoice,
+    /// Whether workers may run on models billed per token, as
+    /// `/worker-billing` takes it. `None`: as `ARKO_WORKER_BILLING` says,
+    /// else ask first.
+    pub worker_billing: Option<arko::WorkerBilling>,
+    /// Whether the daily API budget is on, at Arko's default amount, as
+    /// `/api-budget on` sets it. `None`: as `ARKO_API_BUDGET` says, else
+    /// off.
+    pub api_budget: Option<bool>,
     /// How many levels of workers the session allows, 1 to 4, as
     /// `/worker-depth` takes it.
     pub worker_depth: u32,
@@ -306,6 +315,8 @@ impl Default for NewSessions {
             background_after: None,
             monitor_wakes: None,
             worker_models: arko::ModelChoice::default(),
+            worker_billing: None,
+            api_budget: None,
             worker_depth: arko::workers::DEFAULT_DEPTH,
             worker_retry_cap: false,
             message_copies: false,

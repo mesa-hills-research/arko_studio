@@ -2674,6 +2674,16 @@ impl SessionView {
                             let details = known
                                 .map(|known| known.details())
                                 .filter(|details| !details.is_empty());
+                            // How a model billed per token is billed, at the
+                            // row's end, as the terminal's picker shows it.
+                            // OpenRouter's own details say it for its models.
+                            let billing = details
+                                .is_none()
+                                .then(|| match &session_models {
+                                    Some(models) => arko::models::billing(models, &model.name),
+                                    None => choices.billing(&model.name),
+                                })
+                                .flatten();
                             // What to know before choosing it, in the row's
                             // tooltip, marked by an (i) after its name.
                             let note = arko::models::note(&model.name);
@@ -2707,6 +2717,24 @@ impl SessionView {
                                 .when_some(details, |this, details| {
                                     this.tooltip(details.clone())
                                         .accessibility_label(format!("{label}. {details}"))
+                                })
+                                .when_some(billing, |this, billing| {
+                                    let spoken = match note {
+                                        Some(note) => format!("{label}. {billing}. {note}"),
+                                        None => format!("{label}. {billing}"),
+                                    };
+                                    this.accessibility_label(spoken).child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "model-billing-{group_ix}-{ix}"
+                                            )))
+                                            .test_support()
+                                            .flex_none()
+                                            .pl_1()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(billing),
+                                    )
                                 })
                                 .label(label)
                                 .on_click(move |_, window, cx| {
