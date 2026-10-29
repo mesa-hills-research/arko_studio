@@ -187,6 +187,27 @@ impl Model {
         };
     }
 
+    /// Whether `update` would change nothing here: an item the filter leaves
+    /// out, or text streamed into one, such as a worker's text in the main
+    /// transcript. (The activity comes apart from its update.)
+    pub fn ignores(&self, update: &Update) -> bool {
+        match update {
+            Update::Item(item) | Update::Change(item) => {
+                item.kind != Kind::Conversation
+                    && !self.filter.keeps(item)
+                    && self.position(item.id).is_err()
+            }
+            Update::Append { id, .. } | Update::Remove { id } => self.position(*id).is_err(),
+            Update::Activity => true,
+            _ => false,
+        }
+    }
+
+    /// Whether `activity` is the one the model has.
+    pub fn has_activity(&self, activity: &Activity) -> bool {
+        self.activity == *activity
+    }
+
     pub fn set_activity(&mut self, activity: Activity, changes: &mut Changes) {
         if self.activity != activity {
             self.activity = activity;
@@ -743,14 +764,30 @@ pub(crate) type RowChange = (Range<usize>, usize);
 /// same order, stay: the second list says where each went, from `old` to
 /// `new`.
 pub(crate) fn row_changes(old: &[Row], new: &[Row]) -> (Vec<RowChange>, Vec<(usize, usize)>) {
-    let index: HashMap<RowKey, usize> = new
+    // Rows change near the end, mostly: the rows before and after the
+    // change are in both lists in the same places, and only those between
+    // are looked up by key. (A key is in a list once, so a row of one end
+    // can't be one of those between in the other list.)
+    let start = old
+        .iter()
+        .zip(new)
+        .take_while(|(old, new)| old.key == new.key)
+        .count();
+    let end = old[start..]
+        .iter()
+        .rev()
+        .zip(new[start..].iter().rev())
+        .take_while(|(old, new)| old.key == new.key)
+        .count();
+    let (old_end, new_end) = (old.len() - end, new.len() - end);
+    let index: HashMap<RowKey, usize> = new[start..new_end]
         .iter()
         .enumerate()
-        .map(|(ix, row)| (row.key, ix))
+        .map(|(ix, row)| (row.key, start + ix))
         .collect();
-    let mut kept = Vec::new();
-    let mut next = 0;
-    for (old_ix, row) in old.iter().enumerate() {
+    let mut kept: Vec<(usize, usize)> = (0..start).map(|ix| (ix, ix)).collect();
+    let mut next = start;
+    for (old_ix, row) in old.iter().enumerate().take(old_end).skip(start) {
         if let Some(&new_ix) = index.get(&row.key)
             && new_ix >= next
         {
@@ -758,6 +795,7 @@ pub(crate) fn row_changes(old: &[Row], new: &[Row]) -> (Vec<RowChange>, Vec<(usi
             next = new_ix + 1;
         }
     }
+    kept.extend((0..end).map(|ix| (old_end + ix, new_end + ix)));
     let mut changes = Vec::new();
     let (mut old_from, mut new_from) = (0, 0);
     for &(old_ix, new_ix) in kept.iter().chain([&(old.len(), new.len())]) {
@@ -2426,5 +2464,37 @@ mod tests {
         let (changes, kept) = row_changes(&old, &new);
         assert_eq!(changes, [(1..3, 1), (5..5, 1), (6..6, 1)]);
         assert_eq!(kept, [(0, 0), (3, 2), (4, 3), (5, 5)]);
+    }
+
+    /// The rows after a change stay too, and rows that swap places between
+    /// them keep the first one's place.
+    #[test]
+    fn rows_after_a_change_stay_and_swapped_rows_keep_one() {
+        let row = |key| Row {
+            key,
+            gap: Gap::None,
+        };
+        let old = [
+            row(RowKey::User(1)),
+            row(RowKey::Call(2)),
+            row(RowKey::Call(3)),
+            row(RowKey::Working(3)),
+            row(RowKey::User(9)),
+        ];
+        let new = [
+            row(RowKey::User(1)),
+            row(RowKey::Call(3)),
+            row(RowKey::Call(2)),
+            row(RowKey::Call(4)),
+            row(RowKey::Working(3)),
+            row(RowKey::User(9)),
+        ];
+        let (changes, kept) = row_changes(&old, &new);
+        assert_eq!(kept, [(0, 0), (1, 2), (3, 4), (4, 5)]);
+        assert_eq!(changes, [(1..1, 1), (2..3, 1)]);
+        // Nothing changed.
+        let (changes, kept) = row_changes(&old, &old);
+        assert!(changes.is_empty());
+        assert_eq!(kept, (0..old.len()).map(|ix| (ix, ix)).collect::<Vec<_>>());
     }
 }

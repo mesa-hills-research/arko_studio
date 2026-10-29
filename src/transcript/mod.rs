@@ -15,6 +15,8 @@
 
 mod find;
 mod fold;
+#[cfg(test)]
+pub(crate) mod frame_tests;
 mod height;
 #[cfg(test)]
 mod height_tests;
@@ -426,9 +428,6 @@ pub struct TranscriptView {
     ticker: Option<Task<()>>,
     /// How long the ticker waits between draws.
     tick_every: Duration,
-    /// The entry whose running indicator turns this frame: the latest
-    /// thing that runs, unless "Working…" shows (it turns then).
-    animated: Option<u64>,
     /// The agent's entry "Working…" follows, while the agent waits on the
     /// model ([`Self::working_after`]).
     working: Option<u64>,
@@ -553,7 +552,6 @@ impl TranscriptView {
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
             tick_every: Duration::ZERO,
-            animated: None,
             working: None,
             shows_working: false,
             text_at: 0,
@@ -816,11 +814,33 @@ impl TranscriptView {
         cx.notify();
     }
 
-    /// Applies what came from the feed since the last frame.
-    pub fn apply_pending(&mut self, cx: &mut Context<Self>) {
+    /// Updates came from the feed: the transcript draws again to apply them
+    /// with its next frame. Updates that change nothing here go without a
+    /// frame. The main transcript gets every worker's text as it streams, and
+    /// drawing it again for each would draw the session view around it too.
+    fn updates_came(&mut self, cx: &mut Context<Self>) {
+        let model = &self.model;
+        let unused = self.inbox.drop_unused(|pending| {
+            pending.snapshot.is_none()
+                && pending
+                    .activity
+                    .as_ref()
+                    .is_none_or(|activity| model.has_activity(activity))
+                && pending.updates.iter().all(|update| model.ignores(update))
+        });
+        if !unused {
+            cx.notify();
+        }
+    }
+
+    /// Applies what came from the feed since the last frame, and returns
+    /// whether anything changed. It asks for no frame: the frame that draws
+    /// applies them first, and asking would draw the transcript again in the
+    /// next frame for nothing.
+    pub fn apply_pending(&mut self, cx: &mut Context<Self>) -> bool {
         let pending = self.inbox.take();
         if pending.snapshot.is_none() && pending.updates.is_empty() && pending.activity.is_none() {
-            return;
+            return false;
         }
         let mut changes = Changes::default();
         if let Some(snapshot) = pending.snapshot {
@@ -832,7 +852,9 @@ impl TranscriptView {
         if let Some(activity) = pending.activity {
             self.model.set_activity(activity, &mut changes);
         }
+        let changed = changes.any();
         self.follow(changes, cx);
+        changed
     }
 
     /// Brings the drawn side up to `changes` of the model.
@@ -923,7 +945,6 @@ impl TranscriptView {
                 .copied();
             self.find_changed(&changes.removed, changed, cx);
         }
-        cx.notify();
     }
 
     /// Marks finished the texts that stopped streaming in, so a table row
@@ -1535,32 +1556,6 @@ impl TranscriptView {
         }));
     }
 
-    /// The latest entry that runs, of those the view shows with their own
-    /// indicator: a call, a thinking that streams, a worker's card. A
-    /// worker's call that only the Full view shows, or a call the Messages
-    /// view counts, would otherwise leave no indicator turning.
-    fn latest_running(&self) -> Option<u64> {
-        let filter = self.model.filter();
-        let entries = self.model.entries();
-        entries.iter().enumerate().rev().find_map(|(ix, entry)| {
-            let item = &entry.item;
-            if model::show(filter, self.settings.view, item) != model::Show::Item {
-                return None;
-            }
-            let running = match item.kind {
-                Kind::Call => item.status == Some(CallStatus::Running),
-                Kind::Thinking => self.model.is_streaming(ix),
-                Kind::WorkerLine => item
-                    .worker
-                    .as_deref()
-                    .and_then(|worker| self.model.worker(worker))
-                    .is_some_and(|worker| worker.state == arko::remote::WorkerState::Running),
-                _ => false,
-            };
-            running.then_some(item.id)
-        })
-    }
-
     /// How long until the rows' times change: a second while a call or a
     /// worker runs, else until the minute of a background job's time turns
     /// or a monitor's "ends in" changes, or `None` when nothing runs.
@@ -1903,12 +1898,6 @@ impl Render for TranscriptView {
         if !self.list.is_scrolled_up() {
             self.new_while_away = 0;
         }
-        // "Working…" is the latest thing that runs, when it shows.
-        self.animated = if self.shows_working {
-            None
-        } else {
-            self.latest_running()
-        };
         let new = self.new_while_away;
         // Reached by Tab, the transcript shows that it has the focus, with a
         // ring laid over its edge (a border would move the rows). A row the

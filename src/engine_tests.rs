@@ -1919,6 +1919,154 @@ fn frames_while_another_session_works(cx: &mut TestAppContext) {
     app.close_all(cx);
 }
 
+/// What each frame costs in the whole window at the end of a long
+/// conversation, by the views it draws: a command running at the end, then
+/// a worker writing while the agent waits for it, then the agent waiting on
+/// the model. `TURNS` sets the length (300 by default). Ignored by default.
+///
+/// ```sh
+/// TURNS=300 cargo test --lib frames_at_the_end_of_a_long_conversation -- --ignored --nocapture
+/// ```
+#[gpui_kit::test]
+#[ignore]
+fn frames_at_the_end_of_a_long_conversation(cx: &mut TestAppContext) {
+    use std::time::Instant;
+
+    let mock = Mock::start(|_, body| {
+        if body.contains("Wait a while") {
+            return reply_after("r3", "Waited.", Duration::from_secs(60));
+        }
+        if body.contains("The last question") {
+            if body.contains("call_m1") {
+                return reply("r2", "Done.");
+            }
+            let call = arko::testing::tool_call(
+                "m1",
+                "shell",
+                serde_json::json!({ "command": "sleep 30" }),
+            );
+            return Box::pin(async move { call });
+        }
+        reply("r1", "Hello.")
+    });
+    let app = start(cx, &mock);
+    cx.update(|cx| {
+        crate::prefs::update(cx, |prefs| {
+            prefs.appearance.motion = crate::prefs::Motion::On;
+            if std::env::var("VIEW").as_deref() == Ok("quiet") {
+                prefs.view = crate::prefs::TranscriptView::Quiet;
+            }
+        });
+        cx.set_reduce_motion(false);
+    });
+    app.send(cx, "Hi");
+    app.wait_for_text(cx, "Hello.");
+    let session = app.shown(cx).unwrap();
+    wait_until(cx, "the turn to end", |cx| {
+        cx.read(|cx| !session.read(cx).is_working())
+    });
+    let turns = std::env::var("TURNS")
+        .ok()
+        .and_then(|turns| turns.parse().ok())
+        .unwrap_or(300);
+    let feed = cx.read(|cx| session.read(cx).feed().cloned().unwrap());
+    crate::transcript::frame_tests::long_conversation(&feed, turns, 8);
+    app.wait_for_rows(cx, turns * 10);
+    let transcript = app.transcript(cx).unwrap();
+    let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
+    let step = |cx: &mut TestAppContext| {
+        cx.executor().advance_clock(Duration::from_micros(16_667));
+        cx.update_window(app.window, |_, window, cx| {
+            window.simulate_next_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let settle = |cx: &mut TestAppContext| {
+        for _ in 0..240 {
+            step(cx);
+        }
+    };
+    settle(cx);
+    eprintln!(
+        "{turns} turns: {} rows",
+        cx.read(|cx| transcript.read(cx).row_count())
+    );
+    let draws = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            (
+                view.read(cx).render_count(),
+                transcript.read(cx).render_count(),
+            )
+        })
+    };
+    let frames = |cx: &mut TestAppContext, name: &str, before: &dyn Fn(usize)| {
+        let ms = |d: Duration| d.as_secs_f64() * 1000.;
+        let mut kinds: std::collections::BTreeMap<&str, Vec<Duration>> = Default::default();
+        crate::testing::count_renders();
+        let mut workspace = 0;
+        for n in 0..300 {
+            before(n);
+            let drawn = draws(cx);
+            let start = Instant::now();
+            step(cx);
+            let took = start.elapsed();
+            let after = draws(cx);
+            let workspaces = crate::testing::renders()
+                .get("Workspace")
+                .copied()
+                .unwrap_or_default();
+            let kind = if after.1 > drawn.1 {
+                "the transcript"
+            } else if after.0 > drawn.0 {
+                "the session view"
+            } else if workspaces > workspace {
+                "the workspace"
+            } else {
+                "nothing"
+            };
+            workspace = workspaces;
+            kinds.entry(kind).or_default().push(took);
+        }
+        eprintln!("{name}:");
+        for (kind, mut times) in kinds {
+            times.sort();
+            eprintln!(
+                "  {} frames drawing {kind}: median {:.3} ms, p90 {:.3} ms, max {:.3} ms",
+                times.len(),
+                ms(times[times.len() / 2]),
+                ms(times[times.len() * 9 / 10]),
+                ms(*times.last().unwrap())
+            );
+        }
+    };
+    app.send(cx, "The last question");
+    wait_until(cx, "the command to run", |cx| {
+        cx.read(|cx| !session.read(cx).reading().movable.is_empty())
+    });
+    settle(cx);
+    frames(cx, "a command runs", &|_| {});
+    feed.worker("r9", "Fix the parser", arko::remote::WorkerChange::Started);
+    settle(cx);
+    let words = |n: usize| {
+        let event = arko_workflows::WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: "r9".into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event: arko_agents::AgentEvent::AssistantResponseChunk(format!("word {n} ")),
+        };
+        feed.event(&event, Some("r9"));
+    };
+    frames(cx, "a command runs and a worker writes", &|n| words(n));
+    feed.worker(
+        "r9",
+        "",
+        arko::remote::WorkerChange::Finished { report: "Done." },
+    );
+    app.close_all(cx);
+}
+
 /// The drop that ends a resize must still reach the window's text selection.
 /// Otherwise the selection goes on following the pointer over the transcript.
 #[gpui_kit::test]
