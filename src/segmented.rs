@@ -74,14 +74,17 @@ fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
+/// The gap between the track's outer edge and each segment's edge, on every
+/// side, where the kit's default segmented tabs have it.
+pub(crate) const SEGMENT_INSET: Pixels = px(4.);
+
 /// The track, outlined, 32 px tall around its segments like the kit's default
 /// segmented tabs.
 pub(crate) fn track_style<E: Styled>(track: E, cx: &App) -> E {
     let theme = cx.theme();
-    // The 1 px border and 3 px padding put the 24 px segments 4 px inside the
-    // edge, where the kit's sit.
+    // The padding and the 1 px border make up the inset.
     track
-        .p(px(3.))
+        .p(SEGMENT_INSET - px(1.))
         .gap(px(2.))
         .rounded(theme.radius_lg)
         .border_1()
@@ -104,7 +107,8 @@ pub(crate) fn segment_style<E: Styled + InteractiveElement + FluentBuilder>(
     segment
         .h(px(24.))
         .px_3()
-        .rounded((theme.radius_lg - px(2.)).max(px(0.)))
+        // Concentric with the track's corners.
+        .rounded((theme.radius_lg - SEGMENT_INSET).max(px(0.)))
         .border_1()
         .border_color(theme.transparent)
         .text_sm()
