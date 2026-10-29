@@ -501,12 +501,13 @@ pub trait Backend: Send + Sync + 'static {
     fn remove_added(&self, added: arko::extensions::Added) -> Result<String, String>;
 
     /// Saves a switch of what agents may add, as `/extensions` does in a
-    /// session in the project `workspace`.
+    /// session, for the projects `workspaces` (whose `.arko` folders follow
+    /// the git switch).
     fn set_extension_switch(
         &self,
         switch: extensions::Switch,
         on: bool,
-        workspace: Option<&Path>,
+        workspaces: &[PathBuf],
     ) -> Result<(), String>;
 
     /// The worker profiles: the user's and those of the projects in
@@ -858,9 +859,9 @@ impl Backend for ArkoBackend {
         &self,
         switch: extensions::Switch,
         on: bool,
-        workspace: Option<&Path>,
+        workspaces: &[PathBuf],
     ) -> Result<(), String> {
-        extensions::set_switch(&self.root, workspace, switch, on)
+        extensions::set_switch(&self.root, workspaces, switch, on)
     }
 
     fn profiles(&self, folders: &[PathBuf]) -> profiles::Profiles {
@@ -945,7 +946,7 @@ struct FakeState {
     removed: Vec<arko::extensions::Added>,
     /// The switches of what agents may add, as saved, with the project
     /// each was saved for.
-    switches_saved: Vec<(extensions::Switch, bool, Option<PathBuf>)>,
+    switches_saved: Vec<(extensions::Switch, bool, Vec<PathBuf>)>,
     profiles: profiles::Profiles,
     /// How sessions are named, and what each way lacks.
     names: SessionNames,
@@ -1619,7 +1620,7 @@ impl Backend for FakeBackend {
         &self,
         switch: extensions::Switch,
         on: bool,
-        workspace: Option<&Path>,
+        workspaces: &[PathBuf],
     ) -> Result<(), String> {
         use extensions::Switch;
         self.with_state(|state| {
@@ -1628,9 +1629,7 @@ impl Backend for FakeBackend {
                 Switch::ReviewSkills => state.extensions.approvals.review_project_skills = on,
                 Switch::KeepOutOfGit => state.profiles.preferences.keep_out_of_git = on,
             }
-            state
-                .switches_saved
-                .push((switch, on, workspace.map(Path::to_path_buf)));
+            state.switches_saved.push((switch, on, workspaces.to_vec()));
         });
         Ok(())
     }
@@ -1714,7 +1713,7 @@ impl FakeBackend {
 
     /// The switches of what agents may add, as saved, with the project each
     /// was saved for.
-    pub fn switches_saved(&self) -> Vec<(extensions::Switch, bool, Option<PathBuf>)> {
+    pub fn switches_saved(&self) -> Vec<(extensions::Switch, bool, Vec<PathBuf>)> {
         self.with_state(|state| state.switches_saved.clone())
     }
 

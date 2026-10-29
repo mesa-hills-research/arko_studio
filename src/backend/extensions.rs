@@ -45,7 +45,7 @@ pub struct McpServer {
     pub added: Option<ServerRecord>,
 }
 
-/// A switch of what agents may add, by the word `/extensions` takes.
+/// A switch of what agents may add, as `/extensions` names them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Switch {
     /// "Ask before adding MCP servers".
@@ -56,24 +56,13 @@ pub enum Switch {
     KeepOutOfGit,
 }
 
-impl Switch {
-    /// The command that sets it in a session, as the terminal takes it.
-    pub fn command(self, on: bool) -> String {
-        let word = match self {
-            Switch::AskMcp => "ask-mcp",
-            Switch::ReviewSkills => "review-skills",
-            Switch::KeepOutOfGit => "keep-out-of-git",
-        };
-        format!("/extensions {word} {}", if on { "on" } else { "off" })
-    }
-}
-
-/// Saves `switch` without a session, as `/extensions` does in one: in Arko's
-/// folder `root`, and for the git switch also in the `.arko` folder of the
-/// project `workspace`, if there is one.
+/// Saves `switch` as `/extensions` does in a session: in Arko's folder
+/// `root`, and for the git switch also in the `.arko` folder of each project
+/// of `workspaces`, which adds or removes Arko's `.gitignore` there. The
+/// sessions open then read it again with `Details::refresh_settings`.
 pub fn set_switch(
     root: &Path,
-    workspace: Option<&Path>,
+    workspaces: &[PathBuf],
     switch: Switch,
     on: bool,
 ) -> Result<(), String> {
@@ -84,7 +73,15 @@ pub fn set_switch(
         Switch::KeepOutOfGit => {
             let mut prefs = arko::profiles::Preferences::load(root);
             prefs.keep_out_of_git = on;
-            super::profiles::set_preferences(root, workspace, prefs)
+            let (first, rest) = match workspaces.split_first() {
+                Some((first, rest)) => (Some(first.as_path()), rest),
+                None => (None, workspaces),
+            };
+            super::profiles::set_preferences(root, first, prefs)?;
+            for workspace in rest {
+                arko::arko_dir::apply_setting(workspace, on)?;
+            }
+            Ok(())
         }
     }
 }
@@ -842,30 +839,26 @@ mod tests {
         let root = temp.path().join("arko");
         let project = temp.path().join("project");
         assert_eq!(read(&root, &[], &[]).approvals, ExtensionPrefs::default());
-        set_switch(&root, None, Switch::AskMcp, false).unwrap();
-        set_switch(&root, None, Switch::ReviewSkills, true).unwrap();
+        set_switch(&root, &[], Switch::AskMcp, false).unwrap();
+        set_switch(&root, &[], Switch::ReviewSkills, true).unwrap();
         let approvals = read(&root, &[], &[]).approvals;
         assert!(!approvals.ask_before_adding_mcp);
         assert!(approvals.review_project_skills);
-        let ignore = arko::arko_dir::ensure(&project, &root)
-            .unwrap()
-            .join(".gitignore");
-        assert!(ignore.is_file());
-        set_switch(&root, Some(&project), Switch::KeepOutOfGit, false).unwrap();
+        // Each project of the sessions open follows it.
+        let other = temp.path().join("other");
+        let ignores = [&project, &other].map(|project| {
+            arko::arko_dir::ensure(project, &root)
+                .unwrap()
+                .join(".gitignore")
+        });
+        assert!(ignores.iter().all(|ignore| ignore.is_file()));
+        let both = [project.clone(), other.clone()];
+        set_switch(&root, &both, Switch::KeepOutOfGit, false).unwrap();
         assert!(!arko::profiles::Preferences::load(&root).keep_out_of_git);
-        assert!(!ignore.exists());
-        set_switch(&root, Some(&project), Switch::KeepOutOfGit, true).unwrap();
+        assert!(ignores.iter().all(|ignore| !ignore.exists()));
+        set_switch(&root, &both, Switch::KeepOutOfGit, true).unwrap();
         assert!(arko::profiles::Preferences::load(&root).keep_out_of_git);
-        assert!(ignore.is_file());
-        assert_eq!(
-            Switch::KeepOutOfGit.command(false),
-            "/extensions keep-out-of-git off"
-        );
-        assert_eq!(Switch::AskMcp.command(true), "/extensions ask-mcp on");
-        assert_eq!(
-            Switch::ReviewSkills.command(false),
-            "/extensions review-skills off"
-        );
+        assert!(ignores.iter().all(|ignore| ignore.is_file()));
     }
 
     #[test]

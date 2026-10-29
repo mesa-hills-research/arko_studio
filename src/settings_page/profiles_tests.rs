@@ -538,10 +538,12 @@ fn the_page_lists_a_repository_and_saves_where_profiles_are_kept(cx: &mut TestAp
     cx.run_until_parked();
     // With no session open, it is saved here, as `/extensions` saves it in
     // a session in the latest project, whose .arko folder follows it.
-    let latest = crate::session_view::recent_folders(&backend.sessions().unwrap())
-        .into_iter()
-        .next();
-    assert!(latest.is_some());
+    let latest: Vec<std::path::PathBuf> =
+        crate::session_view::recent_folders(&backend.sessions().unwrap())
+            .into_iter()
+            .take(1)
+            .collect();
+    assert_eq!(latest.len(), 1);
     assert_eq!(
         backend.switches_saved(),
         [(
@@ -563,32 +565,44 @@ fn the_page_lists_a_repository_and_saves_where_profiles_are_kept(cx: &mut TestAp
     );
 }
 
-/// With a session open, "Keep agents' project files out of git" is sent to
-/// it as the terminal's command, so the session saves it and its web page
-/// shows it, and the page shows it at once.
+/// With sessions open, "Keep agents' project files out of git" is saved
+/// for each of their projects, whose .arko folders follow it, and the
+/// sessions are sent nothing. The page shows it at once.
 #[gpui_kit::test]
-fn the_git_switch_is_sent_to_the_open_sessions(cx: &mut TestAppContext) {
+fn the_git_switch_follows_the_open_sessions_projects(cx: &mut TestAppContext) {
     use crate::live::{LiveSession, LiveSessions};
     let backend = start_with_profiles(cx, Profiles::sample(Path::new("/arko")));
-    let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
-    cx.update(|cx| LiveSessions::add_for_tests(session.clone(), cx));
+    let folders = ["/home/ada/src/mesa", "/home/ada/src/arko"].map(std::path::PathBuf::from);
+    let sessions: Vec<_> = folders
+        .iter()
+        .chain(&folders)
+        .enumerate()
+        .map(|(ix, folder)| {
+            let session = cx.new(|cx| {
+                let mut session = LiveSession::for_tests(&format!("s{ix}"), cx);
+                session.set_workspace(folder.clone());
+                session
+            });
+            cx.update(|cx| LiveSessions::add_for_tests(session.clone(), cx));
+            session
+        })
+        .collect();
     let (window, _, settings) = settings_window(cx, PROFILES_PAGE, 1400.);
     let page = page(cx, &settings);
     act(cx, window, |window, cx| window.click("keep-out-of-git", cx));
     cx.run_until_parked();
-    let sent: Vec<String> = cx.read(|cx| {
-        session
-            .read(cx)
-            .queued()
-            .iter()
-            .filter_map(|input| match input {
-                arko::Input::Message(message) => Some(message.text.clone()),
-                _ => None,
-            })
-            .collect()
-    });
-    assert_eq!(sent, ["/extensions keep-out-of-git off"]);
-    assert!(backend.switches_saved().is_empty(), "the session saves it");
+    for session in &sessions {
+        assert!(cx.read(|cx| session.read(cx).queued().is_empty()));
+    }
+    // Each project once.
+    assert_eq!(
+        backend.switches_saved(),
+        [(
+            crate::backend::extensions::Switch::KeepOutOfGit,
+            false,
+            folders.to_vec()
+        )]
+    );
     assert!(cx.read(|cx| {
         !page
             .read(cx)

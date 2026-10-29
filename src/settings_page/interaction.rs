@@ -937,32 +937,30 @@ fn the_approvals_switches_save_what_agents_may_add(cx: &mut TestAppContext) {
     assert!(approvals.review_project_skills);
 }
 
-/// With a session open, a switch is sent to it as the terminal's command,
-/// so the session saves it and its web page shows it.
+/// With a session open, a switch is saved for its project, and the session
+/// is sent nothing, so its transcript has no line for it.
 #[gpui_kit::test]
-fn the_approvals_switches_are_sent_to_the_open_sessions(cx: &mut TestAppContext) {
+fn the_approvals_switches_are_saved_for_the_open_sessions(cx: &mut TestAppContext) {
+    use crate::backend::extensions::Switch;
     use crate::live::{LiveSession, LiveSessions};
     let backend = start_with(cx, prefs::Prefs::default());
-    let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+    let work = std::path::PathBuf::from("/home/ada/src/mesa");
+    let session = cx.new(|cx| {
+        let mut session = LiveSession::for_tests("s1", cx);
+        session.set_workspace(work.clone());
+        session
+    });
     cx.update(|cx| LiveSessions::add_for_tests(session.clone(), cx));
     let (window, _, _) = settings_window(cx, EXTENSIONS_PAGE, 2400.);
     act(cx, window, |window, cx| {
         window.click("review-project-skills", cx)
     });
     cx.run_until_parked();
-    let sent: Vec<String> = cx.read(|cx| {
-        session
-            .read(cx)
-            .queued()
-            .iter()
-            .filter_map(|input| match input {
-                arko::Input::Message(message) => Some(message.text.clone()),
-                _ => None,
-            })
-            .collect()
-    });
-    assert_eq!(sent, ["/extensions review-skills on"]);
-    assert!(backend.switches_saved().is_empty(), "the session saves it");
+    assert!(cx.read(|cx| session.read(cx).queued().is_empty()));
+    assert_eq!(
+        backend.switches_saved(),
+        [(Switch::ReviewSkills, true, vec![work])]
+    );
     assert_eq!(switch_on(cx, window, "review-project-skills"), Some(true));
 }
 

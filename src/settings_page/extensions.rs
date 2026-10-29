@@ -560,11 +560,12 @@ fn open_sessions(cx: &App) -> Vec<Entity<LiveSession>> {
         .collect()
 }
 
-/// Sets a switch of what agents may add, as `/extensions` does. The
-/// sessions open in this app are sent the command, so their web pages show
-/// the change too, and the first saves it. Without one it is saved here,
-/// off the UI thread, for the project of the latest session, and `saved`
-/// runs after.
+/// Sets a switch of what agents may add, as `/extensions` does in a
+/// session, off the UI thread, then `saved` runs. The git switch follows in
+/// the `.arko` folders of the projects of the sessions open in this app, or
+/// without one of the latest session's. The open sessions then read the
+/// switches again and send them to their web pages, with nothing in their
+/// transcripts.
 pub(super) fn set_switch(
     switch: store::Switch,
     on: bool,
@@ -573,26 +574,35 @@ pub(super) fn set_switch(
     saved: impl FnOnce(&mut App) + 'static,
 ) {
     let sessions = open_sessions(cx);
-    if !sessions.is_empty() {
-        for session in sessions {
-            let input = arko::Input::Message(arko::Message {
-                text: switch.command(on),
-                ..Default::default()
-            });
-            // (One that closes meanwhile has no page to keep in step.)
-            session.update(cx, |session, cx| session.send(input, cx).ok());
+    let mut workspaces: Vec<PathBuf> = Vec::new();
+    for session in &sessions {
+        if let Some(workspace) = session.read(cx).workspace()
+            && !workspaces.contains(workspace)
+        {
+            workspaces.push(workspace.clone());
         }
-        return;
     }
+    let details: Vec<_> = sessions
+        .iter()
+        .filter_map(|session| Some(session.read(cx).link()?.details.clone()))
+        .collect();
     let backend = cx.global::<SharedBackend>().clone();
     let saving = cx.background_spawn(async move {
-        let latest = backend
-            .sessions()
-            .map(|sessions| recent_folders(&sessions))
-            .unwrap_or_default()
-            .into_iter()
-            .next();
-        backend.set_extension_switch(switch, on, latest.as_deref())
+        if workspaces.is_empty() {
+            workspaces.extend(
+                backend
+                    .sessions()
+                    .map(|sessions| recent_folders(&sessions))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .next(),
+            );
+        }
+        let result = backend.set_extension_switch(switch, on, &workspaces);
+        for details in details {
+            details.refresh_settings();
+        }
+        result
     });
     window
         .spawn(cx, async move |cx| {

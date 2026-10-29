@@ -764,6 +764,65 @@ fn a_slash_command_is_completed_from_the_menu_and_runs(cx: &mut TestAppContext) 
     app.close_all(cx);
 }
 
+/// The switches for what agents add, changed in Settings while a session is
+/// open, reach its status, which its web page shows, with nothing in its
+/// transcript. Its project's .arko folder follows the git switch.
+#[gpui_kit::test]
+fn a_switch_changed_in_settings_reaches_the_open_session_silently(cx: &mut TestAppContext) {
+    use crate::settings_page::{EXTENSIONS_PAGE, PROFILES_PAGE};
+    let mock = Mock::start(|_, _| answer("Hello.", Duration::ZERO));
+    let app = start(cx, &mock);
+    let ignore = arko::arko_dir::ensure(&app.work, &app.root)
+        .unwrap()
+        .join(".gitignore");
+    app.send(cx, "Say hello.");
+    app.wait_for_text(cx, "Hello.");
+    let session = app.shown(cx).unwrap();
+    let live = |cx: &mut TestAppContext| cx.read(|cx| session.read(cx).reading().settings.clone());
+    assert!(!live(cx).review_project_skills);
+    assert!(live(cx).keep_agents_files_out_of_git);
+    act(cx, app.window, |window, cx| window.press("secondary-,", cx));
+    let settings = cx.read(|cx| app.workspace.read(cx).settings().unwrap().clone());
+    let shows = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    cx.update(|cx| settings.update(cx, |settings, cx| settings.show_page(EXTENSIONS_PAGE, cx)));
+    wait_until(cx, "the Approvals group", |cx| {
+        shows(cx, "review-project-skills")
+    });
+    act(cx, app.window, |window, cx| {
+        window.click("review-project-skills", cx)
+    });
+    wait_until(cx, "the session's status", |cx| {
+        live(cx).review_project_skills
+    });
+    assert!(arko::extension_prefs::load(&app.root).review_project_skills);
+    cx.update(|cx| settings.update(cx, |settings, cx| settings.show_page(PROFILES_PAGE, cx)));
+    wait_until(cx, "the git switch", |cx| shows(cx, "keep-out-of-git"));
+    act(cx, app.window, |window, cx| {
+        window.click("keep-out-of-git", cx)
+    });
+    wait_until(cx, "the session's status", |cx| {
+        !live(cx).keep_agents_files_out_of_git
+    });
+    assert!(!ignore.exists(), "the session's project follows it");
+    // No item says the switches or the command that sets them.
+    let feed = app.feed_of(Some(&session), cx);
+    assert!(
+        !feed.iter().any(|item| {
+            item.contains("/extensions")
+                || item.contains("Review project skills")
+                || item.contains("out of git")
+        }),
+        "{feed:?}"
+    );
+    app.close_all(cx);
+}
+
 #[gpui_kit::test]
 fn a_session_streams_on_while_the_window_shows_another(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, body| {

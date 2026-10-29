@@ -1012,6 +1012,12 @@ impl LiveSession {
         this
     }
 
+    /// Works in `workspace`, as an agent session does (tests).
+    #[cfg(test)]
+    pub fn set_workspace(&mut self, workspace: PathBuf) {
+        self.workspace = Some(workspace);
+    }
+
     /// Takes `reading` and `activity` as if the engine had sent them
     /// (tests).
     #[cfg(test)]
