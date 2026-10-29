@@ -11,7 +11,9 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem};
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Sizable as _, enclosing_radius, h_flex,
+};
 use gpui_kit::component::{switch::Switch, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -314,7 +316,16 @@ impl OpenRouterPart {
             Some(problem) => format!("{} {ABOUT}", sentence(problem)),
             None => ABOUT.to_string(),
         };
-        let (ring, radius) = (cx.theme().ring, cx.theme().radius);
+        let theme = cx.theme();
+        // The marking ring sits 1 px outside the switch's track, so it's a
+        // pill around the pill, or the track's corners 1 px out in a theme
+        // whose radius is under 4 px, where the track squares to it.
+        let ring = theme.ring;
+        let ring_radius = if theme.radius >= px(4.) {
+            theme.radius_full()
+        } else {
+            enclosing_radius(theme.radius, px(1.))
+        };
         SettingGroup::new()
             .title("OpenRouter")
             .description(description)
@@ -362,7 +373,7 @@ impl OpenRouterPart {
                                     },
                                 )
                             })
-                            .rounded(radius)
+                            .rounded(ring_radius)
                             .when(marked, |this| this.border_1().border_color(ring))
                             .child(switch)
                     })

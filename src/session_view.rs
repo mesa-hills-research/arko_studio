@@ -19,7 +19,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
     ThemeStyled as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex,
+    concentric_radius, h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
     popover::Popover,
     v_flex,
@@ -1623,9 +1623,13 @@ impl SessionView {
 
     /// The find bar: the words, where the find is, previous and next, and
     /// close.
-    fn render_find(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_find(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let find = self.find.as_ref()?;
         let theme = cx.theme();
+        // Close sits the box's padding (p_1) and 1 px border inside its
+        // right edge, and its corners follow the box's. The other buttons
+        // match it.
+        let button_radius = concentric_radius(theme.radius_lg, window.rem_size() * 0.25 + px(1.));
         let has_words = !find.input.read(cx).value().trim().is_empty();
         let status = find_status_text(find.status, has_words);
         let key_tip = |label: &'static str, key: &'static str| {
@@ -1696,6 +1700,7 @@ impl SessionView {
                                 Button::new("find-show-full")
                                     .ghost()
                                     .xsmall()
+                                    .rounded(button_radius)
                                     .label("Show")
                                     .tooltip("Open the full output at this match")
                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1715,6 +1720,7 @@ impl SessionView {
                                     Button::new("find-previous")
                                         .ghost()
                                         .xsmall()
+                                        .rounded(button_radius)
                                         .compact()
                                         .icon(IconName::ChevronUp)
                                         .disabled(none)
@@ -1732,6 +1738,7 @@ impl SessionView {
                                     Button::new("find-next")
                                         .ghost()
                                         .xsmall()
+                                        .rounded(button_radius)
                                         .compact()
                                         .icon(IconName::ChevronDown)
                                         .disabled(none)
@@ -1749,6 +1756,7 @@ impl SessionView {
                                     Button::new("find-close")
                                         .ghost()
                                         .xsmall()
+                                        .rounded(button_radius)
                                         .compact()
                                         .icon(IconName::Close)
                                         .accessibility_label("Close")
@@ -3784,7 +3792,7 @@ impl Render for SessionView {
         let questions = self.render_questions_chip(cx);
         let prompt = self.render_prompt(cx);
         let editing = self.render_editing(cx);
-        let find = self.render_find(cx);
+        let find = self.render_find(window, cx);
         // The transcript spans the column (its rows centre themselves, so
         // the wheel and the scrollbar work across it), and draws again only
         // when it changes.
