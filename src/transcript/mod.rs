@@ -15,6 +15,8 @@
 
 mod find;
 mod fold;
+#[cfg(test)]
+pub(crate) mod frame_tests;
 mod height;
 #[cfg(test)]
 mod height_tests;
@@ -814,6 +816,25 @@ impl TranscriptView {
     pub fn set_clock(&mut self, clock: impl Fn() -> i64 + 'static, cx: &mut Context<Self>) {
         self.clock = Rc::new(clock);
         cx.notify();
+    }
+
+    /// Updates came from the feed: the transcript draws again to apply them
+    /// with its next frame. Updates that change nothing here go without a
+    /// frame. The main transcript gets every worker's text as it streams, and
+    /// drawing it again for each would draw the session view around it too.
+    fn updates_came(&mut self, cx: &mut Context<Self>) {
+        let model = &self.model;
+        let unused = self.inbox.drop_unused(|pending| {
+            pending.snapshot.is_none()
+                && pending
+                    .activity
+                    .as_ref()
+                    .is_none_or(|activity| model.has_activity(activity))
+                && pending.updates.iter().all(|update| model.ignores(update))
+        });
+        if !unused {
+            cx.notify();
+        }
     }
 
     /// Applies what came from the feed since the last frame.

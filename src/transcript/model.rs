@@ -187,6 +187,27 @@ impl Model {
         };
     }
 
+    /// Whether `update` would change nothing here: an item the filter leaves
+    /// out, or text streamed into one, such as a worker's text in the main
+    /// transcript. (The activity comes apart from its update.)
+    pub fn ignores(&self, update: &Update) -> bool {
+        match update {
+            Update::Item(item) | Update::Change(item) => {
+                item.kind != Kind::Conversation
+                    && !self.filter.keeps(item)
+                    && self.position(item.id).is_err()
+            }
+            Update::Append { id, .. } | Update::Remove { id } => self.position(*id).is_err(),
+            Update::Activity => true,
+            _ => false,
+        }
+    }
+
+    /// Whether `activity` is the one the model has.
+    pub fn has_activity(&self, activity: &Activity) -> bool {
+        self.activity == *activity
+    }
+
     pub fn set_activity(&mut self, activity: Activity, changes: &mut Changes) {
         if self.activity != activity {
             self.activity = activity;

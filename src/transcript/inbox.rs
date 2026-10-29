@@ -67,8 +67,9 @@ pub(crate) struct Inbox {
 impl Inbox {
     /// Subscribes to `feed`: an inbox that gets the history so far and then
     /// the updates, and asks the transcript to draw again (once) when they
-    /// come. Subscribing copies the history under the feed's lock, so it
-    /// happens on a background thread too.
+    /// come, unless none of them changes anything for it
+    /// ([`TranscriptView::updates_came`]). Subscribing copies the history
+    /// under the feed's lock, so it happens on a background thread too.
     ///
     /// A transcript that doesn't draw within [`CATCH_UP`] takes the
     /// updates then: the model's work is quick, and the frame that shows
@@ -119,7 +120,7 @@ impl Inbox {
         let wake = cx.spawn(async move |this, cx| {
             loop {
                 notify.notified().await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                if this.update(cx, |this, cx| this.updates_came(cx)).is_err() {
                     break;
                 }
             }
@@ -152,6 +153,17 @@ impl Inbox {
     /// Takes what came since the last call.
     pub fn take(&self) -> Pending {
         std::mem::take(&mut *self.pending.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    /// Drops what came, if `unused` says that none of it changes anything
+    /// for the transcript. Returns whether it did.
+    pub fn drop_unused(&self, unused: impl FnOnce(&Pending) -> bool) -> bool {
+        let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+        let drop = unused(&pending);
+        if drop {
+            *pending = Pending::default();
+        }
+        drop
     }
 }
 
