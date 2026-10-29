@@ -238,6 +238,7 @@ mod tests {
                 "General",
                 "Sessions",
                 "Message Box",
+                "Approvals",
                 "Transcript",
                 "Notifications",
                 "View",

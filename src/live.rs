@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use arko::approvals::ApprovalRequest;
 use arko::questions::AgentQuestion;
 use arko::remote::{Activity, Feed, Question, Reading, Update, WorkerState, WorkerSummary};
 use async_trait::async_trait;
@@ -395,6 +396,34 @@ impl Questions {
     }
 }
 
+/// What the user did with the requests in the approval tray in this app,
+/// beside what the engine's status says of them.
+#[derive(Default)]
+struct Approvals {
+    /// Answered here: hidden until the status no longer lists them.
+    answered: std::collections::HashSet<String>,
+}
+
+impl Approvals {
+    /// Takes the requests of a new status.
+    fn read(&mut self, waiting: &[ApprovalRequest]) {
+        self.answered
+            .retain(|id| waiting.iter().any(|request| request.id == *id));
+    }
+
+    /// The requests `input` answers.
+    fn answered_by(input: &arko::Input) -> Vec<String> {
+        match input {
+            arko::Input::AnswerApprovals(answers) => answers
+                .choices
+                .iter()
+                .map(|choice| choice.id.clone())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
@@ -430,6 +459,8 @@ pub struct LiveSession {
     quit_agreed: Option<arko::QuitAsk>,
     /// What the user did with the agent's questions in this app.
     questions: Questions,
+    /// What the user did with the approval tray's requests in this app.
+    approvals: Approvals,
     /// When the user last sent it something or looked at it, in Unix
     /// milliseconds: cache reminders leave sessions alone after an hour.
     touched_at: i64,
@@ -484,6 +515,7 @@ impl LiveSession {
             quit_ask: None,
             quit_agreed: None,
             questions: Questions::default(),
+            approvals: Approvals::default(),
             touched_at: crate::figures::now_ms(),
             input_epoch: std::cell::Cell::new(0),
             opened: 0,
@@ -646,6 +678,7 @@ impl LiveSession {
             .map(|question| question.id)
             .collect();
         self.questions.read(&self.reading.questions);
+        self.approvals.read(&self.reading.approvals);
         // Closed before it opened, only the quit is queued.
         for queued in self.queued.drain(..) {
             let _ = input.send(queued);
@@ -769,6 +802,7 @@ impl LiveSession {
             if self.questions.read(&self.reading.questions) {
                 cx.emit(LiveEvent::QuestionAsked);
             }
+            self.approvals.read(&self.reading.approvals);
         }
         if let Some(activity) = drained.activity {
             let was = std::mem::replace(&mut self.activity, activity);
@@ -841,6 +875,7 @@ impl LiveSession {
         self._feed.clear();
         self.activity = Activity::default();
         self.questions.reopened();
+        self.approvals = Approvals::default();
         self.launch(Start::Resume(id), cx);
         cx.notify();
     }
@@ -1102,11 +1137,35 @@ impl LiveSession {
             .collect()
     }
 
+    /// The requests waiting in the approval tray, in the order they came,
+    /// without those the user answered here.
+    pub fn approvals(&self) -> Vec<&ApprovalRequest> {
+        self.reading
+            .approvals
+            .iter()
+            .filter(|request| !self.approvals.answered.contains(&request.id))
+            .collect()
+    }
+
+    /// Shows `requests` in the approval tray (previews and screenshots,
+    /// where no session runs).
+    #[doc(hidden)]
+    pub fn show_approvals(&mut self, requests: Vec<ApprovalRequest>, cx: &mut Context<Self>) {
+        Arc::make_mut(&mut self.reading).approvals = requests;
+        self.approvals.read(&self.reading.approvals);
+        self.update_indicator(cx);
+        cx.notify();
+    }
+
     /// Why arko would refuse the answers `input` gives as too long for one
     /// note to the agent, as the user reads it.
     fn answer_refusal(&self, input: &arko::Input) -> Option<String> {
         let open = &self.reading.questions;
         match input {
+            arko::Input::AnswerApprovals(answers) => answers
+                .words
+                .as_deref()
+                .and_then(arko::approvals::approval_words_refusal),
             arko::Input::AnswerQuestions(answers) => {
                 arko::questions::answers_refusal(open, answers)
             }
@@ -1228,9 +1287,11 @@ impl LiveSession {
             return Err(why);
         }
         self.questions.sent(&input);
+        // Requests stay in the tray when their answer can't go.
+        let answered = Approvals::answered_by(&input);
         self.touched_at = crate::figures::now_ms();
         self.changes();
-        match (&self.phase, &self.link) {
+        let sent = match (&self.phase, &self.link) {
             (Phase::Open | Phase::Closing, Some(link)) => link
                 .input
                 .send(input)
@@ -1243,7 +1304,11 @@ impl LiveSession {
             (Phase::Sample, _) => Err("This sample session doesn’t run.".to_string()),
             (Phase::Failed(why), _) => Err(why.clone()),
             _ => Err("The session has closed.".to_string()),
+        };
+        if sent.is_ok() {
+            self.approvals.answered.extend(answered);
         }
+        sent
     }
 
     /// Asks the engine to rename the session (empty: back to its

@@ -15,7 +15,7 @@ use crate::sidebar::{
     SelectNext, SelectPrevious,
 };
 use crate::sidebar::{FILTER_CONTEXT, LIST_CONTEXT, RENAME_CONTEXT};
-use crate::{notifications_panel, workers_panel};
+use crate::{approvals, notifications_panel, workers_panel};
 
 /// The sections of the shortcuts sheet and the palette.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +23,7 @@ pub enum Group {
     General,
     Sessions,
     Composer,
+    Approvals,
     Transcript,
     Workers,
     Notifications,
@@ -30,10 +31,11 @@ pub enum Group {
 }
 
 impl Group {
-    pub const ALL: [Group; 7] = [
+    pub const ALL: [Group; 8] = [
         Group::General,
         Group::Sessions,
         Group::Composer,
+        Group::Approvals,
         Group::Transcript,
         Group::Workers,
         Group::Notifications,
@@ -45,6 +47,7 @@ impl Group {
             Group::General => "General",
             Group::Sessions => "Sessions",
             Group::Composer => "Message Box",
+            Group::Approvals => "Approvals",
             Group::Transcript => "Transcript",
             Group::Workers => "Workers",
             Group::Notifications => "Notifications",
@@ -294,6 +297,41 @@ pub fn commands() -> Vec<Command> {
         Command::new(Composer, "Stop", StopTurn).keys(&["secondary-."]),
         // Esc stops a turn from the composer too (it handles that key itself).
         Command::new(Composer, "Move to Background", MoveToBackground).keys(&["ctrl-b"]),
+        // They work while the message box has the keyboard, since its words
+        // go with the answer. No keymap of the box takes them.
+        Command::new(Approvals, "Approve Selected", approvals::ApproveSelected)
+            .keys(&["secondary-shift-a"]),
+        Command::new(Approvals, "Reject All", approvals::RejectAll).keys(&["secondary-shift-r"]),
+        // Option+A on macOS, beside Alt+Q.
+        Command::new(Approvals, "Focus Approvals", approvals::FocusApprovals).keys(&["alt-a"]),
+        Command::new(Approvals, "Approve Selected", approvals::Confirm)
+            .keys(&["enter"])
+            .context(approvals::CONTEXT)
+            .not_in_palette(),
+        Command::new(Approvals, "Previous Request", approvals::SelectPrevious)
+            .keys(&["up"])
+            .context(approvals::CONTEXT)
+            .not_in_palette(),
+        Command::new(Approvals, "Next Request", approvals::SelectNext)
+            .keys(&["down"])
+            .context(approvals::CONTEXT)
+            .not_in_palette(),
+        Command::new(Approvals, "Select or Deselect", approvals::ToggleSelected)
+            .keys(&["space"])
+            .context(approvals::CONTEXT)
+            .not_in_palette(),
+        Command::new(Approvals, "Select All or None", approvals::SelectAll)
+            .keys(&["a"])
+            .context(approvals::CONTEXT)
+            .not_in_palette(),
+        Command::new(Approvals, "Open Details", approvals::OpenDetails)
+            .keys(&["right"])
+            .context(approvals::CONTEXT)
+            .not_in_palette(),
+        Command::new(Approvals, "Close Details", approvals::CloseDetails)
+            .keys(&["escape"])
+            .context(approvals::CONTEXT)
+            .not_in_palette(),
         Command::new(Transcript, "Full Transcript", ViewFull),
         Command::new(Transcript, "Quiet Transcript", ViewQuiet),
         Command::new(Transcript, "Messages Only", ViewMessages),

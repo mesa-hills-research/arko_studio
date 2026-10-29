@@ -3718,37 +3718,6 @@ fn questions_sample() -> Vec<arko::questions::AgentQuestion> {
     .collect()
 }
 
-/// Arko asks to approve a worker profile the agent wants to save, with
-/// instructions long enough to scroll.
-fn approval_sample() -> Vec<arko::questions::AgentQuestion> {
-    let instructions = [
-        "You judge 3D models against a reference image.",
-        "",
-        "1. Render the model from the reference's camera.",
-        "2. Compare silhouettes, proportions and materials.",
-        "3. Score each from 0 to 10, with one line on why.",
-        "4. Name the three changes that would help most.",
-        "",
-        "Be strict about proportions. Ignore lighting differences.",
-        "Report in a table, then the changes as a list.",
-        "Never edit the model yourself.",
-    ]
-    .join("\n");
-    vec![
-        serde_json::from_value(serde_json::json!({
-            "id": "x1a2b3c4d",
-            "question": "The main agent wants to save the worker profile 3d-judge.",
-            "choices": ["Save", "Don't save"], "state": "open", "waits": true, "item": 9,
-            "approval": {
-                "name": "3d-judge", "model": "sol", "effort": "high", "scope": "every project",
-                "description": "Judges 3D results against a reference image",
-                "instructions": instructions
-            }
-        }))
-        .unwrap(),
-    ]
-}
-
 /// A sample session asking the questions above, with `typed` in the
 /// composer as they come (the chip), or nothing (the panel opens), and with
 /// them `attached` to the composer.
@@ -3886,22 +3855,6 @@ fn questions_panel_dark() {
 }
 
 #[test]
-fn questions_approval_light() {
-    goldens().assert(
-        "questions-approval-light",
-        &asking_window(ThemeMode::Light, approval_sample(), None, false),
-    );
-}
-
-#[test]
-fn questions_approval_dark() {
-    goldens().assert(
-        "questions-approval-dark",
-        &asking_window(ThemeMode::Dark, approval_sample(), None, false),
-    );
-}
-
-#[test]
 fn questions_chip_light() {
     goldens().assert(
         "questions-chip-light",
@@ -3931,6 +3884,180 @@ fn questions_replying_dark() {
         "questions-replying-dark",
         &questions_window(ThemeMode::Dark, Some("Spaces, all of them, main."), true),
     );
+}
+
+/// The approval tray's requests: a worker profile, a skill with a script
+/// and a SKILL.md long enough to scroll, an MCP server, and a worker billed
+/// per token whose day's spend reached the budget.
+fn approval_requests() -> Vec<arko::approvals::ApprovalRequest> {
+    let skill = [
+        "---",
+        "name: release-notes",
+        "description: Writes release notes from the git log",
+        "---",
+        "",
+        "# Release notes",
+        "",
+        "1. Run `scripts/log.sh` with the last tag.",
+        "2. Group the commits by area.",
+        "3. Write a sentence for each change a user notices.",
+        "4. Leave out refactors and test-only commits.",
+        "5. End with the contributors, by name.",
+        "",
+        "Keep each line short. Link the issues the commits name.",
+    ]
+    .join("\n");
+    [
+        serde_json::json!({
+            "id": "a1", "batch": 1,
+            "approval": {
+                "kind": "profile", "name": "3d-judge", "model": "sol", "effort": "high",
+                "scope": "every project",
+                "description": "Judges 3D results against a reference image",
+                "instructions": "You judge 3D models against a reference image."
+            }
+        }),
+        serde_json::json!({
+            "id": "a2", "batch": 1,
+            "approval": {
+                "kind": "skill", "name": "release-notes", "scope": "user",
+                "description": "Writes release notes from the git log",
+                "source": {"from": "agent"}, "scripts": ["scripts/log.sh"],
+                "why": "You asked for notes with each release.",
+                "files": [
+                    {"path": "SKILL.md", "bytes": skill.len(), "text": skill},
+                    {"path": "scripts/log.sh", "bytes": 64,
+                     "text": "#!/bin/sh\ngit log --oneline \"$1\"..HEAD"}
+                ]
+            }
+        }),
+        serde_json::json!({
+            "id": "a3", "batch": 1,
+            "approval": {
+                "kind": "mcp_server", "name": "github", "scope": "project",
+                "command": "npx -y @modelcontextprotocol/server-github",
+                "env": [{"name": "GITHUB_TOKEN", "set": true}],
+                "why": "Read the issues the commits name."
+            }
+        }),
+        serde_json::json!({
+            "id": "a4", "batch": 1,
+            "approval": {
+                "kind": "worker_billing", "model": "Opus 5.5", "input_price": 5.0,
+                "output_price": 25.0, "spent": 10.4, "budget": 10.0,
+                "task": "Review the release notes"
+            }
+        }),
+    ]
+    .into_iter()
+    .map(|json| serde_json::from_value(json).unwrap())
+    .collect()
+}
+
+/// A sample session whose approval tray holds the requests `ids` of
+/// [`approval_requests`], once the elements `clicks` were clicked.
+fn approvals_window(mode: ThemeMode, ids: &[&str], clicks: &[&str]) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(900.), px(800.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, window, cx| {
+        let id = SessionId("20261016-091200-a1b2".into());
+        workspace.update(cx, |workspace, cx| workspace.open_session(id, window, cx));
+    })
+    .unwrap();
+    app.run_until_parked();
+    let requests = approval_requests()
+        .into_iter()
+        .filter(|request| ids.contains(&request.id.as_str()))
+        .collect();
+    app.update_window(window, |_, _, cx| {
+        let session = workspace.read(cx).live_session().unwrap().clone();
+        session.update(cx, |session, cx| session.show_approvals(requests, cx));
+    })
+    .unwrap();
+    app.run_until_parked();
+    for click in clicks {
+        let id = gpui_kit::ElementId::from(gpui_kit::SharedString::from(click.to_string()));
+        app.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(id, cx);
+        })
+        .unwrap();
+        app.run_until_parked();
+    }
+    app.capture(window).unwrap()
+}
+
+/// One request: one row, with Reject and Approve and their shortcuts.
+fn approvals_one(mode: ThemeMode) -> Screenshot {
+    approvals_window(mode, &["a1"], &[])
+}
+
+/// Three requests, all checked, with the skill's row open to its details:
+/// its files as chips and its SKILL.md in a box that scrolls.
+fn approvals_three(mode: ThemeMode) -> Screenshot {
+    approvals_window(mode, &["a1", "a2", "a3"], &["approval-row-a2"])
+}
+
+/// Three requests, the server's unchecked, with the worker's row open: the
+/// day's spend over the budget as a warning, and its option on.
+fn approvals_option(mode: ThemeMode) -> Screenshot {
+    approvals_window(
+        mode,
+        &["a2", "a3", "a4"],
+        &["approval-check-a3", "approval-row-a4", "approval-option-a4"],
+    )
+}
+
+#[test]
+fn approvals_one_light() {
+    goldens().assert("approvals-one-light", &approvals_one(ThemeMode::Light));
+}
+
+#[test]
+fn approvals_one_dark() {
+    goldens().assert("approvals-one-dark", &approvals_one(ThemeMode::Dark));
+}
+
+#[test]
+fn approvals_three_light() {
+    goldens().assert("approvals-three-light", &approvals_three(ThemeMode::Light));
+}
+
+#[test]
+fn approvals_three_dark() {
+    goldens().assert("approvals-three-dark", &approvals_three(ThemeMode::Dark));
+}
+
+#[test]
+fn approvals_option_light() {
+    goldens().assert(
+        "approvals-option-light",
+        &approvals_option(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn approvals_option_dark() {
+    goldens().assert("approvals-option-dark", &approvals_option(ThemeMode::Dark));
 }
 
 /// A card of the agent's questions in the transcript: its line, and the

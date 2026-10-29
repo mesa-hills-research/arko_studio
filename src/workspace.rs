@@ -1398,6 +1398,30 @@ impl Render for Workspace {
                     }
                 }),
             )
+            .on_action(
+                cx.listener(|this, _: &crate::approvals::ApproveSelected, window, cx| {
+                    if this.settings.is_none() {
+                        this.session_view
+                            .update(cx, |view, cx| view.answer_approvals(true, window, cx));
+                    }
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::approvals::RejectAll, window, cx| {
+                    if this.settings.is_none() {
+                        this.session_view
+                            .update(cx, |view, cx| view.answer_approvals(false, window, cx));
+                    }
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::approvals::FocusApprovals, window, cx| {
+                    if this.settings.is_none() {
+                        this.session_view
+                            .update(cx, |view, cx| view.focus_approvals(window, cx));
+                    }
+                }),
+            )
             .on_action(cx.listener(|this, _: &menus::Find, window, cx| {
                 if this.settings.is_none() {
                     this.session_view

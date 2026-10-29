@@ -27,6 +27,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::approvals::{ApprovalTray, TrayEvent};
 use crate::backend::{Mode, ModelChoices, NewSession, SessionEntry, SharedBackend};
 use crate::composer::{Attached, Composer, ComposerEvent, Outgoing};
 use crate::editing::{self, Change, Choice};
@@ -133,6 +134,13 @@ struct KeptPanel {
     _events: Subscription,
 }
 
+/// A session's approval tray, with what is checked.
+struct KeptTray {
+    session: WeakEntity<LiveSession>,
+    view: Entity<ApprovalTray>,
+    _events: Subscription,
+}
+
 /// A session's transcript, for the opening of its feed it shows.
 struct KeptTranscript {
     session: EntityId,
@@ -164,6 +172,9 @@ pub struct SessionView {
     /// Each session's answer panel, while it has open questions: what is
     /// filled in waits there while the window shows another session.
     panels: Vec<KeptPanel>,
+    /// Each session's approval tray, while requests wait in it: what is
+    /// checked waits there while the window shows another session.
+    trays: Vec<KeptTray>,
     /// Whether the answer panel shows.
     panel_open: bool,
     /// Where the keyboard was before Alt+Q gave it to the panel: it goes
@@ -353,6 +364,7 @@ impl SessionView {
             composer_empty: true,
             width: WidthClass::Wide,
             panels: Vec::new(),
+            trays: Vec::new(),
             panel_open: false,
             panel_return: None,
             last_key: None,
@@ -819,6 +831,7 @@ impl SessionView {
             self._session
                 .push(cx.observe_in(session, window, |this, _, window, cx| {
                     this.sync_questions(window, cx);
+                    this.sync_approvals(window, cx);
                     this.sync_composer(window, cx);
                     this.sync_transcript(window, cx);
                     cx.notify();
@@ -826,6 +839,7 @@ impl SessionView {
         }
         self.restore_draft(window, cx);
         self.sync_questions(window, cx);
+        self.sync_approvals(window, cx);
         self.sync_composer(window, cx);
         self.sync_transcript(window, cx);
         cx.notify();
@@ -1048,10 +1062,6 @@ impl SessionView {
             }
         };
         panel.update(cx, |panel, cx| panel.set_questions(open, window, cx));
-        // Answered here (an approval's Save), the keyboard stays in the panel.
-        if left.is_some() && !elsewhere && self.panel_open {
-            panel.update(cx, |panel, cx| panel.focus(window, cx));
-        }
         if !self.panel_open && !session.read(cx).unseen_questions().is_empty() && !self.typing(cx) {
             self.panel_open = true;
             self.sync_composer(window, cx);
@@ -1161,24 +1171,120 @@ impl SessionView {
                     Err(why) => window.push_notification(why, cx),
                 }
             }
-            // An approval's Save or Don't save sends it with what else is
-            // filled in. The panel stays for the questions left.
-            AnswerPanelEvent::Choose { id, choice } => {
-                let answers = panel
-                    .read(cx)
-                    .answers_choosing(Some((id.as_str(), choice.as_str())), cx);
-                let ids = answers.ids();
-                let sent = session.update(cx, |session, cx| {
-                    session.send(arko::Input::AnswerQuestions(answers), cx)
-                });
-                match sent {
-                    Ok(()) => panel.update(cx, |panel, cx| panel.sent(&ids, cx)),
-                    Err(why) => window.push_notification(why, cx),
-                }
-                self.sync_questions(window, cx);
-            }
             AnswerPanelEvent::AnswerInChat => self.answer_in_chat(window, cx),
             AnswerPanelEvent::Close => self.close_panel(window, cx),
+        }
+    }
+
+    /// The approval tray while requests wait in it (tests and screenshots).
+    #[doc(hidden)]
+    pub fn approval_tray(&self) -> Option<&Entity<ApprovalTray>> {
+        let session = self.session.as_ref()?.entity_id();
+        self.trays
+            .iter()
+            .find(|kept| kept.session.entity_id() == session)
+            .map(|kept| &kept.view)
+    }
+
+    /// Follows the requests waiting in the session's approval tray: the
+    /// tray shows them, and goes when none wait.
+    fn sync_approvals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The trays of sessions that ended go with them.
+        self.trays.retain(|kept| {
+            kept.session
+                .upgrade()
+                .is_some_and(|session| *session.read(cx).phase() != Phase::Ended)
+        });
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let requests: Vec<arko::approvals::ApprovalRequest> =
+            session.read(cx).approvals().into_iter().cloned().collect();
+        if requests.is_empty() {
+            let had_focus = self
+                .approval_tray()
+                .is_some_and(|tray| tray.read(cx).contains_focus(window, cx));
+            self.trays
+                .retain(|kept| kept.session.entity_id() != session.entity_id());
+            if had_focus {
+                self.focus_composer(window, cx);
+            }
+            return;
+        }
+        let tray = match self.approval_tray() {
+            Some(tray) => tray.clone(),
+            None => {
+                let tray = cx.new(ApprovalTray::new);
+                self.trays.push(KeptTray {
+                    session: session.downgrade(),
+                    view: tray.clone(),
+                    _events: cx.subscribe_in(&tray, window, Self::on_tray_event),
+                });
+                tray
+            }
+        };
+        tray.update(cx, |tray, cx| tray.set_requests(requests, cx));
+    }
+
+    /// Answers every request in the approval tray (Mod+Shift+A approves
+    /// those checked and rejects the others, Mod+Shift+R rejects them all).
+    /// What the message box holds goes with the answer, and the box
+    /// empties. A message being edited or written to a worker stays.
+    pub fn answer_approvals(&mut self, approve: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(session), Some(tray)) = (self.session.clone(), self.approval_tray().cloned())
+        else {
+            window.push_notification("No approvals wait.", cx);
+            return;
+        };
+        let takes_words = self.editing.is_none() && self.target.is_none();
+        let words = if takes_words {
+            self.composer.read(cx).expanded_text(cx)
+        } else {
+            String::new()
+        };
+        let answers = tray.read(cx).answers(approve, &words);
+        let sent = session.update(cx, |session, cx| {
+            session.send(arko::Input::AnswerApprovals(answers.clone()), cx)
+        });
+        if let Err(why) = sent {
+            window.push_notification(why, cx);
+            return;
+        }
+        if answers.words.is_some() {
+            self.composer
+                .update(cx, |composer, cx| composer.set_text("", window, cx));
+            self.keep_draft(cx);
+        }
+        // The tray goes, and the keyboard goes back to the message box if
+        // the tray had it.
+        self.sync_approvals(window, cx);
+        cx.notify();
+    }
+
+    /// Gives the approval tray the keyboard, or gives it back to the
+    /// message box (Alt+A).
+    pub fn focus_approvals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tray) = self.approval_tray().cloned() else {
+            window.push_notification("No approvals wait.", cx);
+            return;
+        };
+        if tray.read(cx).contains_focus(window, cx) {
+            self.focus_composer(window, cx);
+        } else {
+            tray.update(cx, |tray, cx| tray.focus(window, cx));
+        }
+    }
+
+    fn on_tray_event(
+        &mut self,
+        _: &Entity<ApprovalTray>,
+        event: &TrayEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            TrayEvent::Answer { approve } => self.answer_approvals(*approve, window, cx),
+            TrayEvent::Leave => self.focus_composer(window, cx),
         }
     }
 
@@ -3542,8 +3648,10 @@ impl SessionView {
             .session
             .as_ref()
             .is_some_and(|session| session.read(cx).is_working());
+        let tray = self.approval_tray().cloned();
         let panel = self.answer_panel().cloned().map(|panel| {
-            // Above the composer, over the transcript's end.
+            // Above the composer and the approval tray, over the
+            // transcript's end.
             div()
                 .absolute()
                 .left_0()
@@ -3552,11 +3660,16 @@ impl SessionView {
                 .mb_2()
                 .child(panel)
         });
+        // With the tray, the panel floats above it.
+        let (above_tray, panel) = if tray.is_some() {
+            (panel, None)
+        } else {
+            (None, panel)
+        };
         let expanded = prefs::get(cx).input.composer_expanded;
         let send_key = prefs::get(cx).input.send_key;
         let send_chord = Keystroke::parse(crate::composer::send_chord(send_key)).ok();
-        let _ = window;
-        v_flex()
+        let composer = v_flex()
             .id("composer")
             .test_support()
             .relative()
@@ -3651,7 +3764,23 @@ impl SessionView {
                                 .child(button.accessibility_label(label)),
                         )
                     }),
-            )
+            );
+        // The approval tray right above the message box, whose words go
+        // with its answer. It grows less while the answer panel floats
+        // above it.
+        let tallest = window.viewport_size().height
+            * if above_tray.is_some() {
+                crate::approvals::MAX_HEIGHT_UNDER_PANEL
+            } else {
+                crate::approvals::MAX_HEIGHT
+            };
+        let tray = tray.map(|tray| v_flex().w_full().max_h(tallest).mb_2().child(tray));
+        v_flex()
+            .relative()
+            .w_full()
+            .children(tray)
+            .children(above_tray)
+            .child(composer)
     }
 }
 
