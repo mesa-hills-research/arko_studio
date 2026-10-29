@@ -133,8 +133,8 @@ impl Inbox {
                 };
                 cx.background_executor().timer(CATCH_UP).await;
                 let caught_up = this.update(cx, |this, cx| {
-                    if this.renders == drawn {
-                        this.apply_pending(cx);
+                    if this.renders == drawn && this.apply_pending(cx) {
+                        cx.notify();
                     }
                 });
                 if caught_up.is_err() {

@@ -470,3 +470,34 @@ fn every_running_indicator_turns_without_drawing_the_transcript(cx: &mut TestApp
         drawn.drawn.len()
     );
 }
+
+/// A frame that applies an update draws the transcript once. The worker's
+/// calls are in the main transcript, which Quiet doesn't show, and each
+/// comes with a frame of its own.
+#[gpui_kit::test]
+fn an_update_draws_the_transcript_once(cx: &mut TestAppContext) {
+    start(cx);
+    motion_on(cx, View::Quiet);
+    let feed = Feed::new("main");
+    long_conversation(&feed, 3, 2);
+    feed.user("Fix it with a worker.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.worker("r1", "Fix the parser", WorkerChange::Started);
+    call(&feed, "main", "wait_for_agents", &[]);
+    let (window, view, _) = open_hosted(cx, &feed);
+    ready(cx, window, &view);
+    let renders = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).render_count());
+    let before = renders(cx);
+    frames(cx, window, &view, 120, |n| {
+        if n % 4 == 0 {
+            let id = call(&feed, "r1", "read_file", &[("path", "src/lib.rs".into())]);
+            result(&feed, "r1", id, "read_file", "1 | fn a() {}\n");
+        }
+    });
+    // 30 updates, and the running times' tick twice.
+    let drawn = renders(cx) - before;
+    assert!(
+        drawn <= 33,
+        "the transcript drew {drawn} times for 30 updates"
+    );
+}

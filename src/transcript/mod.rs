@@ -833,11 +833,14 @@ impl TranscriptView {
         }
     }
 
-    /// Applies what came from the feed since the last frame.
-    pub fn apply_pending(&mut self, cx: &mut Context<Self>) {
+    /// Applies what came from the feed since the last frame, and returns
+    /// whether anything changed. It asks for no frame: the frame that draws
+    /// applies them first, and asking would draw the transcript again in the
+    /// next frame for nothing.
+    pub fn apply_pending(&mut self, cx: &mut Context<Self>) -> bool {
         let pending = self.inbox.take();
         if pending.snapshot.is_none() && pending.updates.is_empty() && pending.activity.is_none() {
-            return;
+            return false;
         }
         let mut changes = Changes::default();
         if let Some(snapshot) = pending.snapshot {
@@ -849,7 +852,9 @@ impl TranscriptView {
         if let Some(activity) = pending.activity {
             self.model.set_activity(activity, &mut changes);
         }
+        let changed = changes.any();
         self.follow(changes, cx);
+        changed
     }
 
     /// Brings the drawn side up to `changes` of the model.
@@ -940,7 +945,6 @@ impl TranscriptView {
                 .copied();
             self.find_changed(&changes.removed, changed, cx);
         }
-        cx.notify();
     }
 
     /// Marks finished the texts that stopped streaming in, so a table row
