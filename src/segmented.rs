@@ -18,13 +18,10 @@ const TRACK_OUTLINE_MIN_CONTRAST: f32 = 1.2;
 /// The most contrast of the track's outline with the window.
 const TRACK_OUTLINE_MAX_CONTRAST: f32 = 2.;
 
-/// The track behind the segments, the window background.
-///
-/// shortcut: ignores `tab_bar.segmented.background`, which GPUI Kit 0.7.5
-/// still defaults to `secondary`, so read it as the kit does once Studio is
-/// on 0.7.6.
+/// The track behind the segments, as an opaque color. It's the window
+/// background unless the theme sets `tab_bar.segmented.background`.
 fn track(theme: &Theme) -> Hsla {
-    theme.background
+    theme.background.blend(theme.tab_bar_segmented)
 }
 
 /// The fill and the outline of the chosen segment.
@@ -109,7 +106,7 @@ pub(crate) fn track_style<E: Styled>(track: E, cx: &App) -> E {
         .rounded(theme.radius_lg)
         .border_1()
         .border_color(track_outline(theme))
-        .bg(self::track(theme))
+        .bg(theme.tokens.tab_bar_segmented)
 }
 
 /// A segment, filled and outlined when `chosen`. Other
