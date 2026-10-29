@@ -4,7 +4,7 @@
 //! shortcut: this mirrors the kit's private segmented-tab rule, so use the
 //! kit's own helpers if it exposes them.
 
-use gpui_kit::component::{ActiveTheme as _, StyledExt as _, Theme, ThemeStyled as _, v_flex};
+use gpui_kit::component::{ActiveTheme as _, StyledExt as _, Theme, concentric_radius, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -124,8 +124,8 @@ pub(crate) fn segment_style<E: Styled + InteractiveElement + FluentBuilder>(
     segment
         .h(px(24.))
         .px_3()
-        // Concentric with the track's corners.
-        .rounded_inside(theme.radius_lg, SEGMENT_INSET)
+        // Exactly concentric with the track's corners, so it takes no minimum.
+        .rounded(concentric_radius(theme.radius_lg, SEGMENT_INSET))
         .border_1()
         .border_color(theme.transparent)
         .text_sm()
