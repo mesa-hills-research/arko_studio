@@ -13,8 +13,9 @@ gpui_kit::assets::icon_assets!(pub ExtraIcons, [Paperclip, Maximize2, Minimize2,
 gpui_kit::assets::icon_assets!(pub TranscriptIcons, [FilePen, FolderTree, Plug, Wrench, Activity, MessageCircleQuestionMark, SquarePen, GitBranch, RotateCcw]);
 // The status bar's cache timer.
 gpui_kit::assets::icon_assets!(pub StatusIcons, [Timer]);
-// The worker profiles page and its editor.
-gpui_kit::assets::icon_assets!(pub ProfileIcons, [UserCog, Trash]);
+// The worker profiles page and its editor, and the sidebar's mark of a
+// session that needs approval.
+gpui_kit::assets::icon_assets!(pub ProfileIcons, [UserCog, Trash, ShieldCheck]);
 
 /// The icons the app draws, for `Application::with_assets`.
 pub struct Assets;
@@ -69,6 +70,8 @@ mod tests {
             // The worker profiles page.
             IconName::UserCog,
             IconName::Trash,
+            // A session that needs approval.
+            IconName::ShieldCheck,
         ] {
             assert!(
                 Assets.load(&icon.path()).unwrap().is_some(),

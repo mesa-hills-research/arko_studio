@@ -884,7 +884,13 @@ impl Sidebar {
                 // A closed group says one of its sessions has news.
                 let news = collapsed && self.group_has_news(&key, cx);
                 base.role(Role::TreeItem)
-                    .aria_label(SharedString::from(row_label(&title, false, false, news)))
+                    .aria_label(SharedString::from(row_label(
+                        &title,
+                        RowMarks {
+                            news,
+                            ..RowMarks::default()
+                        },
+                    )))
                     .aria_expanded(!collapsed)
                     .text_xs()
                     .font_medium()
@@ -1004,12 +1010,22 @@ impl Sidebar {
                 // or a question that came while the user looked elsewhere).
                 let indicator = LiveSessions::indicator(&id, cx);
                 let background = !is_active;
-                let working = background && indicator.working && !indicator.question;
+                let waiting = indicator.question || indicator.approval;
+                let working = background && indicator.working && !waiting;
                 let asking = background && indicator.question;
+                let approving = background && indicator.approval;
                 let news = background && notifications::has_news(&id, cx);
                 let info = theme.info;
                 base.role(Role::TreeItem)
-                    .aria_label(SharedString::from(row_label(&title, working, asking, news)))
+                    .aria_label(SharedString::from(row_label(
+                        &title,
+                        RowMarks {
+                            working,
+                            asking,
+                            approving,
+                            news,
+                        },
+                    )))
                     .aria_selected(is_active)
                     .when(conversations, |this| this.aria_expanded(expanded))
                     .pl(rems(1.25))
@@ -1088,7 +1104,23 @@ impl Sidebar {
                                         }),
                                 )
                             })
-                            .when(!working && !asking, |this| {
+                            .when(approving, |this| {
+                                this.child(
+                                    div()
+                                        .id(("row-approval", index))
+                                        .test_support()
+                                        .flex_none()
+                                        .child(
+                                            Icon::new(gpui_kit::assets::IconName::ShieldCheck)
+                                                .xsmall()
+                                                .text_color(theme.warning),
+                                        )
+                                        .tooltip(|window, cx| {
+                                            Tooltip::new("Needs approval").build(window, cx)
+                                        }),
+                                )
+                            })
+                            .when(!working && !asking && !approving, |this| {
                                 this.child(
                                     div()
                                         .flex_none()
@@ -1200,17 +1232,29 @@ impl Sidebar {
     }
 }
 
+/// The marks a session row shows.
+#[derive(Debug, Clone, Copy, Default)]
+struct RowMarks {
+    working: bool,
+    asking: bool,
+    approving: bool,
+    news: bool,
+}
+
 /// A session row as a screen reader names it: the title, and the state the
 /// row's marks show. The dot for news isn't read, the label says it.
-fn row_label(title: &str, working: bool, asking: bool, news: bool) -> String {
+fn row_label(title: &str, marks: RowMarks) -> String {
     let mut label = title.to_string();
-    if working {
+    if marks.working {
         label.push_str(", working");
     }
-    if asking {
+    if marks.asking {
         label.push_str(", a question waits");
     }
-    if news {
+    if marks.approving {
+        label.push_str(", needs approval");
+    }
+    if marks.news {
         label.push_str(", new activity");
     }
     label
@@ -1355,7 +1399,7 @@ impl Render for Sidebar {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{CHATS, Row, row_label, rows};
+    use super::{CHATS, Row, RowMarks, row_label, rows};
     use crate::backend::Backend as _;
     use crate::backend::{ConversationEntry, FakeBackend, Mode, SessionEntry, SessionId};
     use std::collections::HashSet;
@@ -1364,17 +1408,38 @@ mod tests {
 
     #[test]
     fn a_rows_name_carries_its_marks() {
+        let marks = RowMarks::default();
+        assert_eq!(row_label("Fix the parser", marks), "Fix the parser");
         assert_eq!(
-            row_label("Fix the parser", false, false, false),
-            "Fix the parser"
-        );
-        assert_eq!(
-            row_label("Fix the parser", true, false, true),
+            row_label(
+                "Fix the parser",
+                RowMarks {
+                    working: true,
+                    news: true,
+                    ..marks
+                }
+            ),
             "Fix the parser, working, new activity"
         );
         assert_eq!(
-            row_label("Fix the parser", false, true, false),
+            row_label(
+                "Fix the parser",
+                RowMarks {
+                    asking: true,
+                    ..marks
+                }
+            ),
             "Fix the parser, a question waits"
+        );
+        assert_eq!(
+            row_label(
+                "Fix the parser",
+                RowMarks {
+                    approving: true,
+                    ..marks
+                }
+            ),
+            "Fix the parser, needs approval"
         );
     }
 

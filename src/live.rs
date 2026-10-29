@@ -34,6 +34,8 @@ pub struct Indicator {
     pub working: bool,
     /// The agent asked a question that waits for an answer.
     pub question: bool,
+    /// A request waits in the approval tray.
+    pub approval: bool,
 }
 
 /// The sessions open in this app, shared by its windows.
@@ -870,6 +872,7 @@ impl LiveSession {
             let indicator = Indicator {
                 working: self.activity.working,
                 question: self.activity.question.is_some() || !self.open_questions().is_empty(),
+                approval: !self.approvals().is_empty(),
             };
             LiveSessions::set_indicator(id, indicator, cx);
             LiveSessions::set_title(id, &self.title, cx);

@@ -3283,9 +3283,9 @@ fn notifications_all_dark() {
 }
 
 /// The sidebar with its marks together: a session that works and has news,
-/// one that asks a question and has news, a chat with news, a closed folder
-/// whose session has news, and one with no mark. `width` is the sidebar's,
-/// in rem.
+/// one that asks a question, needs approval and has news, a chat with news,
+/// a closed folder whose session has news, and one with no mark. `width` is
+/// the sidebar's, in rem.
 fn sidebar_marks(mode: ThemeMode, width: f32) -> Screenshot {
     use arko_studio::live::{Indicator, LiveSessions};
 
@@ -3307,11 +3307,27 @@ fn sidebar_marks(mode: ThemeMode, width: f32) -> Screenshot {
         .with_fonts(fonts::bundled());
     app.update(|cx| {
         arko_studio::init(startup, cx);
-        let mark = |id: &str, working: bool, question: bool, cx: &mut gpui_kit::App| {
-            LiveSessions::set_indicator(&SessionId(id.into()), Indicator { working, question }, cx)
+        let mark = |id: &str, indicator: Indicator, cx: &mut gpui_kit::App| {
+            LiveSessions::set_indicator(&SessionId(id.into()), indicator, cx)
         };
-        mark("20261016-091200-a1b2", true, false, cx);
-        mark("20261015-171000-c3d4", false, true, cx);
+        let marks = Indicator::default();
+        mark(
+            "20261016-091200-a1b2",
+            Indicator {
+                working: true,
+                ..marks
+            },
+            cx,
+        );
+        mark(
+            "20261015-171000-c3d4",
+            Indicator {
+                question: true,
+                approval: true,
+                ..marks
+            },
+            cx,
+        );
     });
     let window = app
         .open_window_with(size(px(1300.), px(560.)), 1., |options, cx| {
