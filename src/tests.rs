@@ -960,6 +960,24 @@ fn a_new_session_picks_chat_or_agent_in_its_empty_transcript(cx: &mut TestAppCon
     });
 }
 
+/// Chat | Agent's segments sit the same inset from the switch's outer edge on
+/// every side, the inset their corners are taken in by.
+#[gpui_kit::test]
+fn the_mode_switch_holds_its_segments_one_inset_inside_its_edge(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, _) = open(cx, 1300.);
+    act(cx, window, |window, _| {
+        let track = window.find("empty-mode-switch").bounds();
+        let chat = window.find("empty-mode-chat").bounds();
+        let agent = window.find("empty-mode-agent").bounds();
+        let inset = crate::segmented::SEGMENT_INSET;
+        assert_eq!(chat.left() - track.left(), inset);
+        assert_eq!(chat.top() - track.top(), inset);
+        assert_eq!(track.bottom() - chat.bottom(), inset);
+        assert_eq!(track.right() - agent.right(), inset);
+    });
+}
+
 #[gpui_kit::test]
 fn a_new_session_says_where_it_will_run_and_the_chip_switches_it(cx: &mut TestAppContext) {
     start(cx);
@@ -1003,7 +1021,8 @@ fn a_long_draft_folder_stays_inside_its_pane(cx: &mut TestAppContext) {
         let view = cx.read(|cx| workspace.read(cx).session_view().clone());
         view.update(cx, |view, cx| {
             view.set_draft_folder(
-                "/home/ada/Desktop/arko-studio-work/scratch/studio-ui-1027/send-lag/probe/work".into(),
+                "/home/ada/Desktop/arko-studio-work/scratch/studio-ui-1027/send-lag/probe/work"
+                    .into(),
                 cx,
             );
         });
@@ -1013,7 +1032,10 @@ fn a_long_draft_folder_stays_inside_its_pane(cx: &mut TestAppContext) {
             let folder = window.find("draft-folder").bounds();
             let change = window.find("change-folder").bounds();
             assert!(line.left() >= pane.left(), "{width}: {line:?} in {pane:?}");
-            assert!(line.right() <= pane.right(), "{width}: {line:?} in {pane:?}");
+            assert!(
+                line.right() <= pane.right(),
+                "{width}: {line:?} in {pane:?}"
+            );
             assert!(folder.left() >= line.left() && folder.right() <= change.left());
             assert!(folder.size.width > px(0.));
             assert!(change.left() >= pane.left() && change.right() <= pane.right());

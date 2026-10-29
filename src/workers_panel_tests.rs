@@ -88,6 +88,7 @@ fn source(feed: &Feed, key: gpui_kit::EntityId) -> PanelSource {
         feed: Some(feed.clone()),
         images: None,
         movable: Vec::new(),
+        usual: crate::workers::Usual::default(),
         key: Some((key, 0)),
     }
 }
@@ -414,6 +415,60 @@ fn the_card_of_a_workers_worker_opens_it_in_the_panel(cx: &mut TestAppContext) {
         .expect("r2's card is in r1's lane");
     panel.click(cx, ("worker-row", card));
     assert_eq!(panel.open_worker(cx).as_deref(), Some("r2"));
+}
+
+/// The card of a worker's worker names the worker's model and effort only
+/// when they aren't the ones the session's workers start with, as the main
+/// transcript's cards do, and follows the session when they change.
+#[gpui_kit::test]
+fn the_card_in_a_workers_view_follows_the_models_workers_start_with(cx: &mut TestAppContext) {
+    use arko::remote::{Kind, WorkerInfo};
+
+    use crate::workers::Usual;
+
+    let panel = open(cx);
+    let feed = Feed::new("main");
+    feed.turn_started();
+    feed.worker("r1", "Review the files", WorkerChange::Started);
+    feed.worker_under("r2", "r1");
+    feed.worker("r2", "Count the files", WorkerChange::Started);
+    let mut info = WorkerInfo::new();
+    info.depth = 2;
+    info.model = Some("gpt-6.1-sol".into());
+    info.effort = Some("high".into());
+    feed.worker_info("r2", info);
+    // Workers start on `model`, with high effort.
+    let start_on = |cx: &mut TestAppContext, model: &str| {
+        panel.panel.update(cx, |panel, cx| {
+            let mut source = source(&feed, cx.entity_id());
+            source.usual = Usual {
+                model: model.into(),
+                effort: "high".into(),
+            };
+            panel.set_source(source, cx);
+        });
+        panel.draw(cx);
+    };
+    start_on(cx, "gpt-6.1-sol");
+    panel.click(cx, ("worker", 0usize));
+    assert_eq!(panel.open_worker(cx).as_deref(), Some("r1"));
+    let card = feed
+        .subscribe()
+        .0
+        .items
+        .iter()
+        .find(|item| item.kind == Kind::WorkerLine && item.agent == "r1")
+        .map(|item| item.id)
+        .expect("r2's card is in r1's lane");
+    let chip = |cx: &mut TestAppContext| {
+        cx.update_window(panel.window, |_, window, _| {
+            window.try_find(("worker-setup", card)).is_some()
+        })
+        .unwrap()
+    };
+    assert!(!chip(cx), "r2 runs as workers usually do");
+    start_on(cx, "gpt-6-luna");
+    assert!(chip(cx), "workers start on another model now");
 }
 
 /// A family's cost reaches the rows from the feed's own sums: the worker

@@ -12,7 +12,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, IconName, Sizable as _, WindowExt as _, enclosing_radius, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -196,12 +196,16 @@ impl AccountsPage {
         account: &'static str,
         controls: AnyElement,
         primary: impl Fn(&mut Window, &mut App) + 'static,
+        window: &Window,
         cx: &App,
     ) -> AnyElement {
         let focus = self.focus_of(account);
         let marked = self.target == Some(account);
         let theme = cx.theme();
-        let (ring, radius) = (theme.ring, theme.radius);
+        // The ring sits its padding (p_0p5) and its 1 px border outside the
+        // buttons' corners.
+        let radius = enclosing_radius(theme.radius, window.rem_size() * 0.125 + px(1.));
+        let ring = theme.ring;
         h_flex()
             .id(SharedString::from(format!("account-{account}")))
             .test_support()
@@ -637,7 +641,7 @@ impl AccountsPage {
         let (add, remove, page) = (this.clone(), this.clone(), this.clone());
         SettingItem::new(
             key.provider,
-            SettingField::render(move |_, _, cx| {
+            SettingField::render(move |_, window, cx| {
                 let (add, remove) = (add.clone(), remove.clone());
                 let asking = add.clone();
                 let primary = move |window: &mut Window, cx: &mut App| {
@@ -666,7 +670,8 @@ impl AccountsPage {
                             }),
                     )
                     .into_any_element();
-                page.read(cx).row_field(provider, controls, primary, cx)
+                page.read(cx)
+                    .row_field(provider, controls, primary, window, cx)
             }),
         )
         .description(description)
@@ -728,7 +733,7 @@ impl AccountsPage {
         items.push(
             SettingItem::new(
                 "Claude Code",
-                SettingField::render(move |_, _, cx| {
+                SettingField::render(move |_, window, cx| {
                     let check = check.clone();
                     let checking_again = check.clone();
                     let button = Button::new("check-claude-code")
@@ -744,6 +749,7 @@ impl AccountsPage {
                         CLAUDE_CODE,
                         button,
                         move |_, cx| checking_again.update(cx, |page, cx| page.check_again(cx)),
+                        window,
                         cx,
                     )
                 }),
@@ -783,7 +789,7 @@ impl AccountsPage {
         };
         SettingItem::new(
             title,
-            SettingField::render(move |_, _, cx| {
+            SettingField::render(move |_, window, cx| {
                 let buttons = path.iter().fold(h_flex().gap_1(), |row, path| {
                     let (first, remove) = (page.clone(), page.clone());
                     let (first_path, remove_path) = (path.clone(), path.clone());
@@ -821,8 +827,13 @@ impl AccountsPage {
                 // The first row is the one the page points at when a model
                 // needs the login.
                 if ix == 0 {
-                    page.read(cx)
-                        .row_field(CHATGPT, buttons.into_any_element(), primary, cx)
+                    page.read(cx).row_field(
+                        CHATGPT,
+                        buttons.into_any_element(),
+                        primary,
+                        window,
+                        cx,
+                    )
                 } else {
                     buttons.into_any_element()
                 }

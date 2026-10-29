@@ -79,6 +79,9 @@ pub struct PanelSource {
     pub images: Option<arko::images::Images>,
     /// The running calls that can move to the background, by item.
     pub movable: Vec<u64>,
+    /// What workers start with unless told otherwise, which the cards in a
+    /// worker's transcript name only when a worker runs another.
+    pub usual: workers::Usual,
     /// Changes when the session (or its opening) changes: the transcripts
     /// kept are another feed's then.
     pub key: Option<(EntityId, u64)>,
@@ -92,6 +95,7 @@ impl PanelSource {
             feed: session.feed().cloned(),
             images: session.link().map(|link| link.images.clone()),
             movable: session.reading().movable.clone(),
+            usual: workers::Usual::of(&session.reading().models),
             key: Some((id, session.opening())),
         }
     }
@@ -245,6 +249,13 @@ impl WorkersPanel {
                     .update(cx, |view, cx| view.set_movable(&source.movable, cx));
             }
         }
+        if source.usual != self.source.usual {
+            for shown in &self.transcripts {
+                shown
+                    .view
+                    .update(cx, |view, cx| view.set_usual(&source.usual, cx));
+            }
+        }
         self.source = source;
         if !same {
             self.sync_rows(cx);
@@ -351,8 +362,11 @@ impl WorkersPanel {
                 }
                 view
             });
-            let movable = self.source.movable.clone();
-            view.update(cx, |view, cx| view.set_movable(&movable, cx));
+            let (movable, usual) = (self.source.movable.clone(), self.source.usual.clone());
+            view.update(cx, |view, cx| {
+                view.set_movable(&movable, cx);
+                view.set_usual(&usual, cx);
+            });
             let events = cx.subscribe_in(&view, window, Self::on_transcript_event);
             self.transcripts.push(Shown {
                 id: id.clone(),

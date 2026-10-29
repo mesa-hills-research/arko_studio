@@ -539,8 +539,8 @@ impl TranscriptView {
             height += ANSWERS_GAP * rem + rem + m.line_xs;
             for (number, answer) in answers {
                 let lines = super::height::hard_lines(answer);
-                height += 0.25 * rem
-                    + m.body.text_lines(&lines, inside - number_room(number)) * m.line;
+                height +=
+                    0.25 * rem + m.body.text_lines(&lines, inside - number_room(number)) * m.line;
             }
         }
         height
@@ -2263,8 +2263,9 @@ impl TranscriptView {
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| item.text.clone());
         let now = (self.clock)();
-        // Its model, effort and profile, once the session has recorded them.
-        let setup = summary.and_then(crate::workers::setup_label);
+        // Its profile, or its model and effort when workers usually run
+        // others, once the session has recorded them.
+        let setup = summary.and_then(|summary| crate::workers::card_setup(summary, &self.usual));
         let state: AnyElement = match summary.map(|summary| summary.state) {
             Some(WorkerState::Running) => {
                 let elapsed = summary

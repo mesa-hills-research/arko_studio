@@ -24,7 +24,7 @@ use gpui_kit::component::input::{
     SubmitKey, SuggestionOptions, Textarea, TextareaState,
 };
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, IconName, Sizable as _, ThemeStyled as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::writing::WordSuggestions;
@@ -1356,8 +1356,16 @@ impl Composer {
             .into_any_element()
     }
 
-    fn render_menu(&self, menu: &SlashMenu, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_menu(
+        &self,
+        menu: &SlashMenu,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = cx.theme();
+        // The menu's padding (p_1) and its 1 px border, between its edge and
+        // a row's.
+        let inset = window.rem_size() * 0.25 + px(1.);
         // The rows around the selected one.
         let first = menu
             .selected
@@ -1386,7 +1394,7 @@ impl Composer {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .rounded(theme.radius)
+                    .rounded_inside(theme.radius_lg, inset)
                     .text_sm()
                     .when(selected, |this| this.bg(background).text_color(foreground))
                     .child(div().flex_none().code_font(theme).child(item.label.clone()))
@@ -1448,7 +1456,7 @@ impl Composer {
 }
 
 impl Render for Composer {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity().downgrade();
         let paste_lines = prefs::get(cx).input.paste_token_lines;
         let menu = self.menu.clone();
@@ -1482,7 +1490,9 @@ impl Render for Composer {
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.attach_paths(paths.paths().to_vec(), window, cx)
             }))
-            .when_some(menu, |this, menu| this.child(self.render_menu(&menu, cx)))
+            .when_some(menu, |this, menu| {
+                this.child(self.render_menu(&menu, window, cx))
+            })
             .children(tiles)
             .child(
                 Textarea::new(&self.textarea)

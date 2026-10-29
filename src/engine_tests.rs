@@ -507,7 +507,9 @@ fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
             window.try_find(("question-answers", card)).is_some()
                 && (0..3).all(|n| {
                     window.try_find(("answer", card * 8 + n)).is_some()
-                        && window.try_find(("question-outcome", card * 8 + n)).is_none()
+                        && window
+                            .try_find(("question-outcome", card * 8 + n))
+                            .is_none()
                 })
         })
         .unwrap()

@@ -4,35 +4,46 @@
 //! shortcut: this mirrors the kit's private segmented-tab rule, so use the
 //! kit's own helpers if it exposes them.
 
-use gpui_kit::component::{ActiveTheme as _, StyledExt as _, Theme, v_flex};
+use gpui_kit::component::{ActiveTheme as _, StyledExt as _, Theme, ThemeStyled as _, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
+/// The least contrast of the chosen segment's fill with the track.
+const SEGMENT_FILL_MIN_CONTRAST: f32 = 1.15;
 /// The least contrast of the chosen segment's outline with its fill and with
 /// the track.
 const SEGMENT_OUTLINE_MIN_CONTRAST: f32 = 1.4;
-/// The most contrast of the track's outline with the track.
-const TRACK_OUTLINE_MAX_CONTRAST: f32 = 1.25;
+/// The least contrast of the track's outline with the window.
+const TRACK_OUTLINE_MIN_CONTRAST: f32 = 1.2;
+/// The most contrast of the track's outline with the window.
+const TRACK_OUTLINE_MAX_CONTRAST: f32 = 2.;
 
-/// The track behind the segments, as an opaque color.
+/// The track behind the segments, as an opaque color. It's the window
+/// background unless the theme sets `tab_bar.segmented.background`.
 fn track(theme: &Theme) -> Hsla {
     theme.background.blend(theme.tab_bar_segmented)
 }
 
 /// The fill and the outline of the chosen segment.
 ///
-/// The fill is the window background on a light theme and a step lighter
-/// than the track on a dark one. The outline is the foreground at 30% opacity
-/// on a light theme and 25% on a dark one. Where a theme's colors sit close
-/// together it gets stronger, until it stands out from both the fill and the
-/// track.
+/// The fill is `secondary`. Where that sits too close to the track, it's the
+/// foreground at 8% opacity on a light theme and 10% on a dark one, stronger
+/// where needed to stand out from the track. The outline is the foreground at
+/// 30% opacity on a light theme and 25% on a dark one, stronger where needed
+/// to stand out from both the fill and the track.
 fn selection(theme: &Theme) -> (Hsla, Hsla) {
     let track = track(theme);
-    let (fill, mut alpha) = if theme.is_dark() {
-        (track.blend(theme.foreground.opacity(0.16)), 0.25)
-    } else {
-        (theme.background, 0.3)
-    };
+    let dark = theme.is_dark();
+    let mut fill = track.blend(theme.secondary);
+    if contrast_ratio(fill, track) < SEGMENT_FILL_MIN_CONTRAST {
+        let mut alpha: f32 = if dark { 0.1 } else { 0.08 };
+        let tint = |alpha: f32| track.blend(theme.foreground.opacity(alpha));
+        while alpha < 1. && contrast_ratio(tint(alpha), track) < SEGMENT_FILL_MIN_CONTRAST {
+            alpha = (alpha + 0.01).min(1.);
+        }
+        fill = tint(alpha);
+    }
+    let mut alpha: f32 = if dark { 0.25 } else { 0.3 };
     let faint = |alpha: f32| {
         let line = fill.blend(theme.foreground.opacity(alpha));
         contrast_ratio(line, fill).min(contrast_ratio(line, track)) < SEGMENT_OUTLINE_MIN_CONTRAST
@@ -43,15 +54,21 @@ fn selection(theme: &Theme) -> (Hsla, Hsla) {
     (fill, theme.foreground.opacity(alpha))
 }
 
-/// The track's hairline, in the theme's border color. A strong border is
-/// faded toward the track, so no theme frames the control heavily.
+/// The track's 1 px outline, in the theme's border color. A strong border is
+/// faded toward the window, so no theme frames the control heavily. A faint
+/// one gives way to the foreground at the least opacity that shows.
 fn track_outline(theme: &Theme) -> Hsla {
     let track = track(theme);
-    let mut alpha = 1.;
-    while alpha > 0.
-        && contrast_ratio(track.blend(theme.border.opacity(alpha)), track)
-            > TRACK_OUTLINE_MAX_CONTRAST
-    {
+    let edge = |color: Hsla| contrast_ratio(track.blend(color), theme.background);
+    if edge(theme.border) < TRACK_OUTLINE_MIN_CONTRAST {
+        let mut alpha: f32 = 0.15;
+        while alpha < 1. && edge(theme.foreground.opacity(alpha)) < TRACK_OUTLINE_MIN_CONTRAST {
+            alpha = (alpha + 0.01).min(1.);
+        }
+        return theme.foreground.opacity(alpha);
+    }
+    let mut alpha: f32 = 1.;
+    while alpha > 0. && edge(theme.border.opacity(alpha)) > TRACK_OUTLINE_MAX_CONTRAST {
         alpha = (alpha - 0.05).max(0.);
     }
     theme.border.opacity(alpha)
@@ -74,14 +91,17 @@ fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
+/// The gap between the track's outer edge and each segment's edge, on every
+/// side, where the kit's default segmented tabs have it.
+pub(crate) const SEGMENT_INSET: Pixels = px(4.);
+
 /// The track, outlined, 32 px tall around its segments like the kit's default
 /// segmented tabs.
 pub(crate) fn track_style<E: Styled>(track: E, cx: &App) -> E {
     let theme = cx.theme();
-    // The 1 px border and 3 px padding put the 24 px segments 4 px inside the
-    // edge, where the kit's sit.
+    // The padding and the 1 px border make up the inset.
     track
-        .p(px(3.))
+        .p(SEGMENT_INSET - px(1.))
         .gap(px(2.))
         .rounded(theme.radius_lg)
         .border_1()
@@ -89,7 +109,7 @@ pub(crate) fn track_style<E: Styled>(track: E, cx: &App) -> E {
         .bg(theme.tokens.tab_bar_segmented)
 }
 
-/// A segment, filled, outlined and lightly raised when `chosen`. Other
+/// A segment, filled and outlined when `chosen`. Other
 /// segments use muted text that brightens on hover, unless `disabled`. A
 /// disabled choice keeps its fill with a fainter outline.
 pub(crate) fn segment_style<E: Styled + InteractiveElement + FluentBuilder>(
@@ -104,7 +124,8 @@ pub(crate) fn segment_style<E: Styled + InteractiveElement + FluentBuilder>(
     segment
         .h(px(24.))
         .px_3()
-        .rounded((theme.radius_lg - px(2.)).max(px(0.)))
+        // Concentric with the track's corners.
+        .rounded_inside(theme.radius_lg, SEGMENT_INSET)
         .border_1()
         .border_color(theme.transparent)
         .text_sm()
@@ -116,16 +137,22 @@ pub(crate) fn segment_style<E: Styled + InteractiveElement + FluentBuilder>(
             theme.muted_foreground
         })
         .when(chosen, |this| {
-            this.font_medium().bg(fill).map(|this| {
-                if disabled {
-                    this.border_color(outline.opacity(0.5))
-                } else {
-                    this.border_color(outline).shadow(raised_shadow())
-                }
+            this.font_medium().bg(fill).border_color(if disabled {
+                outline.opacity(0.5)
+            } else {
+                outline
             })
         })
-        .when(!chosen && !disabled, |this| {
-            this.hover(move |style| style.text_color(foreground))
+        // Every segment keeps a hover style, an empty one when chosen or
+        // disabled, because GPUI keeps an element's hover state current only
+        // while it has one. A segment chosen under the pointer would otherwise
+        // keep the hover color once the other was chosen.
+        .hover(move |style| {
+            if chosen || disabled {
+                style
+            } else {
+                style.text_color(foreground)
+            }
         })
 }
 
@@ -140,34 +167,22 @@ pub(crate) fn segment_label(label: impl Into<SharedString>) -> Div {
         .child(div().h_0().overflow_hidden().font_medium().child(label))
 }
 
-/// The light shadow of the chosen segment, tight because the track around it
-/// is only a few pixels wider.
-fn raised_shadow() -> Vec<BoxShadow> {
-    let ink = hsla(0., 0., 0., 0.1);
-    vec![
-        BoxShadow::new(px(0.), px(1.), ink).blur_radius(px(1.5)),
-        BoxShadow::new(px(0.), px(1.), ink)
-            .blur_radius(px(1.))
-            .spread_radius(px(-1.)),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::{
-        SEGMENT_OUTLINE_MIN_CONTRAST, TRACK_OUTLINE_MAX_CONTRAST, contrast_ratio, selection, track,
-        track_outline,
+        SEGMENT_FILL_MIN_CONTRAST, SEGMENT_OUTLINE_MIN_CONTRAST, TRACK_OUTLINE_MAX_CONTRAST,
+        TRACK_OUTLINE_MIN_CONTRAST, contrast_ratio, selection, track, track_outline,
     };
     use gpui_kit::component::Theme;
     use std::rc::Rc;
 
-    /// In every bundled theme, the chosen segment's outline stands out from
-    /// its fill and from the track, and the track's own outline stays fainter
-    /// than that.
+    /// In every bundled theme, the track's outline shows without framing the
+    /// control heavily, the chosen segment's fill and outline stand out, and
+    /// both labels are legible.
     #[test]
-    fn outlines_are_visible_and_subtle_in_every_bundled_theme() {
+    fn segments_keep_their_contrast_in_every_bundled_theme() {
         let configs = crate::appearance::parse_bundled();
         assert!(configs.len() >= 71, "{} themes read", configs.len());
         let mut failures = Vec::new();
@@ -175,18 +190,52 @@ mod tests {
             let name = config.name.clone();
             let mut theme = Theme::default();
             theme.apply_config(&Rc::new(config));
-            let (fill, outline) = selection(&theme);
             let track = track(&theme);
+            let (fill, outline) = selection(&theme);
+            let edge = track.blend(track_outline(&theme));
             let line = fill.blend(outline);
-            for (surface, color) in [("fill", fill), ("track", track)] {
-                let ratio = contrast_ratio(line, color);
-                if ratio < SEGMENT_OUTLINE_MIN_CONTRAST {
-                    failures.push(format!("{name}: outline on {surface} {ratio:.2}"));
+            let checks = [
+                (
+                    "track outline",
+                    contrast_ratio(edge, theme.background),
+                    TRACK_OUTLINE_MIN_CONTRAST,
+                    TRACK_OUTLINE_MAX_CONTRAST,
+                ),
+                (
+                    "fill",
+                    contrast_ratio(fill, track),
+                    SEGMENT_FILL_MIN_CONTRAST,
+                    21.,
+                ),
+                (
+                    "outline on fill",
+                    contrast_ratio(line, fill),
+                    SEGMENT_OUTLINE_MIN_CONTRAST,
+                    21.,
+                ),
+                (
+                    "outline on track",
+                    contrast_ratio(line, track),
+                    SEGMENT_OUTLINE_MIN_CONTRAST,
+                    21.,
+                ),
+                (
+                    "chosen label",
+                    contrast_ratio(fill.blend(theme.foreground), fill),
+                    4.5,
+                    21.,
+                ),
+                (
+                    "other labels",
+                    contrast_ratio(track.blend(theme.muted_foreground), track),
+                    4.5,
+                    21.,
+                ),
+            ];
+            for (what, ratio, least, most) in checks {
+                if !(least..=most).contains(&ratio) {
+                    failures.push(format!("{name}: {what} {ratio:.2}"));
                 }
-            }
-            let ratio = contrast_ratio(track.blend(track_outline(&theme)), track);
-            if ratio > TRACK_OUTLINE_MAX_CONTRAST {
-                failures.push(format!("{name}: track outline {ratio:.2}"));
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");

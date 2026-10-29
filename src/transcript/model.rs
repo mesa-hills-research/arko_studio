@@ -618,6 +618,13 @@ pub(crate) enum Show {
     Count,
 }
 
+/// Whether `item` is a call that started its worker at once, which the Quiet
+/// view leaves out because the worker's card stands for it. A call still
+/// running, queued or refused has no worker yet, so it shows.
+fn is_start(item: &Item) -> bool {
+    item.kind == Kind::Call && item.started.is_some()
+}
+
 pub(crate) fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
     if let AgentFilter::Worker(_) = filter {
         return match item.kind {
@@ -640,8 +647,13 @@ pub(crate) fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
         };
     }
     match view {
-        View::Full | View::Quiet => match item.kind {
+        View::Full => match item.kind {
             Kind::Result => Show::Hidden,
+            _ => Show::Item,
+        },
+        View::Quiet => match item.kind {
+            Kind::Result => Show::Hidden,
+            _ if is_start(item) => Show::Hidden,
             _ => Show::Item,
         },
         View::Messages => match item.kind {
@@ -909,9 +921,11 @@ pub(crate) fn has_questions(item: &Item) -> bool {
 pub(crate) const GROUP_AFTER: usize = 3;
 
 /// Whether `item` belongs in a run of the main agent's tool activity: its
-/// calls and its thinking between them.
+/// calls and its thinking between them. A call the Quiet view leaves out
+/// ([`is_start`]) isn't in it, so it neither counts toward a group nor shows
+/// when one opens.
 fn in_run(item: &Item) -> bool {
-    item.is_main() && matches!(item.kind, Kind::Call | Kind::Thinking)
+    item.is_main() && matches!(item.kind, Kind::Call | Kind::Thinking) && !is_start(item)
 }
 
 /// The entries of the run of activity starting at `start`, as indexes, and
@@ -1522,6 +1536,173 @@ mod tests {
         assert_eq!(run_of(&model, 6, View::Messages), [5, 6, 8, 9]);
         // Full shows every call and the thinking, folded.
         assert_eq!(keys(&model, View::Full).len(), 11);
+    }
+
+    /// A `start_agent` call as the feed has it: it names its worker once it
+    /// started one at once.
+    fn start_call(id: u64, lane: &str, status: CallStatus, started: Option<&str>) -> Item {
+        let mut call = item(id, Kind::Call, lane, "start worker");
+        call.status = Some(status);
+        call.started = started.map(str::to_string);
+        call
+    }
+
+    fn worker_card(id: u64, lane: &str, worker: &str) -> Item {
+        let mut card = item(id, Kind::WorkerLine, lane, "Fix the parser");
+        card.worker = Some(worker.into());
+        card
+    }
+
+    /// Quiet leaves out the call that started a worker, whose card stands for
+    /// it. A call still running, queued or refused shows, and Full, Messages
+    /// and a worker's own transcript keep every call.
+    #[test]
+    fn quiet_leaves_out_the_call_that_started_a_worker() {
+        let items = vec![
+            item(1, Kind::User, "main", "go"),
+            start_call(2, "main", CallStatus::Ok, Some("r1")),
+            worker_card(3, "main", "r1"),
+            // Queued, refused, and waiting for the billing answer.
+            start_call(4, "main", CallStatus::Ok, None),
+            start_call(5, "main", CallStatus::Failed, None),
+            start_call(6, "main", CallStatus::Running, None),
+            // A call of r1 that started r2, with r2's card in r1's transcript.
+            start_call(7, "r1", CallStatus::Ok, Some("r2")),
+            worker_card(8, "r1", "r2"),
+        ];
+        let main = model(items.clone());
+        assert_eq!(
+            keys(&main, View::Quiet),
+            [
+                RowKey::User(1),
+                RowKey::Worker(3),
+                RowKey::Call(4),
+                RowKey::Call(5),
+                RowKey::Call(6),
+            ]
+        );
+        assert_eq!(
+            keys(&main, View::Full),
+            [
+                RowKey::User(1),
+                RowKey::Call(2),
+                RowKey::Worker(3),
+                RowKey::Call(4),
+                RowKey::Call(5),
+                RowKey::Call(6),
+                RowKey::Call(7),
+            ]
+        );
+        assert_eq!(
+            keys(&main, View::Messages),
+            [
+                RowKey::User(1),
+                RowKey::Count(2),
+                RowKey::Worker(3),
+                RowKey::Count(4),
+            ]
+        );
+        // The call is hidden for the find and the reader's keys too.
+        let filter = AgentFilter::Main;
+        let shown = |view| show(&filter, view, &items[1]);
+        assert_eq!(shown(View::Quiet), Show::Hidden);
+        assert_eq!(shown(View::Full), Show::Item);
+        assert_eq!(shown(View::Messages), Show::Count);
+        for call in &items[3..6] {
+            assert_eq!(show(&filter, View::Quiet, call), Show::Item);
+        }
+        // r1's own transcript shows the call that started r2, in any view.
+        let mut own = Model::new(AgentFilter::Worker("r1".into()));
+        let snapshot = Snapshot {
+            items,
+            ..Snapshot::default()
+        };
+        own.load(snapshot, &mut Changes::default());
+        for view in [View::Full, View::Quiet, View::Messages] {
+            assert_eq!(
+                keys(&own, view),
+                [RowKey::Call(7), RowKey::Worker(8)],
+                "{view:?}"
+            );
+        }
+    }
+
+    /// A hidden start doesn't count toward the calls a run folds past, and
+    /// an opened group doesn't show it.
+    #[test]
+    fn a_hidden_start_is_not_folded_into_a_group() {
+        let call = |id| item(id, Kind::Call, "main", "read a.rs");
+        let start = start_call(4, "main", CallStatus::Ok, Some("r1"));
+        // Three calls and a start: no group, and the start leaves no row.
+        let three = model(vec![
+            item(1, Kind::User, "main", "go"),
+            call(2),
+            call(3),
+            start.clone(),
+            call(5),
+        ]);
+        assert_eq!(
+            keys(&three, View::Quiet),
+            [
+                RowKey::User(1),
+                RowKey::Call(2),
+                RowKey::Call(3),
+                RowKey::Call(5)
+            ]
+        );
+        assert_eq!(keys(&three, View::Full).len(), 5);
+        // A fourth call folds the run, without the start among its members.
+        let four = model(vec![
+            item(1, Kind::User, "main", "go"),
+            call(2),
+            call(3),
+            start.clone(),
+            call(5),
+            call(6),
+        ]);
+        assert_eq!(
+            keys(&four, View::Quiet),
+            [RowKey::User(1), RowKey::Group(2)]
+        );
+        assert_eq!(run_of(&four, 2, View::Quiet), [1, 2, 4, 5]);
+        let expanded = Layout {
+            group_open: &|id| (id == 2).then_some(true),
+            ..layout(View::Quiet)
+        };
+        let rows: Vec<RowKey> = rows(&four, &expanded).iter().map(|r| r.key).collect();
+        assert_eq!(
+            rows,
+            [
+                RowKey::User(1),
+                RowKey::Group(2),
+                RowKey::Call(2),
+                RowKey::Call(3),
+                RowKey::Call(5),
+                RowKey::Call(6),
+            ]
+        );
+        // Starts alone make no group at all, with their cards between.
+        let starts = model(vec![
+            item(1, Kind::User, "main", "go"),
+            start_call(2, "main", CallStatus::Ok, Some("r1")),
+            worker_card(3, "main", "r1"),
+            start_call(4, "main", CallStatus::Ok, Some("r2")),
+            worker_card(5, "main", "r2"),
+            start_call(6, "main", CallStatus::Ok, Some("r3")),
+            worker_card(7, "main", "r3"),
+            start_call(8, "main", CallStatus::Ok, Some("r4")),
+            worker_card(9, "main", "r4"),
+        ]);
+        assert_eq!(
+            keys(&starts, View::Quiet),
+            [
+                RowKey::User(1),
+                RowKey::Worker(3),
+                RowKey::Worker(5),
+                RowKey::Worker(7),
+                RowKey::Worker(9),
+            ]
+        );
     }
 
     #[test]
