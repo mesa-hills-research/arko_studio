@@ -19,7 +19,7 @@ path = "src/main.rs"
 # GPUI Kit, Mesa Hills Research's fork, published as the `mhr-gpui-kit` crates. It pins the
 # matching mhr-gpui release and re-exports it, so GPUI is `gpui_kit::*` and needs no entry of
 # its own.
-gpui-kit = { package = "mhr-gpui-kit", version = "=0.7.5", features = ["fonts", "tree-sitter-languages", "writing"] }
+gpui-kit = { package = "mhr-gpui-kit", version = "=0.7.6", features = ["fonts", "tree-sitter-languages", "writing"] }
 # Arko's engine, as a library: no terminal crates, the web page's server kept.
 arko = { package = "arko-tui", version = "0.13.2", default-features = false, features = ["remote"] }
 anyhow = "1.0"
@@ -55,7 +55,7 @@ uuid = "1"
 [dev-dependencies]
 # The same GPUI Kit with GPUI's test harness, for tests that click and type
 # into real windows on a fake clock.
-gpui-kit = { package = "mhr-gpui-kit", version = "=0.7.5", features = ["test-support"] }
+gpui-kit = { package = "mhr-gpui-kit", version = "=0.7.6", features = ["test-support"] }
 arko = { package = "arko-tui", version = "0.13.2", default-features = false, features = ["remote", "testing"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # The feed's events as arko gets them from the framework, for tests that
