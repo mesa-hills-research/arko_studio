@@ -88,6 +88,9 @@ Each open Agent session runs its own copy of every MCP server, so close the sess
 using. Chat sessions run none. A launcher such as `npx -y` adds a wrapper process to each copy, so
 `node path/to/server.js` is lighter.
 
+A worker the agent gave only some of its skills or MCP servers says how many in the workers panel,
+such as "sonnet · xhigh · impl-light · 2 skills · no MCP", with their names on hover.
+
 **Settings › Notifications** chooses which events notify and whether a sound plays. Each one names
 its session, and clicking it shows that session. Every notification that is on is also kept in a
 history, even when the window was in front and nothing popped up. Open the history from the unread

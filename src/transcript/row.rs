@@ -2266,6 +2266,8 @@ impl TranscriptView {
         // Its profile, or its model and effort when workers usually run
         // others, once the session has recorded them.
         let setup = summary.and_then(|summary| crate::workers::card_setup(summary, &self.usual));
+        // The skills and servers it was narrowed to, in full on hover.
+        let narrowed = summary.and_then(crate::workers::narrowed_sentence);
         let state: AnyElement = match summary.map(|summary| summary.state) {
             Some(WorkerState::Running) => {
                 let elapsed = summary
@@ -2328,6 +2330,11 @@ impl TranscriptView {
                             .text_xs()
                             .text_color(theme.muted_foreground)
                             .child(setup)
+                            .when_some(narrowed.clone(), |this, narrowed| {
+                                this.tooltip(move |window, cx| {
+                                    Tooltip::new(narrowed.clone()).build(window, cx)
+                                })
+                            })
                     }))
                     .child(
                         div()

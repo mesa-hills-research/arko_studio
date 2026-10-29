@@ -2199,6 +2199,95 @@ fn workers_dark() {
     goldens().assert("workers-dark", &workers_window(ThemeMode::Dark));
 }
 
+/// The workers panel with workers narrowed to some skills and MCP servers
+/// beside one that has what the main agent has.
+fn workers_narrowed_window(mode: ThemeMode) -> Screenshot {
+    use arko::remote::{WorkerState, WorkerSummary};
+    use arko_studio::workers_panel::{PanelSource, WorkersPanel};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    const MINUTE: i64 = 60_000;
+    let names = |names: &[&str]| Some(names.iter().map(|name| name.to_string()).collect());
+    let worker = |id: &str, title: &str, calls, last: &str| {
+        let mut summary = WorkerSummary::new(id);
+        summary.title = title.into();
+        summary.state = WorkerState::Running;
+        summary.tool_calls = calls;
+        summary.started_at = Some(WORKERS_NOW - 3 * MINUTE);
+        summary.running_since = summary.started_at;
+        summary.last = Some(last.into());
+        summary.model = Some("cc:claude-sonnet-5-5".into());
+        summary.effort = Some("xhigh".into());
+        summary
+    };
+    let mut light = worker("r1", "Write the release notes", 9, "read CHANGELOG.md");
+    light.profile = Some("impl-light".into());
+    light.skills = names(&["ponytail", "release-notes"]);
+    light.mcp = Some(Vec::new());
+    let mut triage = worker(
+        "r2",
+        "Triage the crash reports",
+        14,
+        "mcp sentry list_issues",
+    );
+    triage.skills = Some(Vec::new());
+    triage.mcp = names(&["sentry"]);
+    let full = worker(
+        "r3",
+        "Fix the flaky parser test",
+        21,
+        "$ cargo test -p parse",
+    );
+    let source = PanelSource {
+        workers: vec![light, triage, full],
+        agents: Vec::new(),
+        feed: None,
+        images: None,
+        movable: Vec::new(),
+        usual: arko_studio::workers::Usual::default(),
+        key: None,
+    };
+    let window = app
+        .open_window_with(size(px(352.), px(300.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut panel = WorkersPanel::new(window, cx);
+                    panel.set_source(source, cx);
+                    panel.set_clock(|| WORKERS_NOW, cx);
+                    panel
+                })
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn workers_narrowed_light() {
+    goldens().assert(
+        "workers-narrowed-light",
+        &workers_narrowed_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn workers_narrowed_dark() {
+    goldens().assert(
+        "workers-narrowed-dark",
+        &workers_narrowed_window(ThemeMode::Dark),
+    );
+}
+
 /// The clock of the workers' screenshots, in Unix milliseconds.
 const WORKERS_NOW: i64 = 1_760_000_000_000;
 

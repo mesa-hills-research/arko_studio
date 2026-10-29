@@ -720,6 +720,7 @@ impl WorkersPanel {
             level,
             meta,
             setup: workers::setup_label(worker),
+            narrowed: workers::narrowed_sentence(worker),
             cost: workers::costs_label(worker),
         }
     }
@@ -855,6 +856,8 @@ impl WorkersPanel {
             .as_ref()
             .is_some_and(|worker| worker.state.is_active());
         let facts = self.facts(&id, now);
+        // The skills and servers it was narrowed to, in full.
+        let narrowed = worker.as_ref().and_then(workers::narrowed_sentence);
         let with_workers = self
             .source
             .workers
@@ -937,7 +940,12 @@ impl WorkersPanel {
                             .min_w_0()
                             .truncate()
                             .font_features(tabular_figures())
-                            .child(facts),
+                            .child(facts)
+                            .when_some(narrowed, |this, narrowed| {
+                                this.tooltip(move |window, cx| {
+                                    Tooltip::new(narrowed.clone()).build(window, cx)
+                                })
+                            }),
                     )
                     .child(
                         Button::new("worker-message")
@@ -1116,8 +1124,11 @@ struct RowFacts {
     /// Whether the row has a line under the others for its setup and cost,
     /// as every row of the list does once one has something for it.
     meta: bool,
-    /// Its model, effort and profile, as the terminal lists them.
+    /// Its model, effort and profile, as the terminal lists them, and the
+    /// skills and servers it was narrowed to.
     setup: Option<String>,
+    /// What it was narrowed to, in a sentence, for the setup's tooltip.
+    narrowed: Option<String>,
     /// What its model calls cost.
     cost: Option<String>,
 }
@@ -1263,7 +1274,12 @@ impl Render for WorkerRow {
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
-                                        .children(facts.setup.clone()),
+                                        .children(facts.setup.clone())
+                                        .when_some(facts.narrowed.clone(), |this, narrowed| {
+                                            this.tooltip(move |window, cx| {
+                                                Tooltip::new(narrowed.clone()).build(window, cx)
+                                            })
+                                        }),
                                 )
                                 .children(facts.cost.clone().map(figures)),
                         ),
