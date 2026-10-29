@@ -1430,9 +1430,10 @@ fn running_indicators_turn_together_and_thinking_shimmers(cx: &mut TestAppContex
     feed.worker("r1", "", WorkerChange::Finished { report: "Done." });
     think(&feed, "hmm");
     settle(cx, window);
-    // The text fades in first, by the test clock, which takes a few hundred
-    // milliseconds of frames of its own.
-    draws_in_a_second(cx, window, &view);
+    // Following the thinking scrolled the transcript, which shows the
+    // scrollbar. It fades away two seconds later, in half a second of frames
+    // of its own, and then thinking shimmers alone.
+    frames_asked(cx, window, 3 * 60);
     let draws = draws_in_a_second(cx, window, &view);
     assert!((10..=16).contains(&draws), "{draws} draws");
 }
