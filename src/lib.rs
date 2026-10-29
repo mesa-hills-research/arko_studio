@@ -7,6 +7,7 @@
 
 pub mod about;
 pub mod appearance;
+pub mod approvals;
 pub mod assets;
 pub mod backend;
 mod bundled_themes;
@@ -54,6 +55,8 @@ pub mod workers_panel;
 pub mod workspace;
 pub mod writing;
 
+#[cfg(test)]
+mod approvals_tests;
 #[cfg(test)]
 mod composer_tests;
 #[cfg(test)]

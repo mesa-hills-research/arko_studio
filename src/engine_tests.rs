@@ -527,11 +527,11 @@ fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
 }
 
 /// When worker billing asks first, a worker the main agent starts on a
-/// model billed per token waits for the user's OK, which Arko asks in the
-/// answer panel with its three choices. Allow starts it, and its report
-/// reaches the agent.
+/// model billed per token waits for the user's OK in the approval tray.
+/// Approve starts it, with the words typed going to the agent, and its
+/// report reaches the agent.
 #[gpui_kit::test]
-fn a_worker_billed_per_token_starts_once_allowed_in_the_panel(cx: &mut TestAppContext) {
+fn a_worker_billed_per_token_starts_once_approved_in_the_tray(cx: &mut TestAppContext) {
     const RUN: &str = "You are agent run";
     let mock = Mock::start(|_, body| {
         if body.contains(&format!("{RUN} r1")) {
@@ -558,25 +558,30 @@ fn a_worker_billed_per_token_starts_once_allowed_in_the_panel(cx: &mut TestAppCo
         })
     });
     app.send_and_rest(cx, "Indent the file.");
-    wait_until(cx, "the answer panel", |cx| app.shows(cx, "answer-panel"));
+    wait_until(cx, "the approval tray", |cx| app.shows(cx, "approval-tray"));
     let session = app.shown(cx).unwrap();
-    let question = cx.read(|cx| session.read(cx).reading().questions[0].clone());
+    let request = cx.read(|cx| session.read(cx).approvals()[0].clone());
     assert!(
-        question.question.starts_with("Start a worker on ")
-            && question.question.contains("billed per token"),
-        "{}",
-        question.question
+        matches!(
+            request.approval,
+            arko::approvals::Approval::WorkerBilling(_)
+        ),
+        "{request:?}"
     );
-    assert_eq!(question.choices.len(), 3);
-    assert_eq!(question.choices[0], "Allow");
+    assert!(request.approval.option().is_some());
+    assert!(!app.shows(cx, "answer-panel"));
     assert!(!mock.was_sent(&format!("{RUN} r1")), "it waits for the OK");
     act(cx, app.window, |window, cx| {
-        window.click(crate::questions::part("answer-choice", &question.id, 0), cx);
+        window.input("Keep it short", cx)
     });
-    act(cx, app.window, |window, cx| window.click("answer-send", cx));
+    act(cx, app.window, |window, cx| {
+        window.click("approval-approve", cx)
+    });
     app.wait_for_text(cx, "Done.");
     assert!(mock.was_sent(&format!("{RUN} r1")));
-    assert!(!app.shows(cx, "answer-panel"));
+    assert!(mock.was_sent("Keep it short"), "the words reach the agent");
+    assert!(!app.shows(cx, "approval-tray"));
+    assert_eq!(app.composer_text(cx), "");
     app.close_all(cx);
 }
 

@@ -17,9 +17,7 @@ use gpui_kit::component::input::{self, Input, InputEvent, InputState};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex,
-    scroll::ScrollableElement as _,
-    v_flex,
+    h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -43,16 +41,11 @@ gpui_kit::actions!(
 );
 
 /// "Arko asks 2 questions": the panel's title, and the chip that stands for
-/// questions that came while the user typed. Approvals alone say what they
-/// ask.
+/// questions that came while the user typed.
 pub fn asks_text(questions: &[AgentQuestion]) -> String {
-    let approvals =
-        !questions.is_empty() && questions.iter().all(|question| question.approval.is_some());
-    match (questions.len(), approvals) {
-        (1, true) => "Arko asks to save a worker profile".to_string(),
-        (count, true) => format!("Arko asks to save {count} worker profiles"),
-        (1, false) => "Arko asks a question".to_string(),
-        (count, false) => format!("Arko asks {count} questions"),
+    match questions.len() {
+        1 => "Arko asks a question".to_string(),
+        count => format!("Arko asks {count} questions"),
     }
 }
 
@@ -98,13 +91,9 @@ pub fn answer(state: &QuestionState) -> Option<&str> {
     }
 }
 
-/// A question's words without its number: an approval says what it
-/// approves.
+/// A question's words without its number.
 pub fn text(question: &AgentQuestion) -> String {
-    match &question.approval {
-        Some(approval) => approval.title(),
-        None => question.question.trim().to_string(),
-    }
+    question.question.trim().to_string()
 }
 
 /// What a screen reader hears of a question card: its line ("Arko asked 2
@@ -151,17 +140,12 @@ pub enum AnswerPanelEvent {
     AnswerInChat,
     /// Close it, the questions left as they are.
     Close,
-    /// Send what is filled in at once, with `choice` as the answer to
-    /// question `id` (an approval's Save or Don't save).
-    Choose { id: String, choice: String },
 }
 
 impl EventEmitter<AnswerPanelEvent> for AnswerPanel {}
 
 /// The answer panel: each open question with its choices as chips, an
-/// "Other" field and "You decide", and Send. An approval of a worker
-/// profile shows the profile, Save and Don't save, an Other field for
-/// changes, and its instructions.
+/// "Other" field and "You decide", and Send.
 pub struct AnswerPanel {
     questions: Vec<AgentQuestion>,
     drafts: HashMap<String, Draft>,
@@ -197,9 +181,7 @@ impl AnswerPanel {
             if self.drafts.contains_key(&question.id) {
                 continue;
             }
-            let placeholder = if question.approval.is_some() {
-                "Tell Arko what to change"
-            } else if question.choices.is_empty() {
+            let placeholder = if question.choices.is_empty() {
                 "Answer"
             } else {
                 "Other"
@@ -233,26 +215,13 @@ impl AnswerPanel {
         &self.questions
     }
 
-    /// What is filled in.
+    /// What is filled in. Every question the panel shows is named, those
+    /// left unanswered with an empty answer.
     pub fn answers(&self, cx: &App) -> Answers {
-        self.answers_choosing(None, cx)
-    }
-
-    /// What is filled in, with `chosen` (a question's id and a choice) as
-    /// that question's whole answer. Every question the panel shows is
-    /// named, those left unanswered with an empty answer.
-    pub fn answers_choosing(&self, chosen: Option<(&str, &str)>, cx: &App) -> Answers {
         let answers = self
             .questions
             .iter()
             .map(|question| {
-                if let Some((_, choice)) = chosen.filter(|(id, _)| *id == question.id) {
-                    let answer = Answer {
-                        choices: vec![choice.to_string()],
-                        ..Answer::default()
-                    };
-                    return QuestionAnswer::new(question.id.clone(), answer);
-                }
                 let Some(draft) = self.drafts.get(&question.id) else {
                     return QuestionAnswer::new(question.id.clone(), Answer::default());
                 };
@@ -402,8 +371,6 @@ impl AnswerPanel {
         let draft = self.drafts.get(&question.id)?;
         let theme = cx.theme();
         let id: SharedString = question.id.clone().into();
-        let approval = question.approval.as_ref();
-        let changes = !draft.other.read(cx).value().trim().is_empty();
         // A chosen chip is outlined in the text's color, which stands out
         // from the other chips' outlines in every theme, as the kit's own
         // fill for a chosen outline button is faint in some.
@@ -411,30 +378,9 @@ impl AnswerPanel {
         let chips = question.choices.iter().enumerate().map(|(n, choice)| {
             let chosen = draft.choices.contains(choice);
             let (id, choice) = (id.clone(), choice.clone());
-            let button = Button::new(part("answer-choice", &id, n))
+            Button::new(part("answer-choice", &id, n))
                 .small()
-                .label(choice.clone());
-            // An approval's choices answer at once, and Save is the primary one.
-            // Words typed for it ask for changes, which Save would drop.
-            if approval.is_some() {
-                let button = if choice == arko::questions::SAVE {
-                    button
-                        .primary()
-                        .disabled(changes)
-                        .when(changes, |this| this.tooltip("Clear your changes to save"))
-                } else {
-                    button.outline()
-                };
-                return button
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.emit(AnswerPanelEvent::Choose {
-                            id: id.to_string(),
-                            choice: choice.clone(),
-                        })
-                    }))
-                    .into_any_element();
-            }
-            button
+                .label(choice.clone())
                 .outline()
                 .selected(chosen)
                 .toggled(chosen)
@@ -445,7 +391,7 @@ impl AnswerPanel {
                 }))
                 .into_any_element()
         });
-        let you_decide = approval.is_none().then(|| {
+        let you_decide = {
             let id = id.clone();
             let chosen = draft.you_decide;
             let spoken = match &question.default {
@@ -473,7 +419,7 @@ impl AnswerPanel {
                     this.leave_field(click, window, cx);
                     this.toggle_you_decide(&id, cx)
                 }))
-        });
+        };
         // Another ask's questions start below a line. One whose card isn't
         // there yet (item 0) stands on its own.
         let new_batch = index > 0
@@ -483,51 +429,8 @@ impl AnswerPanel {
                 .is_some_and(|before| before.item != question.item || question.item == 0);
         let words = text(question);
         // A question that takes several of its choices says so after its
-        // words. An approval never does.
-        let choose_any = question.multiple && !question.choices.is_empty() && approval.is_none();
-        // The profile an approval would save, under what it asks.
-        let profile = approval.map(|approval| {
-            v_flex()
-                .child(
-                    div()
-                        .text_color(theme.muted_foreground)
-                        .child(approval.runs_on()),
-                )
-                .child(SelectableText::new(
-                    part("answer-description", &id, 0),
-                    approval.description.trim().to_string(),
-                ))
-        });
-        // Its instructions, which may be long, scroll in a box of their own.
-        let instructions = approval
-            .filter(|approval| !approval.instructions.trim().is_empty())
-            .map(|approval| {
-                v_flex()
-                    .id(part("answer-instructions", &id, 0))
-                    .test_support()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child("Instructions"),
-                    )
-                    .child(
-                        div()
-                            .max_h(rems(10.))
-                            .overflow_y_scrollbar()
-                            // Each approval's box keeps its own place.
-                            .id(part("answer-instructions-box", &id, 0))
-                            .p_2()
-                            .rounded(theme.radius)
-                            .bg(theme.muted)
-                            .text_sm()
-                            .child(SelectableText::new(
-                                part("answer-instructions-text", &id, 0),
-                                approval.instructions.trim_end().to_string(),
-                            )),
-                    )
-            });
+        // words.
+        let choose_any = question.multiple && !question.choices.is_empty();
         Some(
             v_flex()
                 .id(part("answer-question", &id, 0))
@@ -584,8 +487,7 @@ impl AnswerPanel {
                                                     .child(arko::questions::CHOOSE_ANY),
                                             )
                                         }),
-                                )
-                                .children(profile),
+                                ),
                         ),
                 )
                 .child(
@@ -593,14 +495,13 @@ impl AnswerPanel {
                         .flex_wrap()
                         .gap_1()
                         .children(chips)
-                        .children(you_decide),
+                        .child(you_decide),
                 )
                 .child(
                     Input::new(&draft.other)
                         .small()
                         .aria_label(format!("{}, other answer", first_line(&words))),
                 )
-                .children(instructions)
                 .into_any_element(),
         )
     }
@@ -757,16 +658,6 @@ mod tests {
     use super::{asked, asks_text, card_label, open_text, outcome, replying_text};
     use arko::questions::QuestionState;
 
-    /// An approval of a worker profile, as Arko asks it for the agent.
-    fn approval(id: &str, name: &str, state: &str) -> arko::questions::AgentQuestion {
-        asked(serde_json::json!({
-            "id": id, "question": format!("Save {name}?"), "choices": ["Save", "Don't save"],
-            "state": state, "waits": true, "item": 9,
-            "approval": {"name": name, "model": "sol", "scope": "every project",
-                         "description": "Judges 3D results"}
-        }))
-    }
-
     #[test]
     fn the_chips_count_the_questions() {
         let question = asked(serde_json::json!({ "id": "q1", "question": "?", "state": "open" }));
@@ -775,17 +666,7 @@ mod tests {
             "Arko asks a question"
         );
         assert_eq!(
-            asks_text(&[question.clone(), question.clone()]),
-            "Arko asks 2 questions"
-        );
-        let saves = [
-            approval("x1", "3d-judge", "open"),
-            approval("x2", "linter", "open"),
-        ];
-        assert_eq!(asks_text(&saves[..1]), "Arko asks to save a worker profile");
-        assert_eq!(asks_text(&saves), "Arko asks to save 2 worker profiles");
-        assert_eq!(
-            asks_text(&[saves[0].clone(), question]),
+            asks_text(&[question.clone(), question]),
             "Arko asks 2 questions"
         );
         assert_eq!(open_text(1), "1 open question");
@@ -844,18 +725,5 @@ mod tests {
             "Arko asked 3 questions, 1. Tabs or spaces?, Spaces, 3. Rename the module?, Dismissed"
         );
         assert!(!label.contains("q3"));
-        let open = approval("x1a2b3c4d", "3d-judge", "open");
-        assert_eq!(
-            card_label("Arko asked to save a worker profile", &[open]),
-            "Arko asked to save a worker profile"
-        );
-        let mut saved = approval("x1a2b3c4d", "3d-judge", "open");
-        saved.state = QuestionState::Answered {
-            answer: "Save".into(),
-        };
-        assert_eq!(
-            card_label("Arko asked to save a worker profile", &[saved]),
-            "Arko asked to save a worker profile, Save the worker profile 3d-judge for every project?, Save"
-        );
     }
 }

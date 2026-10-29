@@ -252,18 +252,20 @@ pub fn notice(
                 Delivery::System
             },
         }),
-        LiveEvent::QuestionAsked if settings.question => Some(Notice {
-            title: title.to_string(),
-            body: match question {
-                Some(text) => format!("Arko asks “{}”", first_line(text)),
-                None => "Arko asks you something.".to_string(),
-            },
-            delivery: match (focused, shown) {
-                (true, true) => Delivery::History,
-                (true, false) => Delivery::InApp,
-                (false, _) => Delivery::System,
-            },
-        }),
+        LiveEvent::QuestionAsked | LiveEvent::ApprovalRequested if settings.question => {
+            Some(Notice {
+                title: title.to_string(),
+                body: match question {
+                    Some(text) => format!("Arko asks “{}”", first_line(text)),
+                    None => "Arko asks you something.".to_string(),
+                },
+                delivery: match (focused, shown) {
+                    (true, true) => Delivery::History,
+                    (true, false) => Delivery::InApp,
+                    (false, _) => Delivery::System,
+                },
+            })
+        }
         LiveEvent::WorkerEnded(end) if settings.workers => {
             // A worker that another worker started finishing is routine. Its
             // failure isn't.
@@ -314,11 +316,12 @@ fn first_line(text: &str) -> String {
 }
 
 /// Whether `event` is news for the user, who gets the sidebar's dot when
-/// it comes out of their sight: a turn that ended, a question, a worker the
-/// main agent started that reported and any worker that failed.
+/// it comes out of their sight: a turn that ended, a question, a request
+/// for approval, a worker the main agent started that reported and any
+/// worker that failed.
 fn is_news(event: &LiveEvent) -> bool {
     match event {
-        LiveEvent::TurnEnded | LiveEvent::QuestionAsked => true,
+        LiveEvent::TurnEnded | LiveEvent::QuestionAsked | LiveEvent::ApprovalRequested => true,
         LiveEvent::WorkerEnded(end) => end.parent.is_none() || end.failed,
         _ => false,
     }
@@ -349,11 +352,16 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) {
             let live = session.read(cx);
             (
                 live.title().to_string(),
-                // The latest question, which is the news, or what an
-                // approval asks.
-                live.open_questions()
-                    .last()
-                    .map(|question| crate::questions::text(question)),
+                // The latest question or request, which is the news.
+                if *event == LiveEvent::ApprovalRequested {
+                    live.approvals()
+                        .last()
+                        .map(|request| request.approval.title())
+                } else {
+                    live.open_questions()
+                        .last()
+                        .map(|question| crate::questions::text(question))
+                },
             )
         };
         let Some(notice) = notice(
@@ -478,14 +486,28 @@ mod tests {
         assert_eq!(in_app.delivery, Delivery::InApp);
         assert_eq!(in_app.body, "Arko asks “Tabs or spaces?”");
         assert_eq!(asked(false, true).unwrap().delivery, Delivery::System);
+        // A request for approval notifies as a question does.
+        let requested = notice(
+            &LiveEvent::ApprovalRequested,
+            "Fonts",
+            Some("Save the skill release-notes for every project?"),
+            true,
+            false,
+            &on,
+        )
+        .unwrap();
+        assert_eq!(requested.delivery, Delivery::InApp);
+        assert_eq!(
+            requested.body,
+            "Arko asks “Save the skill release-notes for every project?”"
+        );
         let off = Notifications {
             question: false,
             ..Notifications::default()
         };
-        assert_eq!(
-            notice(&LiveEvent::QuestionAsked, "Fonts", None, false, false, &off),
-            None
-        );
+        for event in [LiveEvent::QuestionAsked, LiveEvent::ApprovalRequested] {
+            assert_eq!(notice(&event, "Fonts", None, false, false, &off), None);
+        }
     }
 
     fn ended(id: &str, parent: Option<&str>, failed: bool, detail: Option<&str>) -> LiveEvent {
