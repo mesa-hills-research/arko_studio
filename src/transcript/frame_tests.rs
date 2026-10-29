@@ -418,3 +418,55 @@ fn a_workers_text_doesnt_draw_the_main_transcript(cx: &mut TestAppContext) {
     });
     assert_eq!(text.as_deref(), Some("a few words ".repeat(120).as_str()));
 }
+
+/// Every running indicator the view shows turns: the workers' cards and the
+/// call the agent waits in. They turn as they paint, so the window asks for
+/// every frame of the display and draws the transcript only for the
+/// second's tick of the running times, however many turn.
+#[gpui_kit::test]
+fn every_running_indicator_turns_without_drawing_the_transcript(cx: &mut TestAppContext) {
+    use super::model::RowKey;
+    use gpui_kit::test::TestWindowExt as _;
+
+    start(cx);
+    motion_on(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Fix it with workers.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    for worker in ["r1", "r2", "r3", "r4"] {
+        feed.worker(worker, "Fix the parser", WorkerChange::Started);
+    }
+    call(&feed, "main", "wait_for_agents", &[]);
+    let (window, view, host) = open_hosted(cx, &feed);
+    ready(cx, window, &view);
+    let running: Vec<u64> = cx.read(|cx| {
+        view.read(cx)
+            .rows
+            .iter()
+            .filter_map(|row| match row.key {
+                RowKey::Worker(id) | RowKey::Call(id) => Some(id),
+                _ => None,
+            })
+            .collect()
+    });
+    assert_eq!(running.len(), 5, "four cards and the wait");
+    let turning = cx
+        .update_window(window, |_, window, _| {
+            running
+                .iter()
+                .filter(|id| window.try_find(("running", **id)).is_some())
+                .count()
+        })
+        .unwrap();
+    let hosted = host.get();
+    let mut drawn = frames(cx, window, &view, 120, |_| {});
+    drawn.report("five running indicators");
+    assert_eq!(turning, 5, "every running indicator turns");
+    assert_eq!(drawn.asked, 120, "the window asks for every frame");
+    assert!(host.get() - hosted >= 120, "the window draws every frame");
+    assert!(
+        drawn.drawn.len() <= 3,
+        "the transcript drew in {} of 120 frames",
+        drawn.drawn.len()
+    );
+}

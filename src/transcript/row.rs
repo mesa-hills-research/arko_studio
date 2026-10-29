@@ -651,16 +651,17 @@ pub(super) fn element_id(key: RowKey) -> ElementId {
     (name, id).into()
 }
 
-/// The running indicator, turning when `turns` (and the system allows
-/// motion). It is the kit's spinner, which turns evenly in each frame the
-/// display shows and turns as it paints, so the transcript isn't drawn again
-/// for each step.
-fn spinner(id: impl Into<ElementId>, turns: bool, cx: &App) -> AnyElement {
-    if !turns || cx.reduce_motion() {
+/// The running indicator, turning unless the system asks for less motion. It
+/// is the kit's spinner, which turns evenly in each frame the display shows
+/// and turns as it paints, so the transcript isn't drawn again for each step,
+/// however many turn.
+fn spinner(id: impl Into<ElementId>, cx: &App) -> AnyElement {
+    if cx.reduce_motion() {
         return Icon::new(IconName::Loader).xsmall().into_any_element();
     }
     div()
         .id(id)
+        .test_support()
         .child(crate::spinner::spinner().xsmall())
         .into_any_element()
 }
@@ -1368,14 +1369,13 @@ impl TranscriptView {
         .into_any_element()
     }
 
-    /// The running indicator of the entry `id`: it turns only for the
-    /// latest thing that runs, and stands still for the others.
+    /// The running indicator of the entry `id`.
     fn spinner(&self, id: u64, cx: &App) -> AnyElement {
-        spinner(("running", id), self.animated == Some(id), cx)
+        spinner(("running", id), cx)
     }
 
     /// "Working…" while the agent waits on the model and no other row says
-    /// it's busy. It's the latest thing that runs, so its indicator turns.
+    /// it's busy.
     fn working(&self, id: u64, cx: &App) -> AnyElement {
         let theme = cx.theme();
         h_flex()
@@ -1384,7 +1384,7 @@ impl TranscriptView {
             .gap_1()
             .text_xs()
             .text_color(theme.muted_foreground)
-            .child(spinner(("working-spinner", id), true, cx))
+            .child(spinner(("working-spinner", id), cx))
             .child("Working…")
             .into_any_element()
     }
@@ -1416,7 +1416,7 @@ impl TranscriptView {
                 None => "Thought".into(),
             }
         };
-        let label: AnyElement = if streaming && self.animated == Some(id) && !cx.reduce_motion() {
+        let label: AnyElement = if streaming && !cx.reduce_motion() {
             ShimmerText::new("Thinking…")
                 .id(("thinking-shimmer", id))
                 .max_fps(SHIMMER_FPS)

@@ -428,9 +428,6 @@ pub struct TranscriptView {
     ticker: Option<Task<()>>,
     /// How long the ticker waits between draws.
     tick_every: Duration,
-    /// The entry whose running indicator turns this frame: the latest
-    /// thing that runs, unless "Working…" shows (it turns then).
-    animated: Option<u64>,
     /// The agent's entry "Working…" follows, while the agent waits on the
     /// model ([`Self::working_after`]).
     working: Option<u64>,
@@ -555,7 +552,6 @@ impl TranscriptView {
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
             tick_every: Duration::ZERO,
-            animated: None,
             working: None,
             shows_working: false,
             text_at: 0,
@@ -1556,32 +1552,6 @@ impl TranscriptView {
         }));
     }
 
-    /// The latest entry that runs, of those the view shows with their own
-    /// indicator: a call, a thinking that streams, a worker's card. A
-    /// worker's call that only the Full view shows, or a call the Messages
-    /// view counts, would otherwise leave no indicator turning.
-    fn latest_running(&self) -> Option<u64> {
-        let filter = self.model.filter();
-        let entries = self.model.entries();
-        entries.iter().enumerate().rev().find_map(|(ix, entry)| {
-            let item = &entry.item;
-            if model::show(filter, self.settings.view, item) != model::Show::Item {
-                return None;
-            }
-            let running = match item.kind {
-                Kind::Call => item.status == Some(CallStatus::Running),
-                Kind::Thinking => self.model.is_streaming(ix),
-                Kind::WorkerLine => item
-                    .worker
-                    .as_deref()
-                    .and_then(|worker| self.model.worker(worker))
-                    .is_some_and(|worker| worker.state == arko::remote::WorkerState::Running),
-                _ => false,
-            };
-            running.then_some(item.id)
-        })
-    }
-
     /// How long until the rows' times change: a second while a call or a
     /// worker runs, else until the minute of a background job's time turns
     /// or a monitor's "ends in" changes, or `None` when nothing runs.
@@ -1924,12 +1894,6 @@ impl Render for TranscriptView {
         if !self.list.is_scrolled_up() {
             self.new_while_away = 0;
         }
-        // "Working…" is the latest thing that runs, when it shows.
-        self.animated = if self.shows_working {
-            None
-        } else {
-            self.latest_running()
-        };
         let new = self.new_while_away;
         // Reached by Tab, the transcript shows that it has the focus, with a
         // ring laid over its edge (a border would move the rows). A row the

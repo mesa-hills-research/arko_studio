@@ -1393,8 +1393,18 @@ fn draws_in_a_second(
     cx.read(|cx| view.read(cx).render_count()) - before
 }
 
+/// Whether the running indicator of the entry `id` turns, as last drawn.
+fn turning(cx: &mut TestAppContext, window: AnyWindowHandle, id: u64) -> bool {
+    cx.update_window(window, |_, window, _| {
+        window.try_find(("running", id)).is_some()
+    })
+    .unwrap()
+}
+
+/// Every running indicator turns, as it paints: a call's and a worker
+/// card's together. Thinking that streams shimmers, a dozen times a second.
 #[gpui_kit::test]
-fn one_indicator_turns_at_a_time(cx: &mut TestAppContext) {
+fn running_indicators_turn_together_and_thinking_shimmers(cx: &mut TestAppContext) {
     start(cx);
     cx.update(|cx| {
         prefs::update(cx, |prefs| prefs.appearance.motion = prefs::Motion::On);
@@ -1405,14 +1415,19 @@ fn one_indicator_turns_at_a_time(cx: &mut TestAppContext) {
     feed.user("Build", Source::App, Delivery::Turn);
     feed.turn_started();
     feed.worker("r1", "Write the fuzz target", WorkerChange::Started);
-    call(&feed, "main", "shell", &[("command", "cargo build".into())]);
+    let build = call(&feed, "main", "shell", &[("command", "cargo build".into())]);
     let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
-    // A worker and a call run: the call's indicator turns, in each frame of
-    // the display.
+    let card = ids_of(&feed, Kind::WorkerLine)[0];
+    let shell = *ids_of(&feed, Kind::Call).last().unwrap();
+    assert!(turning(cx, window, shell));
+    assert!(turning(cx, window, card));
+    // The transcript is the window's root here, so it draws in each frame
+    // of the display.
     let draws = draws_in_a_second(cx, window, &view);
     assert!((58..=62).contains(&draws), "{draws} draws");
-    // Then thinking streams: its shimmer is the one that moves, a dozen times
-    // a second.
+    // The call and the worker end, and thinking streams.
+    result(&feed, "main", build, "shell", "Finished");
+    feed.worker("r1", "", WorkerChange::Finished { report: "Done." });
     think(&feed, "hmm");
     settle(cx, window);
     // The text fades in first, by the test clock, which takes a few hundred
@@ -1420,8 +1435,6 @@ fn one_indicator_turns_at_a_time(cx: &mut TestAppContext) {
     draws_in_a_second(cx, window, &view);
     let draws = draws_in_a_second(cx, window, &view);
     assert!((10..=16).contains(&draws), "{draws} draws");
-    let thinking = item_ids(&feed).last().unwrap().0;
-    assert_eq!(cx.read(|cx| view.read(cx).animated), Some(thinking));
 }
 
 /// How many of `count` frames of a 60 Hz display, one every 1/60 second of
@@ -1440,12 +1453,12 @@ fn frames_asked(cx: &mut TestAppContext, window: AnyWindowHandle, count: usize) 
         .count()
 }
 
-/// The indicator that turns is the latest of those the view shows. A
-/// worker's call that runs after the agent's `wait_for_agents` is in the
-/// transcript, but only the Full view shows it, so in the Quiet view the
-/// wait's indicator goes on turning.
+/// Every running indicator the view shows turns. A worker's call that runs
+/// while the agent waits in `wait_for_agents` is in the transcript, but only
+/// the Full view shows it, so in the Quiet view the wait's indicator alone
+/// turns. The Messages view counts the calls, so the worker's card turns.
 #[gpui_kit::test]
-fn the_indicator_that_turns_is_one_the_view_shows(cx: &mut TestAppContext) {
+fn the_indicators_that_turn_are_those_the_view_shows(cx: &mut TestAppContext) {
     start(cx);
     cx.update(|cx| {
         prefs::update(cx, |prefs| {
@@ -1462,10 +1475,9 @@ fn the_indicator_that_turns_is_one_the_view_shows(cx: &mut TestAppContext) {
     let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
     let wait = *ids_of(&feed, Kind::Call).last().unwrap();
     let card = ids_of(&feed, Kind::WorkerLine)[0];
-    let animated = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).animated);
     // Whatever fades in when the rows come has ended by then.
     frames_asked(cx, window, 30);
-    assert_eq!(animated(cx), Some(wait));
+    assert!(turning(cx, window, wait));
     assert_eq!(frames_asked(cx, window, 60), 60);
 
     // The worker runs a call, which the Quiet view leaves out.
@@ -1474,25 +1486,26 @@ fn the_indicator_that_turns_is_one_the_view_shows(cx: &mut TestAppContext) {
     let worker_call = *ids_of(&feed, Kind::Call).last().unwrap();
     assert!(!keys(&view, cx).contains(&RowKey::Call(worker_call)));
     assert_eq!(frames_asked(cx, window, 60), 60);
-    assert_eq!(animated(cx), Some(wait));
+    assert!(turning(cx, window, wait));
 
-    // The Full view shows it, and it's the latest that runs.
+    // The Full view shows it turning too.
     cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Full));
     settle(cx, window);
-    assert_eq!(animated(cx), Some(worker_call));
+    assert!(turning(cx, window, worker_call));
+    assert!(turning(cx, window, wait));
     assert_eq!(frames_asked(cx, window, 60), 60);
 
-    // The Messages view counts the calls, so the worker's card turns.
+    // The Messages view counts the calls, and the worker's card turns.
     cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Messages));
     settle(cx, window);
-    assert_eq!(animated(cx), Some(card));
+    assert!(turning(cx, window, card));
     assert_eq!(frames_asked(cx, window, 60), 60);
 
     // Its call ends, and in the Quiet view the wait still turns.
     result(&feed, "r1", build, "shell", "Finished");
     cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Quiet));
     settle(cx, window);
-    assert_eq!(animated(cx), Some(wait));
+    assert!(turning(cx, window, wait));
     assert_eq!(frames_asked(cx, window, 60), 60);
 }
 
@@ -1514,7 +1527,7 @@ fn hand_clock(view: &Entity<TranscriptView>, cx: &mut TestAppContext) -> Rc<Cell
 /// "Working…" shows while the agent waits on the model with nothing else
 /// showing it's busy: before the turn's first output, after a call's
 /// result, and once its text stops coming. It goes as soon as output
-/// comes. It's the one indicator that turns.
+/// comes.
 #[gpui_kit::test]
 fn working_shows_while_the_agent_waits_on_the_model(cx: &mut TestAppContext) {
     start(cx);
@@ -1555,7 +1568,12 @@ fn working_shows_while_the_agent_waits_on_the_model(cx: &mut TestAppContext) {
     assert_eq!(keys(&view, cx).last(), Some(&RowKey::Working(after_call)));
     let draws = draws_in_a_second(cx, window, &view);
     assert!((58..=62).contains(&draws), "{draws} draws");
-    assert_eq!(cx.read(|cx| view.read(cx).animated), None);
+    let turning = cx
+        .update_window(window, |_, window, _| {
+            window.try_find(("working-spinner", after_call)).is_some()
+        })
+        .unwrap();
+    assert!(turning);
 
     // Text says it's busy while it comes. Two seconds without more, it
     // waits again.
