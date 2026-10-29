@@ -83,7 +83,8 @@ fn draft_folder_window(mode: ThemeMode, width: f32) -> Screenshot {
         let view = workspace.read(cx).session_view().clone();
         view.update(cx, |view, cx| {
             view.set_draft_folder(
-                "/home/ada/Desktop/arko-studio-work/scratch/studio-ui-1027/send-lag/probe/work".into(),
+                "/home/ada/Desktop/arko-studio-work/scratch/studio-ui-1027/send-lag/probe/work"
+                    .into(),
                 cx,
             );
         });

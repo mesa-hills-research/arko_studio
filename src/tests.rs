@@ -1021,7 +1021,8 @@ fn a_long_draft_folder_stays_inside_its_pane(cx: &mut TestAppContext) {
         let view = cx.read(|cx| workspace.read(cx).session_view().clone());
         view.update(cx, |view, cx| {
             view.set_draft_folder(
-                "/home/ada/Desktop/arko-studio-work/scratch/studio-ui-1027/send-lag/probe/work".into(),
+                "/home/ada/Desktop/arko-studio-work/scratch/studio-ui-1027/send-lag/probe/work"
+                    .into(),
                 cx,
             );
         });
@@ -1031,7 +1032,10 @@ fn a_long_draft_folder_stays_inside_its_pane(cx: &mut TestAppContext) {
             let folder = window.find("draft-folder").bounds();
             let change = window.find("change-folder").bounds();
             assert!(line.left() >= pane.left(), "{width}: {line:?} in {pane:?}");
-            assert!(line.right() <= pane.right(), "{width}: {line:?} in {pane:?}");
+            assert!(
+                line.right() <= pane.right(),
+                "{width}: {line:?} in {pane:?}"
+            );
             assert!(folder.left() >= line.left() && folder.right() <= change.left());
             assert!(folder.size.width > px(0.));
             assert!(change.left() >= pane.left() && change.right() <= pane.right());

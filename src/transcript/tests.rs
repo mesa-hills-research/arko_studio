@@ -5216,7 +5216,11 @@ fn a_question_card_is_a_line_until_its_questions_settle(cx: &mut TestAppContext)
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find(("question-outcome", card * 8)).is_none());
-        assert!(window.try_find(("question-outcome", card * 8 + 1)).is_some());
+        assert!(
+            window
+                .try_find(("question-outcome", card * 8 + 1))
+                .is_some()
+        );
         assert!(window.try_find(("answer", card * 8)).is_some());
         assert!(window.try_find(("answer", card * 8 + 1)).is_none());
     })

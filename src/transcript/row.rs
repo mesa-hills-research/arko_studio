@@ -539,8 +539,8 @@ impl TranscriptView {
             height += ANSWERS_GAP * rem + rem + m.line_xs;
             for (number, answer) in answers {
                 let lines = super::height::hard_lines(answer);
-                height += 0.25 * rem
-                    + m.body.text_lines(&lines, inside - number_room(number)) * m.line;
+                height +=
+                    0.25 * rem + m.body.text_lines(&lines, inside - number_room(number)) * m.line;
             }
         }
         height

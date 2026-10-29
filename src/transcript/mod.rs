@@ -1223,7 +1223,10 @@ impl TranscriptView {
                 .enumerate()
                 .flat_map(|(n, question)| {
                     let answered = crate::questions::answer(&question.state).is_some();
-                    [Some(Place::Question(n)), answered.then_some(Place::Answer(n))]
+                    [
+                        Some(Place::Question(n)),
+                        answered.then_some(Place::Answer(n)),
+                    ]
                 })
                 .flatten()
                 .collect(),
