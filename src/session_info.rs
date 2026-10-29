@@ -1449,22 +1449,40 @@ fn clicked<const N: usize>(after: &[bool], before: [bool; N]) -> Option<usize> {
 }
 
 /// The MCP servers, a line each ("files, 4 tools", "web, didn’t start
-/// (…)"), with the names of the server's tools for its tooltip.
+/// (…)", "figma, stopped by the agent"), marked when an agent added one, with
+/// the names of the server's tools for its tooltip.
 pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
+    use arko::details::McpState;
     let mut lines: Vec<(String, Option<String>)> = mcp
         .servers
         .iter()
-        .map(|server| match &server.tools {
-            Ok(tools) => (
-                format!(
-                    "{}, {} tool{}",
-                    server.name,
-                    tools.len(),
-                    if tools.len() == 1 { "" } else { "s" }
+        .map(|server| {
+            let (mut line, tip) = match (&server.state, &server.tools) {
+                (McpState::Starting, _) => (format!("{}, starting", server.name), None),
+                (McpState::StoppedByAgent, _) => {
+                    (format!("{}, stopped by the agent", server.name), None)
+                }
+                (McpState::Stopped, _) => (format!("{}, stopped", server.name), None),
+                (_, Err(why)) | (McpState::Failed(why), _) => {
+                    (format!("{}, didn’t start ({why})", server.name), None)
+                }
+                (_, Ok(tools)) => (
+                    format!(
+                        "{}, {} tool{}",
+                        server.name,
+                        tools.len(),
+                        if tools.len() == 1 { "" } else { "s" }
+                    ),
+                    (!tools.is_empty()).then(|| tools.join(", ")),
                 ),
-                (!tools.is_empty()).then(|| tools.join(", ")),
-            ),
-            Err(why) => (format!("{}, didn’t start ({why})", server.name), None),
+            };
+            if let Some(added) = &server.added {
+                line.push_str(&format!(
+                    ", added by the agent {}",
+                    added.added.with_timezone(&chrono::Local).format("%-d %b")
+                ));
+            }
+            (line, tip)
         })
         .collect();
     lines.extend(mcp.notes.iter().map(|note| (note.clone(), None)));
@@ -1514,6 +1532,18 @@ pub fn skills_lines(
                     from.push_str(", ");
                 }
                 from.push_str("always loaded");
+            }
+            // Who saved it, the models it is for and whether workers get
+            // it, as `/skills` says them.
+            for note in crate::backend::extensions::skill_notes(
+                skill.added.as_ref(),
+                &skill.models,
+                skill.workers,
+            ) {
+                if !from.is_empty() {
+                    from.push_str(", ");
+                }
+                from.push_str(&note);
             }
             let description = skill.description.split_whitespace().collect::<Vec<_>>();
             let full = path.map(|path| shown_folder(path, home));
@@ -1688,22 +1718,49 @@ mod tests {
         assert_eq!(clicked(&[false, true, false], [false, true, false]), None);
     }
 
+    /// What an agent added on 28 Oct 2026, by `path` or in `file`.
+    fn added_on_28_oct() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-10-28T12:00:00Z")
+            .unwrap()
+            .to_utc()
+    }
+
     #[test]
     fn extensions_read_in_a_line_each() {
+        use arko::details::McpState;
+        let server =
+            |name: &str, state: McpState, tools: Result<Vec<String>, String>| McpServerFacts {
+                name: name.into(),
+                shown: format!("{name}-server"),
+                file: PathBuf::from(".mcp.json"),
+                tools,
+                state,
+                ..McpServerFacts::default()
+            };
+        let mut sentry = server("sentry", McpState::Running, Ok(vec!["issues".into()]));
+        sentry.added = Some(arko::agent_added::ServerRecord {
+            file: PathBuf::from("/home/ada/src/arko/.arko/mcp.json"),
+            name: "sentry".into(),
+            session: "2026-10-28-a1b2".into(),
+            session_title: None,
+            added: added_on_28_oct(),
+            why: "Read the crash reports".into(),
+        });
         let mcp = McpFacts {
             servers: vec![
-                McpServerFacts {
-                    name: "files".into(),
-                    shown: "files-server".into(),
-                    file: PathBuf::from(".mcp.json"),
-                    tools: Ok(vec!["read".into(), "write".into()]),
-                },
-                McpServerFacts {
-                    name: "web".into(),
-                    shown: "web-server".into(),
-                    file: PathBuf::from(".mcp.json"),
-                    tools: Err("no such program".into()),
-                },
+                server(
+                    "files",
+                    McpState::Running,
+                    Ok(vec!["read".into(), "write".into()]),
+                ),
+                server(
+                    "web",
+                    McpState::Failed("no such program".into()),
+                    Err("no such program".into()),
+                ),
+                server("figma", McpState::StoppedByAgent, Ok(Vec::new())),
+                server("github", McpState::Starting, Ok(Vec::new())),
+                sentry,
             ],
             ..McpFacts::default()
         };
@@ -1711,7 +1768,13 @@ mod tests {
             mcp_lines(&mcp),
             [
                 ("files, 2 tools".into(), Some("read, write".into())),
-                ("web, didn’t start (no such program)".into(), None)
+                ("web, didn’t start (no such program)".into(), None),
+                ("figma, stopped by the agent".into(), None),
+                ("github, starting".into(), None),
+                (
+                    "sentry, 1 tool, added by the agent 28 Oct".into(),
+                    Some("issues".into())
+                ),
             ]
         );
         assert_eq!(mcp_lines(&McpFacts::default()), [("None".into(), None)]);
@@ -1723,6 +1786,9 @@ mod tests {
             builtin,
             replaces_builtin: replaces.then(|| home.join(".claude/skills").join(name)),
             path: (!builtin).then(|| home.join(".claude/skills").join(name)),
+            models: Vec::new(),
+            workers: true,
+            added: None,
         };
         let facts = |skills, builtin_off: &[&str]| {
             Ok(SkillsFacts {
@@ -1773,13 +1839,35 @@ mod tests {
             )
         };
         let pdf = shown_folder(&home.join(".agents/skills/pdf"), Some(home));
+        // Who saved it, the models it is for and that only the main agent
+        // gets it follow, as `/skills` says them.
+        let mut notes = skill("release-notes", false, false);
+        notes.added = Some(arko::agent_added::SkillRecord {
+            path: home.join(".claude/skills/release-notes"),
+            scope: arko::agent_added::Scope::User,
+            session: "2026-10-28-a1b2".into(),
+            session_title: None,
+            added: added_on_28_oct(),
+            why: "The checklist changed.".into(),
+            source: None,
+        });
+        let quirks = SkillFacts {
+            models: vec!["haiku".into(), "cc:haiku".into()],
+            ..skill("haiku-quirks", false, false)
+        };
+        let deploy = SkillFacts {
+            workers: false,
+            ..skill("deploy", false, false)
+        };
         assert_eq!(
             skills_lines(
                 &facts(
                     vec![
                         skill("user-facing-prose", true, false),
                         skill("repo-docs-style", false, true),
-                        skill("release-notes", false, false),
+                        notes,
+                        quirks,
+                        deploy,
                         always,
                         renamed,
                     ],
@@ -1788,6 +1876,8 @@ mod tests {
                 Some(home)
             ),
             [
+                folder("deploy", &format!("{skills}, main agent only")),
+                folder("haiku-quirks", &format!("{skills}, for haiku and cc:haiku")),
                 folder("house-rules", &format!("{skills}, always loaded")),
                 (
                     "pdf-2".to_string(),
@@ -1795,7 +1885,10 @@ mod tests {
                     pdf.clone(),
                     Some(pdf),
                 ),
-                folder("release-notes", &skills),
+                folder(
+                    "release-notes",
+                    &format!("{skills}, added by the agent 28 Oct")
+                ),
                 folder("repo-docs-style", &skills),
                 line(
                     "user-facing-prose",

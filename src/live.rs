@@ -102,6 +102,12 @@ impl LiveSessions {
         cx.update_global::<Self, _>(|this, _| this.sessions.push(session));
     }
 
+    /// Counts `session` as open in this app (tests).
+    #[cfg(test)]
+    pub fn add_for_tests(session: Entity<LiveSession>, cx: &mut App) {
+        Self::add(session, cx);
+    }
+
     /// Forgets the session `entity` (with `id`), called while it updates.
     fn remove(entity: EntityId, id: Option<&SessionId>, cx: &mut App) {
         cx.update_global::<Self, _>(|this, _| {

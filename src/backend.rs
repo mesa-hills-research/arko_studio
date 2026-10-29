@@ -491,9 +491,23 @@ pub trait Backend: Send + Sync + 'static {
     /// `folders`, with the MCP config files `mcp_config` set in Settings.
     fn extensions(&self, folders: &[PathBuf], mcp_config: &[PathBuf]) -> extensions::Extensions;
 
-    /// Forgets the answer about the MCP servers of the project in `folder`:
+    /// Forgets the answer about the MCP servers of the project in `folder`,
+    /// those of its `.mcp.json`, or with `local` of its `.arko/mcp.json`:
     /// its next session asks again.
-    fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String>;
+    fn forget_mcp_approval(&self, folder: &Path, local: bool) -> Result<(), String>;
+
+    /// Removes a skill or an MCP server an agent added. `Ok` says what was
+    /// done, `Err` why not.
+    fn remove_added(&self, added: arko::extensions::Added) -> Result<String, String>;
+
+    /// Saves a switch of what agents may add, as `/extensions` does in a
+    /// session in the project `workspace`.
+    fn set_extension_switch(
+        &self,
+        switch: extensions::Switch,
+        on: bool,
+        workspace: Option<&Path>,
+    ) -> Result<(), String>;
 
     /// The worker profiles: the user's and those of the projects in
     /// `folders`.
@@ -828,8 +842,25 @@ impl Backend for ArkoBackend {
         extensions::read(&self.root, folders, mcp_config)
     }
 
-    fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String> {
-        arko::extensions::forget_project_mcp_approval(&self.root, folder).map(|_| ())
+    fn forget_mcp_approval(&self, folder: &Path, local: bool) -> Result<(), String> {
+        if local {
+            arko::extensions::forget_local_mcp_approval(&self.root, folder).map(|_| ())
+        } else {
+            arko::extensions::forget_project_mcp_approval(&self.root, folder).map(|_| ())
+        }
+    }
+
+    fn remove_added(&self, added: arko::extensions::Added) -> Result<String, String> {
+        arko::extensions::remove_added(&self.root, added)
+    }
+
+    fn set_extension_switch(
+        &self,
+        switch: extensions::Switch,
+        on: bool,
+        workspace: Option<&Path>,
+    ) -> Result<(), String> {
+        extensions::set_switch(&self.root, workspace, switch, on)
     }
 
     fn profiles(&self, folders: &[PathBuf]) -> profiles::Profiles {
@@ -852,7 +883,7 @@ impl Backend for ArkoBackend {
         &self,
         preferences: arko::profiles::Preferences,
     ) -> Result<(), String> {
-        profiles::set_preferences(&self.root, preferences)
+        profiles::set_preferences(&self.root, None, preferences)
     }
 }
 
@@ -910,6 +941,11 @@ struct FakeState {
     /// How many of the next OpenRouter saves fail.
     openrouter_failures: usize,
     extensions: extensions::Extensions,
+    /// What was asked to be removed of what agents added, in order.
+    removed: Vec<arko::extensions::Added>,
+    /// The switches of what agents may add, as saved, with the project
+    /// each was saved for.
+    switches_saved: Vec<(extensions::Switch, bool, Option<PathBuf>)>,
     profiles: profiles::Profiles,
     /// How sessions are named, and what each way lacks.
     names: SessionNames,
@@ -940,6 +976,8 @@ impl FakeBackend {
                 session_menus: 0,
                 openrouter_failures: 0,
                 extensions: extensions::Extensions::sample(Path::new("/home/ada"), &root),
+                removed: Vec::new(),
+                switches_saved: Vec::new(),
                 profiles: profiles::Profiles::default(),
                 names: SessionNames {
                     ways: Vec::new(),
@@ -1085,6 +1123,12 @@ impl FakeBackend {
     /// Starts with the worker profiles `profiles`.
     pub fn with_profiles(self, profiles: profiles::Profiles) -> Self {
         self.with_state(|state| state.profiles = profiles);
+        self
+    }
+
+    /// Lists `extensions` for the MCP servers and skills sessions get.
+    pub fn with_extensions(self, extensions: extensions::Extensions) -> Self {
+        self.with_state(|state| state.extensions = extensions);
         self
     }
 
@@ -1510,13 +1554,83 @@ impl Backend for FakeBackend {
         found
     }
 
-    fn forget_mcp_approval(&self, folder: &Path) -> Result<(), String> {
+    fn forget_mcp_approval(&self, folder: &Path, local: bool) -> Result<(), String> {
         self.with_state(|state| {
             for project in &mut state.extensions.projects {
-                if project.folder == folder {
+                if project.folder == folder && project.local == local {
                     project.approval = extensions::Approval::NotAsked;
                 }
             }
+        });
+        Ok(())
+    }
+
+    fn remove_added(&self, added: arko::extensions::Added) -> Result<String, String> {
+        use arko::extensions::Added;
+        self.with_state(|state| {
+            let found = &mut state.extensions;
+            let removed = match &added {
+                Added::Skill { path } => found.skills.iter_mut().any(|folder| {
+                    let before = folder.skills.len();
+                    folder
+                        .skills
+                        .retain(|skill| !(skill.path == *path && skill.added.is_some()));
+                    folder.skills.len() != before
+                }),
+                Added::Server { file, name } => {
+                    let files = found
+                        .files
+                        .iter_mut()
+                        .filter_map(|listed| listed.servers.as_mut()?.as_mut().ok());
+                    let projects = found
+                        .projects
+                        .iter_mut()
+                        .filter_map(|project| project.servers.as_mut().ok());
+                    files.chain(projects).any(|servers| {
+                        let before = servers.len();
+                        servers.retain(|server| {
+                            server.added.as_ref().is_none_or(|record| {
+                                !(record.file == *file && server.name == *name)
+                            })
+                        });
+                        servers.len() != before
+                    })
+                }
+            };
+            state.removed.push(added.clone());
+            match (added, removed) {
+                (Added::Skill { path }, true) => Ok(format!(
+                    "Removed the skill {}.",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                )),
+                (Added::Server { name, .. }, true) => Ok(format!("Removed the MCP server {name}.")),
+                (Added::Skill { path }, false) => Err(format!(
+                    "{} wasn't added by an agent.",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                )),
+                (Added::Server { name, .. }, false) => {
+                    Err(format!("{name} wasn't added by an agent."))
+                }
+            }
+        })
+    }
+
+    fn set_extension_switch(
+        &self,
+        switch: extensions::Switch,
+        on: bool,
+        workspace: Option<&Path>,
+    ) -> Result<(), String> {
+        use extensions::Switch;
+        self.with_state(|state| {
+            match switch {
+                Switch::AskMcp => state.extensions.approvals.ask_before_adding_mcp = on,
+                Switch::ReviewSkills => state.extensions.approvals.review_project_skills = on,
+                Switch::KeepOutOfGit => state.profiles.preferences.keep_out_of_git = on,
+            }
+            state
+                .switches_saved
+                .push((switch, on, workspace.map(Path::to_path_buf)));
         });
         Ok(())
     }
@@ -1542,6 +1656,7 @@ impl Backend for FakeBackend {
                 note: saved.model_problem(),
                 profile: saved,
                 file: file.clone(),
+                older: false,
             };
             let old = replacing.unwrap_or(&profile.name);
             match user.entries.iter().position(|had| had.profile.name == old) {
@@ -1590,6 +1705,17 @@ impl FakeBackend {
     /// The worker profiles as they are now.
     pub fn saved_profiles(&self) -> profiles::Profiles {
         self.with_state(|state| state.profiles.clone())
+    }
+
+    /// What was asked to be removed of what agents added, in order.
+    pub fn removed(&self) -> Vec<arko::extensions::Added> {
+        self.with_state(|state| state.removed.clone())
+    }
+
+    /// The switches of what agents may add, as saved, with the project each
+    /// was saved for.
+    pub fn switches_saved(&self) -> Vec<(extensions::Switch, bool, Option<PathBuf>)> {
+        self.with_state(|state| state.switches_saved.clone())
     }
 
     /// Sets the ChatGPT logins the accounts read as.

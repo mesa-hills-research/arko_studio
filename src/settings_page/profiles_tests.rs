@@ -253,6 +253,7 @@ fn an_effort_the_model_lacks_shows_arkos_reason(cx: &mut TestAppContext) {
                 file: "/arko/profiles/broken.md".into(),
                 profile: broken,
                 note,
+                older: false,
             }],
             unreadable: Vec::new(),
         },
@@ -436,11 +437,13 @@ fn the_page_says_what_a_model_needs_and_lists_projects_read_only(cx: &mut TestAp
     lint.model = Some("haiku".into());
     let project = Project {
         folder: "/home/ada/src/arko".into(),
+        older_folder: true,
         list: List {
             entries: vec![Entry {
                 file: "/home/ada/src/arko/.agents/profiles/lint.md".into(),
                 profile: lint,
                 note: None,
+                older: true,
             }],
             unreadable: vec![crate::backend::profiles::Unreadable {
                 file: "/home/ada/src/arko/.agents/profiles/torn.md".into(),
@@ -489,7 +492,7 @@ fn the_page_says_what_a_model_needs_and_lists_projects_read_only(cx: &mut TestAp
     });
     assert_eq!(
         words,
-        "Runs the linter. Runs on haiku. Needs ANTHROPIC_API_KEY, so workers can’t use it yet."
+        "Runs the linter. Runs on haiku. In .agents/profiles. Needs ANTHROPIC_API_KEY, so workers can’t use it yet."
     );
     // The editor says it under the model.
     act(cx, window, |window, cx| window.click("add-profile", cx));
@@ -508,14 +511,17 @@ fn the_page_says_what_a_model_needs_and_lists_projects_read_only(cx: &mut TestAp
 /// choices about where profiles are kept save as Arko reads them.
 #[gpui_kit::test]
 fn the_page_lists_a_repository_and_saves_where_profiles_are_kept(cx: &mut TestAppContext) {
+    use crate::backend::Backend as _;
     let mut profiles = Profiles::sample(Path::new("/arko"));
     profiles.repositories.push(Project {
         folder: "/home/ada/src/arko".into(),
+        older_folder: false,
         list: List {
             entries: vec![Entry {
-                file: "/home/ada/src/arko/.agents/profiles/lint.md".into(),
+                file: "/home/ada/src/arko/.arko/profiles/lint.md".into(),
                 profile: Profile::new("lint", "Runs the linter"),
                 note: None,
+                older: false,
             }],
             unreadable: Vec::new(),
         },
@@ -528,9 +534,22 @@ fn the_page_lists_a_repository_and_saves_where_profiles_are_kept(cx: &mut TestAp
     // Both choices are on until the user turns them off.
     let kept = || backend.saved_profiles().preferences;
     assert_eq!(kept(), arko::profiles::Preferences::default());
-    act(cx, window, |window, cx| {
-        window.click("keep-profiles-out-of-git", cx)
-    });
+    act(cx, window, |window, cx| window.click("keep-out-of-git", cx));
+    cx.run_until_parked();
+    // With no session open, it is saved here, as `/extensions` saves it in
+    // a session in the latest project, whose .arko folder follows it.
+    let latest = crate::session_view::recent_folders(&backend.sessions().unwrap())
+        .into_iter()
+        .next();
+    assert!(latest.is_some());
+    assert_eq!(
+        backend.switches_saved(),
+        [(
+            crate::backend::extensions::Switch::KeepOutOfGit,
+            false,
+            latest
+        )]
+    );
     act(cx, window, |window, cx| {
         window.click("read-repository-profiles", cx)
     });
@@ -542,6 +561,42 @@ fn the_page_lists_a_repository_and_saves_where_profiles_are_kept(cx: &mut TestAp
             repo_root: false,
         }
     );
+}
+
+/// With a session open, "Keep agents' project files out of git" is sent to
+/// it as the terminal's command, so the session saves it and its web page
+/// shows it, and the page shows it at once.
+#[gpui_kit::test]
+fn the_git_switch_is_sent_to_the_open_sessions(cx: &mut TestAppContext) {
+    use crate::live::{LiveSession, LiveSessions};
+    let backend = start_with_profiles(cx, Profiles::sample(Path::new("/arko")));
+    let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+    cx.update(|cx| LiveSessions::add_for_tests(session.clone(), cx));
+    let (window, _, settings) = settings_window(cx, PROFILES_PAGE, 1400.);
+    let page = page(cx, &settings);
+    act(cx, window, |window, cx| window.click("keep-out-of-git", cx));
+    cx.run_until_parked();
+    let sent: Vec<String> = cx.read(|cx| {
+        session
+            .read(cx)
+            .queued()
+            .iter()
+            .filter_map(|input| match input {
+                arko::Input::Message(message) => Some(message.text.clone()),
+                _ => None,
+            })
+            .collect()
+    });
+    assert_eq!(sent, ["/extensions keep-out-of-git off"]);
+    assert!(backend.switches_saved().is_empty(), "the session saves it");
+    assert!(cx.read(|cx| {
+        !page
+            .read(cx)
+            .profiles()
+            .unwrap()
+            .preferences
+            .keep_out_of_git
+    }));
 }
 
 /// The profiles of a real folder: what the page's backend saves is the file

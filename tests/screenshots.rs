@@ -472,6 +472,82 @@ fn settings_extensions_dark() {
     );
 }
 
+/// Settings › Extensions as the switch "Ask before adding MCP servers" is
+/// turned off, which asks first.
+fn settings_approvals_window(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+    settings_window_with(
+        FakeBackend::sample("/arko", SystemTime::now()),
+        mode,
+        1300.,
+        EXTENSIONS_PAGE,
+        |app, window| {
+            app.run_until_parked();
+            app.update_window(window, |_, window, cx| {
+                window.click("ask-before-adding-mcp", cx)
+            })
+            .unwrap();
+            app.run_until_parked();
+        },
+    )
+}
+
+#[test]
+fn settings_approvals_light() {
+    goldens().assert(
+        "settings-approvals-light",
+        &settings_approvals_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn settings_approvals_dark() {
+    goldens().assert(
+        "settings-approvals-dark",
+        &settings_approvals_window(ThemeMode::Dark),
+    );
+}
+
+/// Settings › Extensions with what agents added, scrolled down to the
+/// skills: a server for every project and one for the project, and a skill
+/// for the project, each with Remove, and skills for haiku and for the main
+/// agent only.
+fn settings_added_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::backend::extensions::Extensions;
+    use gpui_kit::test::TestWindowExt as _;
+    let backend = FakeBackend::sample("/arko", SystemTime::now()).with_extensions(
+        Extensions::sample_added(std::path::Path::new("/home/ada"), "/arko".as_ref()),
+    );
+    settings_window_with(backend, mode, 1300., EXTENSIONS_PAGE, |app, window| {
+        app.run_until_parked();
+        app.update_window(window, |_, window, cx| {
+            window.scroll(
+                ("remove-added", 0usize),
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-480.))),
+                cx,
+            )
+        })
+        .unwrap();
+        app.run_until_parked();
+    })
+}
+
+#[test]
+fn settings_extensions_added_light() {
+    goldens().assert(
+        "settings-extensions-added-light",
+        &settings_added_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn settings_extensions_added_dark() {
+    goldens().assert(
+        "settings-extensions-added-dark",
+        &settings_added_window(ThemeMode::Dark),
+    );
+}
+
 #[test]
 fn settings_advanced_light() {
     goldens().assert(
@@ -743,16 +819,28 @@ fn profiles_with_project() -> arko_studio::backend::profiles::Profiles {
     let mut docs = Profile::new("docs-writer", "Writes the changelog entry for a change");
     docs.model = Some("sol".into());
     docs.effort = Some(arko::Effort::Medium);
-    let entry = |profile: Profile| Entry {
-        file: format!("/home/ada/src/arko/.agents/profiles/{}.md", profile.name).into(),
+    // The project's lint is in the older .agents/profiles.
+    let entry = |profile: Profile, older: bool| Entry {
+        file: format!(
+            "/home/ada/src/arko/{}/{}.md",
+            if older {
+                ".agents/profiles"
+            } else {
+                ".arko/profiles"
+            },
+            profile.name
+        )
+        .into(),
         note: profile.model_problem(),
         profile,
+        older,
     };
     let mut profiles = profiles_sample();
     profiles.projects.push(Project {
         folder: "/home/ada/src/arko".into(),
+        older_folder: true,
         list: List {
-            entries: vec![entry(docs), entry(lint)],
+            entries: vec![entry(docs, false), entry(lint, true)],
             unreadable: vec![Unreadable {
                 file: "/home/ada/src/arko/.agents/profiles/torn.md".into(),
                 reason: "it has no description".into(),
@@ -763,11 +851,13 @@ fn profiles_with_project() -> arko_studio::backend::profiles::Profiles {
     triage.model = Some("haiku".into());
     profiles.repositories.push(Project {
         folder: "/home/ada/src/mesa".into(),
+        older_folder: false,
         list: List {
             entries: vec![Entry {
-                file: "/home/ada/src/mesa/.agents/profiles/triage.md".into(),
+                file: "/home/ada/src/mesa/.arko/profiles/triage.md".into(),
                 note: triage.model_problem(),
                 profile: triage,
+                older: false,
             }],
             unreadable: Vec::new(),
         },
@@ -3487,12 +3577,16 @@ fn session_info(mode: ThemeMode) -> Screenshot {
                     shown: "files-server".into(),
                     file: PathBuf::from("/home/ada/src/arko/.mcp.json"),
                     tools: Ok(vec!["read".into(), "write".into(), "list".into()]),
+                    state: arko::details::McpState::Running,
+                    ..McpServerFacts::default()
                 },
                 McpServerFacts {
                     name: "browser".into(),
                     shown: "browser-server".into(),
                     file: PathBuf::from("/home/ada/src/arko/.mcp.json"),
                     tools: Err("no such program: browser-server".into()),
+                    state: arko::details::McpState::Failed("no such program: browser-server".into()),
+                    ..McpServerFacts::default()
                 },
             ],
             ..McpFacts::default()
@@ -3523,6 +3617,9 @@ fn session_info(mode: ThemeMode) -> Screenshot {
                 builtin: path.is_none(),
                 replaces_builtin: None,
                 path: path.map(PathBuf::from),
+                models: Vec::new(),
+                workers: true,
+                added: None,
             })
             .collect(),
             folders: Vec::new(),

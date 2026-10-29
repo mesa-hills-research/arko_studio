@@ -3,9 +3,19 @@
 
 use std::path::{Path, PathBuf};
 
+use arko::agent_added::{ServerRecord, SkillRecord};
+use arko::extension_prefs::ExtensionPrefs;
+
 pub const USER_MCP_FILE: &str = "mcp.json";
 pub const PROJECT_MCP_FILE: &str = ".mcp.json";
-const PROJECT_SKILL_FOLDERS: [&str; 3] = [".agents/skills", ".claude/skills", ".skills"];
+/// The project's own servers, which agents add for the project.
+pub const LOCAL_MCP_FILE: &str = ".arko/mcp.json";
+const PROJECT_SKILL_FOLDERS: [&str; 4] = [
+    ".agents/skills",
+    ".claude/skills",
+    ".skills",
+    ".arko/skills",
+];
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Extensions {
@@ -14,6 +24,9 @@ pub struct Extensions {
     pub skills: Vec<SkillFolder>,
     /// The skills built into Arko, which belong to no folder.
     pub builtin: Vec<BuiltinSkill>,
+    /// What agents may add without asking, as Arko's `extensions.json`
+    /// says.
+    pub approvals: ExtensionPrefs,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +41,123 @@ pub struct McpServer {
     pub name: String,
     pub command: String,
     pub skipped: Option<String>,
+    /// When and why an agent added it, if one did.
+    pub added: Option<ServerRecord>,
+}
+
+/// A switch of what agents may add, by the word `/extensions` takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Switch {
+    /// "Ask before adding MCP servers".
+    AskMcp,
+    /// "Review project skills".
+    ReviewSkills,
+    /// "Keep agents' project files out of git".
+    KeepOutOfGit,
+}
+
+impl Switch {
+    /// The command that sets it in a session, as the terminal takes it.
+    pub fn command(self, on: bool) -> String {
+        let word = match self {
+            Switch::AskMcp => "ask-mcp",
+            Switch::ReviewSkills => "review-skills",
+            Switch::KeepOutOfGit => "keep-out-of-git",
+        };
+        format!("/extensions {word} {}", if on { "on" } else { "off" })
+    }
+}
+
+/// Saves `switch` without a session, as `/extensions` does in one: in Arko's
+/// folder `root`, and for the git switch also in the `.arko` folder of the
+/// project `workspace`, if there is one.
+pub fn set_switch(
+    root: &Path,
+    workspace: Option<&Path>,
+    switch: Switch,
+    on: bool,
+) -> Result<(), String> {
+    use arko::extension_prefs::update;
+    match switch {
+        Switch::AskMcp => update(root, |prefs| prefs.ask_before_adding_mcp = on).map(|_| ()),
+        Switch::ReviewSkills => update(root, |prefs| prefs.review_project_skills = on).map(|_| ()),
+        Switch::KeepOutOfGit => {
+            let mut prefs = arko::profiles::Preferences::load(root);
+            prefs.keep_out_of_git = on;
+            super::profiles::set_preferences(root, workspace, prefs)
+        }
+    }
+}
+
+/// "Added by an agent on 28 Oct, for this project." and the agent's reason,
+/// for a skill or a server an agent added. `project` says it is for one
+/// project, else for every project.
+pub fn added_words(added: &chrono::DateTime<chrono::Utc>, project: bool, why: &str) -> String {
+    let day = added.with_timezone(&chrono::Local).format("%-d %b");
+    let reach = if project {
+        "this project"
+    } else {
+        "every project"
+    };
+    let why = why.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut words = format!("Added by an agent on {day}, for {reach}.");
+    if !why.is_empty() {
+        words.push(' ');
+        words.push_str(&why);
+        if !why.ends_with(['.', '!', '?']) {
+            words.push('.');
+        }
+    }
+    words
+}
+
+/// [`added_words`] for a skill.
+pub fn skill_added_words(record: &SkillRecord) -> String {
+    added_words(
+        &record.added,
+        record.scope == arko::agent_added::Scope::Project,
+        &record.why,
+    )
+}
+
+/// [`added_words`] for a server, which is for one project when it is in a
+/// project's `.arko/mcp.json`.
+pub fn server_added_words(record: &ServerRecord) -> String {
+    added_words(
+        &record.added,
+        record.file.ends_with(LOCAL_MCP_FILE),
+        &record.why,
+    )
+}
+
+/// What `/skills` adds to a skill's place: that an agent added it, the
+/// models it is listed for, and that only the main agent gets it, as in
+/// "added by the agent 28 Oct, for haiku, main agent only". Empty for a skill
+/// with none of them.
+pub fn skill_notes(added: Option<&SkillRecord>, models: &[String], workers: bool) -> Vec<String> {
+    let mut notes = Vec::new();
+    if let Some(added) = added {
+        notes.push(format!(
+            "added by the agent {}",
+            added.added.with_timezone(&chrono::Local).format("%-d %b")
+        ));
+    }
+    if !models.is_empty() {
+        notes.push(format!("for {}", and_list(models)));
+    }
+    if !workers {
+        notes.push("main agent only".to_string());
+    }
+    notes
+}
+
+/// "a", "a and b", "a, b and c".
+pub fn and_list(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,9 +169,15 @@ pub enum Approval {
     Unavailable,
 }
 
+/// A project's `.mcp.json`, or its own `.arko/mcp.json`, with the answer
+/// Arko remembers for it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectServers {
     pub folder: PathBuf,
+    /// The file.
+    pub file: PathBuf,
+    /// It is the project's `.arko/mcp.json` (else its `.mcp.json`).
+    pub local: bool,
     pub servers: Result<Vec<McpServer>, String>,
     pub approval: Approval,
 }
@@ -72,6 +208,21 @@ pub struct BuiltinSkill {
     pub replaced_by: Vec<PathBuf>,
 }
 
+/// A skill of a folder, for tests and screenshots.
+pub fn sample_skill(folder: &Path, name: &str) -> arko::extensions::SkillEntry {
+    arko::extensions::SkillEntry {
+        name: name.into(),
+        description: String::new(),
+        path: folder.join(name),
+        auto_load: false,
+        skipped: None,
+        builtin: false,
+        added: None,
+        workers: true,
+        models: Vec::new(),
+    }
+}
+
 impl Extensions {
     /// A setup for tests and screenshots.
     pub fn sample(home: &Path, arko: &Path) -> Self {
@@ -79,7 +230,10 @@ impl Extensions {
             name: name.into(),
             command: command.into(),
             skipped: None,
+            added: None,
         };
+        let project = home.join("src/arko");
+        let skills = home.join(".claude/skills");
         Self {
             files: vec![McpFile {
                 path: arko.join(USER_MCP_FILE),
@@ -90,24 +244,19 @@ impl Extensions {
                 )])),
             }],
             projects: vec![ProjectServers {
-                folder: home.join("src/arko"),
+                file: project.join(PROJECT_MCP_FILE),
+                folder: project,
+                local: false,
                 servers: Ok(vec![server("playwright", "npx @playwright/mcp")]),
                 approval: Approval::Approved,
             }],
             skills: vec![SkillFolder {
-                path: home.join(".claude/skills"),
-                of: SkillsOf::Home,
                 skills: ["docx", "pdf", "repo-docs-style"]
                     .into_iter()
-                    .map(|name| arko::extensions::SkillEntry {
-                        name: name.into(),
-                        description: String::new(),
-                        path: home.join(".claude/skills").join(name),
-                        auto_load: false,
-                        skipped: None,
-                        builtin: false,
-                    })
+                    .map(|name| sample_skill(&skills, name))
                     .collect(),
+                path: skills,
+                of: SkillsOf::Home,
             }],
             builtin: vec![
                 BuiltinSkill {
@@ -132,7 +281,88 @@ impl Extensions {
                     replaced_by: Vec::new(),
                 },
             ],
+            approvals: ExtensionPrefs::default(),
         }
+    }
+
+    /// [`sample`](Self::sample) with what agents added on 28 Oct 2026: the
+    /// skill release-notes and the server sentry for the project, and the
+    /// server figma for every project. The project's skills also hold one
+    /// for haiku and one for the main agent only.
+    pub fn sample_added(home: &Path, arko: &Path) -> Self {
+        use arko::agent_added::Scope;
+        let mut sample = Self::sample(home, arko);
+        let project = home.join("src/arko");
+        let added = chrono::DateTime::parse_from_rfc3339("2026-10-28T12:00:00Z")
+            .unwrap()
+            .to_utc();
+        let server_record = |file: &Path, name: &str, why: &str| ServerRecord {
+            file: file.to_path_buf(),
+            name: name.into(),
+            session: "2026-10-28-a1b2".into(),
+            session_title: Some("Release prep".into()),
+            added,
+            why: why.into(),
+        };
+        let user_file = arko.join(USER_MCP_FILE);
+        if let Some(Some(Ok(servers))) = sample.files.first_mut().map(|file| file.servers.as_mut())
+        {
+            servers.push(McpServer {
+                name: "figma".into(),
+                command: "npx -y figma-developer-mcp".into(),
+                skipped: None,
+                added: Some(server_record(
+                    &user_file,
+                    "figma",
+                    "Read the design files the issues link to",
+                )),
+            });
+        }
+        let local = project.join(LOCAL_MCP_FILE);
+        sample.projects.insert(
+            0,
+            ProjectServers {
+                folder: project.clone(),
+                file: local.clone(),
+                local: true,
+                servers: Ok(vec![McpServer {
+                    name: "sentry".into(),
+                    command: "npx -y @sentry/mcp-server".into(),
+                    skipped: None,
+                    added: Some(server_record(
+                        &local,
+                        "sentry",
+                        "Read this project’s crash reports",
+                    )),
+                }]),
+                approval: Approval::Approved,
+            },
+        );
+        let folder = project.join(".arko/skills");
+        let mut notes = sample_skill(&folder, "release-notes");
+        notes.added = Some(SkillRecord {
+            path: notes.path.clone(),
+            scope: Scope::Project,
+            session: "2026-10-28-a1b2".into(),
+            session_title: Some("Release prep".into()),
+            added,
+            why: "The release checklist changed, and later conversations need the new steps."
+                .into(),
+            source: None,
+        });
+        let mut quirks = sample_skill(&folder, "haiku-quirks");
+        quirks.models = vec!["haiku".into()];
+        let mut deploy = sample_skill(&folder, "deploy");
+        deploy.workers = false;
+        sample.skills.insert(
+            0,
+            SkillFolder {
+                path: folder,
+                of: SkillsOf::Project(project),
+                skills: vec![notes, quirks, deploy],
+            },
+        );
+        sample
     }
 }
 
@@ -174,12 +404,20 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
                 });
             }
         }
-        if let Some(workspace) = workspace
-            && let project = workspace.join(PROJECT_MCP_FILE)
-            && project.is_file()
-        {
-            let mut servers = servers_in(&listed, &project);
-            let approval = match arko::extensions::project_mcp_approval(root, workspace) {
+        // The project's own servers come first, as sessions read them.
+        for (name, local) in [(LOCAL_MCP_FILE, true), (PROJECT_MCP_FILE, false)] {
+            let Some(workspace) = workspace else { break };
+            let file = workspace.join(name);
+            if !file.is_file() {
+                continue;
+            }
+            let mut servers = servers_in(&listed, &file);
+            let answer = if local {
+                arko::extensions::local_mcp_approval(root, workspace)
+            } else {
+                arko::extensions::project_mcp_approval(root, workspace)
+            };
+            let approval = match answer {
                 Ok(Some(true)) => Approval::Approved,
                 Ok(Some(false)) => Approval::Refused,
                 Ok(None) => Approval::NotAsked,
@@ -190,6 +428,8 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
             };
             found.projects.push(ProjectServers {
                 folder: workspace.to_path_buf(),
+                file,
+                local,
                 servers,
                 approval,
             });
@@ -267,6 +507,7 @@ pub fn read(root: &Path, folders: &[PathBuf], mcp_config: &[PathBuf]) -> Extensi
             }
         }
     }
+    found.approvals = arko::extension_prefs::load(root);
     found
 }
 
@@ -308,6 +549,7 @@ fn servers_in(
             name: server.name.clone(),
             command: server.command.clone(),
             skipped: server.skipped.clone(),
+            added: server.added.clone(),
         })
         .collect())
 }
@@ -472,6 +714,188 @@ mod tests {
         }
     }
 
+    /// A project's own .arko/mcp.json lists before its .mcp.json, each with
+    /// its answer, which is forgotten apart. A server or a skill an agent
+    /// added says so, and the skills of .arko/skills are the project's.
+    #[test]
+    fn a_projects_own_servers_and_what_agents_added_are_listed() {
+        use arko::extensions::Added;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let project = temp.path().join("project");
+        let servers = serde_json::json!({"sentry": {"command": "npx"}});
+        let local = project.join(LOCAL_MCP_FILE);
+        write(
+            &local,
+            &serde_json::json!({"mcpServers": servers}).to_string(),
+        );
+        write(
+            &project.join(PROJECT_MCP_FILE),
+            r#"{"mcpServers":{"github":{"command":"npx"}}}"#,
+        );
+        write(
+            &root.join("mcp-approvals.json"),
+            &serde_json::json!({"local": {project.display().to_string(): {"start": true, "mcpServers": servers}}})
+                .to_string(),
+        );
+        let added = chrono::Utc::now();
+        arko::agent_added::record_server(
+            &root,
+            ServerRecord {
+                file: local.clone(),
+                name: "sentry".into(),
+                session: "s1".into(),
+                session_title: None,
+                added,
+                why: "Read the crash reports".into(),
+            },
+        )
+        .unwrap();
+        let skill = project.join(".arko/skills/release-notes");
+        write(
+            &skill.join("SKILL.md"),
+            "---\nname: release-notes\ndescription: How to write them\nworkers: false\nmodels: [haiku]\n---\nWrite them.",
+        );
+        arko::agent_added::record_skill(
+            &root,
+            SkillRecord {
+                path: skill.clone(),
+                scope: arko::agent_added::Scope::Project,
+                session: "s1".into(),
+                session_title: None,
+                added,
+                why: "The checklist changed.".into(),
+                source: None,
+            },
+        )
+        .unwrap();
+        let found = read(&root, std::slice::from_ref(&project), &[]);
+        let files: Vec<(&Path, bool, Approval)> = found
+            .projects
+            .iter()
+            .map(|listed| (listed.file.as_path(), listed.local, listed.approval))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                (local.as_path(), true, Approval::Approved),
+                (
+                    project.join(PROJECT_MCP_FILE).as_path(),
+                    false,
+                    Approval::NotAsked
+                )
+            ]
+        );
+        let sentry = &found.projects[0].servers.as_ref().unwrap()[0];
+        assert_eq!(sentry.added.as_ref().unwrap().why, "Read the crash reports");
+        assert_eq!(found.projects[1].servers.as_ref().unwrap()[0].added, None);
+        let folder = found
+            .skills
+            .iter()
+            .find(|folder| folder.path == project.join(".arko/skills"))
+            .unwrap();
+        assert_eq!(folder.of, SkillsOf::Project(project.clone()));
+        let notes = &folder.skills[0];
+        assert_eq!(notes.added.as_ref().unwrap().why, "The checklist changed.");
+        assert!(!notes.workers);
+        assert_eq!(notes.models, ["haiku"]);
+        // The .mcp.json's answer stays when the .arko/mcp.json's is
+        // forgotten.
+        use crate::backend::Backend as _;
+        crate::backend::ArkoBackend::new(&root)
+            .forget_mcp_approval(&project, true)
+            .unwrap();
+        let found = read(&root, std::slice::from_ref(&project), &[]);
+        assert_eq!(found.projects[0].approval, Approval::NotAsked);
+        // Remove takes away what an agent added, and nothing else.
+        let backend = crate::backend::ArkoBackend::new(&root);
+        let said = backend
+            .remove_added(Added::Skill {
+                path: skill.clone(),
+            })
+            .unwrap();
+        assert_eq!(said, "Removed the skill release-notes.");
+        assert!(!skill.exists());
+        let said = backend
+            .remove_added(Added::Server {
+                file: local.clone(),
+                name: "sentry".into(),
+            })
+            .unwrap();
+        assert_eq!(said, "Removed the MCP server sentry.");
+        assert!(!std::fs::read_to_string(&local).unwrap().contains("sentry"));
+        let why = backend
+            .remove_added(Added::Server {
+                file: project.join(PROJECT_MCP_FILE),
+                name: "github".into(),
+            })
+            .unwrap_err();
+        assert!(why.contains("wasn't added by an agent"), "{why}");
+    }
+
+    /// The switches of what agents may add are saved as `/extensions` saves
+    /// them, and the git switch takes Arko's .gitignore out of the project's
+    /// .arko folder and puts it back.
+    #[test]
+    fn the_switches_are_saved_as_the_command_saves_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let project = temp.path().join("project");
+        assert_eq!(read(&root, &[], &[]).approvals, ExtensionPrefs::default());
+        set_switch(&root, None, Switch::AskMcp, false).unwrap();
+        set_switch(&root, None, Switch::ReviewSkills, true).unwrap();
+        let approvals = read(&root, &[], &[]).approvals;
+        assert!(!approvals.ask_before_adding_mcp);
+        assert!(approvals.review_project_skills);
+        let ignore = arko::arko_dir::ensure(&project, &root)
+            .unwrap()
+            .join(".gitignore");
+        assert!(ignore.is_file());
+        set_switch(&root, Some(&project), Switch::KeepOutOfGit, false).unwrap();
+        assert!(!arko::profiles::Preferences::load(&root).keep_out_of_git);
+        assert!(!ignore.exists());
+        set_switch(&root, Some(&project), Switch::KeepOutOfGit, true).unwrap();
+        assert!(arko::profiles::Preferences::load(&root).keep_out_of_git);
+        assert!(ignore.is_file());
+        assert_eq!(
+            Switch::KeepOutOfGit.command(false),
+            "/extensions keep-out-of-git off"
+        );
+        assert_eq!(Switch::AskMcp.command(true), "/extensions ask-mcp on");
+        assert_eq!(
+            Switch::ReviewSkills.command(false),
+            "/extensions review-skills off"
+        );
+    }
+
+    #[test]
+    fn what_an_agent_added_says_when_and_why() {
+        let day = chrono::DateTime::parse_from_rfc3339("2026-10-28T12:00:00Z")
+            .unwrap()
+            .to_utc();
+        assert_eq!(
+            added_words(&day, true, "The release checklist changed"),
+            "Added by an agent on 28 Oct, for this project. The release checklist changed."
+        );
+        assert_eq!(
+            added_words(&day, false, "Read the designs.\n"),
+            "Added by an agent on 28 Oct, for every project. Read the designs."
+        );
+        assert_eq!(
+            added_words(&day, false, ""),
+            "Added by an agent on 28 Oct, for every project."
+        );
+        assert_eq!(skill_notes(None, &[], true), Vec::<String>::new());
+        assert_eq!(
+            skill_notes(None, &["haiku".into(), "cc:haiku".into()], false),
+            ["for haiku and cc:haiku", "main agent only"]
+        );
+        assert_eq!(
+            and_list(&["a".into(), "b".into(), "c".into()]),
+            "a, b and c"
+        );
+    }
+
     #[test]
     fn approvals_are_read_and_forgotten() {
         let temp = tempfile::tempdir().unwrap();
@@ -496,7 +920,7 @@ mod tests {
         );
         use crate::backend::Backend as _;
         crate::backend::ArkoBackend::new(&root)
-            .forget_mcp_approval(&alias)
+            .forget_mcp_approval(&alias, false)
             .unwrap();
         assert!(!arko::extensions::forget_project_mcp_approval(&root, &project).unwrap());
         let found = read(&root, std::slice::from_ref(&project), &[]);

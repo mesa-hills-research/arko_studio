@@ -862,6 +862,172 @@ fn a_projects_mcp_answer_is_forgotten(cx: &mut TestAppContext) {
     });
 }
 
+/// Whether the switch `id` of `window` is on, as last drawn.
+fn switch_on(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) -> Option<bool> {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).and_then(|found| found.checked())
+    })
+    .unwrap()
+}
+
+/// Agents ask before adding MCP servers until the user turns it off, which
+/// asks first, and they save project skills without asking until the user
+/// turns that on. With no session open, Arko's folder is written here.
+#[gpui_kit::test]
+fn the_approvals_switches_save_what_agents_may_add(cx: &mut TestAppContext) {
+    use crate::backend::extensions::Switch;
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, EXTENSIONS_PAGE, 2400.);
+    let page = cx.read(|cx| settings.read(cx).extensions().clone());
+    assert_eq!(switch_on(cx, window, "ask-before-adding-mcp"), Some(true));
+    assert_eq!(switch_on(cx, window, "review-project-skills"), Some(false));
+    // Turning it off asks, and Cancel keeps it on.
+    act(cx, window, |window, cx| {
+        window.click("ask-before-adding-mcp", cx)
+    });
+    let dialog = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.has_active_dialog(cx)
+        })
+        .unwrap()
+    };
+    assert!(dialog(cx));
+    act(cx, window, |window, cx| {
+        window.within("dialog").click("cancel", cx)
+    });
+    cx.run_until_parked();
+    assert!(!dialog(cx));
+    assert!(backend.switches_saved().is_empty());
+    assert_eq!(switch_on(cx, window, "ask-before-adding-mcp"), Some(true));
+    // Turn off saves it.
+    act(cx, window, |window, cx| {
+        window.click("ask-before-adding-mcp", cx)
+    });
+    act(cx, window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(switch_on(cx, window, "ask-before-adding-mcp"), Some(false));
+    // Turning it on and reviewing skills ask nothing.
+    act(cx, window, |window, cx| {
+        window.click("review-project-skills", cx)
+    });
+    act(cx, window, |window, cx| {
+        window.click("ask-before-adding-mcp", cx)
+    });
+    cx.run_until_parked();
+    assert!(!dialog(cx));
+    let saved: Vec<(Switch, bool)> = backend
+        .switches_saved()
+        .into_iter()
+        .map(|(switch, on, _)| (switch, on))
+        .collect();
+    assert_eq!(
+        saved,
+        [
+            (Switch::AskMcp, false),
+            (Switch::ReviewSkills, true),
+            (Switch::AskMcp, true)
+        ]
+    );
+    let approvals = cx.read(|cx| page.read(cx).extensions().unwrap().approvals);
+    assert!(approvals.ask_before_adding_mcp);
+    assert!(approvals.review_project_skills);
+}
+
+/// With a session open, a switch is sent to it as the terminal's command,
+/// so the session saves it and its web page shows it.
+#[gpui_kit::test]
+fn the_approvals_switches_are_sent_to_the_open_sessions(cx: &mut TestAppContext) {
+    use crate::live::{LiveSession, LiveSessions};
+    let backend = start_with(cx, prefs::Prefs::default());
+    let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+    cx.update(|cx| LiveSessions::add_for_tests(session.clone(), cx));
+    let (window, _, _) = settings_window(cx, EXTENSIONS_PAGE, 2400.);
+    act(cx, window, |window, cx| {
+        window.click("review-project-skills", cx)
+    });
+    cx.run_until_parked();
+    let sent: Vec<String> = cx.read(|cx| {
+        session
+            .read(cx)
+            .queued()
+            .iter()
+            .filter_map(|input| match input {
+                arko::Input::Message(message) => Some(message.text.clone()),
+                _ => None,
+            })
+            .collect()
+    });
+    assert_eq!(sent, ["/extensions review-skills on"]);
+    assert!(backend.switches_saved().is_empty(), "the session saves it");
+    assert_eq!(switch_on(cx, window, "review-project-skills"), Some(true));
+}
+
+/// A skill or a server an agent added says when and why, and Remove asks
+/// before removing it.
+#[gpui_kit::test]
+fn what_an_agent_added_is_removed_after_asking(cx: &mut TestAppContext) {
+    use arko::extensions::Added;
+    let home = std::path::Path::new("/home/ada");
+    let backend = start_on(
+        cx,
+        FakeBackend::sample("/arko", SystemTime::now()).with_extensions(
+            crate::backend::extensions::Extensions::sample_added(home, "/arko".as_ref()),
+        ),
+        prefs::Prefs::default(),
+    );
+    let (window, _, settings) = settings_window(cx, EXTENSIONS_PAGE, 2400.);
+    let page = cx.read(|cx| settings.read(cx).extensions().clone());
+    // figma in Arko's mcp.json, sentry in the project's .arko/mcp.json, then
+    // the skill release-notes, each with Remove.
+    act(cx, window, |window, _| {
+        assert!(window.try_find(("remove-added", 2usize)).is_some());
+        assert!(window.try_find(("remove-added", 3usize)).is_none());
+    });
+    act(cx, window, |window, cx| {
+        window.click(("remove-added", 2usize), cx)
+    });
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        window.within("dialog").click("ok", cx)
+    });
+    cx.run_until_parked();
+    let skill = home.join("src/arko/.arko/skills/release-notes");
+    assert_eq!(backend.removed(), [Added::Skill { path: skill }]);
+    act(cx, window, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1);
+        assert!(window.try_find(("remove-added", 2usize)).is_none());
+    });
+    act(cx, window, |window, cx| {
+        window.click(("remove-added", 1usize), cx)
+    });
+    // Cancel keeps it.
+    act(cx, window, |window, cx| {
+        window.within("dialog").click("cancel", cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(backend.removed().len(), 1);
+    act(cx, window, |window, cx| {
+        window.click(("remove-added", 1usize), cx)
+    });
+    act(cx, window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        backend.removed()[1],
+        Added::Server {
+            file: home.join("src/arko/.arko/mcp.json"),
+            name: "sentry".into()
+        }
+    );
+    let projects = cx.read(|cx| page.read(cx).extensions().unwrap().projects.clone());
+    assert!(projects[0].servers.as_ref().unwrap().is_empty());
+}
+
 /// The switches for Arko's built-in skills, all of them and each by name,
 /// reach the options of the sessions opened after, and switching back on
 /// is passed on too.

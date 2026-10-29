@@ -42,12 +42,15 @@ providers and credential discovery.
 **Settings › Worker profiles** lists the profiles the main agent starts workers with. A profile is
 a Markdown file in the `profiles` folder of the Arko folder, with a model, an effort and
 instructions, so Arko in the terminal reads the same ones. Add, edit, duplicate and delete your
-profiles there. The page also lists each recent project's and repository's `.agents/profiles`, read
-only. Two switches choose where profiles are kept. One keeps a project's new profiles folder out of
+profiles there. The page also lists each recent project's and repository's `.arko/profiles`, read
+only, and the older `.agents/profiles` where a project still has one. A profile read from the older
+folder says so. Two switches choose where profiles are kept. **Keep agents' project files out of
+git** keeps the skills, MCP servers and profiles agents save in a project's `.arko` folder out of
 git, and the other makes a project in a subfolder of a git repository read the repository root's
-profiles too. The main agent can save profiles too, for the project unless it says otherwise. It
-asks you first when git would track the folder, when the project isn't in a git repository, or when
-the profile is for every project. See
+profiles too. A change to the first goes to the sessions open in Studio, as `/extensions` does in
+the terminal, so their web pages show it too. The main agent can save profiles too, for the project
+unless it says otherwise. It asks you first when git would track the folder, when the project isn't
+in a git repository, or when the profile is for every project. See
 [Arko's documentation](https://github.com/mesa-hills-research/arko) for the file format.
 
 **Settings › Sessions** sets who chooses the workers' models, whether workers may run on models
@@ -70,9 +73,15 @@ none works. A name you give a session is never replaced, and a name that arrives
 session is kept for the next time you open it. Arko in the terminal reads the same setting
 (`session-names.json`) and changes it with `/session-names`.
 
-**Settings › Extensions** lists the MCP servers and skills sessions get. Arko's built-in skills
-have a switch for all of them and one for each. A session opened or resumed after a change gets it,
-and a session already open keeps its skills. A switch you haven't used leaves its part to Arko's
+**Settings › Extensions** lists the MCP servers and skills sessions get. Its **Approvals** group
+says what agents may add without asking you. **Ask before adding MCP servers** is on until you turn
+it off, which asks first, and **Review project skills** makes agents ask before they save a skill in
+the project too. A change goes to the sessions open in Studio, as on the Worker profiles page. A
+skill or a server an agent added says when and why, and **Remove** takes it away after asking. Each
+recent project's `.arko/mcp.json`, where agents add the project's servers, is listed with its
+`.mcp.json`, each with the answer Arko remembers and **Forget answer**. Arko's built-in skills have
+a switch for all of them and one for each. A session opened or resumed after a change gets it, and a
+session already open keeps its skills. A switch you haven't used leaves its part to Arko's
 `ARKO_BUILTIN_SKILLS` and `ARKO_BUILTIN_SKILLS_OFF` settings.
 
 Each open Agent session runs its own copy of every MCP server, so close the sessions you aren't
