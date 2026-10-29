@@ -520,10 +520,12 @@ fn settings_added_window(mode: ThemeMode) -> Screenshot {
     );
     settings_window_with(backend, mode, 1300., EXTENSIONS_PAGE, |app, window| {
         app.run_until_parked();
+        // (Scrolled with the pointer on a switch that scrolls away, so it
+        // rests on no button.)
         app.update_window(window, |_, window, cx| {
             window.scroll(
-                ("remove-added", 0usize),
-                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-480.))),
+                "ask-before-adding-mcp",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-526.))),
                 cx,
             )
         })

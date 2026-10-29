@@ -1746,6 +1746,7 @@ mod tests {
             session_title: None,
             added: added_on_28_oct(),
             why: "Read the crash reports".into(),
+            folder: None,
         });
         let mcp = McpFacts {
             servers: vec![
@@ -1851,6 +1852,7 @@ mod tests {
             added: added_on_28_oct(),
             why: "The checklist changed.".into(),
             source: None,
+            id: None,
         });
         let quirks = SkillFacts {
             models: vec!["haiku".into(), "cc:haiku".into()],

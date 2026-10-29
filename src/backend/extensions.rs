@@ -300,6 +300,7 @@ impl Extensions {
             session_title: Some("Release prep".into()),
             added,
             why: why.into(),
+            folder: None,
         };
         let user_file = arko.join(USER_MCP_FILE);
         if let Some(Some(Ok(servers))) = sample.files.first_mut().map(|file| file.servers.as_mut())
@@ -346,6 +347,7 @@ impl Extensions {
             why: "The release checklist changed, and later conversations need the new steps."
                 .into(),
             source: None,
+            id: None,
         });
         let mut quirks = sample_skill(&folder, "haiku-quirks");
         quirks.models = vec!["haiku".into()];
@@ -718,8 +720,10 @@ mod tests {
     fn a_projects_own_servers_and_what_agents_added_are_listed() {
         use arko::extensions::Added;
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("arko");
-        let project = temp.path().join("project");
+        // Arko records real paths (a temporary folder may be behind a link).
+        let real = temp.path().canonicalize().unwrap();
+        let root = real.join("arko");
+        let project = real.join("project");
         let servers = serde_json::json!({"sentry": {"command": "npx"}});
         let local = project.join(LOCAL_MCP_FILE);
         write(
@@ -745,6 +749,7 @@ mod tests {
                 session_title: None,
                 added,
                 why: "Read the crash reports".into(),
+                folder: None,
             },
         )
         .unwrap();
@@ -763,6 +768,7 @@ mod tests {
                 added,
                 why: "The checklist changed.".into(),
                 source: None,
+                id: None,
             },
         )
         .unwrap();
