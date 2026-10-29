@@ -50,7 +50,8 @@ fn profile(id: &str, name: &str) -> ApprovalRequest {
         "id": id, "batch": 1,
         "approval": {
             "kind": "profile", "name": name, "model": "sol", "effort": "high",
-            "scope": "every project", "description": "Judges 3D results",
+            "scope": "every project", "folder": "Arko's profiles folder",
+            "description": "Judges 3D results",
             "instructions": "You judge 3D models.\nCompare them with the reference."
         }
     }))

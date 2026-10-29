@@ -3673,8 +3673,8 @@ fn session_info(mode: ThemeMode) -> Screenshot {
                     name: "browser".into(),
                     shown: "browser-server".into(),
                     file: PathBuf::from("/home/ada/src/arko/.mcp.json"),
-                    tools: Err("no such program: browser-server".into()),
-                    state: arko::details::McpState::Failed("no such program: browser-server".into()),
+                    tools: Err("its program wasn't found".into()),
+                    state: arko::details::McpState::Failed("its program wasn't found".into()),
                     ..McpServerFacts::default()
                 },
             ],
@@ -4114,7 +4114,7 @@ fn approval_requests() -> Vec<arko::approvals::ApprovalRequest> {
             "id": "a1", "batch": 1,
             "approval": {
                 "kind": "profile", "name": "3d-judge", "model": "sol", "effort": "high",
-                "scope": "every project",
+                "scope": "every project", "folder": "Arko's profiles folder",
                 "description": "Judges 3D results against a reference image",
                 "instructions": "You judge 3D models against a reference image."
             }

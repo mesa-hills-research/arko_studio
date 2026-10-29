@@ -1463,9 +1463,10 @@ pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
                     (format!("{}, stopped by the agent", server.name), None)
                 }
                 (McpState::Stopped, _) => (format!("{}, stopped", server.name), None),
-                (_, Err(why)) | (McpState::Failed(why), _) => {
-                    (format!("{}, didn’t start ({why})", server.name), None)
-                }
+                (_, Err(why)) | (McpState::Failed(why), _) => (
+                    format!("{}, didn’t start ({})", server.name, curly(why)),
+                    None,
+                ),
                 (_, Ok(tools)) => (
                     format!(
                         "{}, {} tool{}",
@@ -1755,8 +1756,8 @@ mod tests {
                 ),
                 server(
                     "web",
-                    McpState::Failed("no such program".into()),
-                    Err("no such program".into()),
+                    McpState::Failed("its program wasn't found".into()),
+                    Err("its program wasn't found".into()),
                 ),
                 server("figma", McpState::StoppedByAgent, Ok(Vec::new())),
                 server("github", McpState::Starting, Ok(Vec::new())),
@@ -1768,7 +1769,7 @@ mod tests {
             mcp_lines(&mcp),
             [
                 ("files, 2 tools".into(), Some("read, write".into())),
-                ("web, didn’t start (no such program)".into(), None),
+                ("web, didn’t start (its program wasn’t found)".into(), None),
                 ("figma, stopped by the agent".into(), None),
                 ("github, starting".into(), None),
                 (
