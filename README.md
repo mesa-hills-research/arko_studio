@@ -20,8 +20,8 @@ The native interface is written in Rust with [GPUI](https://www.gpui.rs) and
 - Find, edit, regenerate, branch and export conversations, with keyboard shortcuts and a command
   palette.
 - See context use, costs and cache expiry, and share a session through its web page.
-- Get notified when a turn ends, a question comes, a worker reports or fails, or a prompt cache is
-  about to expire, and open the session from the notification history.
+- Get notified when a turn ends, a question or a request for approval comes, a worker reports or
+  fails, or a prompt cache is about to expire, and open the session from the notification history.
 - Choose light and dark themes, fonts, input keys, spell checking and word suggestions.
 
 ## Build and install

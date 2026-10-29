@@ -172,6 +172,8 @@ pub enum LiveEvent {
     Ended,
     TurnEnded,
     QuestionAsked,
+    /// A request came to the approval tray.
+    ApprovalRequested,
     /// A request to the engine failed: the sentence to show.
     Refused(String),
     /// A worker finished or failed.
@@ -402,13 +404,21 @@ impl Questions {
 struct Approvals {
     /// Answered here: hidden until the status no longer lists them.
     answered: std::collections::HashSet<String>,
+    /// The requests the status listed since the session opened.
+    known: std::collections::HashSet<String>,
 }
 
 impl Approvals {
-    /// Takes the requests of a new status.
-    fn read(&mut self, waiting: &[ApprovalRequest]) {
+    /// Takes the requests of a new status. Returns whether one of them is
+    /// new.
+    fn read(&mut self, waiting: &[ApprovalRequest]) -> bool {
         self.answered
             .retain(|id| waiting.iter().any(|request| request.id == *id));
+        let mut new = false;
+        for request in waiting {
+            new |= self.known.insert(request.id.clone());
+        }
+        new
     }
 
     /// The requests `input` answers.
@@ -802,7 +812,9 @@ impl LiveSession {
             if self.questions.read(&self.reading.questions) {
                 cx.emit(LiveEvent::QuestionAsked);
             }
-            self.approvals.read(&self.reading.approvals);
+            if self.approvals.read(&self.reading.approvals) {
+                cx.emit(LiveEvent::ApprovalRequested);
+            }
         }
         if let Some(activity) = drained.activity {
             let was = std::mem::replace(&mut self.activity, activity);
@@ -1743,6 +1755,97 @@ mod tests {
         assert!(cx.read(|cx| session.read(cx).open_questions().is_empty()));
         apply(cx, false, &[]);
         assert!(!indicator(cx).question);
+    }
+
+    /// The session tells of each request that comes to the approval tray
+    /// once. Those answered here leave its tray at once, and those whose
+    /// answer can't go stay.
+    #[gpui_kit::test]
+    fn requests_for_approval_are_told_once(cx: &mut TestAppContext) {
+        cx.update(super::init);
+        let session = cx.new(|cx| {
+            let mut session = LiveSession::blank(cx);
+            session.id = Some(crate::backend::SessionId("s1".into()));
+            session
+        });
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let heard = heard.clone();
+            cx.subscribe(&session, move |_, event: &LiveEvent, _| {
+                heard.borrow_mut().push(event.clone())
+            })
+            .detach();
+        });
+        let apply = |cx: &mut TestAppContext, waiting: &[&str]| {
+            let approvals = waiting
+                .iter()
+                .map(|id| {
+                    crate::approvals::request(serde_json::json!({
+                        "id": id, "batch": 1,
+                        "approval": {"kind": "worker_billing", "model": "Opus 5.5", "task": "Review"}
+                    }))
+                })
+                .collect();
+            session.update(cx, |session, cx| {
+                session.apply(
+                    Drained {
+                        reading: Some(Arc::new(Reading {
+                            approvals,
+                            ..Reading::default()
+                        })),
+                        ..Drained::default()
+                    },
+                    cx,
+                )
+            })
+        };
+        let waiting = |cx: &mut TestAppContext| -> Vec<String> {
+            cx.read(|cx| {
+                session
+                    .read(cx)
+                    .approvals()
+                    .iter()
+                    .map(|request| request.id.clone())
+                    .collect()
+            })
+        };
+        apply(cx, &["a1"]);
+        apply(cx, &["a1", "a2"]);
+        apply(cx, &["a2"]);
+        assert_eq!(
+            *heard.borrow(),
+            [LiveEvent::ApprovalRequested, LiveEvent::ApprovalRequested]
+        );
+        let answer = |id: &str| {
+            arko::Input::AnswerApprovals(arko::approvals::ApprovalAnswers {
+                choices: vec![arko::approvals::ApprovalChoice {
+                    id: id.into(),
+                    approve: true,
+                    option: false,
+                }],
+                words: None,
+            })
+        };
+        // A session that failed keeps them.
+        session.update(cx, |session, _| {
+            session.phase = Phase::Failed("It didn’t open.".into())
+        });
+        assert!(
+            session
+                .update(cx, |session, cx| session.send(answer("a2"), cx))
+                .is_err()
+        );
+        assert_eq!(waiting(cx), ["a2"]);
+        session.update(cx, |session, _| session.phase = Phase::Opening);
+        session
+            .update(cx, |session, cx| session.send(answer("a2"), cx))
+            .unwrap();
+        assert!(waiting(cx).is_empty());
+        // Until the status says so, and after.
+        apply(cx, &["a2"]);
+        assert!(waiting(cx).is_empty());
+        apply(cx, &[]);
+        assert_eq!(heard.borrow().len(), 2);
     }
 
     /// What the engine says in a burst (here 4,000 changes of the turn's
