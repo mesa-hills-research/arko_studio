@@ -110,15 +110,72 @@ pub fn next_move(workers: &[WorkerSummary], now: i64, seen: impl Fn(&str) -> boo
 }
 
 /// A worker's setup in a few words, as the terminal lists it: its model in as
-/// few characters as still name it, its effort and its profile, such as
-/// "sol · high · 3d-judge". `None` until the session has recorded them.
+/// few characters as still name it, its effort and its profile, then the
+/// skills and MCP servers it was narrowed to, such as "sol · high · 3d-judge
+/// · 2 skills · no MCP". `None` until the session has recorded them.
 pub fn setup_label(worker: &WorkerSummary) -> Option<String> {
     let known = |text: &Option<String>| text.clone().filter(|text| !text.is_empty());
     let mut parts: Vec<String> = Vec::new();
     parts.extend(known(&worker.model).map(|model| arko::workers::short_model_name(&model)));
     parts.extend(known(&worker.effort));
     parts.extend(known(&worker.profile));
+    parts.extend(narrowed_words(worker));
     (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// The skills and MCP servers a worker was narrowed to, counted as the web
+/// page counts them: "2 skills", "no skills", "1 MCP server", "no MCP". A
+/// worker that has what its starter has says nothing.
+pub fn narrowed_words(worker: &WorkerSummary) -> Vec<String> {
+    let count = |names: &[String], one: &str, many: &str, none: &str| match names.len() {
+        0 => none.to_string(),
+        1 => format!("1 {one}"),
+        count => format!("{count} {many}"),
+    };
+    let mut words = Vec::new();
+    if let Some(skills) = &worker.skills {
+        words.push(count(skills, "skill", "skills", "no skills"));
+    }
+    if let Some(mcp) = &worker.mcp {
+        words.push(count(mcp, "MCP server", "MCP servers", "no MCP"));
+    }
+    words
+}
+
+/// What a narrowed worker runs and has, as a sentence, as `start_agent`
+/// says it: "Runs sonnet at xhigh effort, profile impl-light, with only the
+/// skills ponytail and release-notes and no MCP servers." `None` for a
+/// worker that has what its starter has.
+pub fn narrowed_sentence(worker: &WorkerSummary) -> Option<String> {
+    let only = |noun: &str, names: &[String]| match names {
+        [] => format!("no {noun}s"),
+        [one] => format!("only the {noun} {one}"),
+        many => format!(
+            "only the {noun}s {}",
+            crate::backend::extensions::and_list(many)
+        ),
+    };
+    let mut phrases: Vec<String> = Vec::new();
+    phrases.extend(worker.skills.as_deref().map(|names| only("skill", names)));
+    phrases.extend(worker.mcp.as_deref().map(|names| only("MCP server", names)));
+    if phrases.is_empty() {
+        return None;
+    }
+    let known = |text: &Option<String>| text.clone().filter(|text| !text.is_empty());
+    let mut runs: Vec<String> = Vec::new();
+    if let Some(model) = known(&worker.model) {
+        runs.push(match known(&worker.effort) {
+            Some(effort) => format!("Runs {model} at {effort} effort"),
+            None => format!("Runs {model}"),
+        });
+    }
+    runs.extend(known(&worker.profile).map(|profile| format!("profile {profile}")));
+    let has = phrases.join(" and ");
+    Some(if runs.is_empty() {
+        format!("Has {has}.")
+    } else {
+        format!("{}, with {has}.", runs.join(", "))
+    })
 }
 
 /// The model and effort workers start with unless told otherwise, as the
@@ -141,23 +198,29 @@ impl Usual {
 
 /// What sets a worker apart on its card in the transcript, as Arko's own
 /// worker line says it: its profile, or else its model when workers start on
-/// another and its effort when that is another too, such as "impl-light",
-/// "sol · xhigh" or "low effort". `None` when it runs as workers usually do.
+/// another and its effort when that is another too, then the skills and MCP
+/// servers it was narrowed to, such as "impl-light", "sol · xhigh", "low
+/// effort" or "impl-light · 2 skills · no MCP". `None` when it runs as
+/// workers usually do.
 pub fn card_setup(worker: &WorkerSummary, usual: &Usual) -> Option<String> {
     let known = |text: &Option<String>| text.clone().filter(|text| !text.is_empty());
     if let Some(profile) = known(&worker.profile) {
-        return Some(profile);
+        let mut parts = vec![profile];
+        parts.extend(narrowed_words(worker));
+        return Some(parts.join(" · "));
     }
     let model = known(&worker.model)
         .filter(|model| *model != usual.model)
         .map(|model| arko::workers::short_model_name(&model));
     let effort = known(&worker.effort).filter(|effort| *effort != usual.effort);
-    match (model, effort) {
-        (Some(model), Some(effort)) => Some(format!("{model} · {effort}")),
-        (Some(model), None) => Some(model),
-        (None, Some(effort)) => Some(format!("{effort} effort")),
-        (None, None) => None,
-    }
+    let mut parts: Vec<String> = match (model, effort) {
+        (Some(model), Some(effort)) => vec![format!("{model} · {effort}")],
+        (Some(model), None) => vec![model],
+        (None, Some(effort)) => vec![format!("{effort} effort")],
+        (None, None) => Vec::new(),
+    };
+    parts.extend(narrowed_words(worker));
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// What a worker's model calls cost, as the status bar's figure reads: what
@@ -601,6 +664,75 @@ mod tests {
         worker.model = None;
         worker.profile = Some("reviewer".into());
         assert_eq!(setup_label(&worker).as_deref(), Some("reviewer"));
+    }
+
+    /// Only a narrowed set is named, counted as the web page counts it, with
+    /// the full sentence for the tooltip. A worker that has what its starter
+    /// has reads as it did.
+    #[test]
+    fn a_worker_names_its_skills_and_servers_only_when_they_are_narrowed() {
+        let names = |names: &[&str]| Some(names.iter().map(|name| name.to_string()).collect());
+        let mut worker = worker("r5", WorkerState::Running, Some(0), None);
+        worker.model = Some("cc:claude-sonnet-5-5".into());
+        worker.effort = Some("xhigh".into());
+        worker.profile = Some("impl-light".into());
+        assert_eq!(
+            setup_label(&worker).as_deref(),
+            Some("cc:sonnet · xhigh · impl-light")
+        );
+        assert_eq!(narrowed_sentence(&worker), None);
+        worker.skills = names(&["ponytail", "release-notes"]);
+        worker.mcp = Some(Vec::new());
+        assert_eq!(
+            setup_label(&worker).as_deref(),
+            Some("cc:sonnet · xhigh · impl-light · 2 skills · no MCP")
+        );
+        assert_eq!(
+            narrowed_sentence(&worker).as_deref(),
+            Some(
+                "Runs cc:claude-sonnet-5-5 at xhigh effort, profile impl-light, with only the skills ponytail and release-notes and no MCP servers."
+            )
+        );
+        worker.skills = Some(Vec::new());
+        worker.mcp = names(&["github"]);
+        assert_eq!(
+            narrowed_words(&worker),
+            ["no skills".to_string(), "1 MCP server".to_string()]
+        );
+        assert_eq!(
+            narrowed_sentence(&worker).as_deref(),
+            Some(
+                "Runs cc:claude-sonnet-5-5 at xhigh effort, profile impl-light, with no skills and only the MCP server github."
+            )
+        );
+        worker.skills = names(&["ponytail"]);
+        worker.mcp = names(&["github", "sentry", "figma"]);
+        assert_eq!(
+            narrowed_words(&worker),
+            ["1 skill".to_string(), "3 MCP servers".to_string()]
+        );
+        // Before the session recorded its model, the sentence says what it
+        // has.
+        worker.model = None;
+        worker.effort = None;
+        worker.profile = None;
+        worker.mcp = None;
+        assert_eq!(
+            narrowed_sentence(&worker).as_deref(),
+            Some("Has only the skill ponytail.")
+        );
+        // The card in the transcript names the narrowed sets too, after the
+        // profile.
+        let usual = Usual::default();
+        worker.profile = Some("impl-light".into());
+        assert_eq!(
+            card_setup(&worker, &usual).as_deref(),
+            Some("impl-light · 1 skill")
+        );
+        worker.profile = None;
+        assert_eq!(card_setup(&worker, &usual).as_deref(), Some("1 skill"));
+        worker.skills = None;
+        assert_eq!(card_setup(&worker, &usual), None);
     }
 
     /// A card names a worker's profile, or else its model when workers start

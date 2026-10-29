@@ -16,7 +16,13 @@ pub struct Entry {
     /// Why a worker can't start with it as it is (a model Arko doesn't
     /// know, or an effort the model doesn't take).
     pub note: Option<String>,
+    /// It is in a project's older `.agents/profiles`, which Arko still reads
+    /// but no longer saves in.
+    pub older: bool,
 }
+
+/// The folder in a project that earlier versions saved profiles in.
+pub const OLDER_FOLDER: &str = ".agents/profiles";
 
 /// A profile file that couldn't be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +54,8 @@ impl List {
 pub struct Project {
     pub folder: PathBuf,
     pub list: List,
+    /// It has the older `.agents/profiles` folder.
+    pub older_folder: bool,
 }
 
 /// The profiles Settings shows.
@@ -80,11 +88,12 @@ pub fn read(root: &Path, folders: &[PathBuf]) -> Profiles {
         let list = list_of(&listed, Place::Project);
         if !list.is_empty() {
             projects.push(Project {
+                older_folder: folder.join(OLDER_FOLDER).is_dir(),
                 folder: folder.clone(),
                 list,
             });
         }
-        // The repository's root, two folders above its `.agents/profiles`.
+        // The repository's root, two folders above its `.arko/profiles`.
         let repository = roots
             .folder(Place::Repository)
             .and_then(|profiles| profiles.ancestors().nth(2).map(Path::to_path_buf));
@@ -93,7 +102,11 @@ pub fn read(root: &Path, folders: &[PathBuf]) -> Profiles {
         {
             let list = list_of(&listed, Place::Repository);
             if !list.is_empty() {
-                repositories.push(Project { folder: top, list });
+                repositories.push(Project {
+                    older_folder: top.join(OLDER_FOLDER).is_dir(),
+                    folder: top,
+                    list,
+                });
             }
         }
     }
@@ -106,9 +119,19 @@ pub fn read(root: &Path, folders: &[PathBuf]) -> Profiles {
 }
 
 /// Saves where worker profiles are kept, for every project. Arko reads the
-/// choice each time, so the next worker started follows it.
-pub fn set_preferences(root: &Path, preferences: profiles::Preferences) -> Result<(), String> {
-    preferences.save(root)
+/// choice each time, so the next worker started follows it. A change to
+/// keeping agents' files out of git also adds or removes Arko's
+/// `.gitignore` in the `.arko` folder of the project `workspace`, as the
+/// command does in a session there.
+pub fn set_preferences(
+    root: &Path,
+    workspace: Option<&Path>,
+    preferences: profiles::Preferences,
+) -> Result<(), String> {
+    match workspace {
+        Some(workspace) => preferences.save_in(root, workspace),
+        None => preferences.save(root),
+    }
 }
 
 /// What `listed` has from `place`. (A project's profile always wins over the
@@ -123,6 +146,7 @@ fn list_of(listed: &profiles::Profiles, place: Place) -> List {
                 profile: found.profile.clone(),
                 file: found.file.clone(),
                 note: found.note.clone(),
+                older: found.in_older_folder(),
             })
             .collect(),
         unreadable: listed
@@ -230,6 +254,7 @@ impl Profiles {
                 file: folder.join(Profile::file_name(name)),
                 profile,
                 note,
+                older: false,
             }
         };
         Profiles {
@@ -318,6 +343,35 @@ mod tests {
         assert!(theirs.list.unreadable[0].file.ends_with("broken.md"));
     }
 
+    /// A project's profiles are read from .arko/profiles and the older
+    /// .agents/profiles, and those of the older folder say so.
+    #[test]
+    fn a_projects_older_profiles_folder_is_read_and_named() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arko");
+        let project = temp.path().join("project");
+        write(
+            &project.join(".arko/profiles/docs.md"),
+            "---\ndescription: Writes the docs\n---\nWrite.",
+        );
+        let listed = read(&root, std::slice::from_ref(&project));
+        assert!(!listed.projects[0].older_folder);
+        write(
+            &project.join(".agents/profiles/lint.md"),
+            "---\ndescription: Runs the linter\n---\nRun it.",
+        );
+        let listed = read(&root, std::slice::from_ref(&project));
+        let theirs = &listed.projects[0];
+        assert!(theirs.older_folder);
+        let entries: Vec<(&str, bool)> = theirs
+            .list
+            .entries
+            .iter()
+            .map(|entry| (entry.profile.name.as_str(), entry.older))
+            .collect();
+        assert_eq!(entries, [("docs", false), ("lint", true)]);
+    }
+
     /// The profiles in a repository's root list once, however many of its
     /// folders are recent projects, and not while Arko is told not to read
     /// them. The choices read back as saved.
@@ -342,7 +396,7 @@ mod tests {
             keep_out_of_git: false,
             repo_root: false,
         };
-        set_preferences(&root, off).unwrap();
+        set_preferences(&root, None, off).unwrap();
         let listed = read(&root, &[app]);
         assert!(listed.repositories.is_empty());
         assert_eq!(listed.preferences, off);

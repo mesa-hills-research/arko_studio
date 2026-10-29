@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use arko::approvals::ApprovalRequest;
 use arko::questions::AgentQuestion;
 use arko::remote::{Activity, Feed, Question, Reading, Update, WorkerState, WorkerSummary};
 use async_trait::async_trait;
@@ -33,6 +34,8 @@ pub struct Indicator {
     pub working: bool,
     /// The agent asked a question that waits for an answer.
     pub question: bool,
+    /// A request waits in the approval tray.
+    pub approval: bool,
 }
 
 /// The sessions open in this app, shared by its windows.
@@ -97,6 +100,12 @@ impl LiveSessions {
 
     fn add(session: Entity<LiveSession>, cx: &mut App) {
         cx.update_global::<Self, _>(|this, _| this.sessions.push(session));
+    }
+
+    /// Counts `session` as open in this app (tests).
+    #[cfg(test)]
+    pub fn add_for_tests(session: Entity<LiveSession>, cx: &mut App) {
+        Self::add(session, cx);
     }
 
     /// Forgets the session `entity` (with `id`), called while it updates.
@@ -171,6 +180,8 @@ pub enum LiveEvent {
     Ended,
     TurnEnded,
     QuestionAsked,
+    /// A request came to the approval tray.
+    ApprovalRequested,
     /// A request to the engine failed: the sentence to show.
     Refused(String),
     /// A worker finished or failed.
@@ -395,6 +406,42 @@ impl Questions {
     }
 }
 
+/// What the user did with the requests in the approval tray in this app,
+/// beside what the engine's status says of them.
+#[derive(Default)]
+struct Approvals {
+    /// Answered here: hidden until the status no longer lists them.
+    answered: std::collections::HashSet<String>,
+    /// The requests the status listed since the session opened.
+    known: std::collections::HashSet<String>,
+}
+
+impl Approvals {
+    /// Takes the requests of a new status. Returns whether one of them is
+    /// new.
+    fn read(&mut self, waiting: &[ApprovalRequest]) -> bool {
+        self.answered
+            .retain(|id| waiting.iter().any(|request| request.id == *id));
+        let mut new = false;
+        for request in waiting {
+            new |= self.known.insert(request.id.clone());
+        }
+        new
+    }
+
+    /// The requests `input` answers.
+    fn answered_by(input: &arko::Input) -> Vec<String> {
+        match input {
+            arko::Input::AnswerApprovals(answers) => answers
+                .choices
+                .iter()
+                .map(|choice| choice.id.clone())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
@@ -430,6 +477,8 @@ pub struct LiveSession {
     quit_agreed: Option<arko::QuitAsk>,
     /// What the user did with the agent's questions in this app.
     questions: Questions,
+    /// What the user did with the approval tray's requests in this app.
+    approvals: Approvals,
     /// When the user last sent it something or looked at it, in Unix
     /// milliseconds: cache reminders leave sessions alone after an hour.
     touched_at: i64,
@@ -484,6 +533,7 @@ impl LiveSession {
             quit_ask: None,
             quit_agreed: None,
             questions: Questions::default(),
+            approvals: Approvals::default(),
             touched_at: crate::figures::now_ms(),
             input_epoch: std::cell::Cell::new(0),
             opened: 0,
@@ -646,6 +696,7 @@ impl LiveSession {
             .map(|question| question.id)
             .collect();
         self.questions.read(&self.reading.questions);
+        self.approvals.read(&self.reading.approvals);
         // Closed before it opened, only the quit is queued.
         for queued in self.queued.drain(..) {
             let _ = input.send(queued);
@@ -769,6 +820,9 @@ impl LiveSession {
             if self.questions.read(&self.reading.questions) {
                 cx.emit(LiveEvent::QuestionAsked);
             }
+            if self.approvals.read(&self.reading.approvals) {
+                cx.emit(LiveEvent::ApprovalRequested);
+            }
         }
         if let Some(activity) = drained.activity {
             let was = std::mem::replace(&mut self.activity, activity);
@@ -824,6 +878,7 @@ impl LiveSession {
             let indicator = Indicator {
                 working: self.activity.working,
                 question: self.activity.question.is_some() || !self.open_questions().is_empty(),
+                approval: !self.approvals().is_empty(),
             };
             LiveSessions::set_indicator(id, indicator, cx);
             LiveSessions::set_title(id, &self.title, cx);
@@ -841,6 +896,7 @@ impl LiveSession {
         self._feed.clear();
         self.activity = Activity::default();
         self.questions.reopened();
+        self.approvals = Approvals::default();
         self.launch(Start::Resume(id), cx);
         cx.notify();
     }
@@ -954,6 +1010,12 @@ impl LiveSession {
         let mut this = Self::blank(cx);
         this.id = Some(SessionId(id.into()));
         this
+    }
+
+    /// Works in `workspace`, as an agent session does (tests).
+    #[cfg(test)]
+    pub fn set_workspace(&mut self, workspace: PathBuf) {
+        self.workspace = Some(workspace);
     }
 
     /// Takes `reading` and `activity` as if the engine had sent them
@@ -1102,11 +1164,35 @@ impl LiveSession {
             .collect()
     }
 
+    /// The requests waiting in the approval tray, in the order they came,
+    /// without those the user answered here.
+    pub fn approvals(&self) -> Vec<&ApprovalRequest> {
+        self.reading
+            .approvals
+            .iter()
+            .filter(|request| !self.approvals.answered.contains(&request.id))
+            .collect()
+    }
+
+    /// Shows `requests` in the approval tray (previews and screenshots,
+    /// where no session runs).
+    #[doc(hidden)]
+    pub fn show_approvals(&mut self, requests: Vec<ApprovalRequest>, cx: &mut Context<Self>) {
+        Arc::make_mut(&mut self.reading).approvals = requests;
+        self.approvals.read(&self.reading.approvals);
+        self.update_indicator(cx);
+        cx.notify();
+    }
+
     /// Why arko would refuse the answers `input` gives as too long for one
     /// note to the agent, as the user reads it.
     fn answer_refusal(&self, input: &arko::Input) -> Option<String> {
         let open = &self.reading.questions;
         match input {
+            arko::Input::AnswerApprovals(answers) => answers
+                .words
+                .as_deref()
+                .and_then(arko::approvals::approval_words_refusal),
             arko::Input::AnswerQuestions(answers) => {
                 arko::questions::answers_refusal(open, answers)
             }
@@ -1228,9 +1314,11 @@ impl LiveSession {
             return Err(why);
         }
         self.questions.sent(&input);
+        // Requests stay in the tray when their answer can't go.
+        let answered = Approvals::answered_by(&input);
         self.touched_at = crate::figures::now_ms();
         self.changes();
-        match (&self.phase, &self.link) {
+        let sent = match (&self.phase, &self.link) {
             (Phase::Open | Phase::Closing, Some(link)) => link
                 .input
                 .send(input)
@@ -1243,7 +1331,11 @@ impl LiveSession {
             (Phase::Sample, _) => Err("This sample session doesn’t run.".to_string()),
             (Phase::Failed(why), _) => Err(why.clone()),
             _ => Err("The session has closed.".to_string()),
+        };
+        if sent.is_ok() {
+            self.approvals.answered.extend(answered);
         }
+        sent
     }
 
     /// Asks the engine to rename the session (empty: back to its
@@ -1678,6 +1770,97 @@ mod tests {
         assert!(cx.read(|cx| session.read(cx).open_questions().is_empty()));
         apply(cx, false, &[]);
         assert!(!indicator(cx).question);
+    }
+
+    /// The session tells of each request that comes to the approval tray
+    /// once. Those answered here leave its tray at once, and those whose
+    /// answer can't go stay.
+    #[gpui_kit::test]
+    fn requests_for_approval_are_told_once(cx: &mut TestAppContext) {
+        cx.update(super::init);
+        let session = cx.new(|cx| {
+            let mut session = LiveSession::blank(cx);
+            session.id = Some(crate::backend::SessionId("s1".into()));
+            session
+        });
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let heard = heard.clone();
+            cx.subscribe(&session, move |_, event: &LiveEvent, _| {
+                heard.borrow_mut().push(event.clone())
+            })
+            .detach();
+        });
+        let apply = |cx: &mut TestAppContext, waiting: &[&str]| {
+            let approvals = waiting
+                .iter()
+                .map(|id| {
+                    crate::approvals::request(serde_json::json!({
+                        "id": id, "batch": 1,
+                        "approval": {"kind": "worker_billing", "model": "Opus 5.5", "task": "Review"}
+                    }))
+                })
+                .collect();
+            session.update(cx, |session, cx| {
+                session.apply(
+                    Drained {
+                        reading: Some(Arc::new(Reading {
+                            approvals,
+                            ..Reading::default()
+                        })),
+                        ..Drained::default()
+                    },
+                    cx,
+                )
+            })
+        };
+        let waiting = |cx: &mut TestAppContext| -> Vec<String> {
+            cx.read(|cx| {
+                session
+                    .read(cx)
+                    .approvals()
+                    .iter()
+                    .map(|request| request.id.clone())
+                    .collect()
+            })
+        };
+        apply(cx, &["a1"]);
+        apply(cx, &["a1", "a2"]);
+        apply(cx, &["a2"]);
+        assert_eq!(
+            *heard.borrow(),
+            [LiveEvent::ApprovalRequested, LiveEvent::ApprovalRequested]
+        );
+        let answer = |id: &str| {
+            arko::Input::AnswerApprovals(arko::approvals::ApprovalAnswers {
+                choices: vec![arko::approvals::ApprovalChoice {
+                    id: id.into(),
+                    approve: true,
+                    option: false,
+                }],
+                words: None,
+            })
+        };
+        // A session that failed keeps them.
+        session.update(cx, |session, _| {
+            session.phase = Phase::Failed("It didn’t open.".into())
+        });
+        assert!(
+            session
+                .update(cx, |session, cx| session.send(answer("a2"), cx))
+                .is_err()
+        );
+        assert_eq!(waiting(cx), ["a2"]);
+        session.update(cx, |session, _| session.phase = Phase::Opening);
+        session
+            .update(cx, |session, cx| session.send(answer("a2"), cx))
+            .unwrap();
+        assert!(waiting(cx).is_empty());
+        // Until the status says so, and after.
+        apply(cx, &["a2"]);
+        assert!(waiting(cx).is_empty());
+        apply(cx, &[]);
+        assert_eq!(heard.borrow().len(), 2);
     }
 
     /// What the engine says in a burst (here 4,000 changes of the turn's

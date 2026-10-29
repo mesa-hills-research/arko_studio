@@ -241,15 +241,15 @@ fn the_dot_shows_with_the_other_marks_and_the_row_names_the_news(cx: &mut TestAp
             &SessionId(SPLIT.into()),
             Indicator {
                 working: true,
-                question: false,
+                ..Indicator::default()
             },
             cx,
         );
         LiveSessions::set_indicator(
             &SessionId(FONTS.into()),
             Indicator {
-                working: false,
                 question: true,
+                ..Indicator::default()
             },
             cx,
         );
@@ -275,6 +275,39 @@ fn the_dot_shows_with_the_other_marks_and_the_row_names_the_news(cx: &mut TestAp
         assert_eq!(dot.label(), None);
     })
     .unwrap();
+}
+
+/// A session the window doesn't show, with requests waiting in its
+/// approval tray, says it needs approval, in place of its time. A request
+/// gives it news too. The mark goes when the requests are answered.
+#[gpui_kit::test]
+fn a_session_waiting_on_approvals_says_so(cx: &mut TestAppContext) {
+    let app = start(&[], cx);
+    let row = row_of(&app.workspace, SPLIT_TITLE, cx);
+    assert!(!app.shows(("row-approval", row), cx));
+    let waiting = |approvals| Reading {
+        approvals,
+        ..Reading::default()
+    };
+    let requests = vec![crate::approvals::request(serde_json::json!({
+        "id": "a1", "batch": 1,
+        "approval": {"kind": "worker_billing", "model": "Opus 5.5", "task": "Review"}
+    }))];
+    app.split.update(cx, |session, cx| {
+        session.set_status(waiting(requests), Activity::default(), cx)
+    });
+    cx.run_until_parked();
+    assert!(app.shows(("row-approval", row), cx));
+    assert!(app.has_news(SPLIT, cx));
+    assert_eq!(
+        app.label(("row", row), cx).as_deref(),
+        Some("Split the engine out of main.rs, needs approval, new activity")
+    );
+    app.split.update(cx, |session, cx| {
+        session.set_status(waiting(Vec::new()), Activity::default(), cx)
+    });
+    cx.run_until_parked();
+    assert!(!app.shows(("row-approval", row), cx));
 }
 
 /// A closed group shows the dot beside its name while a session inside has

@@ -620,6 +620,49 @@ fn a_row_says_the_workers_model_profile_and_cost(cx: &mut TestAppContext) {
     assert_eq!(facts, "Running · 0 s · 0 calls");
 }
 
+/// A worker narrowed to some skills and servers says how many in its row
+/// and its view, with the full sentence on hover. One that has what its
+/// starter has reads as before.
+#[gpui_kit::test]
+fn a_narrowed_workers_row_counts_its_skills_and_servers(cx: &mut TestAppContext) {
+    use arko::remote::WorkerState::Running;
+    let panel = open(cx);
+    let mut narrowed = summary("r1", None, Running, None);
+    narrowed.model = Some("cc:claude-sonnet-5-5".into());
+    narrowed.effort = Some("xhigh".into());
+    narrowed.profile = Some("impl-light".into());
+    let mut plain = narrowed.clone();
+    plain.id = "r2".into();
+    narrowed.skills = Some(vec!["ponytail".into(), "release-notes".into()]);
+    narrowed.mcp = Some(Vec::new());
+    panel.show(cx, vec![narrowed, plain]);
+    let now = *panel.now.borrow();
+    let facts =
+        |id: &str, cx: &mut TestAppContext| cx.read(|cx| panel.panel.read(cx).facts(id, now));
+    assert_eq!(
+        facts("r1", cx),
+        "Running · cc:sonnet · xhigh · impl-light · 2 skills · no MCP · 0 s · 0 calls"
+    );
+    assert_eq!(
+        facts("r2", cx),
+        "Running · cc:sonnet · xhigh · impl-light · 0 s · 0 calls"
+    );
+    // The setup line's tooltip says it in full.
+    let tip = |id: &str, cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let panel = panel.panel.read(cx);
+            panel.row_views[id].read(cx).facts.narrowed.clone()
+        })
+    };
+    assert_eq!(
+        tip("r1", cx).as_deref(),
+        Some(
+            "Runs cc:claude-sonnet-5-5 at xhigh effort, profile impl-light, with only the skills ponytail and release-notes and no MCP servers."
+        )
+    );
+    assert_eq!(tip("r2", cx), None);
+}
+
 #[gpui_kit::test]
 fn the_keyboard_moves_through_the_list_and_opens_a_worker(cx: &mut TestAppContext) {
     let panel = open(cx);

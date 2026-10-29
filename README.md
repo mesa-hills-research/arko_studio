@@ -15,11 +15,13 @@ The native interface is written in Rust with [GPUI](https://www.gpui.rs) and
 - Read streamed replies, Markdown, highlighted code, diffs and images in one transcript.
 - Answer the agent's questions while it works, in a panel above the message box (Alt+Q) or in your
   next message.
+- Approve what the agent asks to set up, such as a skill, an MCP server or a worker billed per
+  token, one at a time or several at once, in a tray above the message box.
 - Find, edit, regenerate, branch and export conversations, with keyboard shortcuts and a command
   palette.
 - See context use, costs and cache expiry, and share a session through its web page.
-- Get notified when a turn ends, a question comes, a worker reports or fails, or a prompt cache is
-  about to expire, and open the session from the notification history.
+- Get notified when a turn ends, a question or a request for approval comes, a worker reports or
+  fails, or a prompt cache is about to expire, and open the session from the notification history.
 - Choose light and dark themes, fonts, input keys, spell checking and word suggestions.
 
 ## Build and install

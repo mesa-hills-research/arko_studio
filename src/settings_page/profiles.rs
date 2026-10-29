@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use arko::extension_prefs::{KEEP_OUT_OF_GIT_ABOUT, KEEP_OUT_OF_GIT_NAME};
 use arko::profiles::{self, Cache, MAX_DESCRIPTION, MAX_INSTRUCTIONS, Preferences, Profile};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
@@ -186,7 +187,7 @@ impl ProfilesPage {
                         .map(|(ix, folder)| {
                             let items =
                                 project_items(from + ix, &folder.list, self.models.as_ref(), home);
-                            (tilde(&folder.folder, home), items)
+                            (tilde(&folder.folder, home), folder.older_folder, items)
                         })
                         .collect()
                 };
@@ -206,25 +207,27 @@ impl ProfilesPage {
                 )
                 .items(user),
         ];
-        for (folder, items) in projects {
+        for (folder, older, items) in projects {
             groups.push(
                 SettingGroup::new()
                     .key(super::group_key(&folder, &self.revision))
                     .title(folder)
-                    .description(
-                        "Read only. Edit the files in the project. In a session there, a project’s profile beats yours of the same name.",
-                    )
+                    .description(format!(
+                        "Read only. Edit the files in the project’s {}. In a session there, a project’s profile beats yours of the same name.",
+                        folders_words(older)
+                    ))
                     .items(items),
             );
         }
-        for (folder, items) in repositories {
+        for (folder, older, items) in repositories {
             groups.push(
                 SettingGroup::new()
                     .key(super::group_key(&folder, &self.revision))
                     .title(folder)
-                    .description(
-                        "Read only. Edit the files in the repository. A session in one of its folders reads these after the project’s own, and before yours.",
-                    )
+                    .description(format!(
+                        "Read only. Edit the files in the repository’s {}. A session in one of its folders reads these after the project’s own, and before yours.",
+                        folders_words(older)
+                    ))
                     .items(items),
             );
         }
@@ -244,10 +247,10 @@ impl ProfilesPage {
     /// project and reads each time a worker starts.
     fn kept_group(&self, this: &Entity<Self>, preferences: Preferences) -> SettingGroup {
         let switch = |id: &'static str,
-                      title: &'static str,
-                      description: &'static str,
+                      title: String,
+                      description: String,
                       on: bool,
-                      set: fn(&mut Preferences, bool),
+                      choose: fn(&Entity<ProfilesPage>, bool, &mut Window, &mut App),
                       keywords: [&'static str; 3]| {
             let page = this.clone();
             SettingItem::new(
@@ -256,9 +259,7 @@ impl ProfilesPage {
                     let page = page.clone();
                     Switch::new(id)
                         .checked(on)
-                        .on_click(move |on, window, cx| {
-                            ProfilesPage::choose(&page, |prefs| set(prefs, *on), window, cx)
-                        })
+                        .on_click(move |on, window, cx| choose(&page, *on, window, cx))
                         .into_any_element()
                 }),
             )
@@ -270,22 +271,43 @@ impl ProfilesPage {
             .title("Where profiles are kept")
             .items([
                 switch(
-                    "keep-profiles-out-of-git",
-                    "Keep new profile folders out of git",
-                    "A project’s new .agents/profiles folder gets a .gitignore, so git ignores it. Delete that file to share the profiles.",
+                    "keep-out-of-git",
+                    curly(KEEP_OUT_OF_GIT_NAME),
+                    curly(KEEP_OUT_OF_GIT_ABOUT),
                     preferences.keep_out_of_git,
-                    |prefs, on| prefs.keep_out_of_git = on,
+                    ProfilesPage::keep_out_of_git,
                     ["worker", "profile", "gitignore"],
                 ),
                 switch(
                     "read-repository-profiles",
-                    "Read the repository’s profiles",
-                    "In a subfolder of a git repository, Arko reads the .agents/profiles in the repository’s root too, after the project’s own.",
+                    "Read the repository’s profiles".into(),
+                    "In a subfolder of a git repository, Arko reads the .arko/profiles and .agents/profiles in the repository’s root too, after the project’s own.".into(),
                     preferences.repo_root,
-                    |prefs, on| prefs.repo_root = on,
+                    |page, on, window, cx| {
+                        ProfilesPage::choose(page, |prefs| prefs.repo_root = on, window, cx)
+                    },
                     ["worker", "profile", "repository"],
                 ),
             ])
+    }
+
+    /// Turns "Keep agents' project files out of git" on or off: the page
+    /// shows it at once, and it is set as `/extensions` sets it, in the
+    /// sessions open here when there are any, so their web pages show it
+    /// too.
+    fn keep_out_of_git(this: &Entity<Self>, on: bool, window: &mut Window, cx: &mut App) {
+        this.update(cx, |page, cx| {
+            if let Some(profiles) = page.profiles.as_mut() {
+                profiles.preferences.keep_out_of_git = on;
+                page.revision += 1;
+                cx.notify();
+            }
+        });
+        let page = this.clone();
+        let switch = crate::backend::extensions::Switch::KeepOutOfGit;
+        super::extensions::set_switch(switch, on, window, cx, move |cx| {
+            page.update(cx, |page, cx| page.refresh(cx))
+        });
     }
 
     /// Changes where profiles are kept: the page shows it at once, the file
@@ -401,6 +423,9 @@ fn entry_words(entry: &Entry, models: Option<&ModelChoices>) -> String {
     if profile.made_by_agent() {
         words.push("Made by the main agent.".into());
     }
+    if entry.older {
+        words.push(format!("In {}.", store::OLDER_FOLDER));
+    }
     if let Some(note) = &entry.note {
         words.push(curly(&with_stop(note)));
     }
@@ -410,6 +435,16 @@ fn entry_words(entry: &Entry, models: Option<&ModelChoices>) -> String {
         words.push(format!("Needs {needs}, so workers can’t use it yet."));
     }
     words.join(" ")
+}
+
+/// The folders a project's profiles are in: `.arko/profiles`, and the
+/// older `.agents/profiles` when it has one.
+fn folders_words(older: bool) -> String {
+    if older {
+        format!(".arko/profiles and {}", store::OLDER_FOLDER)
+    } else {
+        ".arko/profiles".to_string()
+    }
 }
 
 /// What a profile is found by.
@@ -814,6 +849,7 @@ impl ProfileForm {
             file: PathBuf::new(),
             note: None,
             profile: copy,
+            older: false,
         };
         let page = self.page.clone();
         window.close_dialog(cx);

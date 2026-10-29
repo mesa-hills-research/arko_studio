@@ -472,6 +472,84 @@ fn settings_extensions_dark() {
     );
 }
 
+/// Settings › Extensions as the switch "Ask before adding MCP servers" is
+/// turned off, which asks first.
+fn settings_approvals_window(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+    settings_window_with(
+        FakeBackend::sample("/arko", SystemTime::now()),
+        mode,
+        1300.,
+        EXTENSIONS_PAGE,
+        |app, window| {
+            app.run_until_parked();
+            app.update_window(window, |_, window, cx| {
+                window.click("ask-before-adding-mcp", cx)
+            })
+            .unwrap();
+            app.run_until_parked();
+        },
+    )
+}
+
+#[test]
+fn settings_approvals_light() {
+    goldens().assert(
+        "settings-approvals-light",
+        &settings_approvals_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn settings_approvals_dark() {
+    goldens().assert(
+        "settings-approvals-dark",
+        &settings_approvals_window(ThemeMode::Dark),
+    );
+}
+
+/// Settings › Extensions with what agents added, scrolled down to the
+/// skills: a server for every project and one for the project, and a skill
+/// for the project, each with Remove, and skills for haiku and for the main
+/// agent only.
+fn settings_added_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::backend::extensions::Extensions;
+    use gpui_kit::test::TestWindowExt as _;
+    let backend = FakeBackend::sample("/arko", SystemTime::now()).with_extensions(
+        Extensions::sample_added(std::path::Path::new("/home/ada"), "/arko".as_ref()),
+    );
+    settings_window_with(backend, mode, 1300., EXTENSIONS_PAGE, |app, window| {
+        app.run_until_parked();
+        // (Scrolled with the pointer on a switch that scrolls away, so it
+        // rests on no button.)
+        app.update_window(window, |_, window, cx| {
+            window.scroll(
+                "ask-before-adding-mcp",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-526.))),
+                cx,
+            )
+        })
+        .unwrap();
+        app.run_until_parked();
+    })
+}
+
+#[test]
+fn settings_extensions_added_light() {
+    goldens().assert(
+        "settings-extensions-added-light",
+        &settings_added_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn settings_extensions_added_dark() {
+    goldens().assert(
+        "settings-extensions-added-dark",
+        &settings_added_window(ThemeMode::Dark),
+    );
+}
+
 #[test]
 fn settings_advanced_light() {
     goldens().assert(
@@ -743,16 +821,28 @@ fn profiles_with_project() -> arko_studio::backend::profiles::Profiles {
     let mut docs = Profile::new("docs-writer", "Writes the changelog entry for a change");
     docs.model = Some("sol".into());
     docs.effort = Some(arko::Effort::Medium);
-    let entry = |profile: Profile| Entry {
-        file: format!("/home/ada/src/arko/.agents/profiles/{}.md", profile.name).into(),
+    // The project's lint is in the older .agents/profiles.
+    let entry = |profile: Profile, older: bool| Entry {
+        file: format!(
+            "/home/ada/src/arko/{}/{}.md",
+            if older {
+                ".agents/profiles"
+            } else {
+                ".arko/profiles"
+            },
+            profile.name
+        )
+        .into(),
         note: profile.model_problem(),
         profile,
+        older,
     };
     let mut profiles = profiles_sample();
     profiles.projects.push(Project {
         folder: "/home/ada/src/arko".into(),
+        older_folder: true,
         list: List {
-            entries: vec![entry(docs), entry(lint)],
+            entries: vec![entry(docs, false), entry(lint, true)],
             unreadable: vec![Unreadable {
                 file: "/home/ada/src/arko/.agents/profiles/torn.md".into(),
                 reason: "it has no description".into(),
@@ -763,11 +853,13 @@ fn profiles_with_project() -> arko_studio::backend::profiles::Profiles {
     triage.model = Some("haiku".into());
     profiles.repositories.push(Project {
         folder: "/home/ada/src/mesa".into(),
+        older_folder: false,
         list: List {
             entries: vec![Entry {
-                file: "/home/ada/src/mesa/.agents/profiles/triage.md".into(),
+                file: "/home/ada/src/mesa/.arko/profiles/triage.md".into(),
                 note: triage.model_problem(),
                 profile: triage,
+                older: false,
             }],
             unreadable: Vec::new(),
         },
@@ -2109,6 +2201,95 @@ fn workers_dark() {
     goldens().assert("workers-dark", &workers_window(ThemeMode::Dark));
 }
 
+/// The workers panel with workers narrowed to some skills and MCP servers
+/// beside one that has what the main agent has.
+fn workers_narrowed_window(mode: ThemeMode) -> Screenshot {
+    use arko::remote::{WorkerState, WorkerSummary};
+    use arko_studio::workers_panel::{PanelSource, WorkersPanel};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    const MINUTE: i64 = 60_000;
+    let names = |names: &[&str]| Some(names.iter().map(|name| name.to_string()).collect());
+    let worker = |id: &str, title: &str, calls, last: &str| {
+        let mut summary = WorkerSummary::new(id);
+        summary.title = title.into();
+        summary.state = WorkerState::Running;
+        summary.tool_calls = calls;
+        summary.started_at = Some(WORKERS_NOW - 3 * MINUTE);
+        summary.running_since = summary.started_at;
+        summary.last = Some(last.into());
+        summary.model = Some("cc:claude-sonnet-5-5".into());
+        summary.effort = Some("xhigh".into());
+        summary
+    };
+    let mut light = worker("r1", "Write the release notes", 9, "read CHANGELOG.md");
+    light.profile = Some("impl-light".into());
+    light.skills = names(&["ponytail", "release-notes"]);
+    light.mcp = Some(Vec::new());
+    let mut triage = worker(
+        "r2",
+        "Triage the crash reports",
+        14,
+        "mcp sentry list_issues",
+    );
+    triage.skills = Some(Vec::new());
+    triage.mcp = names(&["sentry"]);
+    let full = worker(
+        "r3",
+        "Fix the flaky parser test",
+        21,
+        "$ cargo test -p parse",
+    );
+    let source = PanelSource {
+        workers: vec![light, triage, full],
+        agents: Vec::new(),
+        feed: None,
+        images: None,
+        movable: Vec::new(),
+        usual: arko_studio::workers::Usual::default(),
+        key: None,
+    };
+    let window = app
+        .open_window_with(size(px(352.), px(300.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut panel = WorkersPanel::new(window, cx);
+                    panel.set_source(source, cx);
+                    panel.set_clock(|| WORKERS_NOW, cx);
+                    panel
+                })
+            })
+            .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn workers_narrowed_light() {
+    goldens().assert(
+        "workers-narrowed-light",
+        &workers_narrowed_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn workers_narrowed_dark() {
+    goldens().assert(
+        "workers-narrowed-dark",
+        &workers_narrowed_window(ThemeMode::Dark),
+    );
+}
+
 /// The clock of the workers' screenshots, in Unix milliseconds.
 const WORKERS_NOW: i64 = 1_760_000_000_000;
 
@@ -3283,9 +3464,9 @@ fn notifications_all_dark() {
 }
 
 /// The sidebar with its marks together: a session that works and has news,
-/// one that asks a question and has news, a chat with news, a closed folder
-/// whose session has news, and one with no mark. `width` is the sidebar's,
-/// in rem.
+/// one that asks a question, needs approval and has news, a chat with news,
+/// a closed folder whose session has news, and one with no mark. `width` is
+/// the sidebar's, in rem.
 fn sidebar_marks(mode: ThemeMode, width: f32) -> Screenshot {
     use arko_studio::live::{Indicator, LiveSessions};
 
@@ -3307,11 +3488,27 @@ fn sidebar_marks(mode: ThemeMode, width: f32) -> Screenshot {
         .with_fonts(fonts::bundled());
     app.update(|cx| {
         arko_studio::init(startup, cx);
-        let mark = |id: &str, working: bool, question: bool, cx: &mut gpui_kit::App| {
-            LiveSessions::set_indicator(&SessionId(id.into()), Indicator { working, question }, cx)
+        let mark = |id: &str, indicator: Indicator, cx: &mut gpui_kit::App| {
+            LiveSessions::set_indicator(&SessionId(id.into()), indicator, cx)
         };
-        mark("20261016-091200-a1b2", true, false, cx);
-        mark("20261015-171000-c3d4", false, true, cx);
+        let marks = Indicator::default();
+        mark(
+            "20261016-091200-a1b2",
+            Indicator {
+                working: true,
+                ..marks
+            },
+            cx,
+        );
+        mark(
+            "20261015-171000-c3d4",
+            Indicator {
+                question: true,
+                approval: true,
+                ..marks
+            },
+            cx,
+        );
     });
     let window = app
         .open_window_with(size(px(1300.), px(560.)), 1., |options, cx| {
@@ -3471,12 +3668,16 @@ fn session_info(mode: ThemeMode) -> Screenshot {
                     shown: "files-server".into(),
                     file: PathBuf::from("/home/ada/src/arko/.mcp.json"),
                     tools: Ok(vec!["read".into(), "write".into(), "list".into()]),
+                    state: arko::details::McpState::Running,
+                    ..McpServerFacts::default()
                 },
                 McpServerFacts {
                     name: "browser".into(),
                     shown: "browser-server".into(),
                     file: PathBuf::from("/home/ada/src/arko/.mcp.json"),
-                    tools: Err("no such program: browser-server".into()),
+                    tools: Err("its program wasn't found".into()),
+                    state: arko::details::McpState::Failed("its program wasn't found".into()),
+                    ..McpServerFacts::default()
                 },
             ],
             ..McpFacts::default()
@@ -3507,6 +3708,9 @@ fn session_info(mode: ThemeMode) -> Screenshot {
                 builtin: path.is_none(),
                 replaces_builtin: None,
                 path: path.map(PathBuf::from),
+                models: Vec::new(),
+                workers: true,
+                added: None,
             })
             .collect(),
             folders: Vec::new(),
@@ -3718,37 +3922,6 @@ fn questions_sample() -> Vec<arko::questions::AgentQuestion> {
     .collect()
 }
 
-/// Arko asks to approve a worker profile the agent wants to save, with
-/// instructions long enough to scroll.
-fn approval_sample() -> Vec<arko::questions::AgentQuestion> {
-    let instructions = [
-        "You judge 3D models against a reference image.",
-        "",
-        "1. Render the model from the reference's camera.",
-        "2. Compare silhouettes, proportions and materials.",
-        "3. Score each from 0 to 10, with one line on why.",
-        "4. Name the three changes that would help most.",
-        "",
-        "Be strict about proportions. Ignore lighting differences.",
-        "Report in a table, then the changes as a list.",
-        "Never edit the model yourself.",
-    ]
-    .join("\n");
-    vec![
-        serde_json::from_value(serde_json::json!({
-            "id": "x1a2b3c4d",
-            "question": "The main agent wants to save the worker profile 3d-judge.",
-            "choices": ["Save", "Don't save"], "state": "open", "waits": true, "item": 9,
-            "approval": {
-                "name": "3d-judge", "model": "sol", "effort": "high", "scope": "every project",
-                "description": "Judges 3D results against a reference image",
-                "instructions": instructions
-            }
-        }))
-        .unwrap(),
-    ]
-}
-
 /// A sample session asking the questions above, with `typed` in the
 /// composer as they come (the chip), or nothing (the panel opens), and with
 /// them `attached` to the composer.
@@ -3886,22 +4059,6 @@ fn questions_panel_dark() {
 }
 
 #[test]
-fn questions_approval_light() {
-    goldens().assert(
-        "questions-approval-light",
-        &asking_window(ThemeMode::Light, approval_sample(), None, false),
-    );
-}
-
-#[test]
-fn questions_approval_dark() {
-    goldens().assert(
-        "questions-approval-dark",
-        &asking_window(ThemeMode::Dark, approval_sample(), None, false),
-    );
-}
-
-#[test]
 fn questions_chip_light() {
     goldens().assert(
         "questions-chip-light",
@@ -3931,6 +4088,180 @@ fn questions_replying_dark() {
         "questions-replying-dark",
         &questions_window(ThemeMode::Dark, Some("Spaces, all of them, main."), true),
     );
+}
+
+/// The approval tray's requests: a worker profile, a skill with a script
+/// and a SKILL.md long enough to scroll, an MCP server, and a worker billed
+/// per token whose day's spend reached the budget.
+fn approval_requests() -> Vec<arko::approvals::ApprovalRequest> {
+    let skill = [
+        "---",
+        "name: release-notes",
+        "description: Writes release notes from the git log",
+        "---",
+        "",
+        "# Release notes",
+        "",
+        "1. Run `scripts/log.sh` with the last tag.",
+        "2. Group the commits by area.",
+        "3. Write a sentence for each change a user notices.",
+        "4. Leave out refactors and test-only commits.",
+        "5. End with the contributors, by name.",
+        "",
+        "Keep each line short. Link the issues the commits name.",
+    ]
+    .join("\n");
+    [
+        serde_json::json!({
+            "id": "a1", "batch": 1,
+            "approval": {
+                "kind": "profile", "name": "3d-judge", "model": "sol", "effort": "high",
+                "scope": "every project", "folder": "Arko's profiles folder",
+                "description": "Judges 3D results against a reference image",
+                "instructions": "You judge 3D models against a reference image."
+            }
+        }),
+        serde_json::json!({
+            "id": "a2", "batch": 1,
+            "approval": {
+                "kind": "skill", "name": "release-notes", "scope": "user",
+                "description": "Writes release notes from the git log",
+                "source": {"from": "agent"}, "scripts": ["scripts/log.sh"],
+                "why": "You asked for notes with each release.",
+                "files": [
+                    {"path": "SKILL.md", "bytes": skill.len(), "text": skill},
+                    {"path": "scripts/log.sh", "bytes": 64,
+                     "text": "#!/bin/sh\ngit log --oneline \"$1\"..HEAD"}
+                ]
+            }
+        }),
+        serde_json::json!({
+            "id": "a3", "batch": 1,
+            "approval": {
+                "kind": "mcp_server", "name": "github", "scope": "project",
+                "command": "npx -y @modelcontextprotocol/server-github",
+                "env": [{"name": "GITHUB_TOKEN", "set": true}],
+                "why": "Read the issues the commits name."
+            }
+        }),
+        serde_json::json!({
+            "id": "a4", "batch": 1,
+            "approval": {
+                "kind": "worker_billing", "model": "Opus 5.5", "input_price": 5.0,
+                "output_price": 25.0, "spent": 10.4, "budget": 10.0,
+                "task": "Review the release notes"
+            }
+        }),
+    ]
+    .into_iter()
+    .map(|json| serde_json::from_value(json).unwrap())
+    .collect()
+}
+
+/// A sample session whose approval tray holds the requests `ids` of
+/// [`approval_requests`], once the elements `clicks` were clicked.
+fn approvals_window(mode: ThemeMode, ids: &[&str], clicks: &[&str]) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(900.), px(800.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, window, cx| {
+        let id = SessionId("20261016-091200-a1b2".into());
+        workspace.update(cx, |workspace, cx| workspace.open_session(id, window, cx));
+    })
+    .unwrap();
+    app.run_until_parked();
+    let requests = approval_requests()
+        .into_iter()
+        .filter(|request| ids.contains(&request.id.as_str()))
+        .collect();
+    app.update_window(window, |_, _, cx| {
+        let session = workspace.read(cx).live_session().unwrap().clone();
+        session.update(cx, |session, cx| session.show_approvals(requests, cx));
+    })
+    .unwrap();
+    app.run_until_parked();
+    for click in clicks {
+        let id = gpui_kit::ElementId::from(gpui_kit::SharedString::from(click.to_string()));
+        app.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(id, cx);
+        })
+        .unwrap();
+        app.run_until_parked();
+    }
+    app.capture(window).unwrap()
+}
+
+/// One request: one row, with Reject and Approve and their shortcuts.
+fn approvals_one(mode: ThemeMode) -> Screenshot {
+    approvals_window(mode, &["a1"], &[])
+}
+
+/// Three requests, all checked, with the skill's row open to its details:
+/// its files as chips and its SKILL.md in a box that scrolls.
+fn approvals_three(mode: ThemeMode) -> Screenshot {
+    approvals_window(mode, &["a1", "a2", "a3"], &["approval-row-a2"])
+}
+
+/// Three requests, the server's unchecked, with the worker's row open: the
+/// day's spend over the budget as a warning, and its option on.
+fn approvals_option(mode: ThemeMode) -> Screenshot {
+    approvals_window(
+        mode,
+        &["a2", "a3", "a4"],
+        &["approval-check-a3", "approval-row-a4", "approval-option-a4"],
+    )
+}
+
+#[test]
+fn approvals_one_light() {
+    goldens().assert("approvals-one-light", &approvals_one(ThemeMode::Light));
+}
+
+#[test]
+fn approvals_one_dark() {
+    goldens().assert("approvals-one-dark", &approvals_one(ThemeMode::Dark));
+}
+
+#[test]
+fn approvals_three_light() {
+    goldens().assert("approvals-three-light", &approvals_three(ThemeMode::Light));
+}
+
+#[test]
+fn approvals_three_dark() {
+    goldens().assert("approvals-three-dark", &approvals_three(ThemeMode::Dark));
+}
+
+#[test]
+fn approvals_option_light() {
+    goldens().assert(
+        "approvals-option-light",
+        &approvals_option(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn approvals_option_dark() {
+    goldens().assert("approvals-option-dark", &approvals_option(ThemeMode::Dark));
 }
 
 /// A card of the agent's questions in the transcript: its line, and the
