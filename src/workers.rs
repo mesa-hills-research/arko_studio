@@ -121,6 +121,45 @@ pub fn setup_label(worker: &WorkerSummary) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
+/// The model and effort workers start with unless told otherwise, as the
+/// session's models say. A worker's card names its model or effort only when
+/// they are other ones.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Usual {
+    pub model: String,
+    pub effort: String,
+}
+
+impl Usual {
+    pub fn of(models: &arko::remote::Models) -> Self {
+        Self {
+            model: models.workers.clone(),
+            effort: models.workers_effort.clone(),
+        }
+    }
+}
+
+/// What sets a worker apart on its card in the transcript, as Arko's own
+/// worker line says it: its profile, or else its model when workers start on
+/// another and its effort when that is another too, such as "impl-light",
+/// "sol · xhigh" or "low effort". `None` when it runs as workers usually do.
+pub fn card_setup(worker: &WorkerSummary, usual: &Usual) -> Option<String> {
+    let known = |text: &Option<String>| text.clone().filter(|text| !text.is_empty());
+    if let Some(profile) = known(&worker.profile) {
+        return Some(profile);
+    }
+    let model = known(&worker.model)
+        .filter(|model| *model != usual.model)
+        .map(|model| arko::workers::short_model_name(&model));
+    let effort = known(&worker.effort).filter(|effort| *effort != usual.effort);
+    match (model, effort) {
+        (Some(model), Some(effort)) => Some(format!("{model} · {effort}")),
+        (Some(model), None) => Some(model),
+        (None, Some(effort)) => Some(format!("{effort} effort")),
+        (None, None) => None,
+    }
+}
+
 /// What a worker's model calls cost, as the status bar's figure reads: what
 /// it billed, else (work on a plan) what it would cost at API prices, "≈ $0.12".
 /// `None` before anything cost.
@@ -562,6 +601,52 @@ mod tests {
         worker.model = None;
         worker.profile = Some("reviewer".into());
         assert_eq!(setup_label(&worker).as_deref(), Some("reviewer"));
+    }
+
+    /// A card names a worker's profile, or else its model when workers start
+    /// on another, and its effort when that is another too.
+    #[test]
+    fn a_card_names_a_workers_setup_only_when_it_is_not_the_usual_one() {
+        let usual = Usual {
+            model: "gpt-6-luna".into(),
+            effort: "high".into(),
+        };
+        let card = |model: Option<&str>, effort: Option<&str>, profile: Option<&str>| {
+            let mut worker = worker("r5", WorkerState::Running, Some(0), None);
+            worker.model = model.map(str::to_string);
+            worker.effort = effort.map(str::to_string);
+            worker.profile = profile.map(str::to_string);
+            card_setup(&worker, &usual)
+        };
+        assert_eq!(card(None, None, None), None);
+        assert_eq!(card(Some("gpt-6-luna"), Some("high"), None), None);
+        assert_eq!(
+            card(Some("gpt-6-luna"), Some("high"), Some("impl-light")).as_deref(),
+            Some("impl-light")
+        );
+        // A profile stands for the model and effort it sets.
+        assert_eq!(
+            card(Some("gpt-6.1-sol"), Some("xhigh"), Some("3d-judge")).as_deref(),
+            Some("3d-judge")
+        );
+        assert_eq!(
+            card(Some("gpt-6.1-sol"), Some("high"), None).as_deref(),
+            Some("sol")
+        );
+        assert_eq!(
+            card(Some("gpt-6.1-sol"), Some("xhigh"), None).as_deref(),
+            Some("sol · xhigh")
+        );
+        assert_eq!(
+            card(Some("gpt-6-luna"), Some("low"), None).as_deref(),
+            Some("low effort")
+        );
+        // Nothing is known of a model the session hasn't recorded.
+        assert_eq!(card(None, Some("high"), Some("")), None);
+        assert_eq!(
+            card(Some(""), Some("low"), None).as_deref(),
+            Some("low effort")
+        );
     }
 
     #[test]

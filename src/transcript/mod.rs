@@ -389,6 +389,9 @@ pub struct TranscriptView {
     list: list::RowList,
     focus_handle: FocusHandle,
     settings: Settings,
+    /// What workers start with unless told otherwise, which a worker's card
+    /// names only when the worker runs another.
+    usual: crate::workers::Usual,
     /// The window the transcript is in.
     window: WindowId,
     /// Whether the session shows every Markdown text as its source
@@ -536,6 +539,7 @@ impl TranscriptView {
             // A Tab stop, so the keyboard reaches the transcript to scroll it.
             focus_handle: cx.focus_handle().tab_stop(true),
             settings,
+            usual: crate::workers::Usual::default(),
             window: window.window_handle().window_id(),
             show_source: show_source(cx),
             movable: HashSet::new(),
@@ -726,6 +730,16 @@ impl TranscriptView {
         }
         self.movable = movable.iter().copied().collect();
         cx.notify();
+    }
+
+    /// Sets what workers start with unless told otherwise, from the session's
+    /// models: a worker's card names its model and effort only when they
+    /// differ.
+    pub fn set_usual(&mut self, usual: &crate::workers::Usual, cx: &mut Context<Self>) {
+        if self.usual != *usual {
+            self.usual = usual.clone();
+            cx.notify();
+        }
     }
 
     /// Shows the images the items show (the user's attachments, what tools

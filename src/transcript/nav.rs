@@ -93,7 +93,7 @@ impl TranscriptView {
                 let setup = self
                     .model
                     .worker(worker)
-                    .and_then(crate::workers::setup_label);
+                    .and_then(|summary| crate::workers::card_setup(summary, &self.usual));
                 match setup {
                     Some(setup) => {
                         format!("Worker {worker}, {}, {setup}", first_line(&item.text))

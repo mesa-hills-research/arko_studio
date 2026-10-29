@@ -2550,10 +2550,10 @@ fn a_stop_in_the_main_transcript_names_the_worker_that_started_it(cx: &mut TestA
     );
 }
 
-/// A worker's card says what it runs on once the session has recorded it,
-/// and the card stays one line tall.
+/// A worker's card says its profile once the session has recorded it, and
+/// the card stays one line tall.
 #[gpui_kit::test]
-fn a_worker_card_says_the_model_effort_and_profile(cx: &mut TestAppContext) {
+fn a_worker_card_says_its_profile(cx: &mut TestAppContext) {
     use arko::remote::WorkerInfo;
 
     start(cx);
@@ -2602,10 +2602,256 @@ fn a_worker_card_says_the_model_effort_and_profile(cx: &mut TestAppContext) {
             .key;
         view.row_label(row)
     });
+    assert_eq!(label.as_ref(), "Worker r1, Fix the parser, 3d-judge");
+}
+
+/// A worker's card names its model and effort only when they aren't the ones
+/// workers start with, in the card and in its name for assistive technology.
+#[gpui_kit::test]
+fn a_worker_card_names_its_model_and_effort_only_when_they_are_not_the_usual(
+    cx: &mut TestAppContext,
+) {
+    use arko::remote::WorkerInfo;
+
+    use crate::workers::Usual;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Split the work", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let setups = [
+        ("r1", Some("gpt-6-luna"), Some("high")),
+        ("r2", Some("gpt-6.1-sol"), Some("high")),
+        ("r3", Some("gpt-6.1-sol"), Some("xhigh")),
+        ("r4", Some("gpt-6-luna"), Some("low")),
+        ("r5", None, None),
+    ];
+    for (id, model, effort) in setups {
+        feed.worker(id, "Fix the parser", WorkerChange::Started);
+        let mut info = WorkerInfo::new();
+        info.model = model.map(str::to_string);
+        info.effort = effort.map(str::to_string);
+        feed.worker_info(id, info);
+    }
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let usual = |model: &str, effort: &str| Usual {
+        model: model.into(),
+        effort: effort.into(),
+    };
+    let chips = |cx: &mut TestAppContext| -> Vec<String> {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            view.rows
+                .iter()
+                .filter(|row| matches!(row.key, RowKey::Worker(_)))
+                .map(|row| view.row_label(row.key).to_string())
+                .collect()
+        })
+    };
+    view.update(cx, |view, cx| {
+        view.set_usual(&usual("gpt-6-luna", "high"), cx)
+    });
+    settle(cx, window);
     assert_eq!(
-        label.as_ref(),
-        "Worker r1, Fix the parser, sol · high · 3d-judge"
+        chips(cx),
+        [
+            "Worker r1, Fix the parser",
+            "Worker r2, Fix the parser, sol",
+            "Worker r3, Fix the parser, sol · xhigh",
+            "Worker r4, Fix the parser, low effort",
+            "Worker r5, Fix the parser",
+        ]
     );
+    // The card shows the same words, and none for a worker that runs as
+    // workers usually do.
+    let has_chip = |cx: &mut TestAppContext, card: u64| {
+        cx.update_window(window, |_, window, _| {
+            window.try_find(("worker-setup", card)).is_some()
+        })
+        .unwrap()
+    };
+    let cards: Vec<u64> = item_ids(&feed)
+        .into_iter()
+        .filter(|(_, kind)| *kind == Kind::WorkerLine)
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(
+        cards.iter().map(|id| has_chip(cx, *id)).collect::<Vec<_>>(),
+        [false, true, true, true, false]
+    );
+    // Workers that start on another model change which ones stand out.
+    view.update(cx, |view, cx| {
+        view.set_usual(&usual("gpt-6.1-sol", "xhigh"), cx)
+    });
+    settle(cx, window);
+    assert_eq!(
+        chips(cx),
+        [
+            "Worker r1, Fix the parser, luna · high",
+            "Worker r2, Fix the parser, high effort",
+            "Worker r3, Fix the parser",
+            "Worker r4, Fix the parser, luna · low",
+            "Worker r5, Fix the parser",
+        ]
+    );
+}
+
+/// Quiet shows a worker that started at once as its card alone. A start that
+/// is still running, queued or refused shows as a call, and Full and
+/// Messages keep every call.
+#[gpui_kit::test]
+fn quiet_shows_a_started_worker_as_its_card_alone(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Split the work", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let task = |task: &str| [("task", Value::from(task))];
+    let started = call(&feed, "main", "start_agent", &task("Fix the parser"));
+    result(
+        &feed,
+        "main",
+        started,
+        "start_agent",
+        "Started r1 (agent `worker`).",
+    );
+    feed.worker("r1", "Fix the parser", WorkerChange::Started);
+    let queued = call(&feed, "main", "start_agent", &task("Review the docs"));
+    result(
+        &feed,
+        "main",
+        queued,
+        "start_agent",
+        "Queued r2 (agent `worker`): 4 agent runs are running, the most this workflow allows, so it starts when one ends.",
+    );
+    feed.worker("r2", "Review the docs", WorkerChange::Queued);
+    let refused = call(&feed, "main", "start_agent", &task("Run the migration"));
+    feed.event(
+        &event(
+            "main",
+            AgentEvent::ErrorEncountered {
+                error_message: "The worker's billing needs your answer.".into(),
+                requires_approval_to_retry: false,
+                tool_call_id: Some(refused),
+                error_kind: None,
+            },
+        ),
+        None,
+    );
+    call(&feed, "main", "start_agent", &task("Wait for the card"));
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let ids = item_ids(&feed);
+    let of_kind = |kind: Kind| -> Vec<u64> {
+        ids.iter()
+            .filter(|(_, found)| *found == kind)
+            .map(|(id, _)| *id)
+            .collect()
+    };
+    let calls = of_kind(Kind::Call);
+    assert_eq!(calls.len(), 4, "{ids:?}");
+    let cards = of_kind(Kind::WorkerLine);
+    assert_eq!(cards.len(), 2, "{ids:?}");
+    let rows = |cx: &mut TestAppContext, shown: View| {
+        cx.update(|cx| prefs::update(cx, |prefs| prefs.view = shown));
+        settle(cx, window);
+        keys(&view, cx)
+            .into_iter()
+            .filter(|key| matches!(key, RowKey::Call(_) | RowKey::Worker(_) | RowKey::Count(_)))
+            .collect::<Vec<_>>()
+    };
+    // Only the first call named its worker.
+    cx.read(|cx| {
+        let view = view.read(cx);
+        let started: Vec<Option<String>> = calls
+            .iter()
+            .map(|id| view.model.entry(*id).unwrap().item.started.clone())
+            .collect();
+        assert_eq!(started, [Some("r1".to_string()), None, None, None]);
+    });
+    let (card, other) = (cards[0], cards[1]);
+    assert_eq!(
+        rows(cx, View::Quiet),
+        [
+            RowKey::Worker(card),
+            RowKey::Call(calls[1]),
+            RowKey::Worker(other),
+            RowKey::Call(calls[2]),
+            RowKey::Call(calls[3]),
+        ]
+    );
+    assert_eq!(
+        rows(cx, View::Full),
+        [
+            RowKey::Call(calls[0]),
+            RowKey::Worker(card),
+            RowKey::Call(calls[1]),
+            RowKey::Worker(other),
+            RowKey::Call(calls[2]),
+            RowKey::Call(calls[3]),
+        ]
+    );
+    let messages = rows(cx, View::Messages);
+    assert_eq!(messages.len(), 5, "{messages:?}");
+    assert!(messages.contains(&RowKey::Worker(card)));
+}
+
+/// A start the Quiet view leaves out doesn't push a run of calls into a
+/// group.
+#[gpui_kit::test]
+fn quiet_does_not_fold_a_hidden_start_into_a_group(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Look around", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let read = |feed: &Feed, name: &str| {
+        let id = call(feed, "main", "read_file", &[("path", name.into())]);
+        result(feed, "main", id, "read_file", "1 | fn x() {}\n");
+    };
+    read(&feed, "src/a.rs");
+    read(&feed, "src/b.rs");
+    let started = call(&feed, "main", "start_agent", &[("task", "Count".into())]);
+    result(
+        &feed,
+        "main",
+        started,
+        "start_agent",
+        "Started r1 (agent `worker`).",
+    );
+    read(&feed, "src/c.rs");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Quiet));
+    settle(cx, window);
+    let calls: Vec<u64> = item_ids(&feed)
+        .into_iter()
+        .filter(|(_, kind)| *kind == Kind::Call)
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(calls.len(), 4);
+    // Three calls show in a row. The fourth is the start.
+    let quiet = keys(&view, cx);
+    assert!(
+        !quiet.iter().any(|key| matches!(key, RowKey::Group(_))),
+        "{quiet:?}"
+    );
+    let shown: Vec<RowKey> = quiet
+        .iter()
+        .copied()
+        .filter(|key| matches!(key, RowKey::Call(_)))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            RowKey::Call(calls[0]),
+            RowKey::Call(calls[1]),
+            RowKey::Call(calls[3])
+        ]
+    );
+    // One more call folds them, and the group counts the four it stands for.
+    read(&feed, "src/d.rs");
+    settle(cx, window);
+    let quiet = keys(&view, cx);
+    assert!(quiet.contains(&RowKey::Group(calls[0])), "{quiet:?}");
+    let label = cx.read(|cx| view.read(cx).row_label(RowKey::Group(calls[0])));
+    assert_eq!(label.as_ref(), "4 calls");
 }
 
 #[gpui_kit::test]

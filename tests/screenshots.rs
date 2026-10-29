@@ -2079,6 +2079,7 @@ fn workers_window(mode: ThemeMode) -> Screenshot {
         feed: None,
         images: None,
         movable: Vec::new(),
+        usual: arko_studio::workers::Usual::default(),
         key: None,
     };
     let window = app
@@ -2253,6 +2254,7 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
         feed: None,
         images: None,
         movable: Vec::new(),
+        usual: arko_studio::workers::Usual::default(),
         key: None,
     }
 }

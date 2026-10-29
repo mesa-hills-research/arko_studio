@@ -34,6 +34,7 @@ use crate::layout::WidthClass;
 use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase, PromptKind};
 use crate::questions::{AnswerPanel, AnswerPanelEvent};
 use crate::transcript::{AgentFilter, FindStatus, TranscriptEvent, TranscriptView};
+use crate::workers::Usual;
 use crate::{drafts, menus, prefs, segmented};
 
 /// How many recent folders Change… offers.
@@ -873,10 +874,14 @@ impl SessionView {
                 }
             }
         };
-        // Its running calls that can move to the background offer to.
-        let movable = session.read(cx).reading().movable.clone();
-        kept.view
-            .update(cx, |view, cx| view.set_movable(&movable, cx));
+        // Its running calls that can move to the background offer to, and
+        // its workers' cards name the models that aren't the usual ones.
+        let reading = session.read(cx).reading().clone();
+        let usual = Usual::of(&reading.models);
+        kept.view.update(cx, |view, cx| {
+            view.set_movable(&reading.movable, cx);
+            view.set_usual(&usual, cx);
+        });
         self.transcripts.push(kept);
         if self.transcripts.len() > KEPT_TRANSCRIPTS {
             self.transcripts.remove(0);
