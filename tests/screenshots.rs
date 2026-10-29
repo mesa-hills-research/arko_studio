@@ -3115,6 +3115,48 @@ fn notifications_window_on(
     app.capture(window).unwrap()
 }
 
+/// Chat | Agent switched to Chat and back with the pointer still over it.
+/// Chat goes plain at once, as it looks before the pointer came near.
+#[test]
+fn mode_switch_under_the_pointer() {
+    use gpui_kit::test::TestWindowExt as _;
+
+    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+        let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+        let mut settings = Prefs::default();
+        settings.appearance.theme_mode = mode;
+        settings.appearance.motion = Motion::Off;
+        let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+        let startup = Startup::for_tests(backend)
+            .with_prefs(settings)
+            .with_fonts(fonts::bundled());
+        app.update(|cx| arko_studio::init(startup, cx));
+        let window = app
+            .open_window_with(size(px(1100.), px(800.)), 1., |options, cx| {
+                workspace::open_window(options, cx).map(|(window, _)| window)
+            })
+            .unwrap();
+        let rest = app.capture(window).unwrap().image;
+        let mut chat = None;
+        for id in ["empty-mode-chat", "empty-mode-agent"] {
+            app.update_window(window, |_, window, cx| {
+                chat = Some(window.find("empty-mode-chat").bounds());
+                window.click(id, cx);
+            })
+            .unwrap();
+        }
+        let image = app.capture(window).unwrap().image;
+        let chat = chat.unwrap();
+        let (x, y) = (u32::from(chat.left()), u32::from(chat.top()));
+        let (width, height) = (u32::from(chat.size.width), u32::from(chat.size.height));
+        let changed = (y..y + height)
+            .flat_map(|y| (x..x + width).map(move |x| (x, y)))
+            .filter(|&(x, y)| image.get_pixel(x, y) != rest.get_pixel(x, y))
+            .count();
+        assert_eq!(changed, 0, "{mode:?}");
+    }
+}
+
 #[test]
 fn segmented_selectors_across_themes() {
     for (theme, mode, name) in [

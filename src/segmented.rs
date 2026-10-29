@@ -124,8 +124,16 @@ pub(crate) fn segment_style<E: Styled + InteractiveElement + FluentBuilder>(
                 }
             })
         })
-        .when(!chosen && !disabled, |this| {
-            this.hover(move |style| style.text_color(foreground))
+        // Every segment keeps a hover style, an empty one when chosen or
+        // disabled, because GPUI keeps an element's hover state current only
+        // while it has one. A segment chosen under the pointer would otherwise
+        // keep the hover color once the other was chosen.
+        .hover(move |style| {
+            if chosen || disabled {
+                style
+            } else {
+                style.text_color(foreground)
+            }
         })
 }
 
