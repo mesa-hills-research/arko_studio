@@ -1535,12 +1535,18 @@ impl TranscriptView {
         }));
     }
 
-    /// The latest entry that runs: a call, a thinking that streams, a
-    /// worker's card.
+    /// The latest entry that runs, of those the view shows with their own
+    /// indicator: a call, a thinking that streams, a worker's card. A
+    /// worker's call that only the Full view shows, or a call the Messages
+    /// view counts, would otherwise leave no indicator turning.
     fn latest_running(&self) -> Option<u64> {
+        let filter = self.model.filter();
         let entries = self.model.entries();
         entries.iter().enumerate().rev().find_map(|(ix, entry)| {
             let item = &entry.item;
+            if model::show(filter, self.settings.view, item) != model::Show::Item {
+                return None;
+            }
             let running = match item.kind {
                 Kind::Call => item.status == Some(CallStatus::Running),
                 Kind::Thinking => self.model.is_streaming(ix),

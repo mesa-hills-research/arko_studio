@@ -1424,6 +1424,78 @@ fn one_indicator_turns_at_a_time(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| view.read(cx).animated), Some(thinking));
 }
 
+/// How many of `count` frames of a 60 Hz display, one every 1/60 second of
+/// the test clock, the window asks for: one each while an indicator turns.
+fn frames_asked(cx: &mut TestAppContext, window: AnyWindowHandle, count: usize) -> usize {
+    (0..count)
+        .filter(|_| {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_micros(16_667));
+            let asked = cx
+                .update_window(window, |_, window, cx| window.simulate_next_frame(cx))
+                .unwrap();
+            cx.run_until_parked();
+            asked > 0
+        })
+        .count()
+}
+
+/// The indicator that turns is the latest of those the view shows. A
+/// worker's call that runs after the agent's `wait_for_agents` is in the
+/// transcript, but only the Full view shows it, so in the Quiet view the
+/// wait's indicator goes on turning.
+#[gpui_kit::test]
+fn the_indicator_that_turns_is_one_the_view_shows(cx: &mut TestAppContext) {
+    start(cx);
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.appearance.motion = prefs::Motion::On;
+            prefs.view = View::Quiet;
+        });
+        cx.set_reduce_motion(false);
+    });
+    let feed = Feed::new("main");
+    feed.user("Fix the parser with a worker.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.worker("r1", "Fix the parser", WorkerChange::Started);
+    call(&feed, "main", "wait_for_agents", &[]);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let wait = *ids_of(&feed, Kind::Call).last().unwrap();
+    let card = ids_of(&feed, Kind::WorkerLine)[0];
+    let animated = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).animated);
+    // Whatever fades in when the rows come has ended by then.
+    frames_asked(cx, window, 30);
+    assert_eq!(animated(cx), Some(wait));
+    assert_eq!(frames_asked(cx, window, 60), 60);
+
+    // The worker runs a call, which the Quiet view leaves out.
+    let build = call(&feed, "r1", "shell", &[("command", "cargo build".into())]);
+    settle(cx, window);
+    let worker_call = *ids_of(&feed, Kind::Call).last().unwrap();
+    assert!(!keys(&view, cx).contains(&RowKey::Call(worker_call)));
+    assert_eq!(frames_asked(cx, window, 60), 60);
+    assert_eq!(animated(cx), Some(wait));
+
+    // The Full view shows it, and it's the latest that runs.
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Full));
+    settle(cx, window);
+    assert_eq!(animated(cx), Some(worker_call));
+    assert_eq!(frames_asked(cx, window, 60), 60);
+
+    // The Messages view counts the calls, so the worker's card turns.
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Messages));
+    settle(cx, window);
+    assert_eq!(animated(cx), Some(card));
+    assert_eq!(frames_asked(cx, window, 60), 60);
+
+    // Its call ends, and in the Quiet view the wait still turns.
+    result(&feed, "r1", build, "shell", "Finished");
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Quiet));
+    settle(cx, window);
+    assert_eq!(animated(cx), Some(wait));
+    assert_eq!(frames_asked(cx, window, 60), 60);
+}
+
 /// The "Working…" row of `view`, if it shows.
 fn working_row(view: &Entity<TranscriptView>, cx: &mut TestAppContext) -> Option<RowKey> {
     keys(view, cx)
