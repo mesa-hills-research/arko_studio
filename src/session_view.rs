@@ -744,6 +744,7 @@ impl SessionView {
             mode: session.mode(),
             workspace: session.workspace().cloned(),
             model: session.model().to_string(),
+            main_model: session.reading().models.main.clone(),
             created: std::time::SystemTime::now(),
             last_active: None,
             conversations: Vec::new(),

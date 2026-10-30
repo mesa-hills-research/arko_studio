@@ -295,6 +295,7 @@ mod tests {
         sessions[0].conversations = vec![crate::backend::ConversationEntry {
             number: 1,
             title: line.into(),
+            model: String::new(),
             current: true,
         }];
         let sections = sections(&sessions);

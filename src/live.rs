@@ -1514,6 +1514,7 @@ impl LiveSession {
             mode: self.mode,
             workspace: self.workspace.clone(),
             model: self.reading.models.main.clone(),
+            main_model: self.reading.models.main.clone(),
             created: std::time::SystemTime::now(),
             last_active: None,
             conversations: Vec::new(),

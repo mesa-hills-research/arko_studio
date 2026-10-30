@@ -93,6 +93,9 @@ pub struct ConversationEntry {
     /// 1-based, as `/resume N` takes it.
     pub number: u32,
     pub title: String,
+    /// The model it runs, as `/model` takes it, or empty when that isn't
+    /// known (one an older Arko recorded).
+    pub model: String,
     /// The one the session continues.
     pub current: bool,
 }
@@ -109,6 +112,8 @@ pub struct SessionEntry {
     pub workspace: Option<PathBuf>,
     /// The main agent's model, as arko describes it.
     pub model: String,
+    /// The model new conversations start on, as `/model` takes it.
+    pub main_model: String,
     pub created: SystemTime,
     /// When it was last worked in, `None` before its first message.
     pub last_active: Option<SystemTime>,
@@ -134,6 +139,7 @@ impl SessionEntry {
             mode: entry.mode.into(),
             workspace: entry.workspace,
             model: entry.model,
+            main_model: entry.main_model,
             created: entry.created.into(),
             last_active: entry.last_active,
             conversations: entry
@@ -142,6 +148,7 @@ impl SessionEntry {
                 .map(|conversation| ConversationEntry {
                     number: u32::try_from(conversation.number).unwrap_or(u32::MAX),
                     title: conversation.title,
+                    model: conversation.model,
                     current: conversation.current,
                 })
                 .collect(),
@@ -1053,6 +1060,7 @@ impl FakeBackend {
             mode: Mode::Agent,
             workspace: Some(PathBuf::from(folder)),
             model: "claude-opus-5-5".into(),
+            main_model: "claude-opus-5-5".into(),
             created: ago(minutes + 30),
             last_active: Some(ago(minutes)),
             conversations: Vec::new(),
@@ -1094,11 +1102,13 @@ impl FakeBackend {
             ConversationEntry {
                 number: 1,
                 title: "Fix the handover size for workers".into(),
+                model: "gpt-6.1-sol".into(),
                 current: false,
             },
             ConversationEntry {
                 number: 2,
                 title: "Check /handover-at 950k".into(),
+                model: "claude-opus-5-5".into(),
                 current: true,
             },
         ];
@@ -1446,18 +1456,21 @@ impl Backend for FakeBackend {
             Start::New(new) => {
                 state.created += 1;
                 state.started.push(new.clone());
+                // As arko starts one: the composer's model, else the one
+                // Settings set, else its own choice.
+                let model = new
+                    .model
+                    .clone()
+                    .or_else(|| self.defaults().model)
+                    .or_else(|| self.models.default.clone())
+                    .unwrap_or_default();
                 let entry = SessionEntry {
                     id: SessionId(format!("20261016-120000-new{}", state.created)),
                     title: "New session".into(),
                     mode: new.mode,
                     workspace: new.folder.filter(|_| new.mode == Mode::Agent),
-                    // As arko starts one: the composer's model, else the
-                    // one Settings set, else its own choice.
-                    model: new
-                        .model
-                        .or_else(|| self.defaults().model)
-                        .or_else(|| self.models.default.clone())
-                        .unwrap_or_default(),
+                    model: model.clone(),
+                    main_model: model,
                     created: SystemTime::now(),
                     last_active: None,
                     conversations: Vec::new(),

@@ -3789,6 +3789,51 @@ fn sidebar_marks_narrow_dark() {
     );
 }
 
+/// A session's conversations listed under it, the first on GPT-6.1 Sol
+/// and the second on Opus 5.5, the model new conversations start on: only
+/// the first names its model.
+fn sidebar_conversations(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(900.), px(420.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, _)| window)
+        })
+        .unwrap();
+    app.run_until_parked();
+    // "Fix the handover size for workers", the sixth row.
+    app.update_window(window, |_, window, cx| {
+        window.click(("conversations", 5usize), cx)
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn sidebar_conversations_light() {
+    goldens().assert(
+        "sidebar-conversations-light",
+        &sidebar_conversations(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn sidebar_conversations_dark() {
+    goldens().assert(
+        "sidebar-conversations-dark",
+        &sidebar_conversations(ThemeMode::Dark),
+    );
+}
+
 /// A session's info, as its popover shows it.
 struct InfoCard {
     info: gpui_kit::Entity<arko_studio::session_info::SessionInfo>,

@@ -990,6 +990,7 @@ fn a_session_open_elsewhere_says_who_has_it(cx: &mut TestAppContext) {
             mode: crate::backend::Mode::Agent,
             workspace: entry.workspace,
             model: entry.model,
+            main_model: entry.main_model,
             created: entry.created.into(),
             last_active: None,
             conversations: Vec::new(),
