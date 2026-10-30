@@ -5,7 +5,7 @@ use std::rc::Rc;
 use gpui_kit::component::{ActiveTheme as _, Colorize as _, Theme};
 use gpui_kit::{Hsla, TestAppContext, hsla};
 
-use super::find::{Ink, MATCH_CONTRAST, readable_on};
+use super::find::{Ink, MATCH_CONTRAST, MarkdownInks, readable_on};
 use crate::segmented::contrast_ratio;
 
 /// Matches are yellow, the current one stronger, unless the theme sets its
@@ -32,9 +32,11 @@ fn find_highlights_use_the_themes_search_colors(cx: &mut TestAppContext) {
 /// and a failure's, on the transcript (the window's background or the
 /// sidebar's over it in the workers panel), in the user's bubble, in a
 /// call's details, whose fill may be translucent, and in a call's line and
-/// on a worker's card, normally and hovered. Hovered, it reads as well as
-/// any one color can where none reads at once on both fills. A color that
-/// reads there already stays as it is.
+/// on a worker's card, normally and hovered. In Markdown too, a reply's and
+/// a thinking's, in their text, quotes and links, and in inline code, code
+/// blocks and a table's head on their own backgrounds. Hovered, it reads as
+/// well as any one color can where none reads at once on both fills. A color
+/// that reads there already stays as it is.
 #[gpui_kit::test]
 fn matched_text_reads_in_every_bundled_theme(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -58,7 +60,7 @@ fn matched_text_reads_in_every_bundled_theme(cx: &mut TestAppContext) {
                 theme.input.mix_oklab(theme.transparent, 0.5),
             ];
             // Each text, and the fills under it, as the rows paint them.
-            let inks = [
+            let mut inks = vec![
                 ("plain", Ink::new(theme.foreground), vec![none]),
                 ("muted", Ink::new(theme.muted_foreground), vec![none]),
                 ("warning", Ink::new(theme.warning), vec![none]),
@@ -85,6 +87,51 @@ fn matched_text_reads_in_every_bundled_theme(cx: &mut TestAppContext) {
                     card.to_vec(),
                 ),
             ];
+            // Markdown's parts, as GPUI Kit paints them. A thinking differs
+            // in its own text, which is muted.
+            let md = MarkdownInks::of(false, cx);
+            let thinking = MarkdownInks::of(true, cx).text;
+            let (head_fill, head_text) = md.table_head;
+            let head = Ink::on(head_text, head_fill);
+            let code = md.inline_code;
+            let markdown = [
+                ("reply", Ink::new(md.text), none),
+                ("thinking", Ink::new(thinking), none),
+                ("quote", Ink::new(md.quote), none),
+                ("link", Ink::new(md.link), none),
+                ("inline code", Ink::new(md.text).over(code), code),
+                (
+                    "inline code in a thinking or a quote",
+                    Ink::new(thinking).over(code),
+                    code,
+                ),
+                ("inline code in a link", Ink::new(md.link).over(code), code),
+                ("code block", Ink::on(md.text, md.code_block), md.code_block),
+                (
+                    "code block in a thinking or a quote",
+                    Ink::on(thinking, md.code_block),
+                    md.code_block,
+                ),
+                ("table head", head, head_fill),
+                (
+                    "link in a table head",
+                    Ink {
+                        text: md.link,
+                        ..head
+                    },
+                    head_fill,
+                ),
+                (
+                    "inline code in a table head",
+                    head.over(code),
+                    head_fill.blend(code),
+                ),
+            ];
+            inks.extend(
+                markdown
+                    .into_iter()
+                    .map(|(what, ink, fill)| (what, ink, vec![fill])),
+            );
             let (all, current) = super::find::match_colors(cx);
             for (what, ink, fills) in inks {
                 // Painted over the window's background, or over the sidebar

@@ -1230,6 +1230,30 @@ parse of the whole text.";
         feed
     }
 
+    /// A turn whose thinking and reply hold "parser" in each part of
+    /// Markdown with colors of its own.
+    pub fn markdown() -> Feed {
+        let feed = Feed::new("main");
+        feed.user("How does the parser stream?", Source::App, Delivery::Turn);
+        feed.turn_started();
+        feed.event(
+            &event(AgentEvent::ReasoningChunk(
+                "The parser keeps the open block, and `Parser::feed` returns the rest.".into(),
+            )),
+            None,
+        );
+        let reply = "The parser now streams, as [the parser notes](https://example.com/parser) \
+                     and `Parser::feed` say.\n\n\
+                     > The old parser read the whole text first.\n\n\
+                     | Step | What the parser does |\n| --- | --- |\n\
+                     | feed | It keeps the parser's open block. |\n\n\
+                     ```rust\nlet mut parser = Parser::new();\nparser.feed(chunk);\n```\n";
+        say(&feed, reply);
+        feed.reply(reply);
+        feed.turn_ended("9 s · $0.031 · context 12k", None);
+        feed
+    }
+
     /// A finished turn with each kind of row, and a second one running with
     /// an image a tool returned.
     pub fn representative() -> Feed {
@@ -2002,6 +2026,65 @@ fn transcript_find_dark() {
     goldens().assert(
         "transcript-find-dark",
         &transcript_find_window(ThemeMode::Dark),
+    );
+}
+
+/// Matches in Markdown with the thinking open, in a theme whose muted text,
+/// links, table head and code don't read on its highlights, so each match's
+/// text takes a shade of its part's color that does.
+fn transcript_find_markdown_window(mode: ThemeMode) -> Screenshot {
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.light_theme = "Ayu Light".into();
+    settings.appearance.dark_theme = "Ayu Dark".into();
+    settings.appearance.expand_thinking = true;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let feed = feed::markdown();
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(900.), px(560.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| TranscriptView::new(&feed, AgentFilter::Main, window, cx))
+            })
+            .map(|(window, view)| {
+                opened = Some(view);
+                window
+            })
+        })
+        .unwrap();
+    let view = opened.unwrap();
+    app.run_until_parked();
+    app.update_window(window, |_, _, cx| {
+        view.update(cx, |view, cx| {
+            view.find("parser", cx);
+        });
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn transcript_find_markdown_light() {
+    goldens().assert(
+        "transcript-find-markdown-light",
+        &transcript_find_markdown_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn transcript_find_markdown_dark() {
+    goldens().assert(
+        "transcript-find-markdown-dark",
+        &transcript_find_markdown_window(ThemeMode::Dark),
     );
 }
 
