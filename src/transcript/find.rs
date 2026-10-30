@@ -260,12 +260,20 @@ pub(crate) struct Find {
     changed_meanwhile: HashSet<u64>,
     /// The parts of each highlighted block's Markdown that look their own
     /// way, kept while the view's text and the entry's link definitions
-    /// stay the same.
+    /// stay the same, and while the view does.
     parts: HashMap<(u64, usize), BlockParts>,
+    /// The labels of the link definitions of each entry with highlighted
+    /// blocks, kept while its text stays the same, as written for parsing
+    /// a block with them.
+    definitions: HashMap<u64, (DocKey, String)>,
     /// The highlights given to each block view (tests).
     #[cfg(test)]
     pub installed: HashMap<(u64, usize), Vec<RangeHighlight>>,
 }
+
+/// A version of an entry's Markdown. Its text only grows while its
+/// generation stays the same.
+type DocKey = (u32, usize);
 
 /// The parts of a block view's Markdown that look their own way, and what
 /// they were found in.
@@ -276,6 +284,20 @@ struct BlockParts {
 }
 
 impl Find {
+    /// Lets go of what it kept of the view of block `block` of the entry
+    /// `entry`, which went.
+    pub(super) fn view_released(&mut self, entry: u64, block: usize) {
+        self.parts.remove(&(entry, block));
+        #[cfg(test)]
+        self.installed.remove(&(entry, block));
+    }
+
+    /// The block views it keeps the parts of (tests).
+    #[cfg(test)]
+    pub(super) fn kept_parts(&self) -> Vec<(u64, usize)> {
+        self.parts.keys().copied().collect()
+    }
+
     /// Drops the entry's matches.
     fn forget(&mut self, entry: u64) {
         if let Some(found) = self.found.remove(&entry) {
@@ -1168,6 +1190,8 @@ impl TranscriptView {
         }
         let before = std::mem::take(&mut find.highlighted);
         find.parts.retain(|block, _| now.contains(block));
+        let entries: HashSet<u64> = now.iter().map(|(entry, _)| *entry).collect();
+        find.definitions.retain(|entry, _| entries.contains(entry));
         #[cfg(test)]
         find.installed.retain(|block, _| now.contains(block));
         for (entry, block) in before.difference(&now) {
@@ -1318,19 +1342,45 @@ impl TranscriptView {
         (ranges, highlights)
     }
 
-    /// The link definitions of the entry `entry`'s Markdown, which a link
-    /// in any of its blocks may refer to.
-    fn definitions(&self, entry: u64) -> String {
+    /// The labels of the link definitions of the entry `entry`'s Markdown,
+    /// at the top level or in a quote or a list, as definitions a block can
+    /// be parsed with. A link in any block may refer to any of them.
+    fn definitions(&mut self, entry: u64) -> String {
         let Some(doc) = self.ui.get(&entry).and_then(|ui| ui.doc.as_ref()) else {
             return String::new();
         };
-        let definitions: Vec<&str> = doc
-            .blocks
-            .iter()
-            .filter(|block| matches!(block.content, TextBlockContent::Definition))
-            .filter_map(|block| doc.text.get(block.range.clone()?))
-            .collect();
-        definitions.join("\n\n")
+        let key = (doc.generation, doc.text.len());
+        if let Some((kept, labels)) = self
+            .find
+            .as_ref()
+            .and_then(|find| find.definitions.get(&entry))
+            && *kept == key
+        {
+            return labels.clone();
+        }
+        let mut labels = String::new();
+        for block in &doc.blocks {
+            if !matches!(
+                block.content,
+                TextBlockContent::Definition | TextBlockContent::Quote | TextBlockContent::List
+            ) {
+                continue;
+            }
+            let Some(text) = block.range.clone().and_then(|range| doc.text.get(range)) else {
+                continue;
+            };
+            // Every definition has a label closed by "]:".
+            if !text.contains("]:") {
+                continue;
+            }
+            if let Ok(root) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) {
+                add_definitions(&root, &mut labels);
+            }
+        }
+        if let Some(find) = self.find.as_mut() {
+            find.definitions.insert(entry, (key, labels.clone()));
+        }
+        labels
     }
 
     /// The matches in the text of `place` of the entry `entry`, and which
@@ -1646,6 +1696,18 @@ impl MarkdownInks {
             Some(Code::Block) => ink.over(self.code_block),
             None => ink,
         }
+    }
+}
+
+/// Adds the link definitions in `node` and inside it to `labels`, each as
+/// a definition of its label alone, which is what a link refers to.
+fn add_definitions(node: &markdown::mdast::Node, labels: &mut String) {
+    if let markdown::mdast::Node::Definition(definition) = node {
+        let label = definition.label.as_ref().unwrap_or(&definition.identifier);
+        labels.push_str(&format!("[{label}]: x\n\n"));
+    }
+    for child in node.children().into_iter().flatten() {
+        add_definitions(child, labels);
     }
 }
 

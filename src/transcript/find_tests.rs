@@ -681,7 +681,8 @@ fn matches_take_a_shade_of_their_lines_color_that_reads(cx: &mut TestAppContext)
 /// A reply with each part of Markdown that looks its own way, in blocks
 /// that nest them, with "parser" in each.
 const MARKDOWN_PARTS: &str = "Spanning [pars](https://x.test)er, *emphasis parser*, \
-    `code parser`, [link `parser` code](https://x.test) and [the parser][docs].\n\n\
+    `code parser`, [link `parser` code](https://x.test), [the parser][docs], \
+    [a quoted parser][quoted] and [a listed parser][listed].\n\n\
     - item parser\n  - nested parser\n    > quoted parser\n\n\
     > outer parser\n>\n> > inner parser\n>\n> - listed `parser`\n\n\
     Ünïcödé PARSER and [naïve parser](https://x.test)\n\n\
@@ -690,7 +691,9 @@ const MARKDOWN_PARTS: &str = "Spanning [pars](https://x.test)er, *emphasis parse
     A footnote parser[^n].\n\n\
     ```\nlet parser = 1;\n```\n\n\
     [^n]: The footnote parser.\n\n\
-    [docs]: https://example.com\n";
+    [docs]: https://example.com\n\n\
+    > [quoted]: https://example.com\n\n\
+    - [listed]: https://example.com\n";
 
 /// The reply [`MARKDOWN_PARTS`] after a question, in a window tall enough
 /// to draw all of it, with "parser" found.
@@ -782,6 +785,8 @@ fn markdown_parts_looks() -> Vec<(usize, Vec<Looks>)> {
                 one(code(text)),
                 one(code(link)),
                 one(link),
+                one(link),
+                one(link),
             ],
         ),
         (1, vec![one(text), one(text), one(quote)]),
@@ -868,6 +873,9 @@ fn each_part_of_markdown_has_its_own_look(cx: &mut TestAppContext) {
     use super::{Code, Look, TableRow, Text};
 
     let (_window, view, reply) = markdown_parts_found(cx);
+    // Definitions in a quote or a list count, as anywhere.
+    let definitions = view.update(cx, |view, _| view.definitions(reply));
+    assert_eq!(definitions, "[docs]: x\n\n[quoted]: x\n\n[listed]: x\n\n");
     cx.update(|cx| {
         let view = view.read(cx);
         let parts = |block: usize| {
@@ -879,7 +887,7 @@ fn each_part_of_markdown_has_its_own_look(cx: &mut TestAppContext) {
                 .iter()
                 .filter_map(|block| block.source_range())
                 .collect();
-            super::markdown_parts(&rendered, &blocks, "[docs]: https://example.com")
+            super::markdown_parts(&rendered, &blocks, &definitions)
                 .into_iter()
                 .map(|(range, look)| (rendered.as_str()[range].to_string(), look))
                 .collect::<Vec<_>>()
@@ -915,6 +923,8 @@ fn each_part_of_markdown_has_its_own_look(cx: &mut TestAppContext) {
                 ("parser", code(link)),
                 (" code", link),
                 ("the parser", link),
+                ("a quoted parser", link),
+                ("a listed parser", link),
             ])
         );
         let in_head = Look {
@@ -1005,6 +1015,54 @@ fn a_blocks_parts_are_found_once_for_its_text(cx: &mut TestAppContext) {
     settle(cx, window);
     next(cx, window, &view, true);
     assert!(super::blocks_parsed() > parsed);
+}
+
+/// What the find keeps of a block's view goes with the view. Scrolled up
+/// through a long conversation with a match in every block, it keeps the
+/// parts of as many blocks as have views, not of every block with a match.
+#[gpui_kit::test]
+fn a_blocks_parts_go_with_its_view(cx: &mut TestAppContext) {
+    use super::super::tests::{load_all, open, start};
+
+    start(cx);
+    let feed = Feed::new("main");
+    for turn in 0..200 {
+        feed.user(&format!("Question {turn}"), Source::App, Delivery::Turn);
+        feed.turn_started();
+        feed.reply(&format!(
+            "Answer {turn}, first paragraph.\n\nAnswer {turn}, **second** paragraph."
+        ));
+        feed.turn_ended("3 s", None);
+    }
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    load_all(cx, window, &view);
+    assert_eq!(find(cx, window, &view, "paragraph").total, 400);
+    // Each block whose parts are kept has a view.
+    let kept = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            let kept = view.find.as_ref().unwrap().kept_parts();
+            for (entry, block) in &kept {
+                assert!(
+                    view.existing_block_view(*entry, *block).is_some(),
+                    "block {block} of {entry} has no view"
+                );
+            }
+            kept.len()
+        })
+    };
+    let count = cx.read(|cx| view.read(cx).row_count());
+    let mut most = 0;
+    for ix in (0..count).rev().step_by(4) {
+        view.update(cx, |view, cx| {
+            view.list.scroll_to(ix, px(0.));
+            cx.notify();
+        });
+        settle(cx, window);
+        most = most.max(kept(cx));
+    }
+    let bound = super::super::BLOCK_VIEWS + super::super::RELEASE_EVERY + 20;
+    assert!(most > 0 && most <= bound, "parts of {most} blocks kept");
 }
 
 fn top(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> gpui_kit::ListOffset {

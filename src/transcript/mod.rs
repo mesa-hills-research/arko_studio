@@ -1347,14 +1347,17 @@ impl TranscriptView {
         frames.sort_unstable();
         // Those of the last frames stay, whatever their number.
         let kept_from = frames[frames.len() - BLOCK_VIEWS].min(self.renders.saturating_sub(1));
-        for block in self
-            .ui
-            .values_mut()
-            .filter_map(|ui| ui.doc.as_mut())
-            .flat_map(|doc| &mut doc.blocks)
-        {
-            if block.drawn < kept_from {
-                block.view = None;
+        for (id, ui) in &mut self.ui {
+            let Some(doc) = ui.doc.as_mut() else {
+                continue;
+            };
+            for (ix, block) in doc.blocks.iter_mut().enumerate() {
+                if block.drawn < kept_from && block.view.take().is_some() {
+                    // What a find kept of the view goes with it.
+                    if let Some(find) = self.find.as_mut() {
+                        find.view_released(*id, ix);
+                    }
+                }
             }
         }
     }
