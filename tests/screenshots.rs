@@ -3268,6 +3268,91 @@ fn status_popovers_dark() {
     goldens().assert("status-popovers-dark", &status_popovers(ThemeMode::Dark));
 }
 
+/// The cost's popover after the main agent moved from the Claude plan to the
+/// ChatGPT plan mid-session, with workers billed per token: a row for each
+/// plan the main agent ran on.
+struct CostParts;
+
+impl gpui_kit::Render for CostParts {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use arko::details::{CostReport, CostShare};
+        use arko_studio::status_bar::CostDetails;
+        use gpui_kit::component::ActiveTheme as _;
+        use gpui_kit::{IntoElement as _, ParentElement as _, Styled as _, div};
+
+        let theme = cx.theme();
+        let share = |billed: f64, api: f64, input: usize, output: usize, plan| CostShare {
+            billed,
+            api,
+            input,
+            output,
+            plan,
+        };
+        let main_parts = vec![
+            share(0.0, 3.0, 420_000, 18_000, Some("Claude plan")),
+            share(0.0, 1.2, 90_000, 6_000, Some("ChatGPT plan")),
+        ];
+        let cost = CostReport {
+            main: share(0.0, 4.2, 510_000, 24_000, None),
+            main_parts,
+            workers: share(0.2, 0.2, 90_000, 4_000, None),
+            plans: Vec::new(),
+            embeddings: None,
+        };
+        div()
+            .size_full()
+            .p_4()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .font_family(theme.font_family.clone())
+            .child(
+                div()
+                    .p_3()
+                    .bg(theme.popover)
+                    .text_color(theme.popover_foreground)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(theme.radius_lg)
+                    .child(CostDetails::new(Some(cost)).into_any_element()),
+            )
+    }
+}
+
+fn cost_parts(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(420.), px(260.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| CostParts))
+                .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn cost_parts_light() {
+    goldens().assert("cost-parts-light", &cost_parts(ThemeMode::Light));
+}
+
+#[test]
+fn cost_parts_dark() {
+    goldens().assert("cost-parts-dark", &cost_parts(ThemeMode::Dark));
+}
+
 /// The last cache reminder, at 0:42 before the cache lapses, over an empty
 /// window.
 fn cache_reminder(mode: ThemeMode) -> Screenshot {
