@@ -252,6 +252,8 @@ pub struct SessionView {
 struct Unsent {
     text: String,
     images: Vec<Attached>,
+    /// The questions it answered.
+    answers: Vec<String>,
 }
 
 impl Unsent {
@@ -2395,6 +2397,7 @@ impl SessionView {
         let unsent = (self.session.is_some() && worker.is_none() && !command).then(|| Unsent {
             text: text.clone(),
             images: attached.clone(),
+            answers: message.answers.clone(),
         });
         let result = match (&self.session, to_worker) {
             (Some(session), Some(line)) => {
@@ -2463,7 +2466,8 @@ impl SessionView {
     }
 
     /// Puts the message arko didn't send (its `words`) back in the
-    /// composer, unless something else was typed since.
+    /// composer, to Arko and with the questions it answered, unless
+    /// something else was typed since.
     fn restore_unsent(&mut self, words: &str, window: &mut Window, cx: &mut Context<Self>) {
         if !self.unsent.as_ref().is_some_and(|unsent| unsent.is(words)) {
             return;
@@ -2475,9 +2479,18 @@ impl SessionView {
         if !empty || self.editing.is_some() {
             return;
         }
-        let Some(Unsent { text, images }) = self.unsent.take() else {
+        let Some(Unsent {
+            text,
+            images,
+            answers,
+        }) = self.unsent.take()
+        else {
             return;
         };
+        self.set_target(None, window, cx);
+        if let Some(session) = &self.session {
+            session.update(cx, |session, cx| session.reattach_questions(&answers, cx));
+        }
         self.composer_empty = false;
         self.composer.update(cx, |composer, cx| {
             composer.set_text(&text, window, cx);

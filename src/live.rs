@@ -1293,6 +1293,25 @@ impl LiveSession {
         }
     }
 
+    /// A message that answered the questions `ids` wasn't sent after all, so
+    /// those still open are open here again, and attached to the message
+    /// box.
+    pub fn reattach_questions(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        if ids.is_empty() {
+            return;
+        }
+        self.questions.settled.retain(|id| !ids.contains(id));
+        let attached = &self.questions.attached;
+        let open: Vec<String> = self
+            .open_questions()
+            .iter()
+            .map(|question| question.id.clone())
+            .filter(|id| ids.contains(id) || attached.contains(id))
+            .collect();
+        self.questions.attached = open;
+        cx.notify();
+    }
+
     /// The open questions the answer panel hasn't shown yet.
     pub fn unseen_questions(&self) -> Vec<String> {
         self.open_questions()

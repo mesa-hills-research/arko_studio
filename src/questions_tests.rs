@@ -379,6 +379,34 @@ fn answer_in_chat_attaches_the_questions_to_the_next_message(cx: &mut TestAppCon
     assert!(!app.shows(cx, "questions-replying"));
 }
 
+/// A reply that arko didn't send (it came as the old model began its report
+/// for a switch) comes back replying to the same questions, open again, so
+/// the next message answers them.
+#[gpui_kit::test]
+fn a_reply_arko_did_not_send_comes_back_replying_to_its_questions(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, three());
+    app.click(cx, "answer-in-chat");
+    app.type_text(cx, "Spaces, all of them, main.");
+    app.press(cx, "enter");
+    assert!(!app.shows(cx, "questions-replying"));
+    app.session.update(cx, |_, cx| {
+        cx.emit(crate::live::LiveEvent::NotSent(
+            "Spaces, all of them, main.".into(),
+        ))
+    });
+    cx.run_until_parked();
+    assert!(app.shows(cx, "questions-replying"));
+    assert!(!app.shows(cx, "questions-chip"));
+    app.press(cx, "enter");
+    let reply = arko::Input::Message(arko::Message {
+        text: "Spaces, all of them, main.".into(),
+        answers: vec!["q1".into(), "q2".into(), "q3".into()],
+        ..Default::default()
+    });
+    assert_eq!(app.sent(cx), [reply.clone(), reply]);
+}
+
 /// Esc in the panel does what "Answer in chat" does, and the keyboard goes
 /// to the message box.
 #[gpui_kit::test]

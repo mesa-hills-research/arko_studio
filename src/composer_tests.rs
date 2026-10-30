@@ -2046,6 +2046,33 @@ fn a_message_waits_while_the_report_is_written(cx: &mut TestAppContext) {
     assert_eq!(composer_text(&workspace, cx), "");
 }
 
+/// A message to Arko that arko didn't send comes back to Arko, though the
+/// composer was set to write to a worker meanwhile, so Enter sends it to
+/// Arko again.
+#[gpui_kit::test]
+fn a_message_arko_did_not_send_comes_back_to_arko(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    let view = session_view(&workspace, cx);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx))
+    });
+    act(cx, window, |window, cx| window.input("Carry on.", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_target(Some("r1".into()), window, cx)
+        })
+    });
+    session.update(cx, |_, cx| {
+        cx.emit(crate::live::LiveEvent::NotSent("Carry on.".into()))
+    });
+    act(cx, window, |_, _| {});
+    assert_eq!(composer_text(&workspace, cx), "Carry on.");
+    assert_eq!(cx.read(|cx| view.read(cx).target().cloned()), None);
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(sent(&session, cx), ["Carry on.", "Carry on."]);
+}
+
 /// A message sent as the report began, which arko didn't send, comes back
 /// to the composer whole, unless something else was typed since.
 #[gpui_kit::test]
