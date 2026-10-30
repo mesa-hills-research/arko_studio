@@ -247,6 +247,12 @@ pub struct SessionView {
     /// (it came as the old model began its report for a switch, or the
     /// worker's cache expired before arko continued it).
     unsent: Option<Unsent>,
+    /// A worker arko didn't continue because its cache expired, with arko's
+    /// warning. Arko takes the same message again as confirmed, so a
+    /// message to the worker asks with this warning until Continue, until
+    /// what the window knows of the worker says so too, or until the window
+    /// shows another session.
+    continue_refused: Option<(String, String)>,
 }
 
 /// A message given to the session, as the composer held it, and whom it
@@ -443,6 +449,7 @@ impl SessionView {
             _session_models: None,
             lists_worker_models: false,
             unsent: None,
+            continue_refused: None,
         };
         this.restore_draft(window, cx);
         this.sync_expanded(window, cx);
@@ -879,6 +886,7 @@ impl SessionView {
         self.close_panel(window, cx);
         self.target = None;
         self.unsent = None;
+        self.continue_refused = None;
         self.session = session;
         if let Some(session) = &self.session {
             session.update(cx, |session, cx| session.set_shown(true, cx));
@@ -2380,17 +2388,12 @@ impl SessionView {
         let continues = arko::worker_cache::message_parts(line).map(|(to, _)| to.to_string());
         // Continuing a worker whose prompt cache expired re-reads its whole
         // conversation, so the message waits for the user's answer.
-        if !continue_uncached
-            && let Some(session) = &self.session
-            && let Some(cache) =
-                workers::asks_to_continue(line, session.read(cx).workers(), chrono::Utc::now())
-        {
-            let warning = cache.warning(chrono::Utc::now());
+        if !continue_uncached && let Some((worker, warning)) = self.continue_question(line, cx) {
             let outgoing = Outgoing {
                 text,
                 images: attached,
             };
-            self.ask_continue(&cache.worker, &warning, outgoing, window, cx);
+            self.ask_continue(&worker, &warning, outgoing, window, cx);
             return;
         }
         let images: Vec<arko::Attachment> = attached.iter().map(|image| image.to_arko()).collect();
@@ -2460,6 +2463,7 @@ impl SessionView {
         let session = self.session.as_ref().map(Entity::entity_id);
         let target = self.target.clone();
         let view = cx.entity().downgrade();
+        let confirmed = worker.to_string();
         crate::prompts::confirm_continue(worker, warning, window, cx, move |window, cx| {
             view.update(cx, |view, cx| {
                 let holds = view.session.as_ref().map(Entity::entity_id) == session
@@ -2467,11 +2471,41 @@ impl SessionView {
                     && view.editing.is_none()
                     && view.composer.read(cx).expanded_text(cx) == outgoing.text;
                 if holds {
+                    view.forget_refusal(&confirmed);
                     view.send_as(outgoing.clone(), true, window, cx);
                 }
             })
             .ok();
         });
+    }
+
+    /// The worker the message `line` continues, and the warning to ask
+    /// with, when it asks first. It asks when what the window knows of the
+    /// worker says its cache expired, or when arko didn't continue the
+    /// worker and the window doesn't know that yet.
+    fn continue_question(&mut self, line: &str, cx: &App) -> Option<(String, String)> {
+        let session = self.session.as_ref()?;
+        let now = chrono::Utc::now();
+        if let Some(cache) = workers::asks_to_continue(line, session.read(cx).workers(), now) {
+            // The window knows now what arko knew.
+            self.forget_refusal(&cache.worker);
+            return Some((cache.worker.clone(), cache.warning(now)));
+        }
+        let (to, _) = arko::worker_cache::message_parts(line)?;
+        self.continue_refused
+            .clone()
+            .filter(|(worker, _)| worker.eq_ignore_ascii_case(to))
+    }
+
+    /// Forgets that arko didn't continue `worker`, if it didn't.
+    fn forget_refusal(&mut self, worker: &str) {
+        if self
+            .continue_refused
+            .as_ref()
+            .is_some_and(|(refused, _)| refused.eq_ignore_ascii_case(worker))
+        {
+            self.continue_refused = None;
+        }
     }
 
     /// Whether the shown session's old model writes its report for a switch.
@@ -2530,7 +2564,7 @@ impl SessionView {
     /// Arko didn't continue `worker`, whose prompt cache expired, with the
     /// message given to it last. The message comes back to the composer,
     /// and the dialog asks with Arko's `warning` whether to continue the
-    /// worker.
+    /// worker. Messages to the worker ask too, until one is confirmed.
     fn not_continued(
         &mut self,
         worker: &str,
@@ -2538,6 +2572,7 @@ impl SessionView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.continue_refused = Some((worker.to_string(), warning.to_string()));
         let goes_to_worker = |unsent: &Unsent| {
             unsent
                 .worker

@@ -961,6 +961,49 @@ fn the_question_about_continuing_a_worker_works_from_the_keyboard(cx: &mut TestA
     assert!(composer_focused(&view, window, cx), "after Enter");
 }
 
+/// The worker r1 as the window sees it: running, or finished two hours
+/// ago with a large conversation, its cache long expired.
+fn r1(running: bool) -> arko::remote::WorkerSummary {
+    let mut worker = crate::workers::ended_with_cache("r1", 2 * 3_600_000, 340_000);
+    if running {
+        worker.state = arko::remote::WorkerState::Running;
+    }
+    worker
+}
+
+/// A session in a workspace that follows a feed, as one does once it
+/// opens, and whose worker r1 the window still sees running.
+fn session_seeing_r1_running(
+    cx: &mut TestAppContext,
+) -> (
+    AnyWindowHandle,
+    Entity<crate::session_view::SessionView>,
+    Entity<crate::live::LiveSession>,
+    arko::remote::Feed,
+) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let feed = arko::remote::Feed::new("main");
+    session.update(cx, |session, cx| session.follow_feed(feed.clone(), cx));
+    cx.run_until_parked();
+    session.update(cx, |session, cx| {
+        session.set_workers(vec![r1(true)], &[], cx)
+    });
+    (window, view, session, feed)
+}
+
+/// Arko's notice that it didn't continue r1, whose cache expired, and the
+/// frame that brings it to the window.
+fn refuse_r1(feed: &arko::remote::Feed, cx: &mut TestAppContext) {
+    let warning = r1(false).cache().unwrap().warning(chrono::Utc::now());
+    feed.notice(
+        arko::Level::Warn,
+        &format!("{warning} The same /message again continues it."),
+    );
+    cx.executor().advance_clock(crate::live::FRAME * 2);
+    cx.run_until_parked();
+}
+
 /// Studio asks before continuing a worker by what it knows of the worker,
 /// which Arko may know better a moment later: the cache expired between
 /// the two, or the worker's end hadn't reached the window yet. Arko then
@@ -970,33 +1013,8 @@ fn the_question_about_continuing_a_worker_works_from_the_keyboard(cx: &mut TestA
 /// with Arko's words, and only Continue marks the message as confirmed.
 #[gpui_kit::test]
 fn a_message_arko_did_not_continue_comes_back_and_asks(cx: &mut TestAppContext) {
-    use crate::workers::ended_with_cache;
-    use arko::remote::{Feed, WorkerState};
-
-    let (window, workspace, session) = session_in_workspace(cx, 1300.);
-    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
-    let feed = Feed::new("main");
-    session.update(cx, |session, cx| session.follow_feed(feed.clone(), cx));
-    cx.run_until_parked();
-    // The window still sees r1 running.
-    let two_hours = 2 * 3_600_000;
-    let mut running = ended_with_cache("r1", two_hours, 340_000);
-    running.state = WorkerState::Running;
-    session.update(cx, |session, cx| {
-        session.set_workers(vec![running], &[], cx)
-    });
-    let warning = ended_with_cache("r1", two_hours, 340_000)
-        .cache()
-        .unwrap()
-        .warning(chrono::Utc::now());
-    let refuse = |cx: &mut TestAppContext| {
-        feed.notice(
-            arko::Level::Warn,
-            &format!("{warning} The same /message again continues it."),
-        );
-        cx.executor().advance_clock(crate::live::FRAME * 2);
-        cx.run_until_parked();
-    };
+    let (window, view, session, feed) = session_seeing_r1_running(cx);
+    let refuse = |cx: &mut TestAppContext| refuse_r1(&feed, cx);
     let set_target = |cx: &mut TestAppContext, target: Option<&str>| {
         act(cx, window, |window, cx| {
             view.update(cx, |view, cx| {
@@ -1039,6 +1057,68 @@ fn a_message_arko_did_not_continue_comes_back_and_asks(cx: &mut TestAppContext) 
     refuse(cx);
     assert!(!shows_dialog(cx, window));
     assert_eq!(composer_text(&view, cx), "Wait.");
+}
+
+/// Arko takes the same message again as confirmed after it didn't
+/// continue a worker. So once it didn't, a message to the worker asks
+/// again after Cancel, though the window still sees the worker running.
+/// It asks until Continue, until the window sees the worker's cache
+/// expired too, or until the window shows another session.
+#[gpui_kit::test]
+fn a_worker_arko_did_not_continue_asks_until_confirmed(cx: &mut TestAppContext) {
+    let (window, view, session, feed) = session_seeing_r1_running(cx);
+    let queued = |cx: &mut TestAppContext| queued_continues(&session, cx);
+    let enter = |cx: &mut TestAppContext| act(cx, window, |window, cx| window.press("enter", cx));
+    let went = |text: &str, confirmed| vec![(text.to_string(), confirmed)];
+
+    send_text(cx, window, "/message r1 Go on.");
+    refuse_r1(&feed, cx);
+    answer_dialog(cx, window, "cancel");
+    enter(cx);
+    assert!(shows_dialog(cx, window), "after Cancel");
+    assert_eq!(queued(cx).len(), 1);
+    answer_dialog(cx, window, "ok");
+    assert_eq!(queued(cx)[1..], went("/message r1 Go on.", true));
+    // Confirmed, the next message goes as the window sees r1.
+    send_text(cx, window, "/message r1 And the docs.");
+    assert!(!shows_dialog(cx, window));
+    assert_eq!(queued(cx)[2..], went("/message r1 And the docs.", false));
+
+    // Another session shown drops it.
+    refuse_r1(&feed, cx);
+    answer_dialog(cx, window, "cancel");
+    let other = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    for shown in [&other, &session] {
+        act(cx, window, |window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_session(Some(shown.clone()), window, cx)
+            })
+        });
+    }
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    act(cx, window, |window, cx| {
+        composer.update(cx, |composer, cx| composer.set_text("", window, cx))
+    });
+    send_text(cx, window, "/message r1 And the docs.");
+    assert!(!shows_dialog(cx, window));
+    assert_eq!(queued(cx)[3..], went("/message r1 And the docs.", false));
+
+    // So does the window seeing r1's cache expired: it asks by that, and
+    // once r1 runs again, a message to it goes at once.
+    refuse_r1(&feed, cx);
+    answer_dialog(cx, window, "cancel");
+    session.update(cx, |session, cx| {
+        session.set_workers(vec![r1(false)], &[], cx)
+    });
+    enter(cx);
+    assert!(shows_dialog(cx, window), "by the window's record");
+    answer_dialog(cx, window, "cancel");
+    session.update(cx, |session, cx| {
+        session.set_workers(vec![r1(true)], &[], cx)
+    });
+    enter(cx);
+    assert!(!shows_dialog(cx, window));
+    assert_eq!(queued(cx)[4..], went("/message r1 And the docs.", false));
 }
 
 /// The confirmation names the worker and reads as a sentence.
