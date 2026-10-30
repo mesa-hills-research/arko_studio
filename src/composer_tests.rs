@@ -1925,3 +1925,50 @@ fn the_switch_dialog_gives_the_keyboard_back_to_the_chip(cx: &mut TestAppContext
     });
     assert!(has_keyboard(window, "mode-model", cx), "after an effort");
 }
+
+/// Main agent | New workers is a group of radio buttons, as Chat | Agent
+/// is. A screen reader hears which is chosen, and ←/→ choose while it has
+/// the keyboard.
+#[gpui_kit::test]
+fn main_agent_or_new_workers_is_a_radio_group(cx: &mut TestAppContext) {
+    use gpui_kit::Role;
+    let (window, workspace, _) = started_session_on(cx, two_models());
+    let view = session_view(&workspace, cx);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx))
+    });
+    tab_to(window, "mode-model", cx);
+    act(cx, window, |window, cx| window.press("enter", cx));
+    let chosen = |window: AnyWindowHandle, cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            ["model-for-main", "model-for-workers"].map(|id| {
+                let segment = window.find(id);
+                assert_eq!(segment.role(), Some(Role::RadioButton), "{id}");
+                assert_eq!(segment.checked(), segment.selected(), "{id}");
+                segment.selected() == Some(true)
+            })
+        })
+        .unwrap()
+    };
+    act(cx, window, |window, _| {
+        let group = window.find("model-for");
+        assert_eq!(group.role(), Some(Role::RadioGroup));
+        assert_eq!(group.label(), Some("Agents"));
+        assert_eq!(window.find("model-for-main").label(), Some("Main agent"));
+    });
+    assert_eq!(chosen(window, cx), [true, false]);
+    tab_to(window, "model-for", cx);
+    act(cx, window, |window, cx| window.press("right", cx));
+    assert_eq!(chosen(window, cx), [false, true]);
+    act(cx, window, |window, _| {
+        assert!(window.try_find("effort-high").is_none(), "the main agent's");
+    });
+    act(cx, window, |window, cx| window.press("left", cx));
+    assert_eq!(chosen(window, cx), [true, false]);
+    // A click chooses too.
+    act(cx, window, |window, cx| {
+        window.click("model-for-workers", cx)
+    });
+    assert_eq!(chosen(window, cx), [false, true]);
+}

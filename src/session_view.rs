@@ -18,7 +18,7 @@ use gpui_kit::component::tooltip::{ManagedTooltipExt as _, Tooltip};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, ThemeStyled as _,
     WindowExt as _,
-    button::{Button, ButtonVariants as _, Toggle, ToggleGroup},
+    button::{Button, ButtonVariants as _},
     concentric_radius, h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
     popover::Popover,
@@ -208,6 +208,8 @@ pub struct SessionView {
     /// one in the chip's popover.
     mode_focus: FocusHandle,
     mode_menu_focus: FocusHandle,
+    /// Main agent | New workers in the chip's popover.
+    model_for_focus: FocusHandle,
     _session: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
     _models: Option<Task<()>>,
@@ -391,6 +393,7 @@ impl SessionView {
             model_filter,
             mode_focus: cx.focus_handle().tab_stop(true),
             mode_menu_focus: cx.focus_handle().tab_stop(true),
+            model_for_focus: cx.focus_handle().tab_stop(true),
             _session: Vec::new(),
             _subscriptions: subscriptions,
             _models: None,
@@ -3055,35 +3058,10 @@ impl SessionView {
                 )
             })
             .when(lists_both, |this| {
-                let view = view.clone();
-                let workers = self.lists_worker_models;
                 this.child(
-                    ToggleGroup::new("model-for")
-                        .segmented()
-                        .small()
-                        .child(
-                            Toggle::new("model-for-main")
-                                .label("Main agent")
-                                .checked(!workers),
-                        )
-                        .child(
-                            Toggle::new("model-for-workers")
-                                .label("New workers")
-                                .checked(workers),
-                        )
-                        .on_click(move |checks, _, cx| {
-                            // The one that turned on, else the one shown stays.
-                            let workers = match checks.as_slice() {
-                                [true, _] if workers => false,
-                                [_, true] if !workers => true,
-                                _ => return,
-                            };
-                            view.update(cx, |view, cx| {
-                                view.lists_worker_models = workers;
-                                cx.notify();
-                            })
-                            .ok();
-                        }),
+                    h_flex()
+                        .justify_center()
+                        .child(self.render_model_for(window, cx)),
                 )
             })
             .child(Input::new(&self.model_filter).small().cleanable(true))
@@ -3155,6 +3133,70 @@ impl SessionView {
                 )
             })
             .into_any_element()
+    }
+
+    /// Main agent | New workers, once the conversation has started: whose
+    /// models the list shows. It looks and works as Chat | Agent does, a
+    /// group of radio buttons whose ←/→ choose while it has focus.
+    fn render_model_for(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let workers = self.lists_worker_models;
+        let focused = self.model_for_focus.is_focused(window) && window.last_input_was_keyboard();
+        let view = cx.entity().downgrade();
+        let choose = Rc::new(move |workers: bool, cx: &mut App| {
+            view.update(cx, |view, cx| {
+                view.lists_worker_models = workers;
+                cx.notify();
+            })
+            .ok();
+        });
+        let segment = |value: bool, id: &'static str, label: &'static str| {
+            let checked = workers == value;
+            let choose = choose.clone();
+            h_flex()
+                .id(id)
+                .test_support()
+                .role(Role::RadioButton)
+                .aria_label(label)
+                .aria_toggled(if checked {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
+                .aria_selected(checked)
+                .when(checked, |this| this.aria_active_descendant())
+                .items_center()
+                .justify_center()
+                .map(|this| segmented::segment_style(this, checked, false, cx))
+                .child(segmented::segment_label(label))
+                .when(!checked, |this| {
+                    this.cursor_pointer()
+                        .on_click(move |_, _, cx| choose(value, cx))
+                })
+        };
+        h_flex()
+            .id("model-for")
+            .test_support()
+            .track_focus(&self.model_for_focus)
+            .role(Role::RadioGroup)
+            .aria_label("Agents")
+            .map(|this| segmented::track_style(this, cx))
+            .on_key_down({
+                let choose = choose.clone();
+                move |event: &KeyDownEvent, _, cx| {
+                    let to = match event.keystroke.key.as_str() {
+                        "left" => false,
+                        "right" => true,
+                        _ => return,
+                    };
+                    cx.stop_propagation();
+                    if to != workers {
+                        choose(to, cx);
+                    }
+                }
+            })
+            .when(focused, |this| this.focus_ring_style(window, cx))
+            .child(segment(false, "model-for-main", "Main agent"))
+            .child(segment(true, "model-for-workers", "New workers"))
     }
 
     /// Chat or Agent: a new session just switches, an open one asks first
