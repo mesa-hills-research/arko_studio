@@ -478,6 +478,16 @@ impl WorkersPanel {
         })
     }
 
+    /// The place among `rows` of the row that shows the keyboard cursor's
+    /// ring. It shows while the list has the keyboard and the last input
+    /// was a key, so a click rings no row (its press focuses the list while
+    /// the cursor is still on the row before).
+    fn cursor_ring(&self, rows: &[PanelRow], window: &Window, cx: &App) -> Option<usize> {
+        let keyed =
+            window.last_input_was_keyboard() && self.focus_handle.contains_focused(window, cx);
+        keyed.then(|| self.cursor_index(rows)).flatten()
+    }
+
     fn move_cursor(&mut self, step: isize, wrap: bool, cx: &mut Context<Self>) -> bool {
         let rows = self.rows(self.now());
         if rows.is_empty() {
@@ -643,8 +653,7 @@ impl WorkersPanel {
                 .child("No workers")
                 .into_any_element();
         }
-        let focused = self.focus_handle.contains_focused(window, cx);
-        let cursor = focused.then(|| self.cursor_index(&rows)).flatten();
+        let cursor = self.cursor_ring(&rows, window, cx);
         let height = WorkerRow::height(window, self.meta);
         let children: Vec<AnyElement> = rows
             .iter()

@@ -182,6 +182,15 @@ impl NotificationsPanel {
         self.focus_handle.contains_focused(window, cx)
     }
 
+    /// The notification whose row shows the keyboard cursor's ring. It
+    /// shows while the list has the keyboard and the last input was a key,
+    /// so a click rings no row (its press focuses the list while the cursor
+    /// is still on the row before).
+    fn cursor_ring(&self, window: &Window, cx: &App) -> Option<u64> {
+        self.cursor
+            .filter(|_| window.last_input_was_keyboard() && self.contains_focus(window, cx))
+    }
+
     /// The ids of the notifications, newest first.
     fn order(&self, cx: &App) -> Vec<u64> {
         notifications::entries(cx)
@@ -502,7 +511,7 @@ impl NotificationsPanel {
         }
         let now = self.now(cx);
         let times = figures::Times::of(cx);
-        let focused = self.focus_handle.contains_focused(window, cx);
+        let ring = self.cursor_ring(window, cx);
         let existing = self.existing(cx);
         let rows: Vec<AnyElement> = entries
             .iter()
@@ -511,7 +520,7 @@ impl NotificationsPanel {
                 let openable = entry
                     .session_id()
                     .is_some_and(|session| existing.contains(&session));
-                let selected = focused && self.cursor == Some(entry.id);
+                let selected = ring == Some(entry.id);
                 let when = figures::ago(entry.at, now, &times);
                 self.render_row(index, entry, openable, selected, when, cx)
             })
@@ -597,7 +606,7 @@ mod tests {
     use crate::backend::FakeBackend;
     use crate::cache_reminders::ReminderClock;
     use crate::notifications::{self, Entry};
-    use crate::tests::{act, open, open_title};
+    use crate::tests::{act, open, open_title, press_mouse};
     use crate::workspace::Workspace;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
@@ -876,6 +885,51 @@ mod tests {
             })
             .unwrap();
         assert!(!in_panel);
+    }
+
+    /// The ring follows the keyboard alone. A click on a row rings neither
+    /// the row the keyboard was on nor the one clicked, while the button is
+    /// held or after it's let go.
+    #[gpui_kit::test]
+    fn a_click_rings_no_row_and_keys_ring_the_cursor(cx: &mut TestAppContext) {
+        let panel = start(history(), 1300., cx);
+        let ring = |cx: &mut TestAppContext| {
+            cx.update_window(panel.window, |_, window, cx| {
+                let list = panel.panel.read(cx);
+                (
+                    list.cursor_ring(window, cx),
+                    list.contains_focus(window, cx),
+                )
+            })
+            .unwrap()
+        };
+        panel.press(cx, "secondary-shift-m");
+        assert_eq!(ring(cx), (Some(4), true), "on the newest");
+        panel.press(cx, "down");
+        assert_eq!(ring(cx), (Some(3), true));
+
+        press_mouse(cx, panel.window, row(2), true);
+        assert_eq!(ring(cx), (None, true), "held");
+        press_mouse(cx, panel.window, row(2), false);
+        assert_eq!(
+            open_title(&panel.workspace, cx).as_deref(),
+            Some("Variable fonts and the wght axis")
+        );
+        assert_eq!(
+            ring(cx),
+            (None, false),
+            "the session opened has the keyboard"
+        );
+
+        // Back in the list, a key rings the row clicked, the one row of the
+        // session it opened.
+        cx.update_window(panel.window, |_, window, cx| {
+            panel.panel.update(cx, |list, cx| list.focus(window, cx))
+        })
+        .unwrap();
+        assert_eq!(ring(cx), (None, true));
+        panel.press(cx, "down");
+        assert_eq!(ring(cx), (Some(2), true));
     }
 
     /// Mod+Shift+M comes from a letter key, which the platforms send with

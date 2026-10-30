@@ -17,6 +17,7 @@ use gpui_kit::{
 use super::{PanelRow, PanelSource, WorkersPanel, WorkersPanelEvent};
 use crate::Startup;
 use crate::backend::FakeBackend;
+use crate::tests::press_mouse;
 use crate::workers::ENDED_SHOWS_FOR_MS;
 
 struct Panel {
@@ -172,6 +173,51 @@ impl Panel {
     fn open_worker(&self, cx: &mut TestAppContext) -> Option<SharedString> {
         cx.read(|cx| self.panel.read(cx).open_worker().cloned())
     }
+
+    /// The place of the row that shows the keyboard cursor's ring, and
+    /// whether the list has the keyboard.
+    fn ring(&self, cx: &mut TestAppContext) -> (Option<usize>, bool) {
+        let now = *self.now.borrow();
+        cx.update_window(self.window, |_, window, cx| {
+            let panel = self.panel.read(cx);
+            (
+                panel.cursor_ring(&panel.rows(now), window, cx),
+                panel.focus_handle.contains_focused(window, cx),
+            )
+        })
+        .unwrap()
+    }
+}
+
+/// The ring follows the keyboard alone. A click on a row rings neither the
+/// row the keyboard was on nor the one clicked, while the button is held
+/// or after it's let go.
+#[gpui_kit::test]
+fn a_click_rings_no_row_and_keys_ring_the_cursor(cx: &mut TestAppContext) {
+    let panel = open(cx);
+    *panel.now.borrow_mut() += ENDED_SHOWS_FOR_MS;
+    panel.draw(cx);
+    assert_eq!(
+        panel.rows(cx),
+        [worker("r1"), worker("r3"), PanelRow::Finished(1)]
+    );
+    cx.update_window(panel.window, |_, window, cx| {
+        panel.panel.update(cx, |panel, cx| panel.focus(window, cx))
+    })
+    .unwrap();
+    panel.press(cx, "down");
+    assert_eq!(panel.ring(cx), (Some(1), true));
+
+    press_mouse(cx, panel.window, "workers-finished", true);
+    assert_eq!(panel.ring(cx), (None, true), "held");
+    press_mouse(cx, panel.window, "workers-finished", false);
+    panel.draw(cx);
+    assert_eq!(panel.rows(cx).len(), 4, "the group opened");
+    assert_eq!(panel.ring(cx), (None, true), "let go");
+
+    // The keyboard goes on from the row clicked.
+    panel.press(cx, "up");
+    assert_eq!(panel.ring(cx), (Some(1), true));
 }
 
 fn worker(id: &str) -> PanelRow {
