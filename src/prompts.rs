@@ -745,6 +745,42 @@ pub fn confirm_model_switch(
     });
 }
 
+/// The dialog's title and description before a message continues the
+/// worker of `cache` at `now`, with Arko's warning of what that costs.
+pub fn continue_text(
+    cache: &arko::worker_cache::WorkerCache,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (String, String) {
+    (
+        format!("Continue {}?", cache.worker),
+        workers::curly(&cache.warning(now)),
+    )
+}
+
+/// Asks before a message continues a finished worker whose prompt cache
+/// expired (`cache`). `answer` hears Continue.
+pub fn confirm_continue(
+    cache: &arko::worker_cache::WorkerCache,
+    window: &mut Window,
+    cx: &mut App,
+    answer: impl Fn(&mut Window, &mut App) + 'static,
+) {
+    let (title, description) = continue_text(cache, chrono::Utc::now());
+    let answer = std::rc::Rc::new(answer);
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let ok = answer.clone();
+        alert
+            .title(title.clone())
+            .description(description.clone())
+            .confirm()
+            .ok_text("Continue")
+            .on_ok(move |_, window, cx| {
+                ok(window, cx);
+                true
+            })
+    });
+}
+
 /// Asks for a folder, and puts it in `chosen`.
 fn browse_into(
     chosen: std::rc::Rc<std::cell::RefCell<Option<std::path::PathBuf>>>,
@@ -872,7 +908,23 @@ pub fn confirm_stop(
 
 #[cfg(test)]
 mod tests {
-    use super::{ModelSwitch, model_switch_text, short_tokens, switch_cost_text};
+    use super::{ModelSwitch, continue_text, model_switch_text, short_tokens, switch_cost_text};
+
+    /// The question names the worker, and says in Arko's words, with the
+    /// app's apostrophes, how long ago its cache expired and what
+    /// continuing re-reads.
+    #[test]
+    fn continuing_a_worker_says_what_it_re_reads() {
+        let worker = crate::workers::ended_with_cache("r3", 2 * 3_600_000 + 60_000, 340_000);
+        let cache = worker.cache().unwrap();
+        assert_eq!(
+            continue_text(&cache, chrono::Utc::now()),
+            (
+                "Continue r3?".to_string(),
+                "r3’s cache expired 2 hours ago. Continuing re-reads about 340k tokens without it (≈ $1.36 at API prices).".to_string()
+            )
+        );
+    }
 
     /// A switch of model says what starts, on what, and where the current
     /// conversation stays.

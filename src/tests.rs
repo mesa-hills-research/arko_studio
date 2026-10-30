@@ -724,6 +724,177 @@ fn a_mistyped_command_stays_in_the_composer(cx: &mut TestAppContext) {
     }
 }
 
+/// The messages the session has queued, as typed, each with whether it
+/// continues a worker whose cache expired without asking.
+fn queued_continues(
+    session: &Entity<crate::live::LiveSession>,
+    cx: &mut TestAppContext,
+) -> Vec<(String, bool)> {
+    cx.read(|cx| {
+        session
+            .read(cx)
+            .queued()
+            .iter()
+            .filter_map(|input| match input {
+                arko::Input::Message(message) => {
+                    Some((message.text.clone(), message.continue_uncached))
+                }
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// A session in a workspace whose worker r1 finished two hours ago with a
+/// large conversation, its prompt cache long expired. r2's conversation is
+/// small, and r3's cache lasts a few more minutes.
+fn session_with_uncached_worker(
+    cx: &mut TestAppContext,
+) -> (
+    AnyWindowHandle,
+    Entity<crate::session_view::SessionView>,
+    Entity<crate::live::LiveSession>,
+) {
+    use crate::workers::ended_with_cache;
+
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let two_hours = 2 * 3_600_000;
+    session.update(cx, |session, cx| {
+        let workers = vec![
+            ended_with_cache("r1", two_hours, 340_000),
+            ended_with_cache("r2", two_hours, 8_000),
+            ended_with_cache("r3", -300_000, 340_000),
+        ];
+        session.set_workers(workers, &[], cx)
+    });
+    (window, view, session)
+}
+
+fn composer_text(view: &Entity<crate::session_view::SessionView>, cx: &TestAppContext) -> String {
+    cx.read(|cx| view.read(cx).composer().read(cx).text(cx))
+}
+
+/// Clicks the dialog's `button`, and lets it close and give the keyboard
+/// back.
+fn answer_dialog(cx: &mut TestAppContext, window: AnyWindowHandle, button: &'static str) {
+    act(cx, window, |window, cx| {
+        window.within("dialog").click(button, cx)
+    });
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+}
+
+fn shows_dialog(cx: &mut TestAppContext, window: AnyWindowHandle) -> bool {
+    cx.update_window(window, |_, window, cx| window.has_active_dialog(cx))
+        .unwrap()
+}
+
+/// A message that continues a finished worker whose prompt cache expired
+/// stays in the composer while a dialog asks. Cancel keeps it there.
+/// Continue sends it marked as confirmed, so Arko continues the worker,
+/// and the composer empties as after any message. That holds for a
+/// `/message` typed to Arko and for a message written to the worker.
+#[gpui_kit::test]
+fn continuing_a_worker_whose_cache_expired_asks_first(cx: &mut TestAppContext) {
+    let (window, view, session) = session_with_uncached_worker(cx);
+    for (target, typed) in [(None, "/message R1 Go on."), (Some("r1"), "Go on.")] {
+        act(cx, window, |window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_target(target.map(Into::into), window, cx)
+            })
+        });
+        let queued = queued_continues(&session, cx).len();
+        send_text(cx, window, typed);
+        assert!(shows_dialog(cx, window), "{target:?}");
+        assert_eq!(composer_text(&view, cx), typed);
+        assert_eq!(queued_continues(&session, cx).len(), queued, "{target:?}");
+
+        answer_dialog(cx, window, "cancel");
+        assert!(!shows_dialog(cx, window), "{target:?}");
+        assert_eq!(composer_text(&view, cx), typed);
+        assert_eq!(queued_continues(&session, cx).len(), queued, "{target:?}");
+
+        act(cx, window, |window, cx| window.press("enter", cx));
+        assert!(shows_dialog(cx, window), "{target:?}");
+        answer_dialog(cx, window, "ok");
+        assert!(!shows_dialog(cx, window), "{target:?}");
+        let line = match target {
+            Some(_) => "/message r1 Go on.",
+            None => "/message R1 Go on.",
+        };
+        assert_eq!(
+            queued_continues(&session, cx)[queued..],
+            [(line.to_string(), true)]
+        );
+        assert_eq!(composer_text(&view, cx), "", "{target:?}");
+    }
+}
+
+/// A message to a worker whose conversation is small, or whose cache
+/// lasts, goes at once and continues it as usual.
+#[gpui_kit::test]
+fn continuing_a_small_or_cached_worker_goes_at_once(cx: &mut TestAppContext) {
+    let (window, view, session) = session_with_uncached_worker(cx);
+    send_text(cx, window, "/message r2 Go on.");
+    send_text(cx, window, "/message r3 Go on.");
+    assert!(!shows_dialog(cx, window));
+    assert_eq!(
+        queued_continues(&session, cx),
+        [
+            ("/message r2 Go on.".to_string(), false),
+            ("/message r3 Go on.".to_string(), false),
+        ]
+    );
+    assert_eq!(composer_text(&view, cx), "");
+}
+
+/// The question is about the message the composer held when it was asked.
+/// A different message in the composer by the time of Continue goes
+/// nowhere, and sending it asks about it in turn.
+#[gpui_kit::test]
+fn an_edit_drops_the_question_about_continuing_a_worker(cx: &mut TestAppContext) {
+    let (window, view, session) = session_with_uncached_worker(cx);
+    send_text(cx, window, "/message r1 Go on.");
+    assert!(shows_dialog(cx, window));
+    act(cx, window, |window, cx| {
+        let composer = view.read(cx).composer().clone();
+        composer.update(cx, |composer, cx| {
+            composer.set_text("/message r1 Start over.", window, cx)
+        });
+    });
+    answer_dialog(cx, window, "ok");
+    assert!(!shows_dialog(cx, window));
+    assert!(queued_continues(&session, cx).is_empty());
+    assert_eq!(composer_text(&view, cx), "/message r1 Start over.");
+
+    act(cx, window, |window, cx| window.press("enter", cx));
+    answer_dialog(cx, window, "ok");
+    assert_eq!(
+        queued_continues(&session, cx),
+        [("/message r1 Start over.".to_string(), true)]
+    );
+}
+
+/// The question is about the session it was asked in. Once the window shows
+/// another session, Continue sends nothing to either.
+#[gpui_kit::test]
+fn switching_sessions_drops_the_question_about_continuing_a_worker(cx: &mut TestAppContext) {
+    let (window, view, session) = session_with_uncached_worker(cx);
+    send_text(cx, window, "/message r1 Go on.");
+    assert!(shows_dialog(cx, window));
+    let other = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_session(Some(other.clone()), window, cx)
+        })
+    });
+    answer_dialog(cx, window, "ok");
+    assert!(queued_continues(&session, cx).is_empty());
+    assert!(queued_continues(&other, cx).is_empty());
+}
+
 /// The confirmation names the worker and reads as a sentence.
 #[test]
 fn the_confirmation_of_a_message_to_a_worker_reads_as_a_sentence() {

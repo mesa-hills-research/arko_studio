@@ -35,7 +35,7 @@ use crate::layout::WidthClass;
 use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase, PromptKind};
 use crate::questions::{AnswerPanel, AnswerPanelEvent};
 use crate::transcript::{AgentFilter, FindStatus, TranscriptEvent, TranscriptView};
-use crate::workers::Usual;
+use crate::workers::{self, Usual};
 use crate::{drafts, menus, prefs, segmented};
 
 /// How many recent folders Change… offers.
@@ -2285,8 +2285,22 @@ impl SessionView {
 
     /// Sends `text`: runs the app's own commands, starts a new session with
     /// it, or gives it to the open session as a message, a note or an
-    /// answer. The composer empties once it is taken.
+    /// answer. The composer empties once it is taken. A message that
+    /// continues a worker whose prompt cache expired asks first.
     pub fn send(&mut self, outgoing: Outgoing, window: &mut Window, cx: &mut Context<Self>) {
+        self.send_as(outgoing, false, window, cx);
+    }
+
+    /// Sends `outgoing` as [`send`](Self::send) does. With
+    /// `continue_uncached` the user agreed to continue the worker, so it
+    /// goes without asking.
+    fn send_as(
+        &mut self,
+        outgoing: Outgoing,
+        continue_uncached: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.editing.is_some() {
             self.send_edit(outgoing, window, cx);
             return;
@@ -2336,6 +2350,35 @@ impl SessionView {
             );
             return;
         }
+        let worker = self.session.as_ref().and(self.target.clone());
+        if worker.is_some() && !attached.is_empty() {
+            window.push_notification(
+                "A message to a worker takes text only. Remove the images, or send them to Arko.",
+                cx,
+            );
+            return;
+        }
+        // As `/message r1 …` typed in the terminal.
+        let to_worker = worker
+            .as_ref()
+            .map(|worker| format!("/message {worker} {}", text.trim()));
+        // Continuing a worker whose prompt cache expired re-reads its whole
+        // conversation, so the message waits for the user's answer.
+        if !continue_uncached
+            && let Some(session) = &self.session
+            && let Some(cache) = workers::asks_to_continue(
+                to_worker.as_deref().unwrap_or(&text),
+                session.read(cx).workers(),
+                chrono::Utc::now(),
+            )
+        {
+            let outgoing = Outgoing {
+                text,
+                images: attached,
+            };
+            self.ask_continue(&cache, outgoing, window, cx);
+            return;
+        }
         let images: Vec<arko::Attachment> = attached.iter().map(|image| image.to_arko()).collect();
         // A command runs and leaves the questions attached. Other text
         // answers them.
@@ -2347,22 +2390,17 @@ impl SessionView {
             } else {
                 self.attached(cx)
             },
-            continue_uncached: false,
+            continue_uncached,
         };
-        let worker = self.session.as_ref().and(self.target.clone());
         let unsent = (self.session.is_some() && worker.is_none() && !command).then(|| Unsent {
             text: text.clone(),
             images: attached.clone(),
         });
-        let result = match (&self.session, &self.target) {
-            (Some(_), Some(_)) if !message.images.is_empty() => Err(
-                "A message to a worker takes text only. Remove the images, or send them to Arko."
-                    .to_string(),
-            ),
-            (Some(session), Some(worker)) => {
-                // As `/message r1 …` typed in the terminal.
+        let result = match (&self.session, to_worker) {
+            (Some(session), Some(line)) => {
                 let input = arko::Input::Message(arko::Message {
-                    text: format!("/message {worker} {}", text.trim()),
+                    text: line,
+                    continue_uncached,
                     ..Default::default()
                 });
                 session.update(cx, |session, cx| session.send(input, cx))
@@ -2386,6 +2424,35 @@ impl SessionView {
             }
             Err(why) => window.push_notification(why, cx),
         }
+    }
+
+    /// Asks before `outgoing` continues the finished worker of `cache`,
+    /// whose prompt cache expired. It stays in the composer meanwhile.
+    /// Continue sends it while the view shows the same session and the
+    /// composer still holds it for the same worker. Otherwise nothing goes,
+    /// since the question was about another message.
+    fn ask_continue(
+        &mut self,
+        cache: &arko::worker_cache::WorkerCache,
+        outgoing: Outgoing,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = self.session.as_ref().map(Entity::entity_id);
+        let target = self.target.clone();
+        let view = cx.entity().downgrade();
+        crate::prompts::confirm_continue(cache, window, cx, move |window, cx| {
+            view.update(cx, |view, cx| {
+                let holds = view.session.as_ref().map(Entity::entity_id) == session
+                    && view.target == target
+                    && view.editing.is_none()
+                    && view.composer.read(cx).expanded_text(cx) == outgoing.text;
+                if holds {
+                    view.send_as(outgoing.clone(), true, window, cx);
+                }
+            })
+            .ok();
+        });
     }
 
     /// Whether the shown session's old model writes its report for a switch.

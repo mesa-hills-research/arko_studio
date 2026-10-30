@@ -478,6 +478,37 @@ pub fn last_line(worker: &WorkerSummary) -> Option<String> {
         .filter(|line| !line.is_empty())
 }
 
+/// The prompt cache of the worker in `workers` that the `/message` in
+/// `line` continues, when continuing it at `now` asks first: the worker
+/// ended, its cache expired and its conversation is large enough to cost
+/// ([`WorkerCache::asks`](arko::worker_cache::WorkerCache::asks)). The line
+/// is read as Arko reads it, and the worker matched in any case.
+pub fn asks_to_continue(
+    line: &str,
+    workers: &[WorkerSummary],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<arko::worker_cache::WorkerCache> {
+    let (to, _) = arko::worker_cache::message_parts(line)?;
+    workers
+        .iter()
+        .find(|worker| worker.id.eq_ignore_ascii_case(to))?
+        .cache()
+        .filter(|cache| cache.asks(now))
+}
+
+/// A worker that finished with `tokens` of conversation, whose prompt cache
+/// expired `expired_ms` ago (negative while it lasts), and whose re-read
+/// costs $1.36 (tests).
+#[cfg(test)]
+pub fn ended_with_cache(id: &str, expired_ms: i64, tokens: u64) -> WorkerSummary {
+    let mut worker = WorkerSummary::new(id);
+    worker.state = WorkerState::Finished;
+    worker.cache_expires_at = Some(chrono::Utc::now().timestamp_millis() - expired_ms);
+    worker.reread_tokens = Some(tokens);
+    worker.reread_dollars = Some(1.36);
+    worker
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,5 +1108,37 @@ mod tests {
         // An error left over from a run that went on isn't shown.
         failed.state = WorkerState::Running;
         assert_eq!(failure(&failed), None);
+    }
+
+    /// A `/message` that continues a finished worker whose cache expired
+    /// asks first when its conversation is large. The line is read as Arko
+    /// reads it, with any whitespace and the worker in any case. A worker
+    /// still cached, a small or running one, and other lines go at once.
+    #[test]
+    fn continuing_a_worker_whose_cache_expired_asks_first() {
+        let now = chrono::Utc::now();
+        let two_hours = 2 * 3_600_000;
+        let mut running = ended_with_cache("r4", two_hours, 340_000);
+        running.state = WorkerState::Running;
+        let workers = [
+            ended_with_cache("r1", two_hours, 340_000),
+            ended_with_cache("r2", two_hours, 8_000),
+            ended_with_cache("r3", -60_000, 340_000),
+            running,
+        ];
+        let asks = |line: &str| asks_to_continue(line, &workers, now).map(|cache| cache.worker);
+        assert_eq!(asks("/message r1 Go on.").as_deref(), Some("r1"));
+        assert_eq!(asks("  /message\tR1   Go on.\n").as_deref(), Some("r1"));
+        for line in [
+            "/message r2 Go on.",
+            "/message r3 Go on.",
+            "/message r4 Go on.",
+            "/message r9 Go on.",
+            "/message r1",
+            "/message-copies off",
+            "Ask r1 to go on.",
+        ] {
+            assert_eq!(asks(line), None, "{line}");
+        }
     }
 }

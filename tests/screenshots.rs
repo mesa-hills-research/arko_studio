@@ -2845,6 +2845,55 @@ fn edit_dialog_dark() {
     goldens().assert("edit-dialog-dark", &edit_dialog_window(ThemeMode::Dark));
 }
 
+/// The dialog that asks before a message continues a worker whose prompt
+/// cache expired two hours ago, over a new window.
+fn continue_worker_window(mode: ThemeMode) -> Screenshot {
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(900.), px(560.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, _)| window)
+        })
+        .unwrap();
+    let cache = arko::worker_cache::WorkerCache {
+        worker: "r3".into(),
+        expires_at: chrono::Utc::now() - chrono::Duration::minutes(121),
+        cost: arko::details::SwitchCost {
+            tokens: 340_000,
+            dollars: Some(1.36),
+            plan: None,
+        },
+    };
+    app.update_window(window, |_, window, cx| {
+        arko_studio::prompts::confirm_continue(&cache, window, cx, |_, _| {})
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn continue_worker_light() {
+    goldens().assert(
+        "continue-worker-light",
+        &continue_worker_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn continue_worker_dark() {
+    goldens().assert(
+        "continue-worker-dark",
+        &continue_worker_window(ThemeMode::Dark),
+    );
+}
+
 /// About Arko Studio over a window `width` × `height` logical pixels, with
 /// the built-in fonts, so all three credits show. `scroll` turns the mouse
 /// wheel that many pixels down over the dialog.
