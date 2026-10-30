@@ -480,6 +480,7 @@ pub struct TranscriptView {
     frames: Vec<usize>,
     _prefs: Subscription,
     _show_source: Subscription,
+    _theme: Subscription,
 }
 
 impl EventEmitter<TranscriptEvent> for TranscriptView {}
@@ -522,6 +523,10 @@ impl TranscriptView {
                 cx.notify();
             }
         });
+        // The matches painted on the views of Markdown take the new
+        // theme's colors.
+        let observe_theme =
+            cx.observe_global::<gpui_kit::component::Theme>(|this, cx| this.recolor_matches(cx));
         let observe_show_source = cx.observe_global::<ShowSource>(|this, cx| {
             let show = show_source(cx);
             if show != this.show_source {
@@ -576,6 +581,7 @@ impl TranscriptView {
             frames: Vec::new(),
             _prefs: observe_prefs,
             _show_source: observe_show_source,
+            _theme: observe_theme,
         };
         // The history so far comes with the next frame.
         this

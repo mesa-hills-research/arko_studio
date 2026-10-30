@@ -942,6 +942,39 @@ fn each_part_of_markdown_has_its_own_look(cx: &mut TestAppContext) {
     check_markdown_highlights(cx, &view, reply);
 }
 
+/// A theme changed while the find goes on paints the matches in Markdown
+/// in its colors, leaving the current match where it is and the reader
+/// where they are.
+#[gpui_kit::test]
+fn a_theme_change_recolors_the_matches_in_markdown(cx: &mut TestAppContext) {
+    let (window, view, reply) = markdown_parts_found(cx);
+    let installed_before = cx.read(|cx| view.read(cx).find.as_ref().unwrap().installed.clone());
+    let (current, scrolled) = cx.read(|cx| {
+        let view = view.read(cx);
+        (view.find.as_ref().unwrap().current, view.list.top())
+    });
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.appearance.theme_mode = prefs::ThemeMode::Dark;
+            prefs.appearance.dark_theme = "Ayu Dark".into();
+        })
+    });
+    settle(cx, window);
+    cx.read(|cx| {
+        use gpui_kit::component::ActiveTheme as _;
+        assert_eq!(cx.theme().theme_name().as_ref(), "Ayu Dark");
+        let view = view.read(cx);
+        assert_eq!(view.find.as_ref().unwrap().current, current);
+        let top = view.list.top();
+        assert_eq!(
+            (top.item_ix, top.offset_in_item),
+            (scrolled.item_ix, scrolled.offset_in_item)
+        );
+        assert_ne!(view.find.as_ref().unwrap().installed, installed_before);
+    });
+    check_markdown_highlights(cx, &view, reply);
+}
+
 fn top(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> gpui_kit::ListOffset {
     cx.read(|cx| view.read(cx).list.top())
 }

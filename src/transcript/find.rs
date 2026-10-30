@@ -1175,6 +1175,20 @@ impl TranscriptView {
         }
     }
 
+    /// Paints the matches on the block views again in the theme's colors,
+    /// leaving the current one where it is.
+    pub(super) fn recolor_matches(&mut self, cx: &mut App) {
+        let Some(find) = &self.find else {
+            return;
+        };
+        let blocks: Vec<_> = find.highlighted.iter().copied().collect();
+        for (entry, block) in blocks {
+            if let Some(view) = self.existing_block_view(entry, block) {
+                self.paint_matches(entry, block, &view, false, cx);
+            }
+        }
+    }
+
     /// Paints the matches of block `block` of the entry `entry` on its
     /// view, the current one stronger, their text in shades that read on
     /// them, and shows the current match's line if the find just landed
@@ -1184,6 +1198,20 @@ impl TranscriptView {
         entry: u64,
         block: usize,
         view: &Entity<gpui_kit::component::text::TextViewState>,
+        cx: &mut App,
+    ) {
+        self.paint_matches(entry, block, view, true, cx);
+    }
+
+    /// Paints the matches of block `block` of the entry `entry` on its
+    /// view, and shows the current match's line when `reveal` and the find
+    /// just landed there.
+    fn paint_matches(
+        &mut self,
+        entry: u64,
+        block: usize,
+        view: &Entity<gpui_kit::component::text::TextViewState>,
+        reveal: bool,
         cx: &mut App,
     ) {
         let Some(find) = &mut self.find else {
@@ -1203,7 +1231,7 @@ impl TranscriptView {
             .current
             .filter(|key| key.entry == entry && key.place == Place::Block(block))
             .map(|key| key.ordinal);
-        let reveal = current.is_some() && find.reveal == Some((entry, block));
+        let reveal = reveal && current.is_some() && find.reveal == Some((entry, block));
         if reveal {
             find.reveal = None;
         }
