@@ -1024,7 +1024,8 @@ impl SessionView {
             .into_iter()
             .cloned()
             .collect();
-        // The question being typed in, if it is no longer open.
+        // The question with the keyboard (its field or a chip), if it is no
+        // longer open.
         let left = self
             .answer_panel()
             .and_then(|panel| panel.read(cx).focused_question(window, cx))

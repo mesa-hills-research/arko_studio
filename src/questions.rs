@@ -128,6 +128,9 @@ struct Draft {
     you_decide: bool,
     /// "Other", or the answer of a question without choices.
     other: Entity<InputState>,
+    /// The row of its chips, which holds the keyboard when one of them has
+    /// it.
+    chips: FocusHandle,
     _other: Subscription,
 }
 
@@ -202,6 +205,7 @@ impl AnswerPanel {
                     choices: Vec::new(),
                     you_decide: false,
                     other,
+                    chips: cx.focus_handle(),
                     _other: subscription,
                 },
             );
@@ -309,13 +313,13 @@ impl AnswerPanel {
     /// as a click on the panel's empty space does. A key that pressed it
     /// leaves the keyboard on it.
     fn leave_field(&self, click: &ClickEvent, window: &mut Window, cx: &mut App) {
-        if !click.is_keyboard() && self.focused_question(window, cx).is_some() {
+        if !click.is_keyboard() && self.typed_in(window, cx).is_some() {
             window.focus(&self.focus, cx);
         }
     }
 
     /// The question whose field has the keyboard, by its id.
-    pub fn focused_question(&self, window: &Window, cx: &App) -> Option<String> {
+    fn typed_in(&self, window: &Window, cx: &App) -> Option<String> {
         use gpui_kit::Focusable as _;
         self.drafts
             .iter()
@@ -327,6 +331,17 @@ impl AnswerPanel {
                     .contains_focused(window, cx)
             })
             .map(|(id, _)| id.clone())
+    }
+
+    /// The question that has the keyboard, in its field or on one of its
+    /// chips, by its id.
+    pub fn focused_question(&self, window: &Window, cx: &App) -> Option<String> {
+        self.typed_in(window, cx).or_else(|| {
+            self.drafts
+                .iter()
+                .find(|(_, draft)| draft.chips.contains_focused(window, cx))
+                .map(|(id, _)| id.clone())
+        })
     }
 
     /// Picks `choice` of the question `id`, or lets go of it: one choice,
@@ -492,6 +507,21 @@ impl AnswerPanel {
                 )
                 .child(
                     h_flex()
+                        // Its chips are inside it for the keyboard, so the
+                        // panel knows whose chip has it.
+                        .track_focus(&draft.chips)
+                        // A click between the chips takes the keyboard to
+                        // the panel, as one on its empty space does. A chip
+                        // leaves it where it is.
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                if !window.default_prevented() {
+                                    window.focus(&this.focus, cx);
+                                    window.prevent_default();
+                                }
+                            }),
+                        )
                         .flex_wrap()
                         .gap_1()
                         .children(chips)
