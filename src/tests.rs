@@ -7,7 +7,8 @@ use std::time::SystemTime;
 use gpui_kit::component::{Theme, ThemeRegistry, WindowExt as _};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Entity, Point, TestAppContext, Window,
+    AnyWindowHandle, App, AppContext as _, Bounds, ElementId, Entity, InputEvent as _, Modifiers,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Point, TestAppContext, Window,
     WindowBounds, WindowOptions, px, size,
 };
 
@@ -56,6 +57,50 @@ pub(crate) fn act(
     })
     .unwrap();
     cx.run_until_parked();
+}
+
+/// Half a click on the element `id`. The pointer moves there and presses
+/// the left button (`down`), or lets it go. What shows between the two is
+/// what a click shows while the button is held.
+pub(crate) fn press_mouse(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    id: impl Into<ElementId>,
+    down: bool,
+) {
+    let id = id.into();
+    act(cx, window, |window, cx| {
+        let position = window.find(id).bounds().center();
+        let event = if down {
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input()
+        } else {
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }
+            .to_platform_input()
+        };
+        window.dispatch_event(event, cx);
+        window.render_frame(cx);
+    });
 }
 
 pub(crate) fn open_title(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> Option<String> {

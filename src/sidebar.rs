@@ -823,13 +823,16 @@ impl Sidebar {
     }
 
     /// The row that shows the keyboard cursor's ring. It shows while the list
-    /// has the keyboard, and not while a row's name is being edited, whose
+    /// has the keyboard and the last input was a key, so a click rings no
+    /// row (its press focuses the list while the cursor is still on the row
+    /// before). It doesn't show while a row's name is being edited, whose
     /// field shows the focus then.
     fn cursor_ring(&self, window: &Window, cx: &App) -> Option<&RowKey> {
-        let focused = self.focus_handle.contains_focused(window, cx);
+        let keyed =
+            window.last_input_was_keyboard() && self.focus_handle.contains_focused(window, cx);
         self.cursor
             .as_ref()
-            .filter(|_| focused && self.renaming.is_none())
+            .filter(|_| keyed && self.renaming.is_none())
     }
 
     fn render_row(&self, index: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -1614,7 +1617,7 @@ mod focus_tests {
     // shadow Rust's.
     use super::{RowKey, Sidebar};
     use crate::backend::SessionId;
-    use crate::tests::{act, open};
+    use crate::tests::{act, open, open_title, press_mouse, row_of};
     use crate::{Startup, menus};
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
@@ -1686,5 +1689,71 @@ mod focus_tests {
             view.update(cx, |view, cx| view.focus_composer(window, cx))
         });
         assert_eq!(focus(&sidebar, window, cx), (None, false, false));
+    }
+
+    /// The ring follows the keyboard alone. A press on a row gives the
+    /// list the keyboard before the click moves the cursor, and it rings no
+    /// row then, neither the one the keyboard was on nor the one pressed,
+    /// nor once the button is let go.
+    #[gpui_kit::test]
+    fn a_click_rings_no_row_and_keys_ring_the_cursor(cx: &mut TestAppContext) {
+        start(cx);
+        let (window, workspace) = open(cx, 1300.);
+        cx.update_window(window, |_, window, _| window.activate_window())
+            .unwrap();
+        let sidebar = cx.read(|cx| workspace.read(cx).sidebar().clone());
+        let key = |index: usize, cx: &mut TestAppContext| {
+            cx.read(|cx| sidebar.read(cx).rows[index].key())
+        };
+        // Go to Session, then ↓ from the filter into the list.
+        let to_list = |cx: &mut TestAppContext| {
+            act(cx, window, |window, cx| {
+                window.dispatch_action(Box::new(menus::FocusSessionFilter), cx)
+            });
+            act(cx, window, |window, cx| window.press("down", cx));
+        };
+        let split_title = "Split the engine out of main.rs";
+        let fonts_title = "Variable fonts and the wght axis";
+        let split = row_of(&workspace, split_title, cx);
+        let fonts = row_of(&workspace, fonts_title, cx);
+
+        // From the keyboard, the ring shows on the cursor and moves with it.
+        to_list(cx);
+        assert_eq!(
+            focus(&sidebar, window, cx),
+            (Some(key(fonts, cx)), false, true)
+        );
+        act(cx, window, |window, cx| window.press("down", cx));
+        assert_eq!(
+            focus(&sidebar, window, cx),
+            (Some(key(fonts + 1, cx)), false, true)
+        );
+        act(cx, window, |window, cx| window.press("end", cx));
+        let last = cx.read(|cx| sidebar.read(cx).rows.len() - 1);
+        assert_eq!(
+            focus(&sidebar, window, cx),
+            (Some(key(last, cx)), false, true)
+        );
+
+        // A click opens a session with no ring, while the button is held
+        // and after it's let go.
+        act(cx, window, |window, cx| window.click(("row", fonts), cx));
+        assert_eq!(focus(&sidebar, window, cx).0, None);
+        for (row, title) in [(split, split_title), (fonts, fonts_title)] {
+            press_mouse(cx, window, ("row", row), true);
+            let (ring, _, focused) = focus(&sidebar, window, cx);
+            assert!(focused, "the press gives the list the keyboard");
+            assert_eq!(ring, None, "held on {title}");
+            press_mouse(cx, window, ("row", row), false);
+            assert_eq!(focus(&sidebar, window, cx).0, None, "after {title}");
+            assert_eq!(open_title(&workspace, cx).as_deref(), Some(title));
+        }
+
+        // The keyboard rings its row again, the one clicked last.
+        to_list(cx);
+        assert_eq!(
+            focus(&sidebar, window, cx),
+            (Some(key(fonts, cx)), false, true)
+        );
     }
 }
