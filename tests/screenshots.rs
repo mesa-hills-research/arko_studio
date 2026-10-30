@@ -2437,8 +2437,10 @@ fn workers_narrowed_dark() {
 const WORKERS_NOW: i64 = 1_760_000_000_000;
 
 /// A running worker with workers under it, three levels deep, one of them
-/// finished a moment ago, each row with its model, profile and cost, the
-/// workers that started others with what their family cost, and a finished
+/// finished a moment ago, each row with its cost, with its model or profile
+/// where it isn't what workers usually run (Opus at high effort) and with
+/// "API" where it's billed per token, the workers that started others with
+/// what their family cost, and a finished
 /// family in the collapsed group. The session lists them as they started, and
 /// the panel puts a worker's workers under it, joined to it by tree lines.
 fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
@@ -2590,7 +2592,10 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
         feed: None,
         images: None,
         movable: Vec::new(),
-        usual: arko_studio::workers::Usual::default(),
+        usual: arko_studio::workers::Usual {
+            model: "claude-opus-5-5".into(),
+            effort: "high".into(),
+        },
         billed_per_token,
         key: None,
     }

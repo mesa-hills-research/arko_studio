@@ -290,20 +290,44 @@ impl Panel {
         self.draw(cx);
     }
 
-    /// The bounds of row `row`'s line for the setup and the cost, if it has
-    /// one.
-    fn setup_bounds(
+    /// The bounds of the element `id` in row `row`, if it has one.
+    fn bounds_in(
         &self,
         cx: &mut TestAppContext,
         row: usize,
+        id: &'static str,
     ) -> Option<gpui_kit::Bounds<gpui_kit::Pixels>> {
         cx.update_window(self.window, |_, window, _| {
             window
                 .within(("worker", row))
-                .try_find("worker-setup")
+                .try_find(id)
                 .map(|found| found.bounds())
         })
         .unwrap()
+    }
+
+    /// Makes the workers start on `model` at `effort` unless told otherwise.
+    fn set_usual(&self, cx: &mut TestAppContext, model: &str, effort: &str) {
+        self.panel.update(cx, |panel, cx| {
+            let mut source = panel.source.clone();
+            source.usual = crate::workers::Usual {
+                model: model.into(),
+                effort: effort.into(),
+            };
+            panel.set_source(source, cx);
+        });
+        self.draw(cx);
+    }
+
+    /// What row `id` shows in its chip.
+    fn chip(&self, cx: &mut TestAppContext, id: &str) -> Option<String> {
+        cx.read(|cx| {
+            self.panel.read(cx).row_views[id]
+                .read(cx)
+                .facts
+                .chip
+                .clone()
+        })
     }
 
     fn row_height(&self, cx: &mut TestAppContext, row: usize) -> gpui_kit::Pixels {
@@ -320,21 +344,19 @@ impl Panel {
 fn a_workers_workers_stand_under_it_indented(cx: &mut TestAppContext) {
     use arko::remote::WorkerState::Running;
     let panel = open(cx);
-    let mut workers = vec![
+    let workers = vec![
         summary("r1", None, Running, None),
         summary("r4", None, Running, None),
         summary("r2", Some("r1"), Running, None),
         summary("r3", Some("r2"), Running, None),
     ];
-    for worker in &mut workers {
-        worker.model = Some("gpt-6.1-sol".into());
-    }
     panel.show(cx, workers);
     assert_eq!(
         panel.rows(cx),
         [worker("r1"), worker("r2"), worker("r3"), worker("r4")]
     );
-    let left = |cx: &mut TestAppContext, row| panel.setup_bounds(cx, row).unwrap().left();
+    let left =
+        |cx: &mut TestAppContext, row| panel.bounds_in(cx, row, "worker-last").unwrap().left();
     let (r1, r2, r3, r4) = (left(cx, 0), left(cx, 1), left(cx, 2), left(cx, 3));
     // A level in is a mark's width (1 rem), and a worker of the main agent
     // is where it was.
@@ -687,41 +709,83 @@ fn a_restored_worker_shows_its_saved_tool_calls(cx: &mut TestAppContext) {
     assert!(facts.contains("12 calls"), "{facts}");
 }
 
+/// A row is two lines, whatever it says. It gives the worker's cost beside
+/// its time, and names its setup in a chip only when the worker doesn't run
+/// as workers usually do. Its tooltip and the name a screen reader hears
+/// give the setup in full and what the worker cost with its workers, and
+/// the worker's view says it all.
 #[gpui_kit::test]
-fn a_row_says_the_workers_model_profile_and_cost(cx: &mut TestAppContext) {
+fn a_row_names_a_workers_setup_only_when_it_is_not_the_usual_one(cx: &mut TestAppContext) {
     use arko::remote::WorkerState::Running;
     let panel = open(cx);
     let mut plain = vec![
         summary("r1", None, Running, None),
         summary("r2", None, Running, None),
     ];
-    // Without a model, a profile or a cost, the rows have no line for it.
     panel.show(cx, plain.clone());
-    assert!(panel.setup_bounds(cx, 0).is_none());
     let short = panel.row_height(cx, 0);
     plain[0].model = Some("gpt-6.1-sol".into());
     plain[0].effort = Some("high".into());
     plain[0].profile = Some("3d-judge".into());
     plain[0].cost_billed = 0.34;
+    plain[0].cost_list = 0.34;
+    plain[0].family_cost_billed = 0.5;
+    plain[0].family_cost_list = 0.5;
+    plain[1].model = Some("gpt-6.1-sol".into());
+    plain[1].effort = Some("high".into());
     panel.show(cx, plain);
-    // Every row has the line, so they stay as tall as one another.
-    assert!(panel.setup_bounds(cx, 0).is_some());
-    assert!(panel.setup_bounds(cx, 1).is_some());
-    assert!(panel.row_height(cx, 0) > short);
-    assert_eq!(panel.row_height(cx, 0), panel.row_height(cx, 1));
+    assert_eq!(panel.row_height(cx, 0), short);
+    assert_eq!(panel.row_height(cx, 1), short);
+    // A profile is always named. A model is, until workers usually run it.
+    assert_eq!(panel.chip(cx, "r1").as_deref(), Some("3d-judge"));
+    assert_eq!(panel.chip(cx, "r2").as_deref(), Some("sol · high"));
+    panel.set_usual(cx, "gpt-6.1-sol", "high");
+    assert_eq!(panel.chip(cx, "r1").as_deref(), Some("3d-judge"));
+    assert_eq!(panel.chip(cx, "r2"), None);
+    assert!(panel.bounds_in(cx, 0, "worker-chip").is_some());
+    assert!(panel.bounds_in(cx, 1, "worker-chip").is_none());
+    let cost = cx.read(|cx| {
+        let panel = panel.panel.read(cx);
+        panel.row_views["r1"].read(cx).facts.cost.clone()
+    });
+    assert_eq!(cost.as_deref(), Some("$0.34"));
+    let tip = |cx: &mut TestAppContext, id: &str| cx.read(|cx| panel.panel.read(cx).row_tip(id));
+    assert_eq!(
+        tip(cx, "r1").as_deref(),
+        Some("Running\nsol · high · 3d-judge\n$0.34 · $0.50 with its workers")
+    );
+    assert_eq!(tip(cx, "r2").as_deref(), Some("Running\nsol · high"));
+    let label = cx
+        .update_window(panel.window, |_, window, _| {
+            window.find(("worker", 0usize)).label().map(str::to_string)
+        })
+        .unwrap();
+    assert_eq!(
+        label.as_deref(),
+        Some("r1, Task of r1, Running, sol, high, 3d-judge, $0.34, $0.50 with its workers")
+    );
     let now = *panel.now.borrow();
     let facts = cx.read(|cx| panel.panel.read(cx).facts("r1", now));
     assert_eq!(
         facts,
-        "Running · sol · high · 3d-judge · 0 s · 0 calls · $0.34"
+        "Running · sol · high · 3d-judge · 0 s · 0 calls · $0.34 · $0.50 with its workers"
     );
     let facts = cx.read(|cx| panel.panel.read(cx).facts("r2", now));
-    assert_eq!(facts, "Running · 0 s · 0 calls");
+    assert_eq!(facts, "Running · sol · high · 0 s · 0 calls");
+    // A failure's tip ends with why it failed, whole.
+    let mut failed = summary("r3", None, arko::remote::WorkerState::Failed, Some(0));
+    failed.error = Some("the model failed: overloaded".into());
+    panel.show(cx, vec![failed]);
+    assert_eq!(
+        tip(cx, "r3").as_deref(),
+        Some("Failed\nthe model failed: overloaded")
+    );
 }
 
 /// A worker on a model billed per token says so in its view as Arko's list
-/// of workers does, and in its row in a word, "API", which a screen reader
-/// hears in full. One on a plan says nothing of it.
+/// of workers does, and in its row's chip in a word, "API", even when it
+/// runs the usual model. Its tooltip and a screen reader say it in full. One
+/// on a plan says nothing of it.
 #[gpui_kit::test]
 fn a_worker_billed_per_token_says_so(cx: &mut TestAppContext) {
     use arko::remote::WorkerState::Running;
@@ -746,14 +810,16 @@ fn a_worker_billed_per_token_says_so(cx: &mut TestAppContext) {
         "Running · opus · high · billed per token · 0 s · 0 calls"
     );
     assert_eq!(facts("r2", cx), "Running · cc:opus · 0 s · 0 calls");
-    let setup = |id: &str, cx: &mut TestAppContext| {
-        cx.read(|cx| {
-            let panel = panel.panel.read(cx);
-            panel.row_views[id].read(cx).facts.setup.clone()
-        })
-    };
-    assert_eq!(setup("r1", cx).as_deref(), Some("opus · high · API"));
-    assert_eq!(setup("r2", cx).as_deref(), Some("cc:opus"));
+    assert_eq!(panel.chip(cx, "r1").as_deref(), Some("opus · high · API"));
+    assert_eq!(panel.chip(cx, "r2").as_deref(), Some("cc:opus"));
+    panel.set_usual(cx, "claude-opus-5-5", "high");
+    assert_eq!(panel.chip(cx, "r1").as_deref(), Some("API"));
+    assert_eq!(panel.chip(cx, "r2").as_deref(), Some("cc:opus"));
+    let tip = |cx: &mut TestAppContext, id: &str| cx.read(|cx| panel.panel.read(cx).row_tip(id));
+    assert_eq!(
+        tip(cx, "r1").as_deref(),
+        Some("Running\nopus · high · billed per token")
+    );
     let label = |cx: &mut TestAppContext, row: usize| {
         cx.update_window(panel.window, |_, window, _| {
             window.find(("worker", row)).label().map(str::to_string)
@@ -762,13 +828,110 @@ fn a_worker_billed_per_token_says_so(cx: &mut TestAppContext) {
     };
     assert_eq!(
         label(cx, 0).as_deref(),
-        Some("r1, Task of r1, Running, billed per token")
+        Some("r1, Task of r1, Running, opus, high, billed per token")
     );
-    assert_eq!(label(cx, 1).as_deref(), Some("r2, Task of r2, Running"));
+    assert_eq!(
+        label(cx, 1).as_deref(),
+        Some("r2, Task of r2, Running, cc:opus")
+    );
 }
 
-/// A worker narrowed to some skills and servers says how many in its row
-/// and its view, with the full sentence on hover. One that has what its
+/// When a row's second line is short of room, the context and the calls
+/// give way first, each whole, the context before the calls, and the last
+/// action takes the room they leave. It keeps a few words until they've
+/// gone, and the chip shortens last of all, except that it never takes more
+/// than 45% of the line.
+#[gpui_kit::test]
+fn a_short_line_gives_up_the_figures_then_the_last_action_then_the_chip(cx: &mut TestAppContext) {
+    use arko::remote::{AgentStatus, WorkerState::Running};
+    let panel = open(cx);
+    let mut worker = summary("r1", None, Running, None);
+    worker.profile = Some("impl".into());
+    worker.last = Some("read src/render/scene.rs:120-180".into());
+    worker.tool_calls = 142;
+    panel.panel.update(cx, |panel, cx| {
+        let mut source = panel.source.clone();
+        source.workers = vec![worker];
+        source.agents = vec![AgentStatus {
+            id: "r1".into(),
+            context_tokens: Some(152_000),
+            context_window: Some(1_000_000),
+            handover_at: None,
+            compacts: false,
+        }];
+        panel.set_source(source, cx);
+    });
+    let shown = |part: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
+                 line: gpui_kit::Bounds<gpui_kit::Pixels>| {
+        part.is_some_and(|part| {
+            part.top() == line.top() && part.left() >= line.left() && part.right() <= line.right()
+        })
+    };
+    let few_words = px(16. * 6.);
+    let (mut chip_room, mut chip_shortened, mut figures_went) = (None, false, false);
+    for width in (60..=700).rev().step_by(4) {
+        cx.simulate_window_resize(panel.window, size(px(width as f32), px(700.)));
+        panel.draw(cx);
+        let bounds = |cx: &mut TestAppContext, id| panel.bounds_in(cx, 0, id);
+        let line = bounds(cx, "worker-figures").unwrap();
+        let context = shown(bounds(cx, "worker-context"), line);
+        let calls = shown(bounds(cx, "worker-calls"), line);
+        let last_bounds = bounds(cx, "worker-last").unwrap();
+        let last = last_bounds.size.width;
+        let chip = bounds(cx, "worker-chip").unwrap().size.width;
+        let room = *chip_room.get_or_insert(chip);
+        if width == 700 {
+            assert!(context && calls, "both figures show at {width}");
+        }
+        assert!(calls || !context, "the context goes first, at {width}");
+        if context || calls {
+            assert!(last >= few_words - px(0.5), "{last:?} at {width}");
+        } else {
+            figures_went = true;
+        }
+        // Up to the next figure shown, or to the end of the line.
+        let next = if context {
+            bounds(cx, "worker-context").unwrap().left()
+        } else if calls {
+            bounds(cx, "worker-calls").unwrap().left()
+        } else {
+            line.right() + px(8.)
+        };
+        assert!(
+            next - last_bounds.right() <= px(8.5),
+            "{last_bounds:?} before {next:?} at {width}"
+        );
+        if chip < room - px(0.5) {
+            chip_shortened = true;
+            assert!(!context && !calls, "the chip shortens last, at {width}");
+            let line = line.right() - bounds(cx, "worker-chip").unwrap().left();
+            assert!(
+                last < px(0.5) || chip <= line * 0.45 + px(0.5),
+                "{last:?} beside {chip:?} at {width}"
+            );
+        }
+    }
+    assert!(figures_went && chip_shortened);
+    // A long chip keeps to its share of the line.
+    panel.panel.update(cx, |panel, cx| {
+        let mut source = panel.source.clone();
+        source.workers[0].profile = Some("a-profile-with-a-long-long-name".into());
+        panel.set_source(source, cx);
+    });
+    cx.simulate_window_resize(panel.window, size(px(400.), px(700.)));
+    panel.draw(cx);
+    let chip = panel.bounds_in(cx, 0, "worker-chip").unwrap();
+    let line = panel.bounds_in(cx, 0, "worker-figures").unwrap().right() - chip.left();
+    assert!(
+        chip.size.width <= line * 0.45 + px(0.5),
+        "{chip:?} in {line:?}"
+    );
+    let last = panel.bounds_in(cx, 0, "worker-last").unwrap().size.width;
+    assert!(last >= few_words - px(0.5), "{last:?}");
+}
+
+/// A worker narrowed to some skills and servers says how many in its row's
+/// chip and its view, with the full sentence on hover. One that has what its
 /// starter has reads as before.
 #[gpui_kit::test]
 fn a_narrowed_workers_row_counts_its_skills_and_servers(cx: &mut TestAppContext) {
@@ -794,20 +957,22 @@ fn a_narrowed_workers_row_counts_its_skills_and_servers(cx: &mut TestAppContext)
         facts("r2", cx),
         "Running · cc:sonnet · xhigh · impl-light · 0 s · 0 calls"
     );
-    // The setup line's tooltip says it in full.
-    let tip = |id: &str, cx: &mut TestAppContext| {
-        cx.read(|cx| {
-            let panel = panel.panel.read(cx);
-            panel.row_views[id].read(cx).facts.narrowed.clone()
-        })
-    };
+    assert_eq!(
+        panel.chip(cx, "r1").as_deref(),
+        Some("impl-light · 2 skills · no MCP")
+    );
+    // The row's tooltip says it in full.
+    let tip = |id: &str, cx: &mut TestAppContext| cx.read(|cx| panel.panel.read(cx).row_tip(id));
     assert_eq!(
         tip("r1", cx).as_deref(),
         Some(
-            "Runs cc:claude-sonnet-5-5 at xhigh effort, profile impl-light, with only the skills ponytail and release-notes and no MCP servers."
+            "Running\nRuns cc:claude-sonnet-5-5 at xhigh effort, profile impl-light, with only the skills ponytail and release-notes and no MCP servers."
         )
     );
-    assert_eq!(tip("r2", cx), None);
+    assert_eq!(
+        tip("r2", cx).as_deref(),
+        Some("Running\ncc:sonnet · xhigh · impl-light")
+    );
 }
 
 #[gpui_kit::test]

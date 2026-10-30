@@ -114,13 +114,19 @@ pub fn next_move(workers: &[WorkerSummary], now: i64, seen: impl Fn(&str) -> boo
 /// skills and MCP servers it was narrowed to, such as "sol · high · 3d-judge
 /// · 2 skills · no MCP". `None` until the session has recorded them.
 pub fn setup_label(worker: &WorkerSummary) -> Option<String> {
+    let parts = setup_words(worker);
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// The words of [`setup_label`], one item each.
+pub fn setup_words(worker: &WorkerSummary) -> Vec<String> {
     let known = |text: &Option<String>| text.clone().filter(|text| !text.is_empty());
     let mut parts: Vec<String> = Vec::new();
     parts.extend(known(&worker.model).map(|model| arko::workers::short_model_name(&model)));
     parts.extend(known(&worker.effort));
     parts.extend(known(&worker.profile));
     parts.extend(narrowed_words(worker));
-    (!parts.is_empty()).then(|| parts.join(" · "))
+    parts
 }
 
 /// How Arko's list of workers says a worker's model is billed per token. A

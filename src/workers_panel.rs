@@ -4,12 +4,12 @@
 //!
 //! The list shows the workers that run or wait, and those that ended in the
 //! last five minutes, then a collapsed "Finished" group with the rest. Each
-//! row gives the worker's state, task, time over all its runs, its last
-//! action, its context and its calls, the figures right-aligned in tabular
-//! figures so they line up. A worker's workers stand under it, joined to it
-//! by tree lines. Choosing a worker shows its own transcript, with Stop and
-//! Message. While the worker's view has the focus, the composer writes to
-//! that worker.
+//! row gives the worker's state, task, cost and time over all its runs, then
+//! its setup when it isn't the usual one, its last action, its context and
+//! its calls, the figures right-aligned in tabular figures so they line up.
+//! A worker's workers stand under it, joined to it by tree lines. Choosing a
+//! worker shows its own transcript, with Stop and Message. While the
+//! worker's view has the focus, the composer writes to that worker.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -81,8 +81,9 @@ pub struct PanelSource {
     pub images: Option<arko::images::Images>,
     /// The running calls that can move to the background, by item.
     pub movable: Vec<u64>,
-    /// What workers start with unless told otherwise, which the cards in a
-    /// worker's transcript name only when a worker runs another.
+    /// What workers start with unless told otherwise, which the rows and
+    /// the cards in a worker's transcript name only when a worker runs
+    /// another.
     pub usual: workers::Usual,
     /// The workers whose model is billed per token, by id.
     pub billed_per_token: HashSet<String>,
@@ -147,8 +148,6 @@ pub struct WorkersPanel {
     seen: HashSet<String>,
     /// Each worker's row, by its id.
     row_views: HashMap<String, Entity<WorkerRow>>,
-    /// Whether the rows have a line for the workers' setups and costs.
-    meta: bool,
     /// Whether the panel shows.
     shown: bool,
     scroll: ScrollHandle,
@@ -188,7 +187,6 @@ impl WorkersPanel {
             finished_open: false,
             seen: HashSet::new(),
             row_views: HashMap::new(),
-            meta: false,
             shown: false,
             scroll: ScrollHandle::new(),
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
@@ -250,8 +248,10 @@ impl WorkersPanel {
             self.seen.clear();
             self.row_views.clear();
         }
+        // The rows' chips name what isn't usual.
         let same = source.workers == self.source.workers
             && source.agents == self.source.agents
+            && source.usual == self.source.usual
             && source.key == self.source.key;
         if source.movable != self.source.movable {
             for shown in &self.transcripts {
@@ -665,7 +665,7 @@ impl WorkersPanel {
                 .into_any_element();
         }
         let cursor = self.cursor_ring(&rows, window, cx);
-        let height = WorkerRow::height(window, self.meta);
+        let height = WorkerRow::height(window);
         let levels: Vec<Option<usize>> = rows
             .iter()
             .map(|row| match row {
@@ -728,6 +728,7 @@ impl WorkersPanel {
             .worker(id)
             .map(|worker| self.row_label(worker))
             .unwrap_or_default();
+        let tip = (id.clone(), cx.entity().downgrade());
         row_base(("worker", index), selected, cx)
             .role(Role::ListItem)
             .aria_label(SharedString::from(label))
@@ -736,6 +737,15 @@ impl WorkersPanel {
                 view.clone()
                     .cached(StyleRefinement::default().w_full().h(height)),
             )
+            .managed_tooltip(move |window, cx| {
+                let (id, panel) = &tip;
+                let text = panel
+                    .read_with(cx, |panel, _| panel.row_tip(id))
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                Tooltip::new(text).build(window, cx)
+            })
             .on_click(
                 cx.listener(move |this, _, window, cx| this.enter_worker(open.clone(), window, cx)),
             )
@@ -743,8 +753,8 @@ impl WorkersPanel {
     }
 
     /// What `worker`'s row shows at `now`, `level` workers down the list's
-    /// families, with a line for its setup and cost when `meta`.
-    fn row_facts(&self, worker: &WorkerSummary, level: usize, meta: bool, now: i64) -> RowFacts {
+    /// families.
+    fn row_facts(&self, worker: &WorkerSummary, level: usize, now: i64) -> RowFacts {
         RowFacts {
             id: worker.id.clone().into(),
             state: worker.state,
@@ -754,26 +764,46 @@ impl WorkersPanel {
                 worker.title.clone()
             },
             elapsed: workers::run_time_ms(worker, now).map(workers::elapsed_label),
+            cost: workers::cost_label(worker),
             last: workers::last_line(worker)
                 .unwrap_or_else(|| workers::state_label(worker.state).to_string()),
-            error: workers::failure(worker).map(str::to_string),
+            chip: self.chip(worker),
             context: self.context_label(&worker.id),
             calls: worker.tool_calls,
             level,
-            meta,
-            setup: self.setup(worker, workers::BILLED_PER_TOKEN_SHORT),
-            narrowed: workers::narrowed_sentence(worker),
-            cost: workers::costs_label(worker),
         }
     }
 
-    /// Whether the rows have a line for the workers' setups and costs: they
-    /// all do once any worker has something to put in it, so the rows stay
-    /// as tall as one another.
-    fn has_meta(&self) -> bool {
-        self.source.workers.iter().any(|worker| {
-            workers::setup_label(worker).is_some() || workers::costs_label(worker).is_some()
-        })
+    /// The setup that sets `worker` apart in its row, when it isn't the one
+    /// workers usually run ([`workers::card_setup`]), and "API" for a model
+    /// billed per token, as the model lists say it.
+    fn chip(&self, worker: &WorkerSummary) -> Option<String> {
+        let parts: Vec<String> = workers::card_setup(worker, &self.source.usual)
+            .into_iter()
+            .chain(
+                self.billed_per_token(worker)
+                    .then(|| workers::BILLED_PER_TOKEN_SHORT.to_string()),
+            )
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+
+    /// What the pointer resting on worker `id`'s row shows, a line each for
+    /// its state, its setup in full, what it cost alone and with its
+    /// workers, and why it failed.
+    fn row_tip(&self, id: &str) -> Option<String> {
+        let worker = self.worker(id)?;
+        let mut lines = vec![workers::state_label(worker.state).to_string()];
+        lines.extend(match workers::narrowed_sentence(worker) {
+            Some(sentence) if self.billed_per_token(worker) => {
+                Some(format!("{sentence} Billed per token."))
+            }
+            Some(sentence) => Some(sentence),
+            None => self.setup(worker, workers::BILLED_PER_TOKEN),
+        });
+        lines.extend(workers::costs_label(worker));
+        lines.extend(workers::failure(worker).map(str::to_string));
+        Some(lines.join("\n"))
     }
 
     /// `worker`'s setup in a few words ([`workers::setup_label`]), and
@@ -792,28 +822,29 @@ impl WorkersPanel {
     }
 
     /// A worker's row as a screen reader names it ([`workers::row_label`]),
-    /// with "billed per token" for a model billed per token, which the row
-    /// shows as "API".
+    /// then its setup, "billed per token" for a model billed per token, and
+    /// what it cost, which the row shows in part.
     fn row_label(&self, worker: &WorkerSummary) -> String {
-        let mut label = workers::row_label(worker);
+        let mut parts = vec![workers::row_label(worker)];
+        parts.extend(workers::setup_words(worker));
         if self.billed_per_token(worker) {
-            label.push_str(&format!(", {}", workers::BILLED_PER_TOKEN));
+            parts.push(workers::BILLED_PER_TOKEN.to_string());
         }
-        label
+        parts.extend(workers::cost_label(worker));
+        parts.extend(workers::family_cost_label(worker));
+        parts.join(", ")
     }
 
     /// Brings the workers' rows up to date: a row whose facts changed draws
     /// again, the others keep what they drew.
     fn sync_rows(&mut self, cx: &mut Context<Self>) {
         let now = self.now();
-        let meta = self.has_meta();
-        self.meta = meta;
         let tree = workers::tree(&self.source.workers);
         let mut views = std::mem::take(&mut self.row_views);
         views.retain(|id, _| self.worker(id).is_some());
         for placed in &tree {
             let worker = &self.source.workers[placed.index];
-            let facts = self.row_facts(worker, placed.level, meta, now);
+            let facts = self.row_facts(worker, placed.level, now);
             match views.get(&worker.id) {
                 Some(view) => view.update(cx, |row, cx| row.set(facts, cx)),
                 None => {
@@ -1270,7 +1301,7 @@ fn figures_width(text: &'static str, window: &Window) -> Pixels {
 
 /// "18 calls", with the number right-aligned in room for three figures and
 /// the word after it, so 1 to 999 calls line up.
-fn calls(count: u32, window: &Window) -> impl IntoElement {
+fn calls(count: u32, window: &Window) -> Div {
     h_flex()
         .flex_none()
         .gap_1()
@@ -1285,7 +1316,7 @@ fn calls(count: u32, window: &Window) -> impl IntoElement {
 
 /// A worker's state as a mark: a spinner while it runs, a ring while it
 /// waits, a filled circle once it ended (in `success` when it finished, in
-/// `danger` when it failed).
+/// `danger` when it failed). The row's tooltip names it.
 fn state_mark(state: WorkerState, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let dot = |color: Hsla| div().size_2().rounded_full().bg(color);
@@ -1305,16 +1336,13 @@ fn state_mark(state: WorkerState, cx: &App) -> impl IntoElement {
         // Stopped, and a state a later arko adds.
         _ => dot(theme.muted_foreground).into_any_element(),
     };
-    let label = workers::state_label(state);
     div()
-        .id("worker-state")
         .flex_none()
         .size_4()
         .flex()
         .items_center()
         .justify_center()
         .child(mark)
-        .managed_tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
 }
 
 /// What a worker's row shows.
@@ -1324,24 +1352,16 @@ struct RowFacts {
     state: WorkerState,
     title: String,
     elapsed: Option<String>,
+    /// What its model calls cost, beside its time.
+    cost: Option<String>,
     last: String,
-    /// Why it failed, whole, shown when the pointer rests on its last line.
-    error: Option<String>,
+    /// Its setup, when it isn't the one workers usually run, before its last
+    /// action.
+    chip: Option<String>,
     context: Option<String>,
     calls: u32,
     /// How many workers' workers it is: it stands in that far.
     level: usize,
-    /// Whether the row has a line under the others for its setup and cost,
-    /// as every row of the list does once one has something for it.
-    meta: bool,
-    /// Its model, effort and profile, as the terminal lists them, the
-    /// skills and servers it was narrowed to, and whether it's billed per
-    /// token.
-    setup: Option<String>,
-    /// What it was narrowed to, in a sentence, for the setup's tooltip.
-    narrowed: Option<String>,
-    /// What its model calls cost.
-    cost: Option<String>,
 }
 
 /// A worker's row, as a view of its own: it draws again only when what it
@@ -1374,13 +1394,9 @@ impl WorkerRow {
     }
 
     /// Its height: a cached view is laid out at a set size, not measured.
-    /// The line for the setup and cost is the figures' height again.
-    fn height(window: &Window, meta: bool) -> Pixels {
+    fn height(window: &Window) -> Pixels {
         let (title, figures) = Self::lines(window);
-        let rem = window.rem_size();
-        let lines = if meta { figures * 2. } else { figures };
-        let gaps = if meta { rems(0.25) } else { rems(0.125) };
-        title + gaps.to_pixels(rem) + lines
+        title + rems(0.125).to_pixels(window.rem_size()) + figures
     }
 }
 
@@ -1394,6 +1410,7 @@ impl Render for WorkerRow {
                 .or_default() += 1
         });
         let theme = cx.theme();
+        let rem = window.rem_size();
         let (title_line, figures_line) = Self::lines(window);
         let facts = &self.facts;
         v_flex()
@@ -1425,6 +1442,12 @@ impl Render for WorkerRow {
                     )
                     .children(
                         facts
+                            .cost
+                            .clone()
+                            .map(|cost| figures(cost).text_xs().text_color(theme.muted_foreground)),
+                    )
+                    .children(
+                        facts
                             .elapsed
                             .clone()
                             .map(|elapsed| figures(elapsed).text_xs()),
@@ -1446,57 +1469,71 @@ impl Render for WorkerRow {
                             .gap_2()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child(
+                            .children(facts.chip.clone().map(|chip| {
+                                // It takes at most 45% of the line, so the
+                                // last action keeps a share (the tooltip
+                                // has it whole), and shortens further only
+                                // once the rest of the line has gone.
                                 div()
-                                    .id("worker-last")
-                                    .flex_1()
+                                    .id("worker-chip")
+                                    .test_support()
                                     .min_w_0()
+                                    .max_w(relative(0.45))
+                                    .px_1()
+                                    .rounded(nested_radius(theme.radius, rems(0.5).to_pixels(rem)))
+                                    .bg(theme.muted)
                                     .truncate()
-                                    .when_some(facts.error.clone(), |this, error| {
-                                        this.managed_tooltip(move |window, cx| {
-                                            Tooltip::new(error.clone()).build(window, cx)
-                                        })
-                                    })
-                                    .child(facts.last.clone()),
-                            )
-                            .children(facts.context.clone().map(figures))
-                            .child(calls(facts.calls, window)),
+                                    .child(chip)
+                            }))
+                            .child(
+                                // The context, then the calls, go down to
+                                // a line out of sight, each whole, when
+                                // the last action would have less than a
+                                // few words' room. It takes the room they
+                                // leave.
+                                give_way(figures_line)
+                                    .id("worker-figures")
+                                    .test_support()
+                                    .flex_1()
+                                    .child(
+                                        give_way(figures_line)
+                                            .flex_grow(1.)
+                                            .flex_basis(rems(6.))
+                                            .child(
+                                                div()
+                                                    .id("worker-last")
+                                                    .test_support()
+                                                    .flex_grow(1.)
+                                                    .flex_basis(rems(6.))
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .child(facts.last.clone()),
+                                            )
+                                            .children(facts.context.clone().map(|context| {
+                                                figures(context).id("worker-context").test_support()
+                                            })),
+                                    )
+                                    .child(
+                                        calls(facts.calls, window)
+                                            .id("worker-calls")
+                                            .test_support(),
+                                    ),
+                            ),
                     ),
             )
-            .when(facts.meta, |this| {
-                this.child(
-                    h_flex()
-                        .w_full()
-                        .h(figures_line)
-                        .min_w_0()
-                        .gap_1p5()
-                        .child(div().flex_none().w_4())
-                        .child(
-                            h_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_2()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child(
-                                    div()
-                                        .id("worker-setup")
-                                        .test_support()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .when_some(facts.narrowed.clone(), |this, narrowed| {
-                                            this.managed_tooltip(move |window, cx| {
-                                                Tooltip::new(narrowed.clone()).build(window, cx)
-                                            })
-                                        })
-                                        .children(facts.setup.clone()),
-                                )
-                                .children(facts.cost.clone().map(figures)),
-                        ),
-                )
-            })
     }
+}
+
+/// A line `height` high whose items that have no room go down to a second
+/// line, out of sight.
+fn give_way(height: Pixels) -> Div {
+    h_flex()
+        .min_w_0()
+        .h(height)
+        .overflow_hidden()
+        .flex_wrap()
+        .content_start()
+        .gap_x_2()
 }
 
 #[cfg(test)]
