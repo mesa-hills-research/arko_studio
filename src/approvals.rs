@@ -25,6 +25,7 @@ use gpui_kit::base::SelectableText;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, RoleOverride, Selectable as _, Sizable as _, StyledExt as _,
+    Theme,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
@@ -89,6 +90,37 @@ impl EventEmitter<TrayEvent> for ApprovalTray {}
 /// request, not its place.
 pub(crate) fn part(name: &str, id: &str) -> ElementId {
     SharedString::from(format!("{name}-{id}")).into()
+}
+
+/// The contrast the tray's warnings need on its fill, WCAG's for body text.
+pub(crate) const WARNING_CONTRAST: f32 = 4.5;
+
+/// The color of the tray's warnings, and of a scope of every project: the
+/// theme's warning color as it is while it reads at [`WARNING_CONTRAST`]
+/// on the tray's fill and on a row's hovered fill, else darkened (or, on a
+/// dark fill, lightened) until it does. Most light themes' amber is too
+/// light for a hovered row.
+pub(crate) fn warning_color(theme: &Theme) -> Hsla {
+    use crate::segmented::contrast_ratio;
+    let fill = theme.background.blend(theme.popover);
+    let surfaces = [fill, fill.blend(theme.secondary_hover)];
+    let least = |color: Hsla| {
+        surfaces
+            .iter()
+            .map(|surface| contrast_ratio(surface.blend(color), *surface))
+            .fold(f32::INFINITY, f32::min)
+    };
+    // Black or white, whichever stands out more.
+    let (black, white) = (gpui_kit::black(), gpui_kit::white());
+    let toward = if least(black) >= least(white) {
+        black
+    } else {
+        white
+    };
+    (0..=20)
+        .map(|step| theme.warning.blend(toward.opacity(step as f32 / 20.)))
+        .find(|shade| least(*shade) >= WARNING_CONTRAST)
+        .unwrap_or(toward)
 }
 
 /// Splits `text` at its backticks into the words and the byte ranges of
@@ -310,10 +342,13 @@ impl ApprovalTray {
         }
     }
 
+    /// A request's row, with its details when it's open. `warning` is
+    /// [`warning_color`].
     fn render_row(
         &self,
         request: &ApprovalRequest,
         focused: bool,
+        warning: Hsla,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme();
@@ -385,7 +420,12 @@ impl ApprovalTray {
             .child(
                 div()
                     .flex_none()
-                    .text_color(muted)
+                    // Every project stands out.
+                    .text_color(if approval.every_project() {
+                        warning
+                    } else {
+                        muted
+                    })
                     .child(approval.scope().to_string()),
             )
             .child(
@@ -418,7 +458,7 @@ impl ApprovalTray {
             .w_full()
             .child(h_flex().w_full().gap_1().children(check).child(line))
             .when(open, |this| {
-                this.child(self.render_details(request, several, cx))
+                this.child(self.render_details(request, several, warning, cx))
             })
             .into_any_element()
     }
@@ -430,6 +470,7 @@ impl ApprovalTray {
         &self,
         request: &ApprovalRequest,
         several: bool,
+        warning: Hsla,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme();
@@ -488,7 +529,7 @@ impl ApprovalTray {
                     .child(detail.text)
                     .into_any_element(),
                 Look::Warning => div()
-                    .text_color(theme.warning)
+                    .text_color(warning)
                     .child(SelectableText::new(line_id, detail.text))
                     .into_any_element(),
                 // A skill's files show below, with the one chosen in the box.
@@ -572,11 +613,12 @@ impl ApprovalTray {
 impl Render for ApprovalTray {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus.is_focused(window);
+        let warning = warning_color(cx.theme());
         let rows: Vec<AnyElement> = self
             .requests
             .clone()
             .iter()
-            .map(|request| self.render_row(request, focused, cx))
+            .map(|request| self.render_row(request, focused, warning, cx))
             .collect();
         let count = self.requests.len();
         let heading = approvals_heading(count);
@@ -682,7 +724,10 @@ pub(crate) fn request(json: serde_json::Value) -> ApprovalRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::code_spans;
+    use super::{WARNING_CONTRAST, code_spans, warning_color};
+    use crate::segmented::contrast_ratio;
+    use gpui_kit::component::{ActiveTheme as _, Theme};
+    use gpui_kit::{Hsla, TestAppContext};
 
     #[test]
     fn backticks_mark_code() {
@@ -695,5 +740,46 @@ mod tests {
             code_spans("`a` and `b`"),
             ("a and b".to_string(), vec![0..1, 6..7])
         );
+    }
+
+    /// The tray's warnings, and a scope of every project, read on its fill
+    /// and on a hovered row in every bundled theme, light and dark, in a
+    /// shade of the theme's warning color. One that reads there already
+    /// stays as it is.
+    #[gpui_kit::test]
+    fn warnings_read_on_the_tray_in_every_bundled_theme(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let mut shaded = [0, 0];
+            for config in crate::appearance::parse_bundled() {
+                let name = config.name.clone();
+                Theme::update(cx, |theme| theme.apply_config(&std::rc::Rc::new(config)));
+                let theme = cx.theme().clone();
+                let fill = theme.background.blend(theme.popover);
+                let least = |color: Hsla| {
+                    [fill, fill.blend(theme.secondary_hover)]
+                        .iter()
+                        .map(|surface| contrast_ratio(surface.blend(color), *surface))
+                        .fold(f32::INFINITY, f32::min)
+                };
+                let warning = warning_color(&theme);
+                assert!(
+                    least(warning) >= WARNING_CONTRAST,
+                    "{name}: {:.2}",
+                    least(warning)
+                );
+                assert!(
+                    warning != gpui_kit::black() && warning != gpui_kit::white(),
+                    "{name}"
+                );
+                if least(theme.warning) >= WARNING_CONTRAST {
+                    assert_eq!(warning, theme.warning, "{name}");
+                } else {
+                    shaded[theme.is_dark() as usize] += 1;
+                }
+            }
+            // Light themes and dark ones both needed a shade.
+            assert!(shaded.iter().all(|count| *count > 0), "{shaded:?}");
+        });
     }
 }
