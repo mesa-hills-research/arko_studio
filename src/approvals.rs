@@ -112,11 +112,11 @@ pub(crate) fn part(name: &str, id: &str) -> ElementId {
 /// The contrast the tray's warnings need on its fill, WCAG's for body text.
 pub(crate) const WARNING_CONTRAST: f32 = 4.5;
 
-/// The color of the tray's warnings, and of a scope of every project: the
-/// theme's warning color as it is while it reads at [`WARNING_CONTRAST`]
-/// on the tray's fill and on a row's hovered fill, else darkened (or, on a
-/// dark fill, lightened) until it does. Most light themes' amber is too
-/// light for a hovered row.
+/// The color of the tray's warnings, and of a scope of every project. It's
+/// the theme's warning color while that reads at [`WARNING_CONTRAST`] on
+/// the tray's fill and on a row's hovered fill, else that color darkened
+/// (or, on a dark fill, lightened) until it does. Most light themes' amber
+/// is too light for a hovered row.
 pub(crate) fn warning_color(theme: &Theme) -> Hsla {
     use crate::segmented::contrast_ratio;
     let fill = theme.background.blend(theme.popover);
@@ -735,9 +735,10 @@ const GESTURE_GAP: std::time::Duration = std::time::Duration::from_millis(500);
 /// box has moved, the event goes no further. At the box's end the event
 /// goes on to the rows, unless the box moved earlier in the same gesture.
 ///
-/// shortcut: this mirrors GPUI Kit's private nested scrolling, which its
-/// own scroll areas have, because those keep their scroll handle to
-/// themselves and the keys need it. Use the kit's once it gives a handle.
+/// This mirrors the nested scrolling GPUI Kit keeps private to its own
+/// scroll areas, a shortcut taken because those keep their scroll handle
+/// to themselves and the keys need it. Use the kit's once it gives a
+/// handle.
 fn wheel_stays(wheel: Entity<Wheel>, scroll: &ScrollHandle) -> impl IntoElement {
     let scroll = scroll.clone();
     canvas(

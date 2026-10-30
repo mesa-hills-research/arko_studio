@@ -4274,8 +4274,8 @@ fn release_notes_skill() -> String {
     .join("\n")
 }
 
-/// An update of the skill release-notes an agent saved: SKILL.md's changed
-/// lines, a checklist it adds, a script it changes and notes it removes.
+/// An update of the skill release-notes an agent saved, which changes lines
+/// of SKILL.md and a script, adds a checklist and removes notes.
 fn skill_update_request() -> arko::approvals::ApprovalRequest {
     use arko::approvals::{
         Approval, ApprovalRequest, Scope, SkillApproval, SkillFile, SkillUpdate,
@@ -4339,9 +4339,10 @@ fn skill_update_request() -> arko::approvals::ApprovalRequest {
     }
 }
 
-/// The approval tray's requests: a worker profile, a skill with a script
-/// and a SKILL.md long enough to scroll, an MCP server, a worker billed per
-/// token whose day's spend reached the budget, and an update of the skill.
+/// The approval tray's requests. They are a worker profile, a skill with a
+/// script and a SKILL.md long enough to scroll, an MCP server, a worker
+/// billed per token whose day's spend reached the budget, and an update of
+/// the skill.
 fn approval_requests() -> Vec<arko::approvals::ApprovalRequest> {
     let skill = release_notes_skill();
     let mut requests: Vec<arko::approvals::ApprovalRequest> = [
@@ -4519,9 +4520,9 @@ fn approvals_option_dark() {
     goldens().assert("approvals-option-dark", &approvals_option(ThemeMode::Dark));
 }
 
-/// An update of a skill, open to its details: what it changes, SKILL.md's
-/// changed lines in a box of their own, and the files with SKILL.md in
-/// theirs.
+/// An update of a skill, open to its details. They say what it changes and
+/// show SKILL.md's changed lines in a box of their own, above the files and
+/// SKILL.md in theirs.
 fn approvals_update(mode: ThemeMode) -> Screenshot {
     approvals_window_of(mode, 1100., &["a5"], &["approval-row-a5"], &[])
 }
