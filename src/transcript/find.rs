@@ -17,6 +17,7 @@ use std::ops::Range;
 use arko::remote::Kind;
 use gpui_kit::base::text::{RangeHighlight, RenderedText};
 use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::text::TextBlockContent;
 use gpui_kit::*;
 
 use super::fold::{Folded, fold};
@@ -257,6 +258,9 @@ pub(crate) struct Find {
     /// Entries that changed while their texts were folded off the UI
     /// thread: theirs are made again.
     changed_meanwhile: HashSet<u64>,
+    /// The highlights given to each block view (tests).
+    #[cfg(test)]
+    pub installed: HashMap<(u64, usize), Vec<RangeHighlight>>,
 }
 
 impl Find {
@@ -1151,6 +1155,8 @@ impl TranscriptView {
             }
         }
         let before = std::mem::take(&mut find.highlighted);
+        #[cfg(test)]
+        find.installed.retain(|block, _| now.contains(block));
         for (entry, block) in before.difference(&now) {
             if let Some(view) = self.existing_block_view(*entry, *block) {
                 view.update(cx, |view, cx| view.clear_range_highlights(cx));
@@ -1203,6 +1209,10 @@ impl TranscriptView {
         }
         let needle = find.needle.clone();
         let (ranges, highlights) = self.block_highlights(entry, view, &needle, current, cx);
+        #[cfg(test)]
+        if let Some(find) = self.find.as_mut() {
+            find.installed.insert((entry, block), highlights.clone());
+        }
         view.update(cx, |view, cx| {
             let _ = view.set_range_highlights(highlights, cx);
             if reveal && let Some(range) = current.and_then(|ordinal| ranges.get(ordinal)) {
@@ -1221,24 +1231,40 @@ impl TranscriptView {
         current: Option<usize>,
         cx: &App,
     ) -> (Vec<Range<usize>>, Vec<RangeHighlight>) {
-        let view = view.read(cx);
-        let text = view.rendered_text();
+        let state = view.read(cx);
+        let text = state.rendered_text();
         let ranges = Folded::new(text.as_str()).find(needle);
         if ranges.is_empty() {
             return (ranges, Vec::new());
         }
-        let blocks: Vec<_> = view
+        let blocks: Vec<_> = state
             .blocks()
             .iter()
             .filter_map(|block| block.source_range())
             .collect();
+        let parts = markdown_parts(&text, &blocks, &self.definitions(entry));
         let thinking = self
             .model
             .entry(entry)
             .is_some_and(|entry| entry.item.kind == Kind::Thinking);
         let inks = MarkdownInks::of(thinking, cx);
-        let highlights = markdown_highlights(&text, &blocks, &ranges, current, inks, cx);
+        let highlights = markdown_highlights(&parts, &ranges, current, inks, cx);
         (ranges, highlights)
+    }
+
+    /// The link definitions of the entry `entry`'s Markdown, which a link
+    /// in any of its blocks may refer to.
+    fn definitions(&self, entry: u64) -> String {
+        let Some(doc) = self.ui.get(&entry).and_then(|ui| ui.doc.as_ref()) else {
+            return String::new();
+        };
+        let definitions: Vec<&str> = doc
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.content, TextBlockContent::Definition))
+            .filter_map(|block| doc.text.get(block.range.clone()?))
+            .collect();
+        definitions.join("\n\n")
     }
 
     /// The matches in the text of `place` of the entry `entry`, and which
@@ -1383,7 +1409,7 @@ pub(super) fn match_colors(cx: &App) -> (Hsla, Hsla) {
 /// The contrast matched text needs on its highlight, WCAG's for body text.
 pub(super) const MATCH_CONTRAST: f32 = 4.5;
 
-/// The colors a text of a row is drawn in: its own, and what's under it.
+/// The colors a text of a row is drawn in, its own and those under it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Ink {
     pub text: Hsla,
@@ -1415,17 +1441,9 @@ impl Ink {
     }
 
     /// Its text on `fill`, painted over its own fill, as inline code is in
-    /// a table's head.
+    /// a table.
     pub fn over(self, fill: Hsla) -> Self {
-        let under = self.fills[0];
-        Self::on(
-            self.text,
-            if under.a <= 0. {
-                fill
-            } else {
-                under.blend(fill)
-            },
-        )
+        Self::on(self.text, composite(self.fills[0], fill))
     }
 
     /// What it may be drawn on, opaque: each of its fills over the
@@ -1438,21 +1456,77 @@ impl Ink {
     }
 }
 
+/// `over` painted over `under`, as one color, either of which may be
+/// translucent.
+pub(super) fn composite(under: Hsla, over: Hsla) -> Hsla {
+    if over.a >= 1. || under.a <= 0. {
+        return over;
+    }
+    if over.a <= 0. {
+        return under;
+    }
+    let alpha = over.a + under.a * (1. - over.a);
+    let (under_rgb, over_rgb) = (under.to_rgb(), over.to_rgb());
+    let mix = |low: f32, high: f32| (high * over.a + low * under.a * (1. - over.a)) / alpha;
+    Rgba {
+        r: mix(under_rgb.r, over_rgb.r),
+        g: mix(under_rgb.g, over_rgb.g),
+        b: mix(under_rgb.b, over_rgb.b),
+        a: alpha,
+    }
+    .into()
+}
+
+/// How a part of a block of Markdown draws its text, whatever the theme.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Look {
+    pub text: Text,
+    /// The row of a table it's in.
+    pub table: Option<TableRow>,
+    pub code: Option<Code>,
+}
+
+/// The color of a part's text, unless a table's head sets it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Text {
+    /// The block's own.
+    #[default]
+    Block,
+    Quote,
+    Link,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TableRow {
+    Head,
+    Body,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Code {
+    Inline,
+    Block,
+}
+
 /// The colors of a block of Markdown's text, as the rows style it
-/// ([`row::text_style`]), for the parts drawn in a color or on a surface of
-/// their own.
+/// ([`row::text_style`]) and GPUI Kit paints it, for the parts that look
+/// their own way.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct MarkdownInks {
     /// The block's own text, muted in a thinking.
     pub text: Hsla,
     pub quote: Hsla,
     pub link: Hsla,
-    /// Inline code's background.
+    /// The background of inline code.
     pub inline_code: Hsla,
-    /// A code block's background.
+    /// The background of a code block.
     pub code_block: Hsla,
-    /// A table's head: its background and its text.
-    pub table_head: (Hsla, Hsla),
+    /// The background of a table, under its head too.
+    pub table: Hsla,
+    /// The background of a table's head, over the table's.
+    pub table_head: Hsla,
+    /// The text of a table's head.
+    pub table_head_text: Hsla,
 }
 
 impl MarkdownInks {
@@ -1476,99 +1550,153 @@ impl MarkdownInks {
                 .background_color
                 .unwrap_or(style.code_background()),
             code_block: style.code_background(),
-            table_head: (theme.table_head, theme.table_head_foreground),
+            // GPUI Kit paints a table on the theme's surface, the popover's
+            // color.
+            table: cx
+                .try_global::<gpui_kit::base::Theme>()
+                .map_or(theme.popover, |base| base.tokens.colors.surface),
+            table_head: theme.table_head,
+            table_head_text: theme.table_head_foreground,
+        }
+    }
+
+    /// The ink of a part that looks like `look`.
+    pub fn ink(&self, look: Look) -> Ink {
+        let text = match (look.text, look.table) {
+            (Text::Link, _) => self.link,
+            (_, Some(TableRow::Head)) => self.table_head_text,
+            (Text::Quote, _) => self.quote,
+            (Text::Block, _) => self.text,
+        };
+        let mut ink = Ink::new(text);
+        if let Some(row) = look.table {
+            ink = ink.over(self.table);
+            if row == TableRow::Head {
+                ink = ink.over(self.table_head);
+            }
+        }
+        match look.code {
+            Some(Code::Inline) => ink.over(self.inline_code),
+            Some(Code::Block) => ink.over(self.code_block),
+            None => ink,
         }
     }
 }
 
 /// The parts of the blocks of Markdown `rendered` shows, whose source is at
-/// `blocks`, that draw their text in an ink of their own (quotes, links,
-/// inline code, code blocks and a table's head), as ranges of `rendered`
-/// that don't overlap, in order. A part inside another keeps the colors it
-/// doesn't set itself, so a link in a quote is a link's color and inline
-/// code in a quote is muted.
+/// `blocks`, that look their own way (quotes, links, inline code, code
+/// blocks and tables), as ranges of `rendered` that don't overlap, in order.
+/// A part inside another looks as that one does where it doesn't set its
+/// own look, so a link in a quote is a link's color and inline code in a
+/// quote is muted. A link may refer to one of `definitions`, the entry's
+/// link definitions, wherever they are.
 pub(super) fn markdown_parts(
     rendered: &RenderedText,
     blocks: &[Range<usize>],
-    inks: MarkdownInks,
-) -> Vec<(Range<usize>, Ink)> {
+    definitions: &str,
+) -> Vec<(Range<usize>, Look)> {
     use markdown::mdast::Node;
 
-    /// Where the parts are found: the text, and where its source starts.
+    /// The block a part is found in, which starts at `start` of the
+    /// source of `rendered` and is `len` long.
     struct Source<'a> {
         rendered: &'a RenderedText,
         start: usize,
-        inks: MarkdownInks,
+        len: usize,
     }
 
     /// Adds `node`'s part and those inside it, in the order they start,
-    /// each before the parts inside it. `outer` is the ink of the part it's
-    /// in, and `head` whether it's the first row of a table.
+    /// each before the parts inside it. `outer` is the look of the part
+    /// it's in, and `row` the table row it is when it's one.
     fn add(
         node: &Node,
-        outer: Ink,
-        head: bool,
+        outer: Look,
+        row: Option<TableRow>,
         source: &Source,
-        parts: &mut Vec<(Range<usize>, Ink)>,
+        parts: &mut Vec<(Range<usize>, Look)>,
     ) {
-        let inks = source.inks;
-        let ink = match node {
-            _ if head => Ink::on(inks.table_head.1, inks.table_head.0),
-            Node::Blockquote(_) => Ink {
-                text: inks.quote,
+        let look = match node {
+            _ if row.is_some() => Look {
+                table: row,
                 ..outer
             },
-            Node::Link(_) | Node::LinkReference(_) => Ink {
-                text: inks.link,
+            Node::Blockquote(_) => Look {
+                text: Text::Quote,
                 ..outer
             },
-            Node::InlineCode(_) => outer.over(inks.inline_code),
-            Node::Code(_) => outer.over(inks.code_block),
+            Node::Link(_) | Node::LinkReference(_) => Look {
+                text: Text::Link,
+                ..outer
+            },
+            Node::Table(_) => Look {
+                table: Some(TableRow::Body),
+                ..outer
+            },
+            Node::InlineCode(_) => Look {
+                code: Some(Code::Inline),
+                ..outer
+            },
+            Node::Code(_) => Look {
+                code: Some(Code::Block),
+                ..outer
+            },
             _ => outer,
         };
-        if ink != outer
+        // The definitions parsed after the block are no part of it.
+        if look != outer
             && let Some(at) = node.position()
-            && let Some(range) = source
-                .rendered
-                .range_for_source(source.start + at.start.offset..source.start + at.end.offset)
+            && at.start.offset < source.len
+            && let Some(range) = source.rendered.range_for_source(
+                source.start + at.start.offset..source.start + at.end.offset.min(source.len),
+            )
         {
-            parts.push((range, ink));
+            parts.push((range, look));
         }
         for (ix, child) in node.children().into_iter().flatten().enumerate() {
-            let head = matches!(node, Node::Table(_)) && ix == 0;
-            add(child, ink, head, source, parts);
+            let row = matches!(node, Node::Table(_)).then_some(if ix == 0 {
+                TableRow::Head
+            } else {
+                TableRow::Body
+            });
+            add(child, look, row, source, parts);
         }
     }
 
     // The source is the whole entry's, which may be long, so only the
-    // view's blocks are parsed.
+    // view's blocks are parsed, each with the entry's definitions after it.
     let mut nested = Vec::new();
     for block in blocks {
         let Some(text) = rendered.source().get(block.clone()) else {
             continue;
         };
-        let Ok(root) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) else {
+        let parsed = if definitions.is_empty() {
+            markdown::to_mdast(text, &markdown::ParseOptions::gfm())
+        } else {
+            let text = format!("{text}\n\n{definitions}");
+            markdown::to_mdast(&text, &markdown::ParseOptions::gfm())
+        };
+        let Ok(root) = parsed else {
             continue;
         };
         let source = Source {
             rendered,
             start: block.start,
-            inks,
+            len: text.len(),
         };
-        add(&root, Ink::new(inks.text), false, &source, &mut nested);
+        add(&root, Look::default(), None, &source, &mut nested);
     }
     // Each part's text outside the parts inside it, which come after it.
     let mut parts = Vec::with_capacity(nested.len());
-    let mut add_piece = |range: Range<usize>, ink: Ink| {
+    let mut add_piece = |range: Range<usize>, look: Look| {
         if range.start < range.end {
-            parts.push((range, ink));
+            parts.push((range, look));
         }
     };
     // The parts the text has reached and not left, the innermost last, by
     // where they end.
-    let mut open: Vec<(usize, Ink)> = Vec::new();
+    let mut open: Vec<(usize, Look)> = Vec::new();
     let mut at = 0;
-    for (range, ink) in nested {
+    for (range, look) in nested {
         while let Some(&(end, outer)) = open.last()
             && end <= range.start
         {
@@ -1584,31 +1712,28 @@ pub(super) fn markdown_parts(
         let end = open
             .last()
             .map_or(range.end, |(end, _)| range.end.min(*end));
-        open.push((end.max(start), ink));
+        open.push((end.max(start), look));
     }
-    while let Some((end, ink)) = open.pop() {
-        add_piece(at..end, ink);
+    while let Some((end, look)) = open.pop() {
+        add_piece(at..end, look);
         at = at.max(end);
     }
     parts
 }
 
-/// The highlights of `ranges`, the matches in the blocks of Markdown
-/// `rendered` shows, whose source is at `blocks`, the current one's
-/// stronger. Their text takes a shade of its ink that reads on them, the
-/// block's or, in a part of it with an ink of its own, the part's. A
-/// highlight gives its range one color, so matched code loses its syntax
-/// colors.
+/// The highlights of `ranges`, the matches in a view of Markdown whose
+/// `parts` look their own way, the current one's stronger. Their text takes
+/// a shade of its ink that reads on them, the block's or, in a part with a
+/// look of its own, the part's. A highlight gives its range one color, so
+/// matched code loses its syntax colors.
 pub(super) fn markdown_highlights(
-    rendered: &RenderedText,
-    blocks: &[Range<usize>],
+    parts: &[(Range<usize>, Look)],
     ranges: &[Range<usize>],
     current: Option<usize>,
     inks: MarkdownInks,
     cx: &App,
 ) -> Vec<RangeHighlight> {
-    let parts = markdown_parts(rendered, blocks, inks);
-    let block = Ink::new(inks.text);
+    let block = inks.ink(Look::default());
     let (all, strong) = match_colors(cx);
     let mut highlights = Vec::with_capacity(ranges.len());
     for (ordinal, range) in ranges.iter().enumerate() {
@@ -1624,14 +1749,17 @@ pub(super) fn markdown_highlights(
         // The parts in the match recolor their text over it, and paint
         // nothing, so the match's background stays one piece.
         let first = parts.partition_point(|(part, _)| part.end <= range.start);
-        for (part, ink) in parts[first..]
+        for (part, look) in parts[first..]
             .iter()
             .take_while(|(part, _)| part.start < range.end)
         {
             let piece = part.start.max(range.start)..part.end.min(range.end);
             highlights.push(
-                RangeHighlight::new(piece, transparent_black())
-                    .with_text_color(readable_on(*ink, background, cx)),
+                RangeHighlight::new(piece, transparent_black()).with_text_color(readable_on(
+                    inks.ink(*look),
+                    background,
+                    cx,
+                )),
             );
         }
     }

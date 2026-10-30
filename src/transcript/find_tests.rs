@@ -678,80 +678,200 @@ fn matches_take_a_shade_of_their_lines_color_that_reads(cx: &mut TestAppContext)
     });
 }
 
-/// The matches in Markdown take a shade of the colors of the part they're
-/// in that reads on their highlight, whether a reply's text, a quote's or a
-/// link's, inline code, a table's head or a code block on its own
-/// background, or a thinking's muted text.
-#[gpui_kit::test]
-fn matches_in_markdown_take_a_shade_of_their_parts_colors(cx: &mut TestAppContext) {
-    use gpui_kit::component::ActiveTheme as _;
+/// A reply with each part of Markdown that looks its own way, in blocks
+/// that nest them, with "parser" in each.
+const MARKDOWN_PARTS: &str = "Spanning [pars](https://x.test)er, *emphasis parser*, \
+    `code parser`, [link `parser` code](https://x.test) and [the parser][docs].\n\n\
+    - item parser\n  - nested parser\n    > quoted parser\n\n\
+    > outer parser\n>\n> > inner parser\n>\n> - listed `parser`\n\n\
+    Ünïcödé PARSER and [naïve parser](https://x.test)\n\n\
+    | head parser `code parser` [parser](https://x.test) |\n| --- |\n\
+    | body parser `code parser` [parser](https://x.test) |\n\n\
+    A footnote parser[^n].\n\n\
+    ```\nlet parser = 1;\n```\n\n\
+    [^n]: The footnote parser.\n\n\
+    [docs]: https://example.com\n";
 
-    use super::{Ink, MarkdownInks};
-
+/// The reply [`MARKDOWN_PARTS`] after a question, in a window tall enough
+/// to draw all of it, with "parser" found.
+fn markdown_parts_found(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<TranscriptView>, u64) {
     let feed = Feed::new("main");
     feed.user("Stream it.", Source::App, Delivery::Turn);
     feed.turn_started();
-    think(&feed, "The parser takes a whole string.");
-    let reply = "The parser streams, as [the parser docs](https://example.com) and \
-                 `parser::feed` say.\n\n\
-                 > The old parser waited, and `parser` with it.\n\n\
-                 | parser | speed |\n| --- | --- |\n| new parser | fast |\n\n\
-                 ```rust\nlet parser = Parser::new();\n```\n";
-    say(&feed, reply);
-    feed.reply(reply);
+    say(&feed, MARKDOWN_PARTS);
+    feed.reply(MARKDOWN_PARTS);
     feed.turn_ended("2 s", None);
-    let (window, view) = open_feed(cx, &feed, View::Full, 900.);
-    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.expand_thinking = true));
+    let (window, view) = open_feed(cx, &feed, View::Full, 2000.);
     find(cx, window, &view, "parser");
-    let thinking = entry(cx, &view, "takes a whole string");
-    let reply = entry(cx, &view, "streams");
+    let reply = entry(cx, &view, "Spanning");
+    (window, view, reply)
+}
+
+/// A match as its view was given it, with its text, its highlight, and
+/// its text in pieces of one color each.
+type Drawn = (
+    String,
+    gpui_kit::Hsla,
+    Vec<(String, Option<gpui_kit::Hsla>)>,
+);
+
+/// The pieces of a match, each with its look.
+type Looks = Vec<(&'static str, super::Look)>;
+
+/// Each match of block `block` of `entry` as its view was given it.
+fn installed(view: &TranscriptView, entry: u64, block: usize, cx: &gpui_kit::App) -> Vec<Drawn> {
+    let state = view.existing_block_view(entry, block).unwrap();
+    let rendered = state.read(cx).rendered_text();
+    let text = rendered.as_str();
+    let highlights = &view.find.as_ref().unwrap().installed[&(entry, block)];
+    highlights
+        .iter()
+        .filter(|highlight| highlight.background().a > 0.)
+        .map(|found| {
+            let range = found.range();
+            let mut pieces: Vec<(String, Option<gpui_kit::Hsla>)> = Vec::new();
+            for (at, char) in text[range.clone()].char_indices() {
+                let at = range.start + at;
+                let color = highlights
+                    .iter()
+                    .rev()
+                    .find(|highlight| highlight.range().contains(&at))
+                    .and_then(|highlight| highlight.text_color());
+                match pieces.last_mut() {
+                    Some((piece, last)) if *last == color => piece.push(char),
+                    _ => pieces.push((char.to_string(), color)),
+                }
+            }
+            (text[range].to_string(), found.background(), pieces)
+        })
+        .collect()
+}
+
+/// The look of each piece of each match of [`MARKDOWN_PARTS`], by block.
+fn markdown_parts_looks() -> Vec<(usize, Vec<Looks>)> {
+    use super::{Code, Look, TableRow, Text};
+
+    let text = Look::default();
+    let quote = Look {
+        text: Text::Quote,
+        ..text
+    };
+    let link = Look {
+        text: Text::Link,
+        ..text
+    };
+    let code = |look: Look| Look {
+        code: Some(Code::Inline),
+        ..look
+    };
+    let body = Look {
+        table: Some(TableRow::Body),
+        ..text
+    };
+    let head = Look {
+        table: Some(TableRow::Head),
+        ..text
+    };
+    let one = |look: Look| vec![("parser", look)];
+    vec![
+        (
+            0,
+            vec![
+                vec![("pars", link), ("er", text)],
+                one(text),
+                one(code(text)),
+                one(code(link)),
+                one(link),
+            ],
+        ),
+        (1, vec![one(text), one(text), one(quote)]),
+        (2, vec![one(quote), one(quote), one(code(quote))]),
+        (3, vec![vec![("PARSER", text)], one(link)]),
+        (
+            4,
+            vec![
+                one(head),
+                one(code(head)),
+                one(Look {
+                    text: Text::Link,
+                    ..head
+                }),
+                one(body),
+                one(code(body)),
+                one(Look {
+                    text: Text::Link,
+                    ..body
+                }),
+            ],
+        ),
+        (5, vec![one(text)]),
+        (
+            6,
+            vec![one(Look {
+                code: Some(Code::Block),
+                ..text
+            })],
+        ),
+        (7, vec![one(text)]),
+    ]
+}
+
+/// Checks that each match of [`MARKDOWN_PARTS`] was given the highlight of
+/// the current match or the others', and its pieces the shade of their
+/// look's ink that reads on it, in the theme in force.
+fn check_markdown_highlights(cx: &mut TestAppContext, view: &Entity<TranscriptView>, reply: u64) {
     cx.update(|cx| {
-        let md = MarkdownInks::of(false, cx);
-        let theme = cx.theme();
-        let text = Ink::new(theme.foreground);
-        let code = md.inline_code;
-        assert_eq!(MarkdownInks::of(true, cx).text, theme.muted_foreground);
         let view = view.read(cx);
-        // Each match of the block, and the color its text is drawn in.
-        let drawn = |entry: u64, block: usize| {
-            let state = view.existing_block_view(entry, block).unwrap();
-            let rendered = state.read(cx).rendered_text();
-            let (ranges, highlights) = view.block_highlights(entry, &state, "parser", None, cx);
-            ranges
-                .iter()
-                .map(|range| {
-                    let color = highlights
-                        .iter()
-                        .rev()
-                        .find(|highlight| highlight.range().contains(&range.start))
-                        .and_then(|highlight| highlight.text_color());
-                    (rendered.as_str()[range.clone()].to_string(), color)
-                })
-                .collect::<Vec<_>>()
-        };
-        let (all, _) = super::match_colors(cx);
-        let shade = |ink: Ink| Some(super::readable_on(ink, all, cx));
-        let quote = Ink::new(theme.muted_foreground);
-        let head = Ink::on(theme.table_head_foreground, theme.table_head);
-        let code_block = Ink::on(theme.foreground, theme.editor_background());
-        let expected = [
-            (
-                reply,
-                0,
-                vec![
-                    shade(text),
-                    shade(Ink::new(theme.link)),
-                    shade(text.over(code)),
-                ],
-            ),
-            (reply, 1, vec![shade(quote), shade(quote.over(code))]),
-            (reply, 2, vec![shade(head), shade(text)]),
-            (reply, 3, vec![shade(code_block); 2]),
-            (thinking, 0, vec![shade(Ink::new(theme.muted_foreground))]),
-        ];
-        // The parts of each block with colors of their own.
-        let parts = |entry: u64, block: usize| {
-            let state = view.existing_block_view(entry, block).unwrap();
+        let inks = super::MarkdownInks::of(false, cx);
+        let (all, strong) = super::match_colors(cx);
+        let current = view.find.as_ref().unwrap().current.unwrap();
+        let mut currents = 0;
+        for (block, looks) in markdown_parts_looks() {
+            let found = installed(view, reply, block, cx);
+            assert_eq!(found.len(), looks.len(), "block {block}: {found:?}");
+            for (ordinal, ((text, background, pieces), looks)) in
+                found.into_iter().zip(looks).enumerate()
+            {
+                let is_current = current.entry == reply
+                    && current.place == Place::Block(block)
+                    && current.ordinal == ordinal;
+                currents += usize::from(is_current);
+                assert_eq!(background, if is_current { strong } else { all });
+                assert_eq!(
+                    text,
+                    looks.iter().map(|(piece, _)| *piece).collect::<String>()
+                );
+                // Pieces of one color, as the drawn ones are.
+                let mut expected: Vec<(String, Option<gpui_kit::Hsla>)> = Vec::new();
+                for (piece, look) in looks {
+                    let color = Some(super::readable_on(inks.ink(look), background, cx));
+                    match expected.last_mut() {
+                        Some((text, last)) if *last == color => text.push_str(piece),
+                        _ => expected.push((piece.to_string(), color)),
+                    }
+                }
+                assert_eq!(pieces, expected, "block {block}, match {ordinal}");
+            }
+        }
+        assert_eq!(currents, 1, "the current match is in the reply");
+    });
+}
+
+/// Each part of Markdown that looks its own way has its look, and a part
+/// inside another keeps the outer one's where it sets none. The reply has a
+/// link a match spans, emphasis, inline code alone and in a link, a link to
+/// a definition in another block, nested lists and quotes, text after
+/// characters of several bytes, a table's head and body with their code and
+/// links, a footnote and a code block.
+#[gpui_kit::test]
+fn each_part_of_markdown_has_its_own_look(cx: &mut TestAppContext) {
+    use super::{Code, Look, TableRow, Text};
+
+    let (_window, view, reply) = markdown_parts_found(cx);
+    cx.update(|cx| {
+        let view = view.read(cx);
+        let parts = |block: usize| {
+            let state = view.existing_block_view(reply, block).unwrap();
             let state = state.read(cx);
             let rendered = state.rendered_text();
             let blocks: Vec<_> = state
@@ -759,54 +879,67 @@ fn matches_in_markdown_take_a_shade_of_their_parts_colors(cx: &mut TestAppContex
                 .iter()
                 .filter_map(|block| block.source_range())
                 .collect();
-            super::markdown_parts(&rendered, &blocks, md)
+            super::markdown_parts(&rendered, &blocks, "[docs]: https://example.com")
                 .into_iter()
-                .map(|(range, ink)| (rendered.as_str()[range].to_string(), ink))
+                .map(|(range, look)| (rendered.as_str()[range].to_string(), look))
                 .collect::<Vec<_>>()
         };
-        let owned = |parts: &[(&str, Ink)]| {
+        let link = Look {
+            text: Text::Link,
+            ..Look::default()
+        };
+        let head = Look {
+            table: Some(TableRow::Head),
+            ..Look::default()
+        };
+        let body = Look {
+            table: Some(TableRow::Body),
+            ..Look::default()
+        };
+        let code = |look: Look| Look {
+            code: Some(Code::Inline),
+            ..look
+        };
+        let owned = |parts: &[(&str, Look)]| {
             parts
                 .iter()
-                .map(|(text, ink)| (text.to_string(), *ink))
+                .map(|(text, look)| (text.to_string(), *look))
                 .collect::<Vec<_>>()
         };
         assert_eq!(
-            parts(reply, 0),
+            parts(0),
             owned(&[
-                ("the parser docs", Ink::new(theme.link)),
-                ("parser::feed", text.over(code)),
+                ("pars", link),
+                ("code parser", code(Look::default())),
+                ("link ", link),
+                ("parser", code(link)),
+                (" code", link),
+                ("the parser", link),
             ])
         );
+        let in_head = Look {
+            text: Text::Link,
+            ..head
+        };
+        let in_body = Look {
+            text: Text::Link,
+            ..body
+        };
         assert_eq!(
-            parts(reply, 1),
+            parts(4),
             owned(&[
-                ("The old parser waited, and ", quote),
-                ("parser", quote.over(code)),
-                (" with it.", quote),
+                ("head parser ", head),
+                ("code parser", code(head)),
+                (" ", head),
+                ("parser", in_head),
+                ("\nbody parser ", body),
+                ("code parser", code(body)),
+                (" ", body),
+                ("parser", in_body),
             ])
         );
-        assert_eq!(parts(reply, 2), owned(&[("parser speed", head)]));
-        assert_eq!(
-            parts(reply, 3),
-            owned(&[("let parser = Parser::new();", code_block)])
-        );
-        for (entry, block, colors) in expected {
-            let drawn = drawn(entry, block);
-            assert!(
-                drawn
-                    .iter()
-                    .all(|(text, _)| text.eq_ignore_ascii_case("parser"))
-            );
-            assert_eq!(
-                drawn
-                    .into_iter()
-                    .map(|(_, color)| color)
-                    .collect::<Vec<_>>(),
-                colors,
-                "block {block} of {entry}"
-            );
-        }
     });
+    check_markdown_highlights(cx, &view, reply);
 }
 
 fn top(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> gpui_kit::ListOffset {
