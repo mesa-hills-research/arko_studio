@@ -173,6 +173,7 @@ fn a_key_added_in_settings_makes_its_models_usable(cx: &mut TestAppContext) {
             .map(|(name, alias)| ModelChoice {
                 name: (*name).into(),
                 alias: (*alias).into(),
+                billing: None,
             })
             .collect(),
     };
@@ -1277,9 +1278,10 @@ fn a_group_shows_a_preference_changed_elsewhere(cx: &mut TestAppContext) {
 /// The models of the model settings' tests: the sample's Anthropic models,
 /// and Kimi K3 on OpenRouter.
 pub(super) fn openrouter_models() -> ModelChoices {
-    let choice = |name: &str, alias: &str| ModelChoice {
+    let choice = |name: &str, alias: &str, billing: &str| ModelChoice {
         name: name.into(),
         alias: alias.into(),
+        billing: Some(billing.into()),
     };
     ModelChoices {
         groups: vec![
@@ -1287,14 +1289,14 @@ pub(super) fn openrouter_models() -> ModelChoices {
                 name: "Anthropic API, billed per token".into(),
                 needs: None,
                 models: vec![
-                    choice("claude-opus-5-5", "opus"),
-                    choice("claude-sonnet-5-5", "sonnet"),
+                    choice("claude-opus-5-5", "opus", "API, $4/$20"),
+                    choice("claude-sonnet-5-5", "sonnet", "API, $2/$10"),
                 ],
             },
             ModelGroup {
                 name: "OpenRouter, billed per token".into(),
                 needs: None,
-                models: vec![choice("openrouter:moonshotai/kimi-k3", "")],
+                models: vec![choice("openrouter:moonshotai/kimi-k3", "", "API")],
             },
         ],
         default: Some("claude-opus-5-5".into()),

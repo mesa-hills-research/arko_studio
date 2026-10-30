@@ -607,6 +607,7 @@ mod tests {
                 .map(|(name, alias)| ModelChoice {
                     name: (*name).into(),
                     alias: (*alias).into(),
+                    billing: None,
                 })
                 .collect(),
         };

@@ -383,6 +383,7 @@ fn the_model_list_says_what_access_mythos_needs(cx: &mut TestAppContext) {
                 .map(|(name, alias)| ModelChoice {
                     name: (*name).into(),
                     alias: (*alias).into(),
+                    billing: None,
                 })
                 .collect(),
         }],
@@ -419,28 +420,34 @@ fn the_model_list_says_what_access_mythos_needs(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_model_list_says_how_a_model_is_billed(cx: &mut TestAppContext) {
     use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
-    let group = |name: &str, model: &str, alias: &str| ModelGroup {
+    let group = |name: &str, model: &str, alias: &str, billing: Option<&str>| ModelGroup {
         name: name.into(),
         needs: None,
         models: vec![ModelChoice {
             name: model.into(),
             alias: alias.into(),
+            billing: billing.map(str::to_string),
         }],
     };
+    let billing = "API, $4/$20";
     let choices = ModelChoices {
         groups: vec![
             group(
                 "Claude Code, on your Claude plan",
                 "cc:claude-opus-5-5",
                 "cc:opus",
+                None,
             ),
-            group("Anthropic API, billed per token", "claude-opus-5-5", "opus"),
+            group(
+                "Anthropic API, billed per token",
+                "claude-opus-5-5",
+                "opus",
+                Some(billing),
+            ),
         ],
         default: Some("cc:claude-opus-5-5".into()),
         note: None,
     };
-    let billing = choices.billing("claude-opus-5-5").unwrap();
-    assert!(billing.starts_with("API"));
     let backend = FakeBackend::sample("/arko", SystemTime::now()).with_models(choices);
     cx.update(|cx| crate::init(Startup::for_tests(Arc::new(backend)), cx));
     let (window, _) = open(cx, 1300.);
@@ -1088,6 +1095,7 @@ fn start_with_openrouter(
     let choice = |name: &str, alias: &str| ModelChoice {
         name: name.into(),
         alias: alias.into(),
+        billing: None,
     };
     let backend = FakeBackend::sample("/arko", SystemTime::now())
         .with_models(ModelChoices {
@@ -1366,10 +1374,12 @@ fn a_new_session_starts_with_the_effort_shown(cx: &mut TestAppContext) {
                     ModelChoice {
                         name: "claude-opus-5-5".into(),
                         alias: "opus".into(),
+                        billing: None,
                     },
                     ModelChoice {
                         name: "local-model".into(),
                         alias: String::new(),
+                        billing: None,
                     },
                 ],
             }],
@@ -1425,6 +1435,7 @@ fn a_listed_openrouter_model_is_found_by_its_shown_name(cx: &mut TestAppContext)
                 models: vec![ModelChoice {
                     name: "openrouter:vendor/model-123".into(),
                     alias: String::new(),
+                    billing: None,
                 }],
             }],
             default: None,

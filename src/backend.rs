@@ -249,6 +249,10 @@ pub struct ModelChoice {
     pub name: String,
     /// Its short name: `opus`.
     pub alias: String,
+    /// How it is billed, for a list to show beside it, as Arko says it:
+    /// `API, $5/$25` (per million input and output tokens) for a model
+    /// billed per token, `None` for one on the user's plans.
+    pub billing: Option<String>,
 }
 
 /// The models a new session can start on.
@@ -263,7 +267,9 @@ pub struct ModelChoices {
 }
 
 impl ModelChoices {
+    /// Arko's menu, each model with its billing as Arko says it.
     pub fn from_arko(groups: Vec<arko::models::ModelGroup>, default: Option<String>) -> Self {
+        let models = arko_models(groups.iter().map(|group| group.name.as_str()));
         Self {
             groups: groups
                 .into_iter()
@@ -274,6 +280,7 @@ impl ModelChoices {
                         .models
                         .into_iter()
                         .map(|(name, alias)| ModelChoice {
+                            billing: arko::models::billing(&models, &name),
                             name,
                             alias: alias.to_string(),
                         })
@@ -295,15 +302,32 @@ impl ModelChoices {
     /// How the model `name` is billed, for a list to show beside it, as
     /// Arko says it for an open session: `API, $5/$25` (per million input
     /// and output tokens) for a model billed per token, `None` for one on
-    /// the user's plans. OpenAI's models are billed per token when the list
-    /// reaches them by API key.
+    /// the user's plans. A model the list has is billed as its entry says,
+    /// and another as Arko bills it, with OpenAI's models billed per token
+    /// when the list reaches them by API key.
     pub fn billing(&self, name: &str) -> Option<String> {
-        let by_key = self.groups.iter().any(|group| group.name == OPENAI_BY_KEY);
-        let models = arko::remote::Models {
-            openai_auth: by_key.then(|| OPENAI_KEY_AUTH.to_string()),
-            ..Default::default()
-        };
-        arko::models::billing(&models, name)
+        let listed = self
+            .groups
+            .iter()
+            .flat_map(|group| &group.models)
+            .find(|model| model.name == name);
+        match listed {
+            Some(model) => model.billing.clone(),
+            None => {
+                let groups = self.groups.iter().map(|group| group.name.as_str());
+                arko::models::billing(&arko_models(groups), name)
+            }
+        }
+    }
+}
+
+/// A session's models as far as Arko's billing goes: OpenAI's are reached
+/// by API key when the menu's `groups` name it so.
+fn arko_models<'a>(mut groups: impl Iterator<Item = &'a str>) -> arko::remote::Models {
+    let by_key = groups.any(|group| group == OPENAI_BY_KEY);
+    arko::remote::Models {
+        openai_auth: by_key.then(|| OPENAI_KEY_AUTH.to_string()),
+        ..Default::default()
     }
 }
 
@@ -1080,13 +1104,17 @@ impl FakeBackend {
             groups: vec![ModelGroup {
                 name: "Anthropic API, billed per token".into(),
                 needs: None,
-                models: [("claude-opus-5-5", "opus"), ("claude-sonnet-5-5", "sonnet")]
-                    .into_iter()
-                    .map(|(name, alias)| ModelChoice {
-                        name: name.into(),
-                        alias: alias.into(),
-                    })
-                    .collect(),
+                models: [
+                    ("claude-opus-5-5", "opus", "API, $4/$20"),
+                    ("claude-sonnet-5-5", "sonnet", "API, $2/$10"),
+                ]
+                .into_iter()
+                .map(|(name, alias, billing)| ModelChoice {
+                    name: name.into(),
+                    alias: alias.into(),
+                    billing: Some(billing.into()),
+                })
+                .collect(),
             }],
             default: model,
             note: None,
@@ -1780,6 +1808,33 @@ mod tests {
         assert_eq!(by_key.billing("cc:claude-opus-5-5"), None);
         let (_, by_login) = menu("ChatGPT login");
         assert_eq!(by_login.billing("gpt-6.1-sol"), None);
+    }
+
+    /// A model the list has is billed as its entry says, so a list with
+    /// prices of its own (a test's) shows those whatever Arko's are. One it
+    /// doesn't list is billed as Arko bills it.
+    #[test]
+    fn a_listed_model_is_billed_as_its_entry_says() {
+        let choices = ModelChoices {
+            groups: vec![ModelGroup {
+                name: "Anthropic API, billed per token".into(),
+                needs: None,
+                models: vec![ModelChoice {
+                    name: "claude-opus-5-5".into(),
+                    alias: "opus".into(),
+                    billing: Some("API, $1/$2".into()),
+                }],
+            }],
+            default: None,
+            note: None,
+        };
+        assert_eq!(
+            choices.billing("claude-opus-5-5").as_deref(),
+            Some("API, $1/$2")
+        );
+        let sonnet = arko::models::billing(&arko::remote::Models::default(), "claude-sonnet-5-5");
+        assert!(sonnet.is_some());
+        assert_eq!(choices.billing("claude-sonnet-5-5"), sonnet);
     }
 
     /// A change to OpenRouter's settings is made to the file as it is:
