@@ -947,6 +947,8 @@ fn delete_error(error: arko::sessions::DeleteError) -> BackendError {
 pub struct FakeBackend {
     root: PathBuf,
     models: ModelChoices,
+    /// What an open session can switch to, else arko's list for its status.
+    session_models: Option<ModelChoices>,
     /// A group of models needs nothing once the key of the provider it's
     /// named after is set, as with arko.
     groups_follow_keys: bool,
@@ -998,6 +1000,7 @@ impl FakeBackend {
         Self {
             root: root.clone(),
             models: ModelChoices::default(),
+            session_models: None,
             groups_follow_keys: false,
             state: Mutex::new(FakeState {
                 sessions,
@@ -1185,6 +1188,12 @@ impl FakeBackend {
     /// Offers `models` to new sessions.
     pub fn with_models(mut self, models: ModelChoices) -> Self {
         self.models = models;
+        self
+    }
+
+    /// Offers `models` to open sessions, whatever their status says.
+    pub fn with_session_models(mut self, models: ModelChoices) -> Self {
+        self.session_models = Some(models);
         self
     }
 
@@ -1384,6 +1393,9 @@ impl Backend for FakeBackend {
 
     fn session_models(&self, models: &arko::remote::Models) -> ModelChoices {
         self.with_state(|state| state.session_menus += 1);
+        if let Some(models) = &self.session_models {
+            return models.clone();
+        }
         let groups =
             arko::models::menu(models, |name| arko::models::needs(&models.reachable, name));
         ModelChoices::from_arko(groups, None)

@@ -621,6 +621,128 @@ pub fn confirm_switch(
     });
 }
 
+/// A switch of the main agent's model once the conversation has started.
+pub struct ModelSwitch {
+    /// The model, as the model list names it.
+    pub label: String,
+    /// The effort it starts at, one of `efforts` when there are any.
+    pub effort: Option<String>,
+    /// The efforts to choose from in the dialog. None when the effort was
+    /// chosen already, or the model takes none.
+    pub efforts: Vec<String>,
+    /// The model stays, and only the effort changes.
+    pub keeps_model: bool,
+}
+
+/// The dialog's title and description for `switch`.
+pub fn model_switch_text(switch: &ModelSwitch) -> (String, String) {
+    let label = &switch.label;
+    match (&switch.effort, switch.keeps_model) {
+        (Some(effort), true) => (
+            format!("Switch to {effort} effort?"),
+            format!(
+                "A new conversation starts at {effort} effort, carrying this one over. This one stays in the conversation list."
+            ),
+        ),
+        _ => (
+            format!("Switch to {label}?"),
+            format!(
+                "A new conversation starts on {label}, carrying this one over. This one stays in the conversation list."
+            ),
+        ),
+    }
+}
+
+/// Asks before the main agent moves to another model (or effort) in a new
+/// conversation that carries the current one over. `answer` hears the
+/// effort on Switch. "Don't ask again" counts only on Switch.
+pub fn confirm_model_switch(
+    switch: ModelSwitch,
+    window: &mut Window,
+    cx: &mut App,
+    answer: impl Fn(Option<String>, &mut Window, &mut App) + 'static,
+) {
+    let (title, description) = model_switch_text(&switch);
+    let answer = std::rc::Rc::new(answer);
+    let dont_ask = std::rc::Rc::new(std::cell::Cell::new(false));
+    let effort = std::rc::Rc::new(std::cell::RefCell::new(switch.effort.clone()));
+    let efforts = switch.efforts;
+    window.open_alert_dialog(cx, move |alert, _, cx| {
+        let muted = cx.theme().muted_foreground;
+        let (checked, remembered) = (dont_ask.clone(), dont_ask.clone());
+        let (chosen, shown) = (effort.clone(), effort.clone());
+        let efforts = efforts.clone();
+        let ok = answer.clone();
+        alert
+            .title(title.clone())
+            .description(description.clone())
+            .content(move |content, _, _| {
+                let checked = checked.clone();
+                let current = shown.borrow().clone();
+                let efforts = efforts.clone();
+                let chosen = chosen.clone();
+                content.child(
+                    v_flex()
+                        .id("switch-model")
+                        .test_support()
+                        .gap_2()
+                        .text_sm()
+                        .when_some(current.filter(|_| !efforts.is_empty()), |this, current| {
+                            this.child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().text_color(muted).child("Effort"))
+                                    .child(
+                                        Button::new("switch-effort")
+                                            .outline()
+                                            .small()
+                                            .label(current)
+                                            .dropdown_caret(true)
+                                            .dropdown_menu(move |menu, _, _| {
+                                                efforts.iter().fold(menu, |menu, effort| {
+                                                    let chosen = chosen.clone();
+                                                    let effort = effort.clone();
+                                                    menu.item(
+                                                        gpui_kit::component::menu::PopupMenuItem::new(
+                                                            effort.clone(),
+                                                        )
+                                                        .on_click(move |_, window, _| {
+                                                            *chosen.borrow_mut() =
+                                                                Some(effort.clone());
+                                                            window.refresh();
+                                                        }),
+                                                    )
+                                                })
+                                            }),
+                                    ),
+                            )
+                        })
+                        .child(
+                            Checkbox::new("dont-ask-switch")
+                                .label("Don’t ask again")
+                                .checked(checked.get())
+                                .on_click(move |on, window, _| {
+                                    checked.set(*on);
+                                    window.refresh();
+                                }),
+                        ),
+                )
+            })
+            .confirm()
+            .ok_text("Switch")
+            .on_ok({
+                let effort = effort.clone();
+                move |_, window, cx| {
+                    if remembered.get() {
+                        prefs::update(cx, |prefs| prefs.sessions.ask_before_switch = false);
+                    }
+                    ok(effort.borrow().clone(), window, cx);
+                    true
+                }
+            })
+    });
+}
+
 /// Asks for a folder, and puts it in `chosen`.
 fn browse_into(
     chosen: std::rc::Rc<std::cell::RefCell<Option<std::path::PathBuf>>>,
@@ -748,7 +870,33 @@ pub fn confirm_stop(
 
 #[cfg(test)]
 mod tests {
-    use super::{short_tokens, switch_cost_text};
+    use super::{ModelSwitch, model_switch_text, short_tokens, switch_cost_text};
+
+    /// A switch of model says what starts, on what, and where the current
+    /// conversation stays.
+    #[test]
+    fn a_model_switch_says_a_new_conversation_starts() {
+        let switch = |effort: Option<&str>, keeps_model| ModelSwitch {
+            label: "GPT-6.1 Sol".into(),
+            effort: effort.map(String::from),
+            efforts: Vec::new(),
+            keeps_model,
+        };
+        assert_eq!(
+            model_switch_text(&switch(Some("high"), false)),
+            (
+                "Switch to GPT-6.1 Sol?".to_string(),
+                "A new conversation starts on GPT-6.1 Sol, carrying this one over. This one stays in the conversation list.".to_string()
+            )
+        );
+        assert_eq!(
+            model_switch_text(&switch(Some("low"), true)),
+            (
+                "Switch to low effort?".to_string(),
+                "A new conversation starts at low effort, carrying this one over. This one stays in the conversation list.".to_string()
+            )
+        );
+    }
 
     #[test]
     fn token_counts_read_as_the_context_ring_says() {

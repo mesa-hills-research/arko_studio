@@ -16,9 +16,9 @@ use gpui_kit::component::input::{self, Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::tooltip::{ManagedTooltipExt as _, Tooltip};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
-    ThemeStyled as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, ThemeStyled as _,
+    WindowExt as _,
+    button::{Button, ButtonVariants as _, Toggle, ToggleGroup},
     concentric_radius, h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
     popover::Popover,
@@ -224,6 +224,9 @@ pub struct SessionView {
     /// What reaches the models changed since they were listed.
     session_models_stale: bool,
     _session_models: Option<(arko::remote::Models, Task<()>)>,
+    /// Once the conversation has started, the model list is the new
+    /// workers' (`true`) or the main agent's.
+    lists_worker_models: bool,
 }
 
 /// Where the effort a new session starts with comes from.
@@ -391,6 +394,7 @@ impl SessionView {
             session_models: None,
             session_models_stale: false,
             _session_models: None,
+            lists_worker_models: false,
         };
         this.restore_draft(window, cx);
         this.sync_expanded(window, cx);
@@ -2522,10 +2526,10 @@ impl SessionView {
         let (model, effort) = match &self.session {
             Some(session) => {
                 let session = session.read(cx);
-                let models = &session.reading().models;
+                let (_, effort) = crate::live::conversation_model(&session.reading().models);
                 (
                     Some(session.model().to_string()).filter(|model| !model.is_empty()),
-                    Some(models.main_effort.clone()).filter(|effort| !effort.is_empty()),
+                    effort.map(str::to_string),
                 )
             }
             None => (
@@ -2557,7 +2561,11 @@ impl SessionView {
             .on_open_change(move |open, _, cx| {
                 if *open {
                     opening
-                        .update(cx, |view, cx| view.forget_last_efforts(cx))
+                        .update(cx, |view, cx| {
+                            // It opens on the main agent's models.
+                            view.lists_worker_models = false;
+                            view.forget_last_efforts(cx)
+                        })
                         .ok();
                 }
             })
@@ -2594,7 +2602,9 @@ impl SessionView {
         let filter = self.model_filter.read(cx).value().to_lowercase();
 
         // The models: the new session's, or the open session's from its
-        // status (the workers' only, once its conversation started).
+        // status. Once its conversation has started, the list is the main
+        // agent's, where another model starts a new conversation, or the
+        // new workers'.
         let session_models = self
             .session
             .as_ref()
@@ -2602,45 +2612,48 @@ impl SessionView {
         if let Some(models) = &session_models {
             self.see_session_models(models, cx);
         }
-        let (choices, current, workers_only) = match &self.session {
+        let lists_both = started
+            && session_models
+                .as_ref()
+                .is_some_and(|models| models.has_workers);
+        let workers_only = lists_both && self.lists_worker_models;
+        let (choices, current, current_effort) = match &session_models {
             None => (
                 self.models
                     .as_ref()
                     .map(|(_, models)| models.clone())
                     .unwrap_or_default(),
                 self.draft_model(cx),
-                false,
+                None,
             ),
-            Some(session) => {
-                let models = session.read(cx).reading().models.clone();
+            Some(models) => {
                 let choices = self
                     .session_models
                     .as_ref()
                     .map(|(_, choices)| choices.clone())
                     .unwrap_or_default();
-                let current = if started {
-                    Some(models.workers.clone())
+                let (current, effort) = if workers_only {
+                    (models.workers.as_str(), None)
+                } else if started {
+                    crate::live::conversation_model(models)
                 } else {
-                    Some(models.main.clone())
+                    (models.main.as_str(), Some(models.main_effort.as_str()))
                 };
-                (choices, current.filter(|model| !model.is_empty()), started)
+                (
+                    choices,
+                    Some(current.to_string()).filter(|model| !model.is_empty()),
+                    effort.map(str::to_string),
+                )
             }
         };
-        let has_workers = match &self.session {
-            Some(session) => session.read(cx).reading().models.has_workers,
-            None => true,
-        };
-        let can_switch = match &self.session {
-            None => true,
-            Some(session) => {
-                let session = session.read(cx);
-                *session.phase() == Phase::Open && !session.is_working()
-            }
-        };
-        let session_without_models = self.session.is_some() && choices.groups.is_empty();
+        // A switch waits for the turn to end.
+        let working = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.read(cx).is_working());
+        let waits = started && !workers_only && working;
 
         self.see_openrouter(cx);
-        let locked = started && !workers_only;
         let rows = choices
             .groups
             .iter()
@@ -2761,7 +2774,6 @@ impl SessionView {
                         .small()
                         .w_full()
                         .justify_start()
-                        .disabled(locked)
                         .accessibility_label(spoken)
                         .child(div().text_xs().text_color(muted).child(text))
                 };
@@ -2825,7 +2837,7 @@ impl SessionView {
                                 .small()
                                 .w_full()
                                 .justify_start()
-                                .disabled(!usable || locked)
+                                .disabled(!usable || waits)
                                 .when(checked, |this| this.icon(IconName::Check))
                                 .accessibility_label(match (note, &details) {
                                     (Some(note), _) => format!("{spoken}. {note}"),
@@ -2866,8 +2878,9 @@ impl SessionView {
                                 .on_click(move |_, window, cx| {
                                     let name = name.clone();
                                     // With its efforts to choose from, the
-                                    // list stays open on them.
-                                    let stays = !workers_only && reasons(&name);
+                                    // list stays open on them. After the
+                                    // start, the switch asks for its effort.
+                                    let stays = !started && reasons(&name);
                                     view.update(cx, |view, cx| {
                                         view.choose_model(name, workers_only, window, cx)
                                     })
@@ -2895,7 +2908,7 @@ impl SessionView {
                                 .small()
                                 .w_full()
                                 .justify_start()
-                                .disabled(!usable || locked)
+                                .disabled(!usable || waits)
                                 .when(checked, |this| this.icon(IconName::Check))
                                 .accessibility_label(if details.is_empty() {
                                     spoken
@@ -2916,7 +2929,7 @@ impl SessionView {
                                 .label(model.label.clone())
                                 .on_click(move |_, window, cx| {
                                     let name = model.name.clone();
-                                    let stays = !workers_only && reasons(&name);
+                                    let stays = !started && reasons(&name);
                                     view.update(cx, |view, cx| {
                                         view.choose_model(name, workers_only, window, cx)
                                     })
@@ -2976,10 +2989,9 @@ impl SessionView {
                 );
                 let chosen = match &self.session {
                     None => self.effort_for(&model, cx),
-                    Some(session) => Some((
-                        session.read(cx).reading().models.main_effort.clone(),
-                        EffortFrom::Chosen,
-                    )),
+                    Some(_) => current_effort
+                        .clone()
+                        .map(|effort| (effort, EffortFrom::Chosen)),
                 };
                 (model, efforts, chosen)
             })
@@ -3011,37 +3023,60 @@ impl SessionView {
                 window,
                 cx,
             ))
-            .when(self.session.is_some() && !can_switch, |this| {
+            .when(working, |this| {
                 this.child(
                     div()
                         .text_xs()
                         .text_color(theme.muted_foreground)
-                        .child("Switching between Chat and Agent waits for the turn to end."),
+                        .child(if waits {
+                            "Switching modes or models waits for the turn to end."
+                        } else {
+                            "Switching between Chat and Agent waits for the turn to end."
+                        }),
                 )
             })
-            .when(started && !session_without_models, |this| {
+            .when(lists_both, |this| {
+                let view = view.clone();
+                let workers = self.lists_worker_models;
                 this.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(crate::session_info::MODEL_KEPT),
+                    ToggleGroup::new("model-for")
+                        .segmented()
+                        .small()
+                        .child(
+                            Toggle::new("model-for-main")
+                                .label("Main agent")
+                                .checked(!workers),
+                        )
+                        .child(
+                            Toggle::new("model-for-workers")
+                                .label("New workers")
+                                .checked(workers),
+                        )
+                        .on_click(move |checks, _, cx| {
+                            // The one that turned on, else the one shown stays.
+                            let workers = match checks.as_slice() {
+                                [true, _] if workers => false,
+                                [_, true] if !workers => true,
+                                _ => return,
+                            };
+                            view.update(cx, |view, cx| {
+                                view.lists_worker_models = workers;
+                                cx.notify();
+                            })
+                            .ok();
+                        }),
                 )
             })
-            .when(workers_only && has_workers, |this| {
-                this.child(div().text_xs().font_medium().child("Model for new workers"))
-            })
-            .when(!workers_only || has_workers, |this| {
-                this.child(Input::new(&self.model_filter).small().cleanable(true))
-                    .child(
-                        v_flex()
-                            .id("model-list")
-                            .test_support()
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .children(rows),
-                    )
-            })
+            .child(Input::new(&self.model_filter).small().cleanable(true))
+            .child(
+                v_flex()
+                    .id("model-list")
+                    .test_support()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
             .when_some(effort_row, |this, (model, efforts, chosen)| {
                 let view = view.clone();
                 this.child(
@@ -3087,7 +3122,7 @@ impl SessionView {
                                     }
                                     None => this.ghost(),
                                 })
-                                .disabled(started)
+                                .disabled(waits)
                                 .label(effort.clone())
                                 .on_click(move |_, window, cx| {
                                     let (model, effort) = (model.clone(), effort.clone());
@@ -3192,16 +3227,16 @@ impl SessionView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match &self.session {
-            None => self.set_draft_model(model, None, cx),
-            Some(session) => {
-                let command = if workers {
-                    format!("/model worker {model}")
-                } else {
-                    format!("/model {model}")
-                };
-                self.run_command(session.clone(), command, window, cx);
-            }
+        let Some(session) = self.session.clone() else {
+            self.set_draft_model(model, None, cx);
+            return;
+        };
+        if workers {
+            self.run_command(session, format!("/model worker {model}"), window, cx);
+        } else if session.read(cx).has_started() {
+            self.switch_model(session, model, None, window, cx);
+        } else {
+            self.run_command(session, format!("/model {model}"), window, cx);
         }
     }
 
@@ -3212,15 +3247,79 @@ impl SessionView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match &self.session {
+        match self.session.clone() {
             None => self.set_draft_model(model, Some(effort), cx),
-            Some(session) => self.run_command(
-                session.clone(),
-                format!("/model {model} {effort}"),
+            Some(session) if session.read(cx).has_started() => {
+                self.switch_model(session, model, Some(effort), window, cx)
+            }
+            Some(session) => {
+                self.run_command(session, format!("/model {model} {effort}"), window, cx)
+            }
+        }
+    }
+
+    /// Once the conversation has started, the main agent moves to `model`
+    /// at `effort` (none: the one arko fits) in a new conversation that
+    /// carries the current one over. Settings say whether to ask first.
+    fn switch_model(
+        &mut self,
+        session: Entity<LiveSession>,
+        model: String,
+        effort: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let models = session.read(cx).reading().models.clone();
+        let (current, current_effort) = crate::live::conversation_model(&models);
+        let keeps_model = model == current;
+        if keeps_model && (effort.is_none() || effort.as_deref() == current_effort) {
+            return;
+        }
+        if session.read(cx).is_working() {
+            window.push_notification("Wait for the turn to end.", cx);
+            return;
+        }
+        if !prefs::get(cx).sessions.ask_before_switch {
+            self.run_command(
+                session,
+                model_command(&model, effort.as_deref()),
                 window,
                 cx,
-            ),
+            );
+            return;
         }
+        // Another model's effort is chosen in the dialog, from the one the
+        // main agent runs at, as arko would fit it.
+        let efforts = if keeps_model {
+            Vec::new()
+        } else {
+            arko::commands::dynamic_choices(&arko::remote::Reading::default(), "/model", &[&model])
+        };
+        let effort = effort.or_else(|| fit_effort(&efforts, &models.main_effort));
+        let label = self
+            .openrouter_model(&model)
+            .map(|known| known.label.clone())
+            .unwrap_or_else(|| arko::models::display_name(&model));
+        let command = move |effort: Option<&str>| model_command(&model, effort);
+        let view = cx.entity().downgrade();
+        crate::prompts::confirm_model_switch(
+            crate::prompts::ModelSwitch {
+                label,
+                effort,
+                efforts,
+                keeps_model,
+            },
+            window,
+            cx,
+            move |effort, window, cx| {
+                let command = command(effort.as_deref());
+                let session = session.clone();
+                view.update(cx, |view, cx| {
+                    view.run_command(session, command, window, cx)
+                })
+                .ok();
+            },
+        );
     }
 
     /// Sends a command line to the session, as the terminal would.
@@ -3848,6 +3947,14 @@ fn default_mode(cx: &App) -> Mode {
     match prefs::get(cx).new_sessions.starting_mode() {
         prefs::NewSessionMode::Chat => Mode::Chat,
         _ => Mode::Agent,
+    }
+}
+
+/// The command that sets the main agent's model, at `effort` if given.
+fn model_command(model: &str, effort: Option<&str>) -> String {
+    match effort {
+        Some(effort) => format!("/model {model} {effort}"),
+        None => format!("/model {model}"),
     }
 }
 

@@ -868,8 +868,9 @@ impl LiveSession {
             self.title = self.reading.title.clone().into();
         }
         // (Before the engine's first status, the settings are the default's.)
-        if !self.reading.models.main.is_empty() {
-            self.model = arko::models::display_name(&self.reading.models.main).into();
+        let (model, _) = conversation_model(&self.reading.models);
+        if !model.is_empty() {
+            self.model = arko::models::display_name(model).into();
         }
     }
 
@@ -1268,6 +1269,15 @@ impl LiveSession {
         self.questions.seen.extend(open);
     }
 
+    /// Shows `models` as the session's (previews and screenshots, where no
+    /// session runs).
+    #[doc(hidden)]
+    pub fn show_models(&mut self, models: arko::remote::Models, cx: &mut Context<Self>) {
+        Arc::make_mut(&mut self.reading).models = models;
+        self.apply_reading();
+        cx.notify();
+    }
+
     /// Shows `questions` as the agent's open questions (previews and
     /// screenshots, where no session runs).
     #[doc(hidden)]
@@ -1282,8 +1292,9 @@ impl LiveSession {
         &self.workers
     }
 
-    /// Whether the conversation has started: the main agent keeps its
-    /// model from then on.
+    /// Whether the conversation has started. From then on, another model
+    /// for the main agent starts a new conversation that carries this one
+    /// over.
     pub fn has_started(&self) -> bool {
         // A new session is created by its first message, and a sample
         // session is an old one.
@@ -1646,6 +1657,19 @@ fn first_line(text: &str) -> SharedString {
         "New session".into()
     } else {
         short.into()
+    }
+}
+
+/// The model of the conversation the next message goes to, as `/model`
+/// takes it, and its effort when arko says it. That's the model new
+/// conversations start on, unless `/resume` went back to a conversation on
+/// another one, whose effort isn't known.
+pub fn conversation_model(models: &arko::remote::Models) -> (&str, Option<&str>) {
+    let effort = Some(models.main_effort.as_str()).filter(|effort| !effort.is_empty());
+    if models.conversation.is_empty() || models.conversation == models.main {
+        (&models.main, effort)
+    } else {
+        (&models.conversation, None)
     }
 }
 

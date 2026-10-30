@@ -1533,3 +1533,216 @@ fn an_open_sessions_models_are_listed_once_per_status(cx: &mut TestAppContext) {
     act(cx, window, |_, _| {});
     assert_eq!(backend.session_menus(), 2, "a new status lists them again");
 }
+
+/// A session whose conversation started on Opus 5.5 at high effort, with
+/// workers on Sonnet 5.5, shown in the window. (It queues what it is sent.)
+fn started_session(
+    cx: &mut TestAppContext,
+) -> (
+    AnyWindowHandle,
+    Entity<Workspace>,
+    Entity<crate::live::LiveSession>,
+) {
+    let (_, window, workspace) = start(cx);
+    let session = cx.new(|cx| crate::live::LiveSession::for_tests("s1", cx));
+    session.update(cx, |session, cx| {
+        session.set_status(started_reading(), Default::default(), cx)
+    });
+    act(cx, window, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(session.clone(), window, cx)
+        })
+    });
+    (window, workspace, session)
+}
+
+fn started_reading() -> arko::remote::Reading {
+    arko::remote::Reading {
+        models: arko::remote::Models {
+            main: "claude-opus-5-5".into(),
+            main_effort: "high".into(),
+            conversation: "claude-opus-5-5".into(),
+            workers: "claude-sonnet-5-5".into(),
+            workers_effort: "high".into(),
+            started: true,
+            reachable: vec!["anthropic".into()],
+            has_workers: true,
+            ..arko::remote::Models::default()
+        },
+        ..arko::remote::Reading::default()
+    }
+}
+
+/// The command lines the session was sent.
+fn sent(session: &Entity<crate::live::LiveSession>, cx: &mut TestAppContext) -> Vec<String> {
+    cx.read(|cx| {
+        session
+            .read(cx)
+            .queued()
+            .iter()
+            .filter_map(|input| match input {
+                arko::Input::Message(message) => Some(message.text.clone()),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// The model list's row a screen reader hears as `spoken` first.
+fn model_row(
+    window: AnyWindowHandle,
+    spoken: &str,
+    cx: &mut TestAppContext,
+) -> gpui_kit::SharedString {
+    cx.update_window(window, |_, window, _| {
+        (0..8)
+            .flat_map(|group| (0..12).map(move |ix| format!("model-{group}-{ix}").into()))
+            .find(|id: &gpui_kit::SharedString| {
+                window
+                    .try_find(id.clone())
+                    .is_some_and(|row| row.label().is_some_and(|label| label.starts_with(spoken)))
+            })
+    })
+    .unwrap()
+    .unwrap_or_else(|| panic!("no row for {spoken}"))
+}
+
+/// Once the conversation has started, the model list is the main agent's:
+/// another model asks, then starts a new conversation on it at the effort
+/// the dialog shows, and the conversation's own model sends nothing.
+#[gpui_kit::test]
+fn after_the_start_another_main_model_asks_then_switches(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    let opus = model_row(window, "Opus 5.5, Anthropic API", cx);
+    act(cx, window, |window, cx| window.click(opus.clone(), cx));
+    assert!(sent(&session, cx).is_empty(), "its own model");
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    find_model(&workspace, window, "sonnet", cx);
+    let sonnet = model_row(window, "Sonnet 5.5, Anthropic API", cx);
+    act(cx, window, |window, cx| window.click(sonnet.clone(), cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("switch-model").is_some());
+        // The effort the main agent runs at, as Sonnet takes it.
+        assert_eq!(window.find("switch-effort").label(), Some("high"));
+    });
+    assert!(sent(&session, cx).is_empty(), "it asks first");
+    act(cx, window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    assert_eq!(sent(&session, cx), ["/model claude-sonnet-5-5 high"]);
+}
+
+/// Told not to ask, another model switches at once, and an effort chosen
+/// for the conversation's model does too.
+#[gpui_kit::test]
+fn told_not_to_ask_a_model_switches_at_once(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.sessions.ask_before_switch = false));
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    find_model(&workspace, window, "sonnet", cx);
+    let sonnet = model_row(window, "Sonnet 5.5, Anthropic API", cx);
+    act(cx, window, |window, cx| window.click(sonnet.clone(), cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("switch-model").is_none());
+    });
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("effort-low", cx));
+    assert_eq!(
+        sent(&session, cx),
+        ["/model claude-sonnet-5-5", "/model claude-opus-5-5 low"]
+    );
+}
+
+/// An effort chosen for the conversation's model asks too, naming the
+/// effort, and Cancel sends nothing. "Don't ask again" counts on Switch.
+#[gpui_kit::test]
+fn another_effort_after_the_start_asks_too(cx: &mut TestAppContext) {
+    let (window, _, session) = started_session(cx);
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("effort-high", cx));
+    assert!(sent(&session, cx).is_empty(), "the effort it runs at");
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("effort-low", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("switch-model").is_some());
+        assert!(window.try_find("switch-effort").is_none(), "chosen already");
+        window.within("dialog").click("cancel", cx);
+    });
+    assert!(sent(&session, cx).is_empty());
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("effort-low", cx));
+    act(cx, window, |window, cx| window.click("dont-ask-switch", cx));
+    act(cx, window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    assert_eq!(sent(&session, cx), ["/model claude-opus-5-5 low"]);
+    assert!(!cx.read(|cx| prefs::get(cx).sessions.ask_before_switch));
+}
+
+/// After the start, the list switches to the new workers' models, whose
+/// pick changes the workers started from now on, as before.
+#[gpui_kit::test]
+fn after_the_start_the_new_workers_models_are_a_click_away(cx: &mut TestAppContext) {
+    let (window, _, session) = started_session(cx);
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| {
+        window.click("model-for-workers", cx)
+    });
+    let opus = model_row(window, "Opus 5.5, Anthropic API", cx);
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("effort-high").is_none(), "the main agent's");
+        window.click(opus.clone(), cx);
+    });
+    assert_eq!(sent(&session, cx), ["/model worker claude-opus-5-5"]);
+    // It opens on the main agent's again.
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("effort-high").is_some());
+    });
+}
+
+/// During a turn, the main agent's models wait for it to end.
+#[gpui_kit::test]
+fn the_main_agents_models_wait_for_the_turn(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    let working = arko::remote::Activity {
+        working: true,
+        ..Default::default()
+    };
+    session.update(cx, |session, cx| {
+        session.set_status(started_reading(), working, cx)
+    });
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    find_model(&workspace, window, "sonnet", cx);
+    let sonnet = model_row(window, "Sonnet 5.5, Anthropic API", cx);
+    act(cx, window, |window, cx| window.click(sonnet.clone(), cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("switch-model").is_none());
+    });
+    assert!(sent(&session, cx).is_empty());
+}
+
+/// In a conversation `/resume` went back to on another model, the chip
+/// names that model, without the effort of new conversations, and the
+/// list checks it.
+#[gpui_kit::test]
+fn the_chip_names_the_conversations_model(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    let mut reading = started_reading();
+    reading.models.conversation = "claude-sonnet-5-5".into();
+    session.update(cx, |session, cx| {
+        session.set_status(reading, Default::default(), cx)
+    });
+    act(cx, window, |_, _| {});
+    let view = session_view(&workspace, cx);
+    let label = cx.read(|cx| view.read(cx).chip_label(cx));
+    assert!(label.ends_with("Sonnet 5.5"), "{label}");
+    // Opus is another model here: it asks.
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    let opus = model_row(window, "Opus 5.5, Anthropic API", cx);
+    act(cx, window, |window, cx| window.click(opus.clone(), cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("switch-model").is_some());
+    });
+}

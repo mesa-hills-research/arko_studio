@@ -695,13 +695,13 @@ fn confirmations_group() -> SettingGroup {
         )
         .keywords(["quit", "close", "jobs", "workers"]),
         super::switch(
-            "Ask before switching modes",
-            "Before switching an open session between Chat and Agent, say what it costs.",
+            "Ask before switching modes or models",
+            "Before switching an open session between Chat and Agent, or to another model, say what changes.",
             |prefs| prefs.sessions.ask_before_switch,
             |prefs, on| prefs.sessions.ask_before_switch = on,
             defaults.ask_before_switch,
         )
-        .keywords(["chat", "agent", "mode", "cache"]),
+        .keywords(["chat", "agent", "mode", "model", "cache"]),
         super::switch(
             "Ask before editing a message",
             "Editing or regenerating a message removes the messages after it.",

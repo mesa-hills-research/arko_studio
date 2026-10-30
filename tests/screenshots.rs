@@ -3211,6 +3211,7 @@ impl gpui_kit::Render for StatusPopovers {
         };
         let cost = CostReport {
             main: share(1.0, 420_000, 18_000),
+            main_parts: vec![share(1.0, 420_000, 18_000)],
             workers: share(0.2, 90_000, 4_000),
             plans: Vec::new(),
             embeddings: Some((120_000, 0.01)),
@@ -4142,6 +4143,135 @@ fn model_popover_light() {
 #[test]
 fn model_popover_dark() {
     goldens().assert("model-popover-dark", &model_popover(ThemeMode::Dark));
+}
+
+/// An open session's model list once its conversation has started on
+/// Opus 5.5 through Claude Code: the main agent's models, where another one
+/// starts a new conversation, a click away from the new workers'. With
+/// `pick`, the dialog that asks before the switch to that row.
+fn model_popover_started(mode: ThemeMode, pick: Option<&'static str>) -> Screenshot {
+    use arko_studio::backend::{ModelChoice, ModelChoices, ModelGroup};
+    use gpui_kit::test::TestWindowExt as _;
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    // Billed at prices of the test's own, so a change to Arko's leaves the
+    // golden as it is.
+    let choice = |name: &str, alias: &str, billing: Option<&str>| ModelChoice {
+        name: name.into(),
+        alias: alias.into(),
+        billing: billing.map(String::from),
+    };
+    let backend =
+        FakeBackend::sample("/arko", SystemTime::now()).with_session_models(ModelChoices {
+            groups: vec![
+                ModelGroup {
+                    name: "Claude Code, on your Claude plan".into(),
+                    needs: None,
+                    models: vec![
+                        choice("cc:claude-opus-5-5", "cc:opus", None),
+                        choice("cc:claude-sonnet-5-5", "cc:sonnet", None),
+                    ],
+                },
+                ModelGroup {
+                    name: "OpenAI, on your ChatGPT plan".into(),
+                    needs: None,
+                    models: vec![
+                        choice("gpt-6.1-sol", "sol", None),
+                        choice("gpt-6-luna", "luna", None),
+                    ],
+                },
+                ModelGroup {
+                    name: "Anthropic API, billed per token".into(),
+                    needs: None,
+                    models: vec![choice("claude-opus-5-5", "opus", Some("API, $4/$20"))],
+                },
+            ],
+            default: None,
+            note: None,
+        });
+    let startup = Startup::for_tests(Arc::new(backend))
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(1300.), px(800.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, window, cx| {
+        let id = SessionId("20261016-091200-a1b2".into());
+        workspace.update(cx, |workspace, cx| workspace.open_session(id, window, cx));
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.update_window(window, |_, _, cx| {
+        let session = workspace.read(cx).live_session().unwrap().clone();
+        session.update(cx, |session, cx| {
+            session.show_models(
+                arko::remote::Models {
+                    main: "cc:claude-opus-5-5".into(),
+                    main_effort: "high".into(),
+                    conversation: "cc:claude-opus-5-5".into(),
+                    workers: "cc:claude-sonnet-5-5".into(),
+                    workers_effort: "high".into(),
+                    started: true,
+                    has_workers: true,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.update_window(window, |_, window, cx| window.click("mode-model", cx))
+        .unwrap();
+    app.run_until_parked();
+    if let Some(pick) = pick {
+        app.update_window(window, |_, window, cx| window.click(pick, cx))
+            .unwrap();
+        app.run_until_parked();
+    }
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn model_popover_started_light() {
+    goldens().assert(
+        "model-popover-started-light",
+        &model_popover_started(ThemeMode::Light, None),
+    );
+}
+
+#[test]
+fn model_popover_started_dark() {
+    goldens().assert(
+        "model-popover-started-dark",
+        &model_popover_started(ThemeMode::Dark, None),
+    );
+}
+
+#[test]
+fn model_switch_light() {
+    goldens().assert(
+        "model-switch-light",
+        &model_popover_started(ThemeMode::Light, Some("model-1-0")),
+    );
+}
+
+#[test]
+fn model_switch_dark() {
+    goldens().assert(
+        "model-switch-dark",
+        &model_popover_started(ThemeMode::Dark, Some("model-1-0")),
+    );
 }
 
 /// The agent's questions: one choice with a default, several choices, and
