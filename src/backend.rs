@@ -21,7 +21,9 @@ mod names;
 pub mod profiles;
 
 pub use accounts::{Accounts, key_named};
-pub use defaults::{SessionDefaults, web_page_bind};
+pub use defaults::{
+    API_BUDGET_VARIABLE, BillingFromEnv, SessionDefaults, WORKER_BILLING_VARIABLE, web_page_bind,
+};
 pub use names::{SessionNames, Way, write_names};
 
 /// Reading accounts in words, for Settings.
@@ -501,6 +503,10 @@ pub trait Backend: Send + Sync + 'static {
     /// lacks. It runs `claude`.
     fn session_names(&self) -> SessionNames;
 
+    /// What `ARKO_WORKER_BILLING` and `ARKO_API_BUDGET` give new sessions
+    /// whose preferences leave them to Arko, as Arko reads them now.
+    fn billing_from_env(&self) -> BillingFromEnv;
+
     /// Names new sessions by asking a model in the order of `ways` (none:
     /// by the first words of the first message). `Err` says why it isn't
     /// saved.
@@ -854,6 +860,10 @@ impl Backend for ArkoBackend {
         SessionNames::read(&self.root)
     }
 
+    fn billing_from_env(&self) -> BillingFromEnv {
+        BillingFromEnv::read(&self.root)
+    }
+
     fn set_session_names(&self, ways: &[Way]) -> Result<(), String> {
         arko::session_names::save(&self.root, ways).map_err(|why| sentence(&why))
     }
@@ -977,6 +987,8 @@ struct FakeState {
     /// The lists of ways saved, in order, and why saving is refused.
     names_saved: Vec<Vec<Way>>,
     names_refused: Option<String>,
+    /// What the billing variables say.
+    billing_from_env: BillingFromEnv,
 }
 
 impl FakeBackend {
@@ -1015,6 +1027,7 @@ impl FakeBackend {
                 },
                 names_saved: Vec::new(),
                 names_refused: None,
+                billing_from_env: BillingFromEnv::default(),
             }),
             defaults: Mutex::new(SessionDefaults::default()),
         }
@@ -1135,6 +1148,13 @@ impl FakeBackend {
                 })
                 .collect();
         });
+        self
+    }
+
+    /// Gives new sessions the worker billing and the budget `env` says,
+    /// unless the preferences choose them.
+    pub fn with_billing_from_env(self, env: BillingFromEnv) -> Self {
+        self.with_state(|state| state.billing_from_env = env);
         self
     }
 
@@ -1539,6 +1559,10 @@ impl Backend for FakeBackend {
 
     fn session_names(&self) -> SessionNames {
         self.with_state(|state| state.names.clone())
+    }
+
+    fn billing_from_env(&self) -> BillingFromEnv {
+        self.with_state(|state| state.billing_from_env)
     }
 
     fn set_session_names(&self, ways: &[Way]) -> Result<(), String> {

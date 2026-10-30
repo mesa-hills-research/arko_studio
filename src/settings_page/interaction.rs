@@ -612,6 +612,102 @@ fn the_worker_settings_are_chosen_and_passed_on(cx: &mut TestAppContext) {
     assert_eq!(label(cx, 5).as_deref(), Some("1"));
 }
 
+/// While the preferences leave worker billing and the daily API budget to
+/// Arko, Sessions shows what ARKO_WORKER_BILLING and ARKO_API_BUDGET give
+/// new sessions, which Arko reads itself. A choice made there wins, and a
+/// reset leaves them to the variables again.
+#[gpui_kit::test]
+fn worker_billing_and_the_budget_show_what_the_variables_say(cx: &mut TestAppContext) {
+    use crate::backend::BillingFromEnv;
+    use arko::WorkerBilling;
+    use gpui_kit::component::setting::SettingItem;
+    use gpui_kit::component::text::Text;
+
+    let backend =
+        FakeBackend::sample("/arko", SystemTime::now()).with_billing_from_env(BillingFromEnv {
+            worker_billing: Some(WorkerBilling::Plans),
+            api_budget: Some(Some(20.0)),
+        });
+    let backend = start_on(cx, backend, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, SESSIONS_PAGE, 900.);
+    let page = cx.read(|cx| settings.read(cx).sessions().clone());
+    let billing = |cx: &mut TestAppContext| {
+        let mut label = None;
+        act(cx, window, |window, _| {
+            label = window
+                .within("group-0")
+                .within("item-3")
+                .find("btn")
+                .label()
+                .map(str::to_string);
+        });
+        label.unwrap()
+    };
+    let budget_on = |cx: &mut TestAppContext| {
+        let mut checked = None;
+        act(cx, window, |window, _| {
+            checked = window
+                .within("group-0")
+                .within("item-4")
+                .find("check")
+                .checked();
+        });
+        checked.unwrap()
+    };
+    let description = |cx: &mut TestAppContext, item: usize| {
+        cx.read(|cx| match page.read(cx).agent_items(cx).swap_remove(item) {
+            SettingItem::Item {
+                description: Some(Text::String(text)),
+                ..
+            } => text.to_string(),
+            _ => String::new(),
+        })
+    };
+    assert_eq!(billing(cx), "Plans only");
+    assert!(budget_on(cx));
+    assert!(
+        description(cx, 3).contains("Workers run only on your plans"),
+        "{}",
+        description(cx, 3)
+    );
+    assert!(description(cx, 3).ends_with("Until it’s set here, ARKO_WORKER_BILLING decides."));
+    assert!(
+        description(cx, 4).starts_with("Once $20 is billed per token today"),
+        "{}",
+        description(cx, 4)
+    );
+    // Arko reads the variables itself, so the app passes nothing on.
+    let started_with = || {
+        let mut options = arko::Options::default();
+        backend.defaults().apply(&mut options, Some(Mode::Agent));
+        (options.worker_billing, options.api_budget)
+    };
+    assert_eq!(started_with(), (None, None));
+    // A choice made there wins over them.
+    act(cx, window, |window, cx| {
+        window.within("group-0").within("item-3").click("btn", cx)
+    });
+    act(cx, window, |window, cx| {
+        window.within("popup-menu").click(1usize, cx)
+    });
+    act(cx, window, |window, cx| {
+        window.within("group-0").within("item-4").click("check", cx)
+    });
+    assert_eq!(billing(cx), "Ask before API");
+    assert!(!budget_on(cx));
+    assert!(description(cx, 4).starts_with("No daily limit"));
+    assert_eq!(started_with(), (Some(WorkerBilling::Ask), Some(None)));
+    // Reset, as the page's reset does it: the variables decide again.
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.new_sessions.worker_billing = None;
+            prefs.new_sessions.api_budget = None;
+        })
+    });
+    assert_eq!(billing(cx), "Plans only");
+    assert!(budget_on(cx));
+}
+
 /// The chat instructions type as Settings › Input says, as it changes
 /// with Settings open.
 #[gpui_kit::test]

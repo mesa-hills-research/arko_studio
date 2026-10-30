@@ -8,6 +8,7 @@ use gpui_kit::component::{ActiveTheme as _, IconName};
 use gpui_kit::*;
 
 use super::fields::{self, TextKind, TextSetting};
+use crate::backend::{API_BUDGET_VARIABLE, BillingFromEnv, SharedBackend, WORKER_BILLING_VARIABLE};
 use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
@@ -39,6 +40,10 @@ pub struct SessionsPage {
     names: names::Names,
     /// The preferences as the page last showed them.
     seen: prefs::Prefs,
+    /// What the billing variables say, which worker billing and the budget
+    /// show while the preferences leave them to Arko.
+    billing_env: BillingFromEnv,
+    billing_env_read: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -142,7 +147,11 @@ impl SessionsPage {
                 _ => {}
             }),
             // A key or a login added or removed changes what a way lacks.
-            cx.observe_global::<crate::backend::AccountsSeen>(|this, cx| this.refresh_names(cx)),
+            // The accounts read again from the files, so are the variables.
+            cx.observe_global::<crate::backend::AccountsSeen>(|this, cx| {
+                this.refresh_names(cx);
+                this.read_billing_env(cx);
+            }),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 if !super::shown_changed(&mut this.seen, cx) {
                     return;
@@ -187,10 +196,29 @@ impl SessionsPage {
             instructions_typed: None,
             names: names::Names::new(),
             seen: super::shown_prefs(prefs::get(cx)),
+            billing_env: BillingFromEnv::default(),
+            billing_env_read: None,
             _subscriptions: subscriptions,
         };
         this.refresh_names(cx);
+        this.read_billing_env(cx);
         this
+    }
+
+    /// Reads what the billing variables say, in the background.
+    fn read_billing_env(&mut self, cx: &mut Context<Self>) {
+        let backend = cx.global::<SharedBackend>().clone();
+        let read = cx.background_spawn(async move { backend.billing_from_env() });
+        self.billing_env_read = Some(cx.spawn(async move |this, cx| {
+            let env = read.await;
+            this.update(cx, |this, cx| {
+                if this.billing_env != env {
+                    this.billing_env = env;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
     }
 
     /// Follows the keybindings and spell check settings for chat instructions.
@@ -265,6 +293,7 @@ impl SessionsPage {
                 new.worker_models,
                 new.worker_billing,
                 new.api_budget,
+                (self.billing_env.worker_billing, self.billing_env.api_budget),
                 new.worker_depth,
                 new.worker_retry_cap,
                 new.message_copies,
@@ -295,160 +324,187 @@ impl SessionsPage {
     }
 
     fn agent_group(&self, cx: &App) -> SettingGroup {
-        let defaults = NewSessions::default();
-        let new = &prefs::get(cx).new_sessions;
         SettingGroup::new()
             .title("Agent sessions")
-            .items([
-                self.handover.item("Handover size", "handover-at")
-                .description(format!(
-                    "When the main agent’s context reaches it, the agent writes a report and goes on in a fresh conversation. Like 950k or 1.2M, at least {}k, and held under 95% of what its model takes.",
-                    MIN_HANDOVER_SIZE / 1000
-                ))
-                .keywords(["context", "tokens", "handover-at", "main agent"]),
-                self.workers_handover
-                    .item("Workers’ handover size", "workers-handover-at")
-                .description("The same for workers, each up to what its own model takes.")
-                .keywords(["context", "tokens", "handover-at", "workers"]),
-                super::choice_of(
-                    workers::MODELS_NAME,
-                    ModelChoice::ALL
-                        .map(|choice| (choice, SharedString::from(curly(choice.label()))))
-                        .to_vec(),
-                    |prefs| prefs.new_sessions.worker_models,
-                    |prefs, choice| prefs.new_sessions.worker_models = choice,
-                    defaults.worker_models,
+            .items(self.agent_items(cx))
+    }
+
+    /// The items of the "Agent sessions" group.
+    pub(super) fn agent_items(&self, cx: &App) -> Vec<SettingItem> {
+        let defaults = NewSessions::default();
+        let new = &prefs::get(cx).new_sessions;
+        let env = self.billing_env;
+        vec![
+            self.handover.item("Handover size", "handover-at")
+            .description(format!(
+                "When the main agent’s context reaches it, the agent writes a report and goes on in a fresh conversation. Like 950k or 1.2M, at least {}k, and held under 95% of what its model takes.",
+                MIN_HANDOVER_SIZE / 1000
+            ))
+            .keywords(["context", "tokens", "handover-at", "main agent"]),
+            self.workers_handover
+                .item("Workers’ handover size", "workers-handover-at")
+            .description("The same for workers, each up to what its own model takes.")
+            .keywords(["context", "tokens", "handover-at", "workers"]),
+            super::choice_of(
+                workers::MODELS_NAME,
+                ModelChoice::ALL
+                    .map(|choice| (choice, SharedString::from(curly(choice.label()))))
+                    .to_vec(),
+                |prefs| prefs.new_sessions.worker_models,
+                |prefs, choice| prefs.new_sessions.worker_models = choice,
+                defaults.worker_models,
+            )
+            .description(models_about(new.worker_models))
+            .keywords(["workers", "profiles", "model", "worker-models", "agent chooses"]),
+            worker_billing_item(env)
+            .description(with_variable(
+                billing_about(env.worker_billing(new.worker_billing)),
+                env.worker_billing.is_some(),
+                WORKER_BILLING_VARIABLE,
+            ))
+            .keywords([
+                "workers",
+                "billing",
+                "api",
+                "per token",
+                "plans",
+                "worker-billing",
+                WORKER_BILLING_VARIABLE,
+            ]),
+            SettingItem::new(
+                workers::BUDGET_NAME,
+                SettingField::switch(
+                    move |cx: &App| {
+                        let chosen = prefs::get(cx).new_sessions.api_budget;
+                        env.api_budget(chosen).is_some()
+                    },
+                    |on: bool, cx: &mut App| {
+                        prefs::update(cx, |prefs| prefs.new_sessions.api_budget = Some(on))
+                    },
                 )
-                .description(models_about(new.worker_models))
-                .keywords(["workers", "profiles", "model", "worker-models", "agent chooses"]),
-                super::choice_of(
-                    workers::BILLING_NAME,
-                    WorkerBilling::ALL
-                        .map(|billing| (billing, SharedString::from(billing.label())))
-                        .to_vec(),
-                    |prefs| prefs.new_sessions.worker_billing.unwrap_or_default(),
-                    |prefs, billing| prefs.new_sessions.worker_billing = Some(billing),
-                    WorkerBilling::default(),
-                )
-                .description(billing_about(new.worker_billing.unwrap_or_default()))
-                .keywords(["workers", "billing", "api", "per token", "plans", "worker-billing"]),
-                super::switch(
-                    workers::BUDGET_NAME,
-                    "",
-                    |prefs| prefs.new_sessions.api_budget.unwrap_or(false),
-                    |prefs, on| prefs.new_sessions.api_budget = Some(on),
-                    false,
-                )
-                .description(budget_about(
-                    new.api_budget
-                        .unwrap_or(false)
-                        .then_some(workers::DEFAULT_BUDGET),
-                ))
-                .keywords(["workers", "budget", "api", "spend", "dollars", "api-budget"]),
-                super::choice_of(
-                    workers::DEPTH_NAME,
-                    (1..=workers::MAX_DEPTH)
-                        .map(|depth| (depth, SharedString::from(depth.to_string())))
-                        .collect(),
-                    |prefs| prefs.new_sessions.worker_depth,
-                    |prefs, depth| prefs.new_sessions.worker_depth = depth,
-                    defaults.worker_depth,
-                )
-                .description(depth_about())
-                .keywords(["workers", "nested", "levels", "worker-depth"]),
-                super::switch(
-                    workers::RETRY_CAP_NAME,
-                    "",
-                    |prefs| prefs.new_sessions.worker_retry_cap,
-                    |prefs, on| prefs.new_sessions.worker_retry_cap = on,
-                    defaults.worker_retry_cap,
-                )
-                .description(retry_cap_about(new.worker_retry_cap))
-                .keywords(["workers", "retry", "failed requests", "worker-retry-cap"]),
-                super::switch(
-                    workers::COPIES_NAME,
-                    "",
-                    |prefs| prefs.new_sessions.message_copies,
-                    |prefs, on| prefs.new_sessions.message_copies = on,
-                    defaults.message_copies,
-                )
-                .description(copies_about(new.message_copies))
-                .keywords(["workers", "messages", "copy", "message-copies"]),
-                self.background_after
-                    .item("Background after", "background-after")
-                .description(
-                    "A shell command still running then moves to the background, and the agent goes on with its work. 90s, 10m or 1h at most, or off.",
-                )
-                .keywords(["shell", "command", "timeout", "jobs"]),
-                self.monitor_wakes
-                    .item(arko::monitors::NAME, "monitor-wakes")
-                .description(
-                    "A monitor’s warning before it ends wakes an idle agent for this long after your last message, so it can keep the monitor. Auto lasts while the prompt cache from that message does. Or 30m, 2h or 24h at most, always, or off.",
-                )
-                .keywords(["monitor", "warning", "wake", "idle", "jobs"]),
-                super::switch(
-                    "Outside access",
-                    "The agents may change files outside the session’s folder. The status bar says so while it’s on.",
-                    |prefs| prefs.new_sessions.outside_access,
-                    |prefs, on| prefs.new_sessions.outside_access = on,
-                    defaults.outside_access,
-                )
-                .keywords(["workspace", "files", "permissions"]),
-                super::switch(
-                    "Text replies",
-                    "The main agent ends its turns with a reply in text. Off, it ends them by calling complete_task.",
-                    |prefs| prefs.new_sessions.text_replies,
-                    |prefs, on| prefs.new_sessions.text_replies = on,
-                    defaults.text_replies,
-                )
-                .keywords(["complete_task", "replies"]),
-                super::switch(
-                    "Claude Code compacts",
-                    "At the handover size, Claude Code compacts the conversation of agents on cc: models. Off, they hand over as on other providers.",
-                    |prefs| prefs.new_sessions.cc_compact,
-                    |prefs, on| prefs.new_sessions.cc_compact = on,
-                    defaults.cc_compact,
-                )
-                .keywords(["cc", "compaction", "compact", "handover"]),
-                super::choice(
-                    "Extra rules",
-                    &[
-                        (ExtraRules::Small, "Small models"),
-                        (ExtraRules::All, "Every agent"),
-                        (ExtraRules::Off, "No agent"),
-                    ],
-                    |prefs| prefs.new_sessions.extra_rules,
-                    |prefs, rules| prefs.new_sessions.extra_rules = rules,
-                    defaults.extra_rules,
-                )
-                .description(
-                    "Plain, explicit rules in the agents’ instructions, which small models (Haiku, luna) do better with.",
-                )
-                .keywords(["small models", "instructions", "haiku"]),
-                super::choice(
-                    "Project instructions",
-                    &[
-                        (ProjectInstructions::One, "AGENTS.md, else CLAUDE.md"),
-                        (ProjectInstructions::Both, "Both"),
-                        (ProjectInstructions::Off, "Neither"),
-                    ],
-                    |prefs| prefs.new_sessions.project_instructions,
-                    |prefs, files| prefs.new_sessions.project_instructions = files,
-                    defaults.project_instructions,
-                )
-                .description(
-                    "Which of the project’s files the main agent gets with its first message.",
-                )
-                .keywords(["AGENTS.md", "CLAUDE.md", "project"]),
-                super::switch(
-                    "Workers get them too",
-                    "Each worker gets the project’s instructions with its first message.",
-                    |prefs| prefs.new_sessions.worker_project_instructions,
-                    |prefs, on| prefs.new_sessions.worker_project_instructions = on,
-                    defaults.worker_project_instructions,
-                )
-                .keywords(["AGENTS.md", "CLAUDE.md", "workers"]),
-            ])
+                .on_reset(
+                    |cx| prefs::get(cx).new_sessions.api_budget.is_some(),
+                    |_, cx| prefs::update(cx, |prefs| prefs.new_sessions.api_budget = None),
+                ),
+            )
+            .description(with_variable(
+                budget_about(env.api_budget(new.api_budget)),
+                env.api_budget.is_some(),
+                API_BUDGET_VARIABLE,
+            ))
+            .keywords([
+                "workers",
+                "budget",
+                "api",
+                "spend",
+                "dollars",
+                "api-budget",
+                API_BUDGET_VARIABLE,
+            ]),
+            super::choice_of(
+                workers::DEPTH_NAME,
+                (1..=workers::MAX_DEPTH)
+                    .map(|depth| (depth, SharedString::from(depth.to_string())))
+                    .collect(),
+                |prefs| prefs.new_sessions.worker_depth,
+                |prefs, depth| prefs.new_sessions.worker_depth = depth,
+                defaults.worker_depth,
+            )
+            .description(depth_about())
+            .keywords(["workers", "nested", "levels", "worker-depth"]),
+            super::switch(
+                workers::RETRY_CAP_NAME,
+                "",
+                |prefs| prefs.new_sessions.worker_retry_cap,
+                |prefs, on| prefs.new_sessions.worker_retry_cap = on,
+                defaults.worker_retry_cap,
+            )
+            .description(retry_cap_about(new.worker_retry_cap))
+            .keywords(["workers", "retry", "failed requests", "worker-retry-cap"]),
+            super::switch(
+                workers::COPIES_NAME,
+                "",
+                |prefs| prefs.new_sessions.message_copies,
+                |prefs, on| prefs.new_sessions.message_copies = on,
+                defaults.message_copies,
+            )
+            .description(copies_about(new.message_copies))
+            .keywords(["workers", "messages", "copy", "message-copies"]),
+            self.background_after
+                .item("Background after", "background-after")
+            .description(
+                "A shell command still running then moves to the background, and the agent goes on with its work. 90s, 10m or 1h at most, or off.",
+            )
+            .keywords(["shell", "command", "timeout", "jobs"]),
+            self.monitor_wakes
+                .item(arko::monitors::NAME, "monitor-wakes")
+            .description(
+                "A monitor’s warning before it ends wakes an idle agent for this long after your last message, so it can keep the monitor. Auto lasts while the prompt cache from that message does. Or 30m, 2h or 24h at most, always, or off.",
+            )
+            .keywords(["monitor", "warning", "wake", "idle", "jobs"]),
+            super::switch(
+                "Outside access",
+                "The agents may change files outside the session’s folder. The status bar says so while it’s on.",
+                |prefs| prefs.new_sessions.outside_access,
+                |prefs, on| prefs.new_sessions.outside_access = on,
+                defaults.outside_access,
+            )
+            .keywords(["workspace", "files", "permissions"]),
+            super::switch(
+                "Text replies",
+                "The main agent ends its turns with a reply in text. Off, it ends them by calling complete_task.",
+                |prefs| prefs.new_sessions.text_replies,
+                |prefs, on| prefs.new_sessions.text_replies = on,
+                defaults.text_replies,
+            )
+            .keywords(["complete_task", "replies"]),
+            super::switch(
+                "Claude Code compacts",
+                "At the handover size, Claude Code compacts the conversation of agents on cc: models. Off, they hand over as on other providers.",
+                |prefs| prefs.new_sessions.cc_compact,
+                |prefs, on| prefs.new_sessions.cc_compact = on,
+                defaults.cc_compact,
+            )
+            .keywords(["cc", "compaction", "compact", "handover"]),
+            super::choice(
+                "Extra rules",
+                &[
+                    (ExtraRules::Small, "Small models"),
+                    (ExtraRules::All, "Every agent"),
+                    (ExtraRules::Off, "No agent"),
+                ],
+                |prefs| prefs.new_sessions.extra_rules,
+                |prefs, rules| prefs.new_sessions.extra_rules = rules,
+                defaults.extra_rules,
+            )
+            .description(
+                "Plain, explicit rules in the agents’ instructions, which small models (Haiku, luna) do better with.",
+            )
+            .keywords(["small models", "instructions", "haiku"]),
+            super::choice(
+                "Project instructions",
+                &[
+                    (ProjectInstructions::One, "AGENTS.md, else CLAUDE.md"),
+                    (ProjectInstructions::Both, "Both"),
+                    (ProjectInstructions::Off, "Neither"),
+                ],
+                |prefs| prefs.new_sessions.project_instructions,
+                |prefs, files| prefs.new_sessions.project_instructions = files,
+                defaults.project_instructions,
+            )
+            .description(
+                "Which of the project’s files the main agent gets with its first message.",
+            )
+            .keywords(["AGENTS.md", "CLAUDE.md", "project"]),
+            super::switch(
+                "Workers get them too",
+                "Each worker gets the project’s instructions with its first message.",
+                |prefs| prefs.new_sessions.worker_project_instructions,
+                |prefs, on| prefs.new_sessions.worker_project_instructions = on,
+                defaults.worker_project_instructions,
+            )
+            .keywords(["AGENTS.md", "CLAUDE.md", "workers"]),
+        ]
     }
 
     fn chat_group(&self) -> SettingGroup {
@@ -492,6 +548,45 @@ impl SessionsPage {
             .keywords(["handover", "summary", "context"]),
         ])
     }
+}
+
+/// A setting's description `about`, which says that `variable` decides
+/// until the setting is chosen when it's `set`.
+fn with_variable(about: String, set: bool, variable: &str) -> String {
+    if set {
+        format!("{about} Until it’s set here, {variable} decides.")
+    } else {
+        about
+    }
+}
+
+/// Worker billing's menu, which shows the preference, else what `env`'s
+/// variable says, else Arko's default. Reset leaves it to them again.
+fn worker_billing_item(env: BillingFromEnv) -> SettingItem {
+    let label = |billing: WorkerBilling| SharedString::from(billing.label());
+    SettingItem::new(
+        workers::BILLING_NAME,
+        SettingField::dropdown(
+            WorkerBilling::ALL
+                .map(|billing| (label(billing), label(billing)))
+                .to_vec(),
+            move |cx: &App| label(env.worker_billing(prefs::get(cx).new_sessions.worker_billing)),
+            move |value: SharedString, cx: &mut App| {
+                let chosen = WorkerBilling::ALL
+                    .into_iter()
+                    .find(|billing| label(*billing) == value);
+                if let Some(billing) = chosen {
+                    prefs::update(cx, |prefs| {
+                        prefs.new_sessions.worker_billing = Some(billing)
+                    });
+                }
+            },
+        )
+        .on_reset(
+            |cx| prefs::get(cx).new_sessions.worker_billing.is_some(),
+            |_, cx| prefs::update(cx, |prefs| prefs.new_sessions.worker_billing = None),
+        ),
+    )
 }
 
 fn confirmations_group() -> SettingGroup {
