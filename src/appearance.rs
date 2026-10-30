@@ -281,4 +281,20 @@ mod tests {
         assert_eq!(mode(prefs::DEFAULT_LIGHT_THEME), Some(false));
         assert_eq!(mode(prefs::DEFAULT_DARK_THEME), Some(true));
     }
+
+    /// Every bundled theme sets its text fields' outline (`input.border`),
+    /// as GPUI Kit's own themes do.
+    #[test]
+    fn every_bundled_theme_outlines_its_inputs() {
+        for (file, text) in crate::bundled_themes::BUNDLED {
+            let set: serde_json::Value = serde_json::from_str(text).unwrap();
+            for theme in set["themes"].as_array().unwrap() {
+                assert!(
+                    theme["colors"].get("input.border").is_some(),
+                    "{file}: {}",
+                    theme["name"]
+                );
+            }
+        }
+    }
 }
