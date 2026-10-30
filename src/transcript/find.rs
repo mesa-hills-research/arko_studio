@@ -258,9 +258,21 @@ pub(crate) struct Find {
     /// Entries that changed while their texts were folded off the UI
     /// thread: theirs are made again.
     changed_meanwhile: HashSet<u64>,
+    /// The parts of each highlighted block's Markdown that look their own
+    /// way, kept while the view's text and the entry's link definitions
+    /// stay the same.
+    parts: HashMap<(u64, usize), BlockParts>,
     /// The highlights given to each block view (tests).
     #[cfg(test)]
     pub installed: HashMap<(u64, usize), Vec<RangeHighlight>>,
+}
+
+/// The parts of a block view's Markdown that look their own way, and what
+/// they were found in.
+struct BlockParts {
+    rendered: RenderedText,
+    definitions: String,
+    parts: std::rc::Rc<[(Range<usize>, Look)]>,
 }
 
 impl Find {
@@ -1155,6 +1167,7 @@ impl TranscriptView {
             }
         }
         let before = std::mem::take(&mut find.highlighted);
+        find.parts.retain(|block, _| now.contains(block));
         #[cfg(test)]
         find.installed.retain(|block, _| now.contains(block));
         for (entry, block) in before.difference(&now) {
@@ -1236,7 +1249,7 @@ impl TranscriptView {
             find.reveal = None;
         }
         let needle = find.needle.clone();
-        let (ranges, highlights) = self.block_highlights(entry, view, &needle, current, cx);
+        let (ranges, highlights) = self.block_highlights(entry, block, view, &needle, current, cx);
         #[cfg(test)]
         if let Some(find) = self.find.as_mut() {
             find.installed.insert((entry, block), highlights.clone());
@@ -1249,11 +1262,13 @@ impl TranscriptView {
         });
     }
 
-    /// The matches of `needle` in `view`, a view of the entry `entry`'s
-    /// Markdown, and their highlights, the one at `current` stronger.
+    /// The matches of `needle` in `view`, the view of block `block` of the
+    /// entry `entry`'s Markdown, and their highlights, the one at `current`
+    /// stronger.
     pub(super) fn block_highlights(
-        &self,
+        &mut self,
         entry: u64,
+        block: usize,
         view: &Entity<gpui_kit::component::text::TextViewState>,
         needle: &str,
         current: Option<usize>,
@@ -1265,12 +1280,35 @@ impl TranscriptView {
         if ranges.is_empty() {
             return (ranges, Vec::new());
         }
-        let blocks: Vec<_> = state
-            .blocks()
-            .iter()
-            .filter_map(|block| block.source_range())
-            .collect();
-        let parts = markdown_parts(&text, &blocks, &self.definitions(entry));
+        let definitions = self.definitions(entry);
+        let kept = self
+            .find
+            .as_ref()
+            .and_then(|find| find.parts.get(&(entry, block)))
+            .filter(|kept| kept.rendered == text && kept.definitions == definitions)
+            .map(|kept| kept.parts.clone());
+        let parts = match kept {
+            Some(parts) => parts,
+            None => {
+                let blocks: Vec<_> = state
+                    .blocks()
+                    .iter()
+                    .filter_map(|block| block.source_range())
+                    .collect();
+                let parts: std::rc::Rc<[_]> = markdown_parts(&text, &blocks, &definitions).into();
+                if let Some(find) = self.find.as_mut() {
+                    find.parts.insert(
+                        (entry, block),
+                        BlockParts {
+                            rendered: text,
+                            definitions,
+                            parts: parts.clone(),
+                        },
+                    );
+                }
+                parts
+            }
+        };
         let thinking = self
             .model
             .entry(entry)
@@ -1697,6 +1735,8 @@ pub(super) fn markdown_parts(
         let Some(text) = rendered.source().get(block.clone()) else {
             continue;
         };
+        #[cfg(test)]
+        BLOCKS_PARSED.with(|parsed| parsed.set(parsed.get() + 1));
         let parsed = if definitions.is_empty() {
             markdown::to_mdast(text, &markdown::ParseOptions::gfm())
         } else {
@@ -1840,6 +1880,15 @@ thread_local! {
     /// How many shades were worked out (tests).
     #[cfg(test)]
     static SHADES_WORKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many blocks of Markdown were parsed for their parts (tests).
+    #[cfg(test)]
+    static BLOCKS_PARSED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many blocks of Markdown were parsed for their parts (tests).
+#[cfg(test)]
+pub(super) fn blocks_parsed() -> usize {
+    BLOCKS_PARSED.with(std::cell::Cell::get)
 }
 
 /// The colors a shade is worked out from, by their bits.

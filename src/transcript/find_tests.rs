@@ -975,6 +975,38 @@ fn a_theme_change_recolors_the_matches_in_markdown(cx: &mut TestAppContext) {
     check_markdown_highlights(cx, &view, reply);
 }
 
+/// A block's parts are found once for its text. Moving through the matches
+/// and changing the theme find them again in no block, and new text in the
+/// block has its parts found again.
+#[gpui_kit::test]
+fn a_blocks_parts_are_found_once_for_its_text(cx: &mut TestAppContext) {
+    let feed = Feed::new("main");
+    feed.user("Stream it.", Source::App, Delivery::Turn);
+    feed.turn_started();
+    say(
+        &feed,
+        "The [parser](https://x.test) and `parser` and the parser",
+    );
+    let (window, view) = open_feed(cx, &feed, View::Full, 900.);
+    find(cx, window, &view, "parser");
+    let parsed = super::blocks_parsed();
+    assert!(parsed > 0);
+    for _ in 0..3 {
+        next(cx, window, &view, true);
+    }
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.appearance.theme_mode = prefs::ThemeMode::Dark;
+        })
+    });
+    settle(cx, window);
+    assert_eq!(super::blocks_parsed(), parsed);
+    say(&feed, ", then the parser streams.");
+    settle(cx, window);
+    next(cx, window, &view, true);
+    assert!(super::blocks_parsed() > parsed);
+}
+
 fn top(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> gpui_kit::ListOffset {
     cx.read(|cx| view.read(cx).list.top())
 }
