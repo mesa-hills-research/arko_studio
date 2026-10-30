@@ -696,6 +696,8 @@ pub fn confirm_model_switch(
                                         Button::new("switch-effort")
                                             .outline()
                                             .small()
+                                            // Named with its label, as heard.
+                                            .accessibility_label(format!("Effort, {current}"))
                                             .label(current)
                                             .dropdown_caret(true)
                                             .dropdown_menu(move |menu, _, _| {

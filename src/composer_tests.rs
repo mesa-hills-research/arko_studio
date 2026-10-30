@@ -1636,14 +1636,23 @@ fn after_the_start_another_main_model_asks_then_switches(cx: &mut TestAppContext
     act(cx, window, |window, cx| window.click(sonnet.clone(), cx));
     act(cx, window, |window, _| {
         assert!(window.try_find("switch-model").is_some());
-        // The effort the main agent runs at, as Sonnet takes it.
-        assert_eq!(window.find("switch-effort").label(), Some("high"));
+        // The effort the conversation runs at, as Sonnet takes it, named
+        // with its label for a screen reader.
+        assert_eq!(window.find("switch-effort").label(), Some("Effort, high"));
     });
     assert!(sent(&session, cx).is_empty(), "it asks first");
+    // Another effort, from its list.
+    act(cx, window, |window, cx| window.click("switch-effort", cx));
+    act(cx, window, |window, cx| {
+        window.within("popup-menu").click(0usize, cx)
+    });
+    act(cx, window, |window, _| {
+        assert_eq!(window.find("switch-effort").label(), Some("Effort, low"));
+    });
     act(cx, window, |window, cx| {
         window.within("dialog").click("ok", cx)
     });
-    assert_eq!(sent(&session, cx), ["/model claude-sonnet-5-5 high"]);
+    assert_eq!(sent(&session, cx), ["/model claude-sonnet-5-5 low"]);
 }
 
 /// Told not to ask, another model switches at once, and an effort chosen
