@@ -4253,11 +4253,9 @@ fn questions_replying_dark() {
     );
 }
 
-/// The approval tray's requests: a worker profile, a skill with a script
-/// and a SKILL.md long enough to scroll, an MCP server, and a worker billed
-/// per token whose day's spend reached the budget.
-fn approval_requests() -> Vec<arko::approvals::ApprovalRequest> {
-    let skill = [
+/// The SKILL.md of the skill release-notes, before its update.
+fn release_notes_skill() -> String {
+    [
         "---",
         "name: release-notes",
         "description: Writes release notes from the git log",
@@ -4273,8 +4271,80 @@ fn approval_requests() -> Vec<arko::approvals::ApprovalRequest> {
         "",
         "Keep each line short. Link the issues the commits name.",
     ]
+    .join("\n")
+}
+
+/// An update of the skill release-notes an agent saved: SKILL.md's changed
+/// lines, a checklist it adds, a script it changes and notes it removes.
+fn skill_update_request() -> arko::approvals::ApprovalRequest {
+    use arko::approvals::{
+        Approval, ApprovalRequest, Scope, SkillApproval, SkillFile, SkillUpdate,
+    };
+
+    let skill = release_notes_skill()
+        .replace(
+            "refactors and test-only commits.",
+            "refactors, test-only commits and version bumps.",
+        )
+        .replace(
+            "by name.\n",
+            "by name.\n6. Go through checklist.md before you post them.\n",
+        );
+    let diff = [
+        "  2. Group the commits by area.",
+        "  3. Write a sentence for each change a user notices.",
+        "- 4. Leave out refactors and test-only commits.",
+        "+ 4. Leave out refactors, test-only commits and version bumps.",
+        "  5. End with the contributors, by name.",
+        "+ 6. Go through checklist.md before you post them.",
+        "",
+        "  Keep each line short. Link the issues the commits name.",
+    ]
     .join("\n");
-    [
+    let file = |path: &str, text: &str| SkillFile {
+        path: path.into(),
+        bytes: text.len() as u64,
+        text: Some(text.into()),
+    };
+    ApprovalRequest {
+        id: "a5".into(),
+        batch: 1,
+        approval: Approval::Skill(SkillApproval {
+            name: "release-notes".into(),
+            scope: Scope::User,
+            description: "Writes release notes from the git log".into(),
+            workers: true,
+            scripts: vec!["scripts/log.sh".into()],
+            update: Some(SkillUpdate {
+                saved: "26 Oct".into(),
+                diff,
+                added: vec!["checklist.md".into()],
+                removed: vec!["notes.md".into()],
+                changed: vec!["scripts/log.sh".into()],
+            }),
+            why: "The last notes listed a version bump.".into(),
+            files: vec![
+                file("SKILL.md", &skill),
+                file(
+                    "checklist.md",
+                    "- Every change has its issue.\n- Names are spelt right.",
+                ),
+                file(
+                    "scripts/log.sh",
+                    "#!/bin/sh\ngit log --oneline --no-merges \"$1\"..HEAD",
+                ),
+            ],
+            ..SkillApproval::default()
+        }),
+    }
+}
+
+/// The approval tray's requests: a worker profile, a skill with a script
+/// and a SKILL.md long enough to scroll, an MCP server, a worker billed per
+/// token whose day's spend reached the budget, and an update of the skill.
+fn approval_requests() -> Vec<arko::approvals::ApprovalRequest> {
+    let skill = release_notes_skill();
+    let mut requests: Vec<arko::approvals::ApprovalRequest> = [
         serde_json::json!({
             "id": "a1", "batch": 1,
             "approval": {
@@ -4318,12 +4388,19 @@ fn approval_requests() -> Vec<arko::approvals::ApprovalRequest> {
     ]
     .into_iter()
     .map(|json| serde_json::from_value(json).unwrap())
-    .collect()
+    .collect();
+    requests.push(skill_update_request());
+    requests
 }
 
 /// A sample session whose approval tray holds the requests `ids` of
 /// [`approval_requests`], once the elements `clicks` were clicked.
 fn approvals_window(mode: ThemeMode, ids: &[&str], clicks: &[&str]) -> Screenshot {
+    approvals_window_of(mode, 800., ids, clicks)
+}
+
+/// [`approvals_window`] in a window `height` tall.
+fn approvals_window_of(mode: ThemeMode, height: f32, ids: &[&str], clicks: &[&str]) -> Screenshot {
     use gpui_kit::test::TestWindowExt as _;
 
     let mut app = ScreenshotApp::with_assets(Assets).unwrap();
@@ -4337,7 +4414,7 @@ fn approvals_window(mode: ThemeMode, ids: &[&str], clicks: &[&str]) -> Screensho
     app.update(|cx| arko_studio::init(startup, cx));
     let mut opened = None;
     let window = app
-        .open_window_with(size(px(900.), px(800.)), 1., |options, cx| {
+        .open_window_with(size(px(900.), px(height)), 1., |options, cx| {
             workspace::open_window(options, cx).map(|(window, workspace)| {
                 opened = Some(workspace);
                 window
@@ -4425,6 +4502,26 @@ fn approvals_option_light() {
 #[test]
 fn approvals_option_dark() {
     goldens().assert("approvals-option-dark", &approvals_option(ThemeMode::Dark));
+}
+
+/// An update of a skill, open to its details: what it changes, SKILL.md's
+/// changed lines in a box of their own, and the files with SKILL.md in
+/// theirs.
+fn approvals_update(mode: ThemeMode) -> Screenshot {
+    approvals_window_of(mode, 1100., &["a5"], &["approval-row-a5"])
+}
+
+#[test]
+fn approvals_update_light() {
+    goldens().assert(
+        "approvals-update-light",
+        &approvals_update(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn approvals_update_dark() {
+    goldens().assert("approvals-update-dark", &approvals_update(ThemeMode::Dark));
 }
 
 /// A card of the agent's questions in the transcript: its line, and the

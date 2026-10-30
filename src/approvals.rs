@@ -439,6 +439,12 @@ impl ApprovalTray {
             Approval::Skill(skill) if !skill.files.is_empty() => Some(skill.files.clone()),
             _ => None,
         };
+        // The box of a skill's SKILL.md, which the files below show. An
+        // update's changed lines have a box of their own.
+        let main_text = files
+            .as_ref()
+            .and_then(|files| files[0].text.as_deref())
+            .map(str::trim_end);
         let scroll_box = |name: &str, text: String| {
             div()
                 .id(part(name, &id))
@@ -486,7 +492,9 @@ impl ApprovalTray {
                     .child(SelectableText::new(line_id, detail.text))
                     .into_any_element(),
                 // A skill's files show below, with the one chosen in the box.
-                Look::Box | Look::File if files.is_some() => continue,
+                Look::Box if main_text == Some(detail.text.as_str()) => continue,
+                Look::File if files.is_some() => continue,
+                Look::Box if files.is_some() => scroll_box("approval-diff", detail.text),
                 Look::Box => scroll_box("approval-box", detail.text),
                 Look::File => SelectableText::new(line_id, detail.text).into_any_element(),
             });

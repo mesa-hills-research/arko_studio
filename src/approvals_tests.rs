@@ -7,7 +7,10 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use arko::approvals::{ApprovalAnswers, ApprovalChoice, ApprovalRequest};
+use arko::approvals::{
+    Approval, ApprovalAnswers, ApprovalChoice, ApprovalRequest, Scope, SkillApproval, SkillFile,
+    SkillUpdate,
+};
 use arko::remote::{Activity, Reading};
 use gpui_kit::Focusable as _;
 use gpui_kit::test::TestWindowExt as _;
@@ -96,6 +99,43 @@ fn skill(id: &str) -> ApprovalRequest {
             ]
         }
     }))
+}
+
+/// Arko asks to update the skill release-notes an agent saved, whose
+/// SKILL.md and script change and which gains a checklist.
+fn update(id: &str) -> ApprovalRequest {
+    let file = |path: &str, text: &str| SkillFile {
+        path: path.into(),
+        bytes: text.len() as u64,
+        text: Some(text.into()),
+    };
+    ApprovalRequest {
+        id: id.into(),
+        batch: 1,
+        approval: Approval::Skill(SkillApproval {
+            name: "release-notes".into(),
+            scope: Scope::Project,
+            description: "Writes release notes from the git log".into(),
+            update: Some(SkillUpdate {
+                saved: "26 Oct".into(),
+                diff: "  # Release notes\n- Read the log.\n+ Read the log since the last tag."
+                    .into(),
+                added: vec!["checklist.md".into()],
+                changed: vec!["scripts/log.sh".into()],
+                ..SkillUpdate::default()
+            }),
+            why: "The notes missed the tag.".into(),
+            files: vec![
+                file(
+                    "SKILL.md",
+                    "# Release notes\nRead the log since the last tag.",
+                ),
+                file("checklist.md", "- Tag it."),
+                file("scripts/log.sh", "git log --oneline \"$1\"..HEAD"),
+            ],
+            ..SkillApproval::default()
+        }),
+    }
 }
 
 /// The answer naming each of `choices` (an id and whether it is approved),
@@ -470,6 +510,32 @@ fn a_skills_files_show_one_at_a_time_in_the_box(cx: &mut TestAppContext) {
     assert_eq!(shown(cx), Some(false));
     app.click(cx, file(1));
     assert_eq!(shown(cx), Some(true));
+    // A new skill's SKILL.md shows once, in the files' box.
+    assert!(app.shows(cx, part("approval-box", "a1")));
+    assert!(!app.shows(cx, part("approval-diff", "a1")));
+}
+
+/// An update of a skill says so in its row, and its details show SKILL.md's
+/// changed lines in a box of their own, above the files and their box.
+#[gpui_kit::test]
+fn an_update_shows_the_lines_it_changes(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.request(cx, vec![update("a1")]);
+    assert_eq!(
+        app.label(cx, part("approval-row", "a1")).as_deref(),
+        Some("Update, release-notes, this project, changes SKILL.md and 2 more files")
+    );
+    app.click(cx, part("approval-row", "a1"));
+    let top = |app: &Window, cx: &mut TestAppContext, id| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(part(id, "a1")).bounds().top()
+        })
+        .unwrap()
+    };
+    let diff = top(&app, cx, "approval-diff");
+    let files = top(&app, cx, "approval-box");
+    assert!(diff < files, "{diff:?} {files:?}");
 }
 
 /// A worker billed per token has its option in its details: approved with
