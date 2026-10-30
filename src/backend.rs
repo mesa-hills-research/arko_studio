@@ -22,7 +22,8 @@ pub mod profiles;
 
 pub use accounts::{Accounts, key_named};
 pub use defaults::{
-    API_BUDGET_VARIABLE, BillingFromEnv, SessionDefaults, WORKER_BILLING_VARIABLE, web_page_bind,
+    API_BUDGET_VARIABLE, BillingFromEnv, SessionDefaults, SetIn, WORKER_BILLING_VARIABLE,
+    web_page_bind,
 };
 pub use names::{SessionNames, Way, write_names};
 

@@ -212,9 +212,20 @@ pub const WORKER_BILLING_VARIABLE: &str = "ARKO_WORKER_BILLING";
 /// `off`).
 pub const API_BUDGET_VARIABLE: &str = "ARKO_API_BUDGET";
 
+/// Where a variable is set for every session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetIn {
+    /// The app's environment, which comes before any `.env` file.
+    Environment,
+    /// The `.env` in Arko's folder or beside the program. A project's own
+    /// `.env` comes before it in that project's sessions.
+    File,
+}
+
 /// What [`WORKER_BILLING_VARIABLE`] and [`API_BUDGET_VARIABLE`] give a new
-/// session whose preferences leave them to Arko, as Arko reads them: from
-/// the environment, else a `.env` file.
+/// session whose preferences leave them to Arko, as Arko reads them for
+/// every session, from the environment, else Arko's `.env` files. A new
+/// session also reads its project's `.env`, between the two.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BillingFromEnv {
     /// `None` where it isn't set, or isn't one of Arko's words.
@@ -229,6 +240,10 @@ pub struct BillingFromEnv {
     /// What [`API_BUDGET_VARIABLE`] holds when Arko doesn't take it, which
     /// stops sessions in the same way.
     pub bad_api_budget: Option<String>,
+    /// Where [`WORKER_BILLING_VARIABLE`] is set, if it is.
+    pub billing_set_in: Option<SetIn>,
+    /// Where [`API_BUDGET_VARIABLE`] is set, if it is.
+    pub budget_set_in: Option<SetIn>,
 }
 
 impl BillingFromEnv {
@@ -241,7 +256,16 @@ impl BillingFromEnv {
         let api_budget = budget
             .as_deref()
             .and_then(|value| arko::workers::parse_budget(value).ok());
+        // Arko reads the environment before the files.
+        let set_in = |name: &str, value: &Option<String>| {
+            value.as_ref().map(|_| {
+                let set = std::env::var(name).is_ok_and(|value| !value.trim().is_empty());
+                if set { SetIn::Environment } else { SetIn::File }
+            })
+        };
         Self {
+            billing_set_in: set_in(WORKER_BILLING_VARIABLE, &billing),
+            budget_set_in: set_in(API_BUDGET_VARIABLE, &budget),
             bad_worker_billing: billing.filter(|_| worker_billing.is_none()),
             bad_api_budget: budget.filter(|_| api_budget.is_none()),
             worker_billing,
@@ -521,6 +545,16 @@ mod tests {
         let read = BillingFromEnv::read(root.path());
         assert_eq!(read.worker_billing, Some(arko::WorkerBilling::Plans));
         assert_eq!(read.api_budget, Some(Some(25.0)));
+        assert_eq!(read.billing_set_in, Some(SetIn::File));
+        assert_eq!(read.budget_set_in, Some(SetIn::File));
+        // A new session in a project with a .env of its own reads that
+        // first, which is why the file's value is only every project's
+        // default.
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join(".env"), "ARKO_WORKER_BILLING=api\n").unwrap();
+        let session = arko::Env::for_folder_in(Some(project.path()), true, Some(root.path()));
+        assert_eq!(session.var(WORKER_BILLING_VARIABLE).as_deref(), Some("api"));
+        assert_eq!(session.var(API_BUDGET_VARIABLE).as_deref(), Some("25"));
         std::fs::write(
             root.path().join(".env"),
             "ARKO_WORKER_BILLING=sometimes\nARKO_API_BUDGET=off\n",

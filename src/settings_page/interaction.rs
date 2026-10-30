@@ -618,7 +618,7 @@ fn the_worker_settings_are_chosen_and_passed_on(cx: &mut TestAppContext) {
 /// reset leaves them to the variables again.
 #[gpui_kit::test]
 fn worker_billing_and_the_budget_show_what_the_variables_say(cx: &mut TestAppContext) {
-    use crate::backend::BillingFromEnv;
+    use crate::backend::{BillingFromEnv, SetIn};
     use arko::WorkerBilling;
     use gpui_kit::component::setting::SettingItem;
     use gpui_kit::component::text::Text;
@@ -627,6 +627,8 @@ fn worker_billing_and_the_budget_show_what_the_variables_say(cx: &mut TestAppCon
         FakeBackend::sample("/arko", SystemTime::now()).with_billing_from_env(BillingFromEnv {
             worker_billing: Some(WorkerBilling::Plans),
             api_budget: Some(Some(20.0)),
+            billing_set_in: Some(SetIn::File),
+            budget_set_in: Some(SetIn::Environment),
             ..BillingFromEnv::default()
         });
     let backend = start_on(cx, backend, prefs::Prefs::default());
@@ -671,7 +673,12 @@ fn worker_billing_and_the_budget_show_what_the_variables_say(cx: &mut TestAppCon
         "{}",
         description(cx, 3)
     );
-    assert!(description(cx, 3).ends_with("Until it’s set here, ARKO_WORKER_BILLING decides."));
+    // Set in Arko's .env, it's every project's default, and a project's
+    // own .env comes first. Set in the environment, it comes first itself.
+    assert!(description(cx, 3).ends_with(
+        "Until it’s set here, ARKO_WORKER_BILLING decides, unless a project’s .env sets it."
+    ));
+    assert!(description(cx, 4).ends_with("Until it’s set here, ARKO_API_BUDGET decides."));
     assert!(
         description(cx, 4).starts_with("Once $20 is billed per token today"),
         "{}",

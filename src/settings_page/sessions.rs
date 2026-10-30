@@ -9,7 +9,9 @@ use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _};
 use gpui_kit::*;
 
 use super::fields::{self, TextKind, TextSetting};
-use crate::backend::{API_BUDGET_VARIABLE, BillingFromEnv, SharedBackend, WORKER_BILLING_VARIABLE};
+use crate::backend::{
+    API_BUDGET_VARIABLE, BillingFromEnv, SetIn, SharedBackend, WORKER_BILLING_VARIABLE,
+};
 use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
@@ -365,7 +367,7 @@ impl SessionsPage {
             worker_billing_item(env.worker_billing)
             .description(with_variable(
                 billing_about(env.worker_billing(new.worker_billing)),
-                env.worker_billing.is_some(),
+                env.billing_set_in.filter(|_| env.worker_billing.is_some()),
                 WORKER_BILLING_VARIABLE,
             ))
             .keywords([
@@ -387,7 +389,7 @@ impl SessionsPage {
                 .map(|value| {
                     variable_warning(
                         "worker-billing-variable",
-                        bad_billing_words(value),
+                        bad_billing_words(value, env.billing_set_in),
                         [
                             "workers",
                             "billing",
@@ -417,7 +419,7 @@ impl SessionsPage {
             )
             .description(with_variable(
                 budget_about(env.api_budget(new.api_budget)),
-                env.api_budget.is_some(),
+                env.budget_set_in.filter(|_| env.api_budget.is_some()),
                 API_BUDGET_VARIABLE,
             ))
             .keywords([
@@ -437,7 +439,7 @@ impl SessionsPage {
                 .map(|value| {
                     variable_warning(
                         "api-budget-variable",
-                        bad_budget_words(value),
+                        bad_budget_words(value, env.budget_set_in),
                         ["workers", "budget", "api-budget", API_BUDGET_VARIABLE],
                     )
                 }),
@@ -594,28 +596,44 @@ impl SessionsPage {
 }
 
 /// A setting's description `about`, which says that `variable` decides
-/// until the setting is chosen when it's `set`.
-fn with_variable(about: String, set: bool, variable: &str) -> String {
-    if set {
-        format!("{about} Until it’s set here, {variable} decides.")
-    } else {
-        about
+/// until the setting is chosen, when it's set (`set_in`). Set in a `.env`
+/// file of the app's, it's every project's default, which a project's own
+/// `.env` comes before.
+fn with_variable(about: String, set_in: Option<SetIn>, variable: &str) -> String {
+    match set_in {
+        None => about,
+        Some(SetIn::Environment) => format!("{about} Until it’s set here, {variable} decides."),
+        Some(SetIn::File) => format!(
+            "{about} Until it’s set here, {variable} decides, unless a project’s .env sets it."
+        ),
+    }
+}
+
+/// Why new sessions won't start while a setting is left to a variable that
+/// holds a value Arko doesn't take. One set in a `.env` file of the app's
+/// gives way to a project's own `.env`.
+fn wont_start(set_in: Option<SetIn>) -> &'static str {
+    match set_in {
+        Some(SetIn::File) => "so new sessions won’t start unless a project’s .env sets it",
+        _ => "so new sessions won’t start",
     }
 }
 
 /// What Worker billing says when [`WORKER_BILLING_VARIABLE`] holds `value`,
 /// which Arko doesn't take, while the setting is left to it.
-fn bad_billing_words(value: &str) -> String {
+fn bad_billing_words(value: &str, set_in: Option<SetIn>) -> String {
     format!(
-        "{WORKER_BILLING_VARIABLE} is “{value}”, so new sessions won’t start. Choose one here, or set it to plans, ask or api."
+        "{WORKER_BILLING_VARIABLE} is “{value}”, {}. Choose one here, or set it to plans, ask or api.",
+        wont_start(set_in)
     )
 }
 
 /// What the daily API budget says when [`API_BUDGET_VARIABLE`] holds
 /// `value`, which Arko doesn't take, while the setting is left to it.
-fn bad_budget_words(value: &str) -> String {
+fn bad_budget_words(value: &str, set_in: Option<SetIn>) -> String {
     format!(
-        "{API_BUDGET_VARIABLE} is “{value}”, so new sessions won’t start. Turn it on or off here, or set it to dollars, such as 20, or off."
+        "{API_BUDGET_VARIABLE} is “{value}”, {}. Turn it on or off here, or set it to dollars, such as 20, or off.",
+        wont_start(set_in)
     )
 }
 
@@ -756,21 +774,39 @@ pub fn shown_background_after(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        bad_billing_words, bad_budget_words, parse_background_after, parse_handover,
-        parse_monitor_wakes, shown_background_after, shown_tokens,
+        SetIn, bad_billing_words, bad_budget_words, parse_background_after, parse_handover,
+        parse_monitor_wakes, shown_background_after, shown_tokens, with_variable,
     };
 
     /// A variable Arko doesn't take is named with its value, says what it
-    /// stops, and what to do.
+    /// stops, and what to do. A variable set in a `.env` of the app's is
+    /// every project's default, which a project's own `.env` comes before.
     #[test]
     fn a_variable_arko_refuses_says_what_to_do() {
         assert_eq!(
-            bad_billing_words("sometimes"),
+            bad_billing_words("sometimes", Some(SetIn::Environment)),
             "ARKO_WORKER_BILLING is “sometimes”, so new sessions won’t start. Choose one here, or set it to plans, ask or api."
         );
         assert_eq!(
-            bad_budget_words("lots"),
+            bad_budget_words("lots", Some(SetIn::Environment)),
             "ARKO_API_BUDGET is “lots”, so new sessions won’t start. Turn it on or off here, or set it to dollars, such as 20, or off."
+        );
+        // Set in a .env of the app's, a project's own .env comes first.
+        assert_eq!(
+            bad_billing_words("sometimes", Some(SetIn::File)),
+            "ARKO_WORKER_BILLING is “sometimes”, so new sessions won’t start unless a project’s .env sets it. Choose one here, or set it to plans, ask or api."
+        );
+        assert_eq!(
+            with_variable("About.".into(), Some(SetIn::File), "ARKO_API_BUDGET"),
+            "About. Until it’s set here, ARKO_API_BUDGET decides, unless a project’s .env sets it."
+        );
+        assert_eq!(
+            with_variable("About.".into(), Some(SetIn::Environment), "ARKO_API_BUDGET"),
+            "About. Until it’s set here, ARKO_API_BUDGET decides."
+        );
+        assert_eq!(
+            with_variable("About.".into(), None, "ARKO_API_BUDGET"),
+            "About."
         );
     }
 
