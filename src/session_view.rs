@@ -2056,6 +2056,7 @@ impl SessionView {
             text: outgoing.text,
             images: outgoing.images.iter().map(Attached::to_arko).collect(),
             answers: Vec::new(),
+            continue_uncached: false,
         };
         if !prefs::get(cx).sessions.ask_before_edit {
             self.finish_edit(Choice::Change, item, message, window, cx);
@@ -2209,6 +2210,7 @@ impl SessionView {
                         text,
                         images: images.iter().map(Attached::to_arko).collect(),
                         answers: Vec::new(),
+                        continue_uncached: false,
                     }
                 });
                 self.branch(session, Some(last), first, None, None, window, cx);
@@ -2345,6 +2347,7 @@ impl SessionView {
             } else {
                 self.attached(cx)
             },
+            continue_uncached: false,
         };
         let worker = self.session.as_ref().and(self.target.clone());
         let unsent = (self.session.is_some() && worker.is_none() && !command).then(|| Unsent {
