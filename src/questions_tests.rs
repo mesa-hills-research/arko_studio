@@ -268,6 +268,57 @@ fn the_panel_sends_what_is_filled_in(cx: &mut TestAppContext) {
     assert!(!app.shows(cx, "questions-chip"));
 }
 
+/// The words in Other go with a pick, and with "You decide". Picking a
+/// choice leaves the words as they are, typing more leaves the pick, and
+/// "You decide" lets go of the pick but not the words.
+#[gpui_kit::test]
+fn the_words_in_other_go_with_a_pick_or_you_decide(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, three());
+    let answer = |app: &Window, cx: &mut TestAppContext, index: usize| {
+        let panel = app.panel(cx);
+        cx.read(|cx| panel.read(cx).answers(cx).answers[index].answer.clone())
+    };
+    // q1 takes one choice: the words first, then Tabs, then more words.
+    app.fill(cx, 0, "Two wide");
+    app.click(cx, part("answer-choice", "q1", 0));
+    app.fill(cx, 0, " in the tests");
+    assert_eq!(
+        answer(&app, cx, 0),
+        Answer {
+            choices: vec!["Tabs".into()],
+            text: Some("Two wide in the tests".into()),
+            you_decide: false,
+        }
+    );
+    // Spaces instead keeps the words too.
+    app.click(cx, part("answer-choice", "q1", 1));
+    assert_eq!(
+        answer(&app, cx, 0).text.as_deref(),
+        Some("Two wide in the tests")
+    );
+    // "You decide" with words, before and after them.
+    app.click(cx, part("answer-you-decide", "q1", 0));
+    app.fill(cx, 2, "Not main");
+    app.click(cx, part("answer-you-decide", "q3", 0));
+    app.click(cx, "answer-send");
+    let you_decide = |text: &str| Answer {
+        text: Some(text.into()),
+        you_decide: true,
+        ..Answer::default()
+    };
+    assert_eq!(
+        app.sent(cx),
+        [arko::Input::AnswerQuestions(Answers {
+            answers: vec![
+                QuestionAnswer::new("q1", you_decide("Two wide in the tests")),
+                QuestionAnswer::new("q2", Answer::default()),
+                QuestionAnswer::new("q3", you_decide("Not main")),
+            ],
+        })]
+    );
+}
+
 /// Send sends what is filled in, and names the questions left unanswered,
 /// which stay open in the quiet chip. "You decide" lets go of the choices.
 #[gpui_kit::test]

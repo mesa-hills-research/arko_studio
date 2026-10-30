@@ -432,8 +432,9 @@ impl App {
 
 /// Questions that come while the message box is empty open the answer
 /// panel by itself. Its choices, "You decide" and "Other" reach the agent
-/// as one note. The answers stay in a user bubble below the questions,
-/// including after the session resumes.
+/// as one note, the words in Other with a choice or "You decide" too. The
+/// answers stay in a user bubble below the questions, including after the
+/// session resumes.
 #[gpui_kit::test]
 fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
     let mock = asking(
@@ -462,15 +463,19 @@ fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
                 .cloned()
         })
         .unwrap();
-    act(cx, app.window, |window, cx| {
-        panel.update(cx, |panel, cx| panel.focus_field(2, window, cx));
-        window.input("main", cx);
-    });
+    for (field, words) in [(0, "2 wide"), (1, "after the review"), (2, "main")] {
+        act(cx, app.window, |window, cx| {
+            panel.update(cx, |panel, cx| panel.focus_field(field, window, cx));
+            window.input(words, cx);
+        });
+    }
     act(cx, app.window, |window, cx| window.click("answer-send", cx));
     app.wait_for_text(cx, "Thanks.");
     assert!(mock.was_sent("The user answered q1, q2 and q3."));
-    assert!(mock.was_sent("q1 Tabs or spaces? Spaces"));
-    assert!(mock.was_sent("q2 Push now? You decide (you said you'd assume: not yet)"));
+    assert!(mock.was_sent("q1 Tabs or spaces? Spaces, plus “2 wide”"));
+    assert!(mock.was_sent(
+        "q2 Push now? You decide (you said you'd assume: not yet), plus “after the review”"
+    ));
     assert!(mock.was_sent("q3 Which branch? main"));
     assert!(!app.shows(cx, "answer-panel"));
     assert!(!app.shows(cx, "questions-chip"));
@@ -489,10 +494,10 @@ fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
         card,
         [
             arko::questions::QuestionState::Answered {
-                answer: "Spaces".into()
+                answer: "Spaces, plus “2 wide”".into()
             },
             arko::questions::QuestionState::Answered {
-                answer: "You decide".into()
+                answer: "You decide, plus “after the review”".into()
             },
             arko::questions::QuestionState::Answered {
                 answer: "main".into()
