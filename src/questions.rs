@@ -91,6 +91,13 @@ pub fn answer(state: &QuestionState) -> Option<&str> {
     }
 }
 
+/// What the record under a card says became of a settled question, under
+/// its words: its outcome, unless it is the user's answer, which the bubble
+/// under the card shows. `None` while it is open.
+pub fn record_outcome(state: &QuestionState) -> Option<String> {
+    answer(state).is_none().then(|| outcome(state)).flatten()
+}
+
 /// A question's words without its number.
 pub fn text(question: &AgentQuestion) -> String {
     question.question.trim().to_string()

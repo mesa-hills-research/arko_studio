@@ -5435,6 +5435,76 @@ fn answers_given_in_the_panel_are_found_and_copied(cx: &mut TestAppContext) {
     assert_eq!(copied, "The release branch");
 }
 
+/// What became of a question, under its words in the record, is found in
+/// reading order, between its words and the next question's, and copied as
+/// selected.
+#[gpui_kit::test]
+fn what_became_of_a_question_is_found_and_copied(cx: &mut TestAppContext) {
+    use super::find::{Place, QuestionPart};
+    use arko::questions::QuestionState;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Tidy the parser.", Source::App, Delivery::Turn);
+    let card = crate::questions::ask(
+        &feed,
+        &[("q1", "Which branch?"), ("q2", "Rename the README?")],
+        false,
+    );
+    feed.set_question_state(
+        "q1",
+        QuestionState::Closed {
+            why: Some("Found it in the README".into()),
+        },
+    );
+    feed.set_question_state("q2", QuestionState::Dismissed);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    settle(cx, window);
+    view.update(cx, |view, cx| view.find("readme", cx));
+    settle(cx, window);
+    let matches = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            [
+                Place::Question(0, QuestionPart::Words),
+                Place::Question(0, QuestionPart::Outcome),
+                Place::Question(1, QuestionPart::Words),
+            ]
+            .map(|place| view.match_ranges(card, place).len())
+        })
+    };
+    assert_eq!(cx.read(|cx| view.read(cx).find_status().total), 2);
+    assert_eq!(matches(cx), [0, 1, 1]);
+    // In reading order: the first match is the outcome's.
+    view.update(cx, |view, cx| view.find_next(true, cx));
+    settle(cx, window);
+    let status = cx.read(|cx| view.read(cx).find_status());
+    assert_eq!(status.current, Some(0));
+    assert_eq!(
+        cx.read(|cx| view.read(cx).current_match())
+            .map(|found| found.place),
+        Some(Place::Question(0, QuestionPart::Outcome))
+    );
+    view.update(cx, |view, cx| view.find("", cx));
+    settle(cx, window);
+    cx.update_window(window, |_, window, cx| {
+        let text = window.find(("question-outcome", card * 8)).bounds();
+        let middle = text.size.height / 2.;
+        window.drag(
+            text.origin + gpui_kit::point(px(1.), middle),
+            text.origin + gpui_kit::point(text.size.width - px(1.), middle),
+            cx,
+        );
+        window.press("secondary-c", cx);
+    })
+    .unwrap();
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert_eq!(copied, "Arko closed it. Found it in the README");
+}
+
 /// The line of a card with questions open asks for the answer panel on
 /// that card, by a click or Enter. Once they are all settled it's text.
 #[gpui_kit::test]

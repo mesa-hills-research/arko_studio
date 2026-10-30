@@ -1232,8 +1232,8 @@ impl TranscriptView {
             _ => return,
         }
         let frame = self.renders;
-        // A card of questions has a run for each question's text, and one
-        // for each answer given in the answer panel.
+        // A card of questions has a run for each question's text and what
+        // became of it, and one for each answer given in the answer panel.
         let questions: Vec<Place> = match key {
             RowKey::Question(id) => self
                 .model
@@ -1244,8 +1244,10 @@ impl TranscriptView {
                 .enumerate()
                 .flat_map(|(n, question)| {
                     let answered = crate::questions::answer(&question.state).is_some();
+                    let outcome = crate::questions::record_outcome(&question.state).is_some();
                     [
-                        Some(Place::Question(n)),
+                        Some(Place::Question(n, find::QuestionPart::Words)),
+                        outcome.then_some(Place::Question(n, find::QuestionPart::Outcome)),
                         answered.then_some(Place::Answer(n)),
                     ]
                 })
@@ -2002,8 +2004,12 @@ impl TranscriptView {
             Place::Parameters => 1,
             Place::Output => 2,
             // A card's questions, in order (an agent asks a few at a time),
-            // then their answers in the bubble under it.
-            Place::Question(n) => (n as u64).min(PARTS / 2 - 1),
+            // each with what became of it, then their answers in the bubble
+            // under it.
+            Place::Question(n, part) => {
+                let outcome = u64::from(part == find::QuestionPart::Outcome);
+                (2 * n as u64 + outcome).min(PARTS / 2 - 1)
+            }
             Place::Answer(n) => (PARTS / 2 + n as u64).min(PARTS - 1),
             _ => 0,
         };
@@ -2012,7 +2018,7 @@ impl TranscriptView {
 }
 
 /// The parts a row's texts may have in the window's selection, in order.
-const PARTS: u64 = 16;
+const PARTS: u64 = 32;
 
 /// "screenshot.png · 240 KB": an image's label and size. A label that
 /// already ends with the size says it once. `read_file` and Claude Code's

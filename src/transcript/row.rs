@@ -25,7 +25,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::find::Place;
+use super::find::{Place, QuestionPart};
 use crate::fonts::CodeFont as _;
 
 use super::height::Metrics;
@@ -1952,11 +1952,11 @@ impl TranscriptView {
             });
         let muted = theme.muted_foreground;
         let record = questions.iter().enumerate().filter_map(|(n, question)| {
-            let outcome = crate::questions::outcome(&question.state)?;
+            if question.state.is_open() {
+                return None;
+            }
             // The user's own answer is in the bubble under the card.
-            let outcome = crate::questions::answer(&question.state)
-                .is_none()
-                .then_some(outcome);
+            let outcome = crate::questions::record_outcome(&question.state);
             Some(
                 h_flex()
                     .id(("question", id * 8 + n as u64))
@@ -1985,7 +1985,7 @@ impl TranscriptView {
                                     .child(self.marked(
                                         ("question-words", id * 8 + n as u64),
                                         id,
-                                        Place::Question(n),
+                                        Place::Question(n, QuestionPart::Words),
                                         crate::questions::text(question),
                                         cx,
                                     )),
@@ -1996,7 +1996,13 @@ impl TranscriptView {
                                     .test_support()
                                     .text_sm()
                                     .text_color(muted)
-                                    .child(outcome)
+                                    .child(self.marked(
+                                        ("question-outcome-words", id * 8 + n as u64),
+                                        id,
+                                        Place::Question(n, QuestionPart::Outcome),
+                                        outcome,
+                                        cx,
+                                    ))
                             })),
                     ),
             )

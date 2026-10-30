@@ -46,11 +46,20 @@ pub(crate) enum Place {
     Output,
     /// An entry's Markdown before its rows are ready: its source.
     Unready,
-    /// Question `n` of a card of the agent's questions.
-    Question(usize),
+    /// Question `n` of a card of the agent's questions: its words, or what
+    /// became of it under them in the record.
+    Question(usize, QuestionPart),
     /// The answer to question `n` of a card, given in the answer panel, in
     /// the bubble under the card.
     Answer(usize),
+}
+
+/// A part of a question in the record of a card, in reading order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) enum QuestionPart {
+    Words,
+    /// What became of it, when that isn't the user's answer.
+    Outcome,
 }
 
 /// One match.
@@ -694,8 +703,9 @@ impl TranscriptView {
                     .unwrap_or_else(|| item.text.clone());
                 vec![(Place::Text, title)]
             }
-            // The record's questions, then the answers given in the answer
-            // panel, in the bubble under it. The open ones are the panel's.
+            // The record's questions, each with what became of it, then the
+            // answers given in the answer panel, in the bubble under it. The
+            // open ones are the panel's.
             Kind::Question if super::model::has_questions(item) => {
                 let questions = item.questions.iter().flatten().enumerate();
                 let answers = questions.clone().filter_map(|(n, question)| {
@@ -704,7 +714,17 @@ impl TranscriptView {
                 });
                 questions
                     .filter(|(_, question)| !question.state.is_open())
-                    .map(|(n, question)| (Place::Question(n), crate::questions::text(question)))
+                    .flat_map(|(n, question)| {
+                        let words = crate::questions::text(question);
+                        let outcome = crate::questions::record_outcome(&question.state);
+                        [
+                            Some((Place::Question(n, QuestionPart::Words), words)),
+                            outcome.map(|outcome| {
+                                (Place::Question(n, QuestionPart::Outcome), outcome)
+                            }),
+                        ]
+                    })
+                    .flatten()
                     .chain(answers)
                     .collect()
             }
