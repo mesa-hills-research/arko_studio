@@ -2082,11 +2082,12 @@ impl TranscriptView {
         // The Messages view hides turns' footers: the notice that says why
         // the turn ended without a reply offers Regenerate instead.
         let regenerate = self.end_line_regenerate(RowKey::Notice(id), view, cx);
-        let (icon, color, text_color) = match item.level {
-            Some(Level::Error) => (Lucide::CircleX, theme.danger, theme.foreground),
-            Some(Level::Warn) => (Lucide::TriangleAlert, theme.warning, theme.warning),
-            _ => (Lucide::Info, theme.muted_foreground, theme.muted_foreground),
+        let (color, text_color) = match item.level {
+            Some(Level::Error) => (theme.danger, theme.foreground),
+            Some(Level::Warn) => (theme.warning, theme.warning),
+            _ => (theme.muted_foreground, theme.muted_foreground),
         };
+        let icon = notice_icon(item);
         h_flex()
             .relative()
             .w_full()
@@ -2494,6 +2495,18 @@ impl Render for OutputViewer {
     }
 }
 
+/// A notice's icon, by its level. The line that opens a turn Arko started
+/// for news (a worker's report, a job that finished, a monitor's alert)
+/// has an inbox, so it stands apart from notices about how a turn goes.
+fn notice_icon(item: &Item) -> Lucide {
+    match item.level {
+        Some(Level::Error) => Lucide::CircleX,
+        Some(Level::Warn) => Lucide::TriangleAlert,
+        _ if item.opens_turn => Lucide::Inbox,
+        _ => Lucide::Info,
+    }
+}
+
 /// The chevron of a disclosure, open or closed.
 fn chevron(open: bool) -> IconName {
     if open {
@@ -2788,12 +2801,36 @@ mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::{
-        CACHE_REFRESHED, OutputViewer, REGENERATE_HINT, apply_diff_patch, code_lines, duration,
-        edit_diff, longest_code, preview, user_tags,
+        CACHE_REFRESHED, Lucide, OutputViewer, REGENERATE_HINT, apply_diff_patch, code_lines,
+        duration, edit_diff, longest_code, notice_icon, preview, user_tags,
     };
-    use arko::remote::{Delivery, Item, Kind, Source};
+    use arko::remote::{Delivery, Item, Kind, Level, Source};
     use gpui_kit::AppContext as _;
     use std::sync::Arc;
+
+    /// The line that opens a turn Arko started has an inbox, and other
+    /// notices their level's icon.
+    #[test]
+    fn a_turns_opening_line_has_an_icon_of_its_own() {
+        let notice = |text: &str, level: Level| Item::new(Kind::Notice, text).level(level);
+        let icon = |item: &Item| notice_icon(item).path();
+        assert_eq!(
+            icon(&notice("r1 reported", Level::Info).opens_turn()),
+            Lucide::Inbox.path()
+        );
+        assert_eq!(
+            icon(&notice("Resumed the session.", Level::Info)),
+            Lucide::Info.path()
+        );
+        assert_eq!(
+            icon(&notice("rate limited", Level::Warn)),
+            Lucide::TriangleAlert.path()
+        );
+        assert_eq!(
+            icon(&notice("The request failed.", Level::Error)),
+            Lucide::CircleX.path()
+        );
+    }
 
     #[gpui_kit::test]
     fn the_output_dialogs_copy_shares_the_output(cx: &mut gpui_kit::TestAppContext) {
