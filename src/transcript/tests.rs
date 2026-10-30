@@ -5437,7 +5437,7 @@ fn answers_given_in_the_panel_are_found_and_copied(cx: &mut TestAppContext) {
 
 /// What became of a question, under its words in the record, is found in
 /// reading order, between its words and the next question's, and copied as
-/// selected.
+/// selected, alone or with the questions around it.
 #[gpui_kit::test]
 fn what_became_of_a_question_is_found_and_copied(cx: &mut TestAppContext) {
     use super::find::{Place, QuestionPart};
@@ -5503,6 +5503,27 @@ fn what_became_of_a_question_is_found_and_copied(cx: &mut TestAppContext) {
         .and_then(|item| item.text())
         .unwrap_or_default();
     assert_eq!(copied, "Arko closed it. Found it in the README");
+    // A drag from the first question's words to the second's copies the
+    // outcome between them, in reading order.
+    cx.update_window(window, |_, window, cx| {
+        let first = window.find(("question-text", card * 8)).bounds();
+        let second = window.find(("question-text", card * 8 + 1)).bounds();
+        window.drag(
+            first.origin + gpui_kit::point(px(1.), first.size.height / 2.),
+            second.origin + gpui_kit::point(second.size.width - px(1.), second.size.height / 2.),
+            cx,
+        );
+        window.press("secondary-c", cx);
+    })
+    .unwrap();
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert_eq!(
+        copied,
+        "Which branch?\nArko closed it. Found it in the README\nRename the README?"
+    );
 }
 
 /// The line of a card with questions open asks for the answer panel on
