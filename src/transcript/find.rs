@@ -1368,32 +1368,40 @@ pub(super) const MATCH_CONTRAST: f32 = 4.5;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Ink {
     pub text: Hsla,
-    /// What the row paints under the text, over the transcript: nothing,
-    /// or a box's fill, which may be translucent.
-    pub fill: Hsla,
+    /// What the row paints under the text, over the transcript, as it
+    /// shows normally and hovered: nothing, a box's fill, which may be
+    /// translucent, or a control's. A control's pressed fill shows only
+    /// while it's pressed, which moves on from the match.
+    pub fills: [Hsla; 2],
 }
 
 impl Ink {
     /// `text` on the transcript.
     pub fn new(text: Hsla) -> Self {
-        Self {
-            text,
-            fill: transparent_black(),
-        }
+        Self::on(text, transparent_black())
     }
 
     /// `text` on `fill`, such as a bubble or a call's details.
     pub fn on(text: Hsla, fill: Hsla) -> Self {
-        Self { text, fill }
+        Self {
+            text,
+            fills: [fill; 2],
+        }
     }
 
-    /// What it may be drawn on, opaque: its fill over the transcript, which
-    /// is the window's background in a session and the sidebar's over it in
-    /// the workers panel.
-    pub(super) fn surfaces(&self, cx: &App) -> [Hsla; 2] {
+    /// `text` in a control that paints `fills` under it, normally and
+    /// hovered.
+    pub fn in_control(text: Hsla, fills: [Hsla; 2]) -> Self {
+        Self { text, fills }
+    }
+
+    /// What it may be drawn on, opaque: each of its fills over the
+    /// transcript, which is the window's background in a session and the
+    /// sidebar's over it in the workers panel.
+    pub(super) fn surfaces(&self, cx: &App) -> [Hsla; 4] {
         let theme = cx.theme();
-        [theme.background, theme.background.blend(theme.sidebar)]
-            .map(|transcript| transcript.blend(self.fill))
+        let transcripts = [theme.background, theme.background.blend(theme.sidebar)];
+        std::array::from_fn(|at| transcripts[at / 2].blend(self.fills[at % 2]))
     }
 }
 
@@ -1401,28 +1409,38 @@ impl Ink {
 /// it is while it reads there at [`MATCH_CONTRAST`], else darkened (or, on
 /// a dark highlight, lightened) until it does. Plain text is too light on
 /// the current match's highlight in most dark themes, and a warning's amber
-/// on both highlights in light ones.
+/// on both highlights in light ones. Where no color reads at once on a
+/// control's normal fill and on its hovered one, it reads on the normal one
+/// and as well as any color can on the hovered one.
 pub(super) fn readable_on(ink: Ink, highlight: Hsla, cx: &App) -> Hsla {
     use crate::segmented::contrast_ratio;
     let under = ink.surfaces(cx).map(|surface| surface.blend(highlight));
-    // The least it reads at on any surface it may be drawn on.
-    let contrast = |color: Hsla| {
+    // The least it reads at on the surfaces it may be drawn on, or on
+    // those where its control shows normally (the even ones).
+    let least = |color: Hsla, normal_only: bool| {
         under
             .iter()
-            .map(|under| contrast_ratio(under.blend(color), *under))
+            .enumerate()
+            .filter(|(at, _)| !normal_only || at % 2 == 0)
+            .map(|(_, under)| contrast_ratio(under.blend(color), *under))
             .fold(f32::INFINITY, f32::min)
     };
-    // Black or white, whichever stands out more, always reads.
+    // Black or white, whichever stands out more.
     let (black, white) = (gpui_kit::black(), gpui_kit::white());
-    let toward = if contrast(black) >= contrast(white) {
-        black
+    let (toward, away) = if least(black, false) >= least(white, false) {
+        (black, white)
     } else {
-        white
+        (white, black)
     };
+    let reads = |color: Hsla, normal_only: bool| least(color, normal_only) >= MATCH_CONTRAST;
     (0..=20)
         .map(|step| ink.text.blend(toward.opacity(step as f32 / 20.)))
-        .find(|shade| contrast(*shade) >= MATCH_CONTRAST)
-        .unwrap_or(toward)
+        .find(|shade| reads(*shade, false))
+        .unwrap_or(if reads(toward, true) || !reads(away, true) {
+            toward
+        } else {
+            away
+        })
 }
 
 #[path = "find_text.rs"]

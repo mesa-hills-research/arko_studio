@@ -12,7 +12,8 @@ use gpui_kit::base::image_cache::LruImageCache;
 use gpui_kit::base::text::{TextView, TextViewMotion, TextViewStyle};
 use gpui_kit::base::{Easing, SelectableText};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Theme, WindowExt as _,
+    ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, Sizable as _, Theme,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     clipboard::Clipboard,
     diff_view::{Diff, DiffView},
@@ -1532,7 +1533,7 @@ impl TranscriptView {
                             id,
                             Place::Outcome,
                             outcome,
-                            Ink::new(theme.danger),
+                            call_line_ink(theme.danger, theme),
                             cx,
                         )))
                     })
@@ -1546,7 +1547,7 @@ impl TranscriptView {
             id,
             Place::Text,
             line.clone(),
-            Ink::new(theme.muted_foreground),
+            call_line_ink(theme.muted_foreground, theme),
             cx,
         );
         let header = Disclosure {
@@ -2349,7 +2350,7 @@ impl TranscriptView {
         };
         let open: SharedString = worker_id.clone().into();
         let view = view.downgrade();
-        let title = self.marked_plain(id, Place::Text, title, Ink::new(theme.foreground), cx);
+        let title = self.marked_plain(id, Place::Text, title, worker_title_ink(theme), cx);
         let card = Button::new(("worker-card", id))
             .outline()
             .small()
@@ -2587,12 +2588,7 @@ impl RenderOnce for Disclosure {
             .read(cx)
             .clone();
         let theme = cx.theme();
-        // A ghost button's hover.
-        let hover = if theme.is_dark() {
-            theme.accent.opacity(0.5)
-        } else {
-            theme.accent
-        };
+        let [_, hover] = disclosure_fills(theme);
         let ring = theme.ring;
         // An extra-small button's size and padding, its border (the focus
         // ring) taken out of the padding.
@@ -2620,6 +2616,37 @@ impl RenderOnce for Disclosure {
             // A click, or Enter or Space while it has the focus.
             .on_click(move |_, window, cx| (self.on_toggle)(window, cx))
     }
+}
+
+/// How a call's line and the failure beside it are drawn: `text`, in a
+/// [`Disclosure`].
+pub(super) fn call_line_ink(text: Hsla, theme: &Theme) -> Ink {
+    Ink::in_control(text, disclosure_fills(theme))
+}
+
+/// How a worker card's title is drawn: in the label of an outline button.
+pub(super) fn worker_title_ink(theme: &Theme) -> Ink {
+    Ink::in_control(theme.button_foreground, outline_button_fills(theme))
+}
+
+/// What a [`Disclosure`] paints under its content, normally and hovered:
+/// nothing, then a ghost button's hover.
+pub(super) fn disclosure_fills(theme: &Theme) -> [Hsla; 2] {
+    let hover = if theme.is_dark() {
+        theme.accent.opacity(0.5)
+    } else {
+        theme.accent
+    };
+    [transparent_black(), hover]
+}
+
+/// What GPUI Kit's outline button paints under its label, normally and
+/// hovered.
+pub(super) fn outline_button_fills(theme: &Theme) -> [Hsla; 2] {
+    [
+        theme.input_background(),
+        theme.input.mix_oklab(theme.transparent, 0.5),
+    ]
 }
 
 /// What the menu item that switches a reply between its formatted text and
