@@ -895,6 +895,72 @@ fn switching_sessions_drops_the_question_about_continuing_a_worker(cx: &mut Test
     assert!(queued_continues(&other, cx).is_empty());
 }
 
+/// The question is about the worker it was asked for. Once the composer
+/// writes to Arko instead, Continue sends nothing.
+#[gpui_kit::test]
+fn a_target_change_drops_the_question_about_continuing_a_worker(cx: &mut TestAppContext) {
+    let (window, view, session) = session_with_uncached_worker(cx);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_target(Some("r1".into()), window, cx)
+        })
+    });
+    send_text(cx, window, "Go on.");
+    assert!(shows_dialog(cx, window));
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.set_target(None, window, cx))
+    });
+    answer_dialog(cx, window, "ok");
+    assert!(queued_continues(&session, cx).is_empty());
+    assert_eq!(composer_text(&view, cx), "Go on.");
+}
+
+fn composer_focused(
+    view: &Entity<crate::session_view::SessionView>,
+    window: AnyWindowHandle,
+    cx: &mut TestAppContext,
+) -> bool {
+    use gpui_kit::Focusable as _;
+    let textarea = cx.read(|cx| view.read(cx).composer().read(cx).textarea().clone());
+    cx.update_window(window, |_, window, cx| {
+        textarea.read(cx).focus_handle(cx).is_focused(window)
+    })
+    .unwrap()
+}
+
+/// The question works from the keyboard. Esc cancels and keeps the
+/// message, Enter continues, and the keyboard goes back to the composer
+/// either way.
+#[gpui_kit::test]
+fn the_question_about_continuing_a_worker_works_from_the_keyboard(cx: &mut TestAppContext) {
+    let (window, view, session) = session_with_uncached_worker(cx);
+    let close = |cx: &mut TestAppContext, key: &str| {
+        let key = key.to_string();
+        act(cx, window, |window, cx| window.press(&key, cx));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+    };
+    send_text(cx, window, "/message r1 Go on.");
+    assert!(shows_dialog(cx, window));
+    close(cx, "escape");
+    assert!(!shows_dialog(cx, window));
+    assert_eq!(composer_text(&view, cx), "/message r1 Go on.");
+    assert!(composer_focused(&view, window, cx), "after Esc");
+    assert!(queued_continues(&session, cx).is_empty());
+
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert!(shows_dialog(cx, window));
+    close(cx, "enter");
+    assert!(!shows_dialog(cx, window));
+    assert_eq!(
+        queued_continues(&session, cx),
+        [("/message r1 Go on.".to_string(), true)]
+    );
+    assert_eq!(composer_text(&view, cx), "");
+    assert!(composer_focused(&view, window, cx), "after Enter");
+}
+
 /// Studio asks before continuing a worker by what it knows of the worker,
 /// which Arko may know better a moment later: the cache expired between
 /// the two, or the worker's end hadn't reached the window yet. Arko then
