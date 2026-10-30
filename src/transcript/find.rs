@@ -46,11 +46,20 @@ pub(crate) enum Place {
     Output,
     /// An entry's Markdown before its rows are ready: its source.
     Unready,
-    /// Question `n` of a card of the agent's questions.
-    Question(usize),
+    /// Question `n` of a card of the agent's questions: its words, or what
+    /// became of it under them in the record.
+    Question(usize, QuestionPart),
     /// The answer to question `n` of a card, given in the answer panel, in
     /// the bubble under the card.
     Answer(usize),
+}
+
+/// A part of a question in the record of a card, in reading order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) enum QuestionPart {
+    Words,
+    /// What became of it, when that isn't the user's answer.
+    Outcome,
 }
 
 /// One match.
@@ -694,8 +703,9 @@ impl TranscriptView {
                     .unwrap_or_else(|| item.text.clone());
                 vec![(Place::Text, title)]
             }
-            // The record's questions, then the answers given in the answer
-            // panel, in the bubble under it. The open ones are the panel's.
+            // The record's questions, each with what became of it, then the
+            // answers given in the answer panel, in the bubble under it. The
+            // open ones are the panel's.
             Kind::Question if super::model::has_questions(item) => {
                 let questions = item.questions.iter().flatten().enumerate();
                 let answers = questions.clone().filter_map(|(n, question)| {
@@ -704,7 +714,17 @@ impl TranscriptView {
                 });
                 questions
                     .filter(|(_, question)| !question.state.is_open())
-                    .map(|(n, question)| (Place::Question(n), crate::questions::text(question)))
+                    .flat_map(|(n, question)| {
+                        let words = crate::questions::text(question);
+                        let outcome = crate::questions::record_outcome(&question.state);
+                        [
+                            Some((Place::Question(n, QuestionPart::Words), words)),
+                            outcome.map(|outcome| {
+                                (Place::Question(n, QuestionPart::Outcome), outcome)
+                            }),
+                        ]
+                    })
+                    .flatten()
                     .chain(answers)
                     .collect()
             }
@@ -1238,17 +1258,18 @@ impl TranscriptView {
     }
 
     /// `text` as the plain text of `place` in a row, selectable as usual,
-    /// with its matches painted on it.
+    /// with its matches painted on it. The row draws it in `ink`.
     pub(super) fn marked(
         &self,
         id: impl Into<ElementId>,
         entry: u64,
         place: Place,
         text: impl Into<SharedString>,
+        ink: Ink,
         cx: &App,
     ) -> AnyElement {
         let text = text.into();
-        let highlights = self.highlights(entry, place, &text, cx);
+        let highlights = self.highlights(entry, place, &text, ink, cx);
         let selectable = self.selectable(id, entry, place, text);
         if highlights.is_empty() {
             return selectable.into_any_element();
@@ -1263,10 +1284,11 @@ impl TranscriptView {
         entry: u64,
         place: Place,
         text: impl Into<SharedString>,
+        ink: Ink,
         cx: &App,
     ) -> AnyElement {
         let text = text.into();
-        let highlights = self.highlights(entry, place, &text, cx);
+        let highlights = self.highlights(entry, place, &text, ink, cx);
         if highlights.is_empty() {
             return text.into_any_element();
         }
@@ -1277,13 +1299,15 @@ impl TranscriptView {
         )
     }
 
-    /// The matches of `place` in `text`, painted with the current one
-    /// stronger.
+    /// The matches of `place` in `text`, drawn in `ink`, painted with the
+    /// current one stronger, their text in a shade of its color that reads
+    /// on their highlight.
     fn highlights(
         &self,
         entry: u64,
         place: Place,
         text: &str,
+        ink: Ink,
         cx: &App,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
         let ranges = self.match_ranges(entry, place);
@@ -1291,6 +1315,7 @@ impl TranscriptView {
             return Vec::new();
         }
         let (all, strong) = match_colors(cx);
+        let (on_all, on_strong) = (readable_on(ink, all, cx), readable_on(ink, strong, cx));
         ranges
             .into_iter()
             .filter(|(range, _)| text.get(range.clone()).is_some())
@@ -1298,6 +1323,7 @@ impl TranscriptView {
                 (
                     range,
                     HighlightStyle {
+                        color: Some(if current { on_strong } else { on_all }),
                         background_color: Some(if current { strong } else { all }),
                         ..HighlightStyle::default()
                     },
@@ -1332,6 +1358,79 @@ impl TranscriptView {
 pub(super) fn match_colors(cx: &App) -> (Hsla, Hsla) {
     let theme = cx.theme();
     (theme.search_match, theme.search_match_active)
+}
+
+/// The contrast matched text needs on its highlight, WCAG's for body text.
+pub(super) const MATCH_CONTRAST: f32 = 4.5;
+
+/// The colors a plain text of a row is drawn in: its own, and what it's
+/// drawn on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Ink {
+    pub text: Hsla,
+    /// A surface of its own, such as a bubble's. `None` for the
+    /// transcript's, which is the window's background in a session and the
+    /// sidebar's in the workers panel.
+    pub surface: Option<Hsla>,
+}
+
+impl Ink {
+    /// `text` on the transcript.
+    pub fn new(text: Hsla) -> Self {
+        Self {
+            text,
+            surface: None,
+        }
+    }
+
+    /// `text` on `surface`, such as a bubble or a call's details.
+    pub fn on(text: Hsla, surface: Hsla) -> Self {
+        Self {
+            text,
+            surface: Some(surface),
+        }
+    }
+
+    /// What it may be drawn on.
+    fn surfaces(&self, cx: &App) -> Vec<Hsla> {
+        let theme = cx.theme();
+        match self.surface {
+            Some(surface) => vec![surface],
+            None => vec![theme.background, theme.sidebar],
+        }
+    }
+}
+
+/// The text of `ink`'s matches on the highlight `highlight`: its color as
+/// it is while it reads there at [`MATCH_CONTRAST`], else darkened (or, on
+/// a dark highlight, lightened) until it does. Plain text is too light on
+/// the current match's highlight in most dark themes, and a warning's amber
+/// on both highlights in light ones.
+pub(super) fn readable_on(ink: Ink, highlight: Hsla, cx: &App) -> Hsla {
+    use crate::segmented::contrast_ratio;
+    let under: Vec<Hsla> = ink
+        .surfaces(cx)
+        .into_iter()
+        .map(|surface| surface.blend(highlight))
+        .collect();
+    // The least it reads at on any surface it may be drawn on.
+    let contrast = |color: Hsla| {
+        under
+            .iter()
+            .map(|under| contrast_ratio(under.blend(color), *under))
+            .fold(f32::INFINITY, f32::min)
+    };
+    // Black or white, whichever stands out more, always reads.
+    let (black, white) = (gpui_kit::black(), gpui_kit::white());
+    let toward = if contrast(black) >= contrast(white) {
+        black
+    } else {
+        white
+    };
+    (0..=20)
+        .map(|step| ink.text.blend(toward.opacity(step as f32 / 20.)))
+        .find(|shade| contrast(*shade) >= MATCH_CONTRAST)
+        .unwrap_or(toward)
 }
 
 #[path = "find_text.rs"]

@@ -173,6 +173,7 @@ fn a_key_added_in_settings_makes_its_models_usable(cx: &mut TestAppContext) {
             .map(|(name, alias)| ModelChoice {
                 name: (*name).into(),
                 alias: (*alias).into(),
+                billing: None,
             })
             .collect(),
     };
@@ -609,6 +610,158 @@ fn the_worker_settings_are_chosen_and_passed_on(cx: &mut TestAppContext) {
     assert_eq!(label(cx, 3).as_deref(), Some("API allowed"));
     assert!(!budget_on(cx));
     assert_eq!(label(cx, 5).as_deref(), Some("1"));
+}
+
+/// While the preferences leave worker billing and the daily API budget to
+/// Arko, Sessions shows what ARKO_WORKER_BILLING and ARKO_API_BUDGET give
+/// new sessions, which Arko reads itself. A choice made there wins, and a
+/// reset leaves them to the variables again.
+#[gpui_kit::test]
+fn worker_billing_and_the_budget_show_what_the_variables_say(cx: &mut TestAppContext) {
+    use crate::backend::BillingFromEnv;
+    use arko::WorkerBilling;
+    use gpui_kit::component::setting::SettingItem;
+    use gpui_kit::component::text::Text;
+
+    let backend =
+        FakeBackend::sample("/arko", SystemTime::now()).with_billing_from_env(BillingFromEnv {
+            worker_billing: Some(WorkerBilling::Plans),
+            api_budget: Some(Some(20.0)),
+            ..BillingFromEnv::default()
+        });
+    let backend = start_on(cx, backend, prefs::Prefs::default());
+    let (window, _, settings) = settings_window(cx, SESSIONS_PAGE, 900.);
+    let page = cx.read(|cx| settings.read(cx).sessions().clone());
+    let billing = |cx: &mut TestAppContext| {
+        let mut label = None;
+        act(cx, window, |window, _| {
+            label = window
+                .within("group-0")
+                .within("item-3")
+                .find("btn")
+                .label()
+                .map(str::to_string);
+        });
+        label.unwrap()
+    };
+    let budget_on = |cx: &mut TestAppContext| {
+        let mut checked = None;
+        act(cx, window, |window, _| {
+            checked = window
+                .within("group-0")
+                .within("item-4")
+                .find("check")
+                .checked();
+        });
+        checked.unwrap()
+    };
+    let description = |cx: &mut TestAppContext, item: usize| {
+        cx.read(|cx| match page.read(cx).agent_items(cx).swap_remove(item) {
+            SettingItem::Item {
+                description: Some(Text::String(text)),
+                ..
+            } => text.to_string(),
+            _ => String::new(),
+        })
+    };
+    assert_eq!(billing(cx), "Plans only");
+    assert!(budget_on(cx));
+    assert!(
+        description(cx, 3).contains("Workers run only on your plans"),
+        "{}",
+        description(cx, 3)
+    );
+    assert!(description(cx, 3).ends_with("Until it’s set here, ARKO_WORKER_BILLING decides."));
+    assert!(
+        description(cx, 4).starts_with("Once $20 is billed per token today"),
+        "{}",
+        description(cx, 4)
+    );
+    // Arko reads the variables itself, so the app passes nothing on.
+    let started_with = || {
+        let mut options = arko::Options::default();
+        backend.defaults().apply(&mut options, Some(Mode::Agent));
+        (options.worker_billing, options.api_budget)
+    };
+    assert_eq!(started_with(), (None, None));
+    // A choice made there wins over them.
+    act(cx, window, |window, cx| {
+        window.within("group-0").within("item-3").click("btn", cx)
+    });
+    act(cx, window, |window, cx| {
+        window.within("popup-menu").click(1usize, cx)
+    });
+    act(cx, window, |window, cx| {
+        window.within("group-0").within("item-4").click("check", cx)
+    });
+    assert_eq!(billing(cx), "Ask before API");
+    assert!(!budget_on(cx));
+    assert!(description(cx, 4).starts_with("No daily limit"));
+    assert_eq!(started_with(), (Some(WorkerBilling::Ask), Some(None)));
+    // Reset, as the page's reset does it: the variables decide again.
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| {
+            prefs.new_sessions.worker_billing = None;
+            prefs.new_sessions.api_budget = None;
+        })
+    });
+    assert_eq!(billing(cx), "Plans only");
+    assert!(budget_on(cx));
+}
+
+/// A variable Arko doesn't take keeps new sessions from starting while
+/// worker billing or the budget is left to it, so the setting says so
+/// under it, in the warning style, until a choice is made there. The
+/// setting shows Arko's default meanwhile.
+#[gpui_kit::test]
+fn a_variable_arko_refuses_is_flagged_on_its_setting(cx: &mut TestAppContext) {
+    use crate::backend::BillingFromEnv;
+
+    let backend =
+        FakeBackend::sample("/arko", SystemTime::now()).with_billing_from_env(BillingFromEnv {
+            bad_worker_billing: Some("sometimes".into()),
+            bad_api_budget: Some("lots".into()),
+            ..BillingFromEnv::default()
+        });
+    start_on(cx, backend, prefs::Prefs::default());
+    let (window, _, _) = settings_window(cx, SESSIONS_PAGE, 1200.);
+    let shows = |cx: &mut TestAppContext, id: &'static str| {
+        let mut shown = false;
+        act(cx, window, |window, _| {
+            shown = window.try_find(id).is_some()
+        });
+        shown
+    };
+    let billing = |cx: &mut TestAppContext| {
+        let mut label = None;
+        act(cx, window, |window, _| {
+            label = window
+                .within("group-0")
+                .within("item-3")
+                .find("btn")
+                .label()
+                .map(str::to_string);
+        });
+        label.unwrap()
+    };
+    assert!(shows(cx, "worker-billing-variable"));
+    assert!(shows(cx, "api-budget-variable"));
+    assert_eq!(billing(cx), "Ask before API");
+    // Chosen there, worker billing no longer reads the variable.
+    act(cx, window, |window, cx| {
+        window.within("group-0").within("item-3").click("btn", cx)
+    });
+    act(cx, window, |window, cx| {
+        window.within("popup-menu").click(0usize, cx)
+    });
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.worker_billing),
+        Some(arko::WorkerBilling::Plans)
+    );
+    assert!(!shows(cx, "worker-billing-variable"));
+    assert!(shows(cx, "api-budget-variable"));
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.new_sessions.api_budget = Some(false)));
+    assert!(!shows(cx, "api-budget-variable"));
 }
 
 /// The chat instructions type as Settings › Input says, as it changes
@@ -1277,9 +1430,10 @@ fn a_group_shows_a_preference_changed_elsewhere(cx: &mut TestAppContext) {
 /// The models of the model settings' tests: the sample's Anthropic models,
 /// and Kimi K3 on OpenRouter.
 pub(super) fn openrouter_models() -> ModelChoices {
-    let choice = |name: &str, alias: &str| ModelChoice {
+    let choice = |name: &str, alias: &str, billing: &str| ModelChoice {
         name: name.into(),
         alias: alias.into(),
+        billing: Some(billing.into()),
     };
     ModelChoices {
         groups: vec![
@@ -1287,14 +1441,14 @@ pub(super) fn openrouter_models() -> ModelChoices {
                 name: "Anthropic API, billed per token".into(),
                 needs: None,
                 models: vec![
-                    choice("claude-opus-5-5", "opus"),
-                    choice("claude-sonnet-5-5", "sonnet"),
+                    choice("claude-opus-5-5", "opus", "API, $4/$20"),
+                    choice("claude-sonnet-5-5", "sonnet", "API, $2/$10"),
                 ],
             },
             ModelGroup {
                 name: "OpenRouter, billed per token".into(),
                 needs: None,
-                models: vec![choice("openrouter:moonshotai/kimi-k3", "")],
+                models: vec![choice("openrouter:moonshotai/kimi-k3", "", "API")],
             },
         ],
         default: Some("claude-opus-5-5".into()),
@@ -1545,19 +1699,19 @@ fn the_model_rows_and_openrouter_controls_have_names(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| {
         window.click("new-sessions-model-button", cx)
     });
-    // A model billed per token is heard with its billing, as Arko says it.
-    let billed = |row: &str, name: &str| match openrouter_models().billing(name) {
-        Some(billing) => format!("{row}, {billing}"),
-        None => row.to_string(),
-    };
-    let opus = billed("Opus 5.5, Anthropic API", "claude-opus-5-5");
-    let kimi = billed("Kimi K3, OpenRouter", "openrouter:moonshotai/kimi-k3");
-    assert!(opus.starts_with("Opus 5.5, Anthropic API, API, $"));
+    // A model billed per token is heard with its billing, as Arko says it,
+    // less an "API" its way already says.
     act(cx, window, |window, _| {
         let list = window.within("new-sessions-model");
         assert_eq!(list.find("model-row-0-0").label(), Some("Last used"));
-        assert_eq!(list.find("model-row-1-0").label(), Some(opus.as_str()));
-        assert_eq!(list.find("model-row-2-0").label(), Some(kimi.as_str()));
+        assert_eq!(
+            list.find("model-row-1-0").label(),
+            Some("Opus 5.5, Anthropic API, $4/$20")
+        );
+        assert_eq!(
+            list.find("model-row-2-0").label(),
+            Some("Kimi K3, OpenRouter, API")
+        );
         assert_eq!(
             list.find("model-row-2-1").label(),
             Some("All OpenRouter models")

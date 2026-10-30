@@ -123,6 +123,25 @@ pub fn setup_label(worker: &WorkerSummary) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
+/// How Arko's list of workers says a worker's model is billed per token. A
+/// worker on one of the user's plans says nothing.
+pub const BILLED_PER_TOKEN: &str = "billed per token";
+
+/// The same in a word, as the model lists say it beside a model billed per
+/// token, for a worker's row, where room is short.
+pub const BILLED_PER_TOKEN_SHORT: &str = "API";
+
+/// Whether `worker` runs on a model billed per token in the session of
+/// `models`, as Arko bills it. A worker whose model isn't recorded yet
+/// doesn't.
+pub fn billed_per_token(worker: &WorkerSummary, models: &arko::remote::Models) -> bool {
+    worker
+        .model
+        .as_deref()
+        .filter(|model| !model.is_empty())
+        .is_some_and(|model| arko::models::billing(models, model).is_some())
+}
+
 /// The skills and MCP servers a worker was narrowed to, counted as the web
 /// page counts them: "2 skills", "no skills", "1 MCP server", "no MCP". A
 /// worker that has what its starter has says nothing.
@@ -664,6 +683,30 @@ mod tests {
         worker.model = None;
         worker.profile = Some("reviewer".into());
         assert_eq!(setup_label(&worker).as_deref(), Some("reviewer"));
+    }
+
+    /// A worker on a model billed per token is, as Arko bills it in its
+    /// session: an Anthropic API model always, an OpenAI model when the
+    /// session reaches it by API key. One on a plan, or whose model isn't
+    /// recorded, isn't.
+    #[test]
+    fn a_worker_is_billed_per_token_as_arko_bills_its_model() {
+        let session = |auth: &str| arko::remote::Models {
+            openai_auth: Some(auth.to_string()),
+            ..arko::remote::Models::default()
+        };
+        let (login, key) = (session("ChatGPT login"), session("OpenAI API key"));
+        let mut worker = worker("r1", WorkerState::Running, Some(0), None);
+        assert!(!billed_per_token(&worker, &login));
+        for (model, on_login, on_key) in [
+            ("claude-opus-5-5", true, true),
+            ("cc:claude-opus-5-5", false, false),
+            ("gpt-6.1-sol", false, true),
+        ] {
+            worker.model = Some(model.into());
+            assert_eq!(billed_per_token(&worker, &login), on_login, "{model}");
+            assert_eq!(billed_per_token(&worker, &key), on_key, "{model}");
+        }
     }
 
     /// Only a narrowed set is named, counted as the web page counts it, with

@@ -460,6 +460,7 @@ fn the_page_says_what_a_model_needs_and_lists_projects_read_only(cx: &mut TestAp
                 models: vec![ModelChoice {
                     name: "claude-haiku-5-5".into(),
                     alias: "haiku".into(),
+                    billing: None,
                 }],
             },
             ModelGroup {
@@ -468,6 +469,7 @@ fn the_page_says_what_a_model_needs_and_lists_projects_read_only(cx: &mut TestAp
                 models: vec![ModelChoice {
                     name: "gpt-6.1-sol".into(),
                     alias: "sol".into(),
+                    billing: None,
                 }],
             },
         ],

@@ -25,7 +25,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::find::Place;
+use super::find::{Ink, Place, QuestionPart};
 use crate::fonts::CodeFont as _;
 
 use super::height::Metrics;
@@ -1064,6 +1064,13 @@ impl TranscriptView {
             .and_then(|ui| ui.text.clone())
             .unwrap_or_else(|| item.text.clone().into());
         let muted = theme.muted_foreground;
+        // As the bubble draws it: a note the agent hasn't read is an
+        // outline in muted text.
+        let ink = if item.pending {
+            Ink::new(muted)
+        } else {
+            Ink::on(theme.foreground, bubble_color(theme))
+        };
         let copy_view = view.downgrade();
         // Edit and Branch, for a message the conversation still has.
         let changes = self.is_editable(id).then(|| {
@@ -1156,7 +1163,7 @@ impl TranscriptView {
             .children(self.thumbnails(item, view, cx))
             // As wide as its words on one line, up to the bubble's widest,
             // where it wraps.
-            .child(self.marked(("user-text", id), id, Place::Text, text, cx));
+            .child(self.marked(("user-text", id), id, Place::Text, text, ink, cx));
         at_right(bubble, Some(actions.into_any_element())).into_any_element()
     }
 
@@ -1216,7 +1223,18 @@ impl TranscriptView {
                 .when(self.shows_source(id), |this| {
                     this.code_font(theme).text_size(theme.mono_font_size)
                 })
-                .child(self.marked(("source", id), id, Place::Source(block), text, cx))
+                .child(self.marked(
+                    ("source", id),
+                    id,
+                    Place::Source(block),
+                    text,
+                    Ink::new(if thinking {
+                        theme.muted_foreground
+                    } else {
+                        theme.foreground
+                    }),
+                    cx,
+                ))
                 .into_any_element()
         } else {
             // The longest code block of the row, at the top level or inside
@@ -1514,6 +1532,7 @@ impl TranscriptView {
                             id,
                             Place::Outcome,
                             outcome,
+                            Ink::new(theme.danger),
                             cx,
                         )))
                     })
@@ -1523,6 +1542,13 @@ impl TranscriptView {
         };
         let action = self.call_action(item, job.as_ref(), view);
         let header_view = view.downgrade();
+        let marked_line = self.marked_plain(
+            id,
+            Place::Text,
+            line.clone(),
+            Ink::new(theme.muted_foreground),
+            cx,
+        );
         let header = Disclosure {
             id: ("call-toggle", id).into(),
             open,
@@ -1549,7 +1575,7 @@ impl TranscriptView {
                         .min_w_0()
                         .truncate()
                         .text_left()
-                        .child(self.marked_plain(id, Place::Text, line.clone(), cx)),
+                        .child(marked_line),
                 )
                 .children(trailing)
                 .into_any_element(),
@@ -1649,7 +1675,14 @@ impl TranscriptView {
                 .bg(theme.muted)
                 .code_font(theme)
                 .text_size(theme.mono_font_size)
-                .child(self.marked((key, id), id, place, text, cx))
+                .child(self.marked(
+                    (key, id),
+                    id,
+                    place,
+                    text,
+                    Ink::on(theme.foreground, theme.muted),
+                    cx,
+                ))
         };
         let caption = |text: String| {
             div()
@@ -1952,11 +1985,11 @@ impl TranscriptView {
             });
         let muted = theme.muted_foreground;
         let record = questions.iter().enumerate().filter_map(|(n, question)| {
-            let outcome = crate::questions::outcome(&question.state)?;
+            if question.state.is_open() {
+                return None;
+            }
             // The user's own answer is in the bubble under the card.
-            let outcome = crate::questions::answer(&question.state)
-                .is_none()
-                .then_some(outcome);
+            let outcome = crate::questions::record_outcome(&question.state);
             Some(
                 h_flex()
                     .id(("question", id * 8 + n as u64))
@@ -1985,8 +2018,9 @@ impl TranscriptView {
                                     .child(self.marked(
                                         ("question-words", id * 8 + n as u64),
                                         id,
-                                        Place::Question(n),
+                                        Place::Question(n, QuestionPart::Words),
                                         crate::questions::text(question),
+                                        Ink::new(theme.foreground),
                                         cx,
                                     )),
                             )
@@ -1996,7 +2030,14 @@ impl TranscriptView {
                                     .test_support()
                                     .text_sm()
                                     .text_color(muted)
-                                    .child(outcome)
+                                    .child(self.marked(
+                                        ("question-outcome-words", id * 8 + n as u64),
+                                        id,
+                                        Place::Question(n, QuestionPart::Outcome),
+                                        outcome,
+                                        Ink::new(muted),
+                                        cx,
+                                    ))
                             })),
                     ),
             )
@@ -2039,6 +2080,7 @@ impl TranscriptView {
                                     id,
                                     Place::Answer(n),
                                     answer.to_string(),
+                                    Ink::on(theme.foreground, bubble_color(theme)),
                                     cx,
                                 )),
                         )
@@ -2082,11 +2124,12 @@ impl TranscriptView {
         // The Messages view hides turns' footers: the notice that says why
         // the turn ended without a reply offers Regenerate instead.
         let regenerate = self.end_line_regenerate(RowKey::Notice(id), view, cx);
-        let (icon, color, text_color) = match item.level {
-            Some(Level::Error) => (Lucide::CircleX, theme.danger, theme.foreground),
-            Some(Level::Warn) => (Lucide::TriangleAlert, theme.warning, theme.warning),
-            _ => (Lucide::Info, theme.muted_foreground, theme.muted_foreground),
+        let (color, text_color) = match item.level {
+            Some(Level::Error) => (theme.danger, theme.foreground),
+            Some(Level::Warn) => (theme.warning, theme.warning),
+            _ => (theme.muted_foreground, theme.muted_foreground),
         };
+        let icon = notice_icon(item);
         h_flex()
             .relative()
             .w_full()
@@ -2121,6 +2164,7 @@ impl TranscriptView {
                         id,
                         Place::Text,
                         item.text.clone(),
+                        Ink::new(text_color),
                         cx,
                     )),
             )
@@ -2147,7 +2191,14 @@ impl TranscriptView {
             .border_color(border)
             .code_font(theme)
             .text_size(theme.mono_font_size)
-            .child(self.marked(("output-text", id), id, Place::Text, item.text.clone(), cx))
+            .child(self.marked(
+                ("output-text", id),
+                id,
+                Place::Text,
+                item.text.clone(),
+                Ink::new(theme.foreground),
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -2169,7 +2220,13 @@ impl TranscriptView {
                     .test_support()
                     .truncate()
                     .when(regenerate.is_some(), |this| this.pr(rems(REGENERATE_ROOM)))
-                    .child(self.marked_plain(id, Place::Text, item.text.clone(), cx)),
+                    .child(self.marked_plain(
+                        id,
+                        Place::Text,
+                        item.text.clone(),
+                        Ink::new(theme.muted_foreground),
+                        cx,
+                    )),
             )
             // Over the line, centred on it, so the line keeps its height.
             .when_some(regenerate, |this, regenerate| {
@@ -2292,6 +2349,7 @@ impl TranscriptView {
         };
         let open: SharedString = worker_id.clone().into();
         let view = view.downgrade();
+        let title = self.marked_plain(id, Place::Text, title, Ink::new(theme.foreground), cx);
         let card = Button::new(("worker-card", id))
             .outline()
             .small()
@@ -2310,14 +2368,7 @@ impl TranscriptView {
                             .text_size(theme.mono_font_size)
                             .child(worker_id),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_left()
-                            .child(self.marked_plain(id, Place::Text, title, cx)),
-                    )
+                    .child(div().flex_1().min_w_0().truncate().text_left().child(title))
                     // The title gives way first, and then the setup.
                     .children(setup.map(|setup| {
                         div()
@@ -2490,6 +2541,18 @@ impl Render for OutputViewer {
                         .value(self.copy_value()),
                 ),
             )
+    }
+}
+
+/// A notice's icon, by its level. The line that opens a turn Arko started
+/// for news (a worker's report, a job that finished, a monitor's alert)
+/// has an inbox, so it stands apart from notices about how a turn goes.
+fn notice_icon(item: &Item) -> Lucide {
+    match item.level {
+        Some(Level::Error) => Lucide::CircleX,
+        Some(Level::Warn) => Lucide::TriangleAlert,
+        _ if item.opens_turn => Lucide::Inbox,
+        _ => Lucide::Info,
     }
 }
 
@@ -2788,12 +2851,36 @@ mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::{
-        CACHE_REFRESHED, OutputViewer, REGENERATE_HINT, apply_diff_patch, code_lines, duration,
-        edit_diff, longest_code, preview, user_tags,
+        CACHE_REFRESHED, Lucide, OutputViewer, REGENERATE_HINT, apply_diff_patch, code_lines,
+        duration, edit_diff, longest_code, notice_icon, preview, user_tags,
     };
-    use arko::remote::{Delivery, Item, Kind, Source};
+    use arko::remote::{Delivery, Item, Kind, Level, Source};
     use gpui_kit::AppContext as _;
     use std::sync::Arc;
+
+    /// The line that opens a turn Arko started has an inbox, and other
+    /// notices their level's icon.
+    #[test]
+    fn a_turns_opening_line_has_an_icon_of_its_own() {
+        let notice = |text: &str, level: Level| Item::new(Kind::Notice, text).level(level);
+        let icon = |item: &Item| notice_icon(item).path();
+        assert_eq!(
+            icon(&notice("r1 reported", Level::Info).opens_turn()),
+            Lucide::Inbox.path()
+        );
+        assert_eq!(
+            icon(&notice("Resumed the session.", Level::Info)),
+            Lucide::Info.path()
+        );
+        assert_eq!(
+            icon(&notice("rate limited", Level::Warn)),
+            Lucide::TriangleAlert.path()
+        );
+        assert_eq!(
+            icon(&notice("The request failed.", Level::Error)),
+            Lucide::CircleX.path()
+        );
+    }
 
     #[gpui_kit::test]
     fn the_output_dialogs_copy_shares_the_output(cx: &mut gpui_kit::TestAppContext) {

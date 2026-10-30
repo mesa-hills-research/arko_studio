@@ -91,6 +91,13 @@ pub fn answer(state: &QuestionState) -> Option<&str> {
     }
 }
 
+/// What the record under a card says became of a settled question, under
+/// its words: its outcome, unless it is the user's answer, which the bubble
+/// under the card shows. `None` while it is open.
+pub fn record_outcome(state: &QuestionState) -> Option<String> {
+    answer(state).is_none().then(|| outcome(state)).flatten()
+}
+
 /// A question's words without its number.
 pub fn text(question: &AgentQuestion) -> String {
     question.question.trim().to_string()
@@ -128,6 +135,9 @@ struct Draft {
     you_decide: bool,
     /// "Other", or the answer of a question without choices.
     other: Entity<InputState>,
+    /// The row of its chips, which holds the keyboard when one of them has
+    /// it.
+    chips: FocusHandle,
     _other: Subscription,
 }
 
@@ -202,6 +212,7 @@ impl AnswerPanel {
                     choices: Vec::new(),
                     you_decide: false,
                     other,
+                    chips: cx.focus_handle(),
                     _other: subscription,
                 },
             );
@@ -309,13 +320,13 @@ impl AnswerPanel {
     /// as a click on the panel's empty space does. A key that pressed it
     /// leaves the keyboard on it.
     fn leave_field(&self, click: &ClickEvent, window: &mut Window, cx: &mut App) {
-        if !click.is_keyboard() && self.focused_question(window, cx).is_some() {
+        if !click.is_keyboard() && self.typed_in(window, cx).is_some() {
             window.focus(&self.focus, cx);
         }
     }
 
     /// The question whose field has the keyboard, by its id.
-    pub fn focused_question(&self, window: &Window, cx: &App) -> Option<String> {
+    fn typed_in(&self, window: &Window, cx: &App) -> Option<String> {
         use gpui_kit::Focusable as _;
         self.drafts
             .iter()
@@ -327,6 +338,17 @@ impl AnswerPanel {
                     .contains_focused(window, cx)
             })
             .map(|(id, _)| id.clone())
+    }
+
+    /// The question that has the keyboard, in its field or on one of its
+    /// chips, by its id.
+    pub fn focused_question(&self, window: &Window, cx: &App) -> Option<String> {
+        self.typed_in(window, cx).or_else(|| {
+            self.drafts
+                .iter()
+                .find(|(_, draft)| draft.chips.contains_focused(window, cx))
+                .map(|(id, _)| id.clone())
+        })
     }
 
     /// Picks `choice` of the question `id`, or lets go of it: one choice,
@@ -420,13 +442,7 @@ impl AnswerPanel {
                     this.toggle_you_decide(&id, cx)
                 }))
         };
-        // Another ask's questions start below a line. One whose card isn't
-        // there yet (item 0) stands on its own.
-        let new_batch = index > 0
-            && self
-                .questions
-                .get(index - 1)
-                .is_some_and(|before| before.item != question.item || question.item == 0);
+        let new_batch = starts_ask(&self.questions, index);
         let words = text(question);
         // A question that takes several of its choices says so after its
         // words.
@@ -492,6 +508,21 @@ impl AnswerPanel {
                 )
                 .child(
                     h_flex()
+                        // Its chips are inside it for the keyboard, so the
+                        // panel knows whose chip has it.
+                        .track_focus(&draft.chips)
+                        // A click between the chips takes the keyboard to
+                        // the panel, as one on its empty space does. A chip
+                        // leaves it where it is.
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                if !window.default_prevented() {
+                                    window.focus(&this.focus, cx);
+                                    window.prevent_default();
+                                }
+                            }),
+                        )
                         .flex_wrap()
                         .gap_1()
                         .children(chips)
@@ -612,6 +643,21 @@ impl Render for AnswerPanel {
     }
 }
 
+/// Whether the question `index` of the panel's `questions` starts below a
+/// line: another ask's questions do, and one whose card isn't there yet
+/// (item 0) stands on its own.
+fn starts_ask(questions: &[AgentQuestion], index: usize) -> bool {
+    let (Some(before), Some(question)) = (
+        index
+            .checked_sub(1)
+            .and_then(|before| questions.get(before)),
+        questions.get(index),
+    ) else {
+        return false;
+    };
+    before.item != question.item || question.item == 0
+}
+
 /// A question as the status gives it (tests).
 #[cfg(test)]
 pub(crate) fn question(id: &str, text: &str) -> AgentQuestion {
@@ -655,7 +701,7 @@ pub(crate) fn answer_in_message(feed: &arko::remote::Feed, id: &str, text: &str)
 
 #[cfg(test)]
 mod tests {
-    use super::{asked, asks_text, card_label, open_text, outcome, replying_text};
+    use super::{asked, asks_text, card_label, open_text, outcome, replying_text, starts_ask};
     use arko::questions::QuestionState;
 
     #[test]
@@ -700,6 +746,32 @@ mod tests {
             outcome(&QuestionState::Dismissed).as_deref(),
             Some("Dismissed")
         );
+    }
+
+    /// Each ask's questions start below a line in the panel. A question
+    /// whose card isn't there yet (item 0) stands on its own, also beside
+    /// another such question, since nothing says they were asked together.
+    #[test]
+    fn questions_before_their_card_stand_on_their_own() {
+        let question = |id: &str, item: u64| {
+            asked(serde_json::json!({
+                "id": id, "question": "?", "state": "open", "item": item
+            }))
+        };
+        let questions = [
+            question("q1", 7),
+            question("q2", 7),
+            question("q3", 0),
+            question("q4", 0),
+            question("q5", 9),
+            question("q6", 9),
+        ];
+        let lines: Vec<bool> = (0..questions.len())
+            .map(|index| starts_ask(&questions, index))
+            .collect();
+        assert_eq!(lines, [false, false, true, true, true, false]);
+        // The first question has no line, whatever its item.
+        assert!(!starts_ask(&questions[2..], 0));
     }
 
     /// A screen reader hears a card's line, then each settled question

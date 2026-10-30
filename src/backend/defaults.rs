@@ -4,7 +4,7 @@
 //! the web page).
 
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::prefs::{self, Prefs};
 
@@ -200,6 +200,68 @@ impl SessionDefaults {
                 options.worker_project_instructions = Some(self.worker_project_instructions);
             }
             Mode::Chat => options.chat_instructions = self.chat_instructions.clone(),
+        }
+    }
+}
+
+/// The variable that says whether new sessions' workers may run on models
+/// billed per token (`plans`, `ask` or `api`).
+pub const WORKER_BILLING_VARIABLE: &str = "ARKO_WORKER_BILLING";
+
+/// The variable that sets new sessions' daily API budget (dollars, or
+/// `off`).
+pub const API_BUDGET_VARIABLE: &str = "ARKO_API_BUDGET";
+
+/// What [`WORKER_BILLING_VARIABLE`] and [`API_BUDGET_VARIABLE`] give a new
+/// session whose preferences leave them to Arko, as Arko reads them: from
+/// the environment, else a `.env` file.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BillingFromEnv {
+    /// `None` where it isn't set, or isn't one of Arko's words.
+    pub worker_billing: Option<arko::WorkerBilling>,
+    /// The budget in dollars, `Some(None)` for off. `None` where it isn't
+    /// set, or isn't a budget Arko takes.
+    pub api_budget: Option<Option<f64>>,
+    /// What [`WORKER_BILLING_VARIABLE`] holds when Arko doesn't take it.
+    /// Arko then refuses to start a session that leaves worker billing to
+    /// it.
+    pub bad_worker_billing: Option<String>,
+    /// What [`API_BUDGET_VARIABLE`] holds when Arko doesn't take it, which
+    /// stops sessions in the same way.
+    pub bad_api_budget: Option<String>,
+}
+
+impl BillingFromEnv {
+    /// As Arko finds them now, with Arko's folder `root`.
+    pub fn read(root: &Path) -> Self {
+        let env = arko::Env::for_folder_in(None, true, Some(root));
+        let billing = env.var(WORKER_BILLING_VARIABLE);
+        let worker_billing = billing.as_deref().and_then(arko::WorkerBilling::parse);
+        let budget = env.var(API_BUDGET_VARIABLE);
+        let api_budget = budget
+            .as_deref()
+            .and_then(|value| arko::workers::parse_budget(value).ok());
+        Self {
+            bad_worker_billing: billing.filter(|_| worker_billing.is_none()),
+            bad_api_budget: budget.filter(|_| api_budget.is_none()),
+            worker_billing,
+            api_budget,
+        }
+    }
+
+    /// New sessions' worker billing with the preference `chosen`, as Arko
+    /// resolves it: the preference, else the variable, else Arko's default.
+    pub fn worker_billing(&self, chosen: Option<arko::WorkerBilling>) -> arko::WorkerBilling {
+        chosen.or(self.worker_billing).unwrap_or_default()
+    }
+
+    /// New sessions' daily API budget in dollars with the preference
+    /// `chosen` (on, at Arko's default amount, or off), as Arko resolves it:
+    /// the preference, else the variable, else none.
+    pub fn api_budget(&self, chosen: Option<bool>) -> Option<f64> {
+        match chosen {
+            Some(on) => on.then_some(arko::workers::DEFAULT_BUDGET),
+            None => self.api_budget.flatten(),
         }
     }
 }
@@ -404,6 +466,76 @@ mod tests {
         let mut options = new_options();
         SessionDefaults::from_prefs(&prefs).apply(&mut options, Some(Mode::Agent));
         assert_eq!(options.api_budget, Some(None));
+    }
+
+    /// Left to Arko, worker billing and the budget are what the variables
+    /// say, else Arko's defaults. A preference wins over them, and the
+    /// budget it turns on is Arko's default amount.
+    #[test]
+    fn billing_left_to_arko_follows_the_variables() {
+        use arko::WorkerBilling;
+        let unset = BillingFromEnv::default();
+        assert_eq!(unset.worker_billing(None), WorkerBilling::Ask);
+        assert_eq!(unset.api_budget(None), None);
+        let set = BillingFromEnv {
+            worker_billing: Some(WorkerBilling::Plans),
+            api_budget: Some(Some(20.0)),
+            ..BillingFromEnv::default()
+        };
+        assert_eq!(set.worker_billing(None), WorkerBilling::Plans);
+        assert_eq!(set.api_budget(None), Some(20.0));
+        assert_eq!(
+            set.worker_billing(Some(WorkerBilling::Api)),
+            WorkerBilling::Api
+        );
+        assert_eq!(set.api_budget(Some(false)), None);
+        assert_eq!(
+            unset.api_budget(Some(true)),
+            Some(arko::workers::DEFAULT_BUDGET)
+        );
+        let off = BillingFromEnv {
+            api_budget: Some(None),
+            ..BillingFromEnv::default()
+        };
+        assert_eq!(off.api_budget(None), None);
+    }
+
+    /// The variables are read as Arko reads them, from Arko's folder's
+    /// `.env` among other places. A value Arko doesn't take counts as unset,
+    /// and is kept to say so.
+    #[test]
+    fn the_billing_variables_are_read_from_arkos_env_file() {
+        // The test's own environment may set them; then there's nothing
+        // to learn from the file.
+        if std::env::var_os(WORKER_BILLING_VARIABLE).is_some()
+            || std::env::var_os(API_BUDGET_VARIABLE).is_some()
+        {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join(".env"),
+            "ARKO_WORKER_BILLING=plans\nARKO_API_BUDGET=25\n",
+        )
+        .unwrap();
+        let read = BillingFromEnv::read(root.path());
+        assert_eq!(read.worker_billing, Some(arko::WorkerBilling::Plans));
+        assert_eq!(read.api_budget, Some(Some(25.0)));
+        std::fs::write(
+            root.path().join(".env"),
+            "ARKO_WORKER_BILLING=sometimes\nARKO_API_BUDGET=off\n",
+        )
+        .unwrap();
+        let read = BillingFromEnv::read(root.path());
+        assert_eq!(read.worker_billing, None);
+        assert_eq!(read.bad_worker_billing.as_deref(), Some("sometimes"));
+        assert_eq!(read.api_budget, Some(None));
+        assert_eq!(read.bad_api_budget, None);
+        std::fs::write(root.path().join(".env"), "ARKO_API_BUDGET=lots\n").unwrap();
+        let read = BillingFromEnv::read(root.path());
+        assert_eq!(read.api_budget, None);
+        assert_eq!(read.bad_api_budget.as_deref(), Some("lots"));
+        assert_eq!(read.bad_worker_billing, None);
     }
 
     /// The model chosen in the composer wins over the default.

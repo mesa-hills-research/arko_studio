@@ -795,6 +795,7 @@ fn profile_models() -> arko_studio::backend::ModelChoices {
             .map(|(name, alias)| ModelChoice {
                 name: (*name).into(),
                 alias: (*alias).into(),
+                billing: None,
             })
             .collect(),
     };
@@ -2313,6 +2314,7 @@ fn workers_window(mode: ThemeMode) -> Screenshot {
         images: None,
         movable: Vec::new(),
         usual: arko_studio::workers::Usual::default(),
+        billed_per_token: Default::default(),
         key: None,
     };
     let window = app
@@ -2396,6 +2398,7 @@ fn workers_narrowed_window(mode: ThemeMode) -> Screenshot {
         images: None,
         movable: Vec::new(),
         usual: arko_studio::workers::Usual::default(),
+        billed_per_token: Default::default(),
         key: None,
     };
     let window = app
@@ -2566,6 +2569,17 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
         handover_at: None,
         compacts: false,
     };
+    // The session reaches OpenAI by the ChatGPT login, so only the workers
+    // on the Anthropic API are billed per token.
+    let session = arko::remote::Models {
+        openai_auth: Some("ChatGPT login".into()),
+        ..Default::default()
+    };
+    let billed_per_token = all
+        .iter()
+        .filter(|worker| arko_studio::workers::billed_per_token(worker, &session))
+        .map(|worker| worker.id.clone())
+        .collect();
     PanelSource {
         workers: all,
         agents: vec![
@@ -2577,6 +2591,7 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
         images: None,
         movable: Vec::new(),
         usual: arko_studio::workers::Usual::default(),
+        billed_per_token,
         key: None,
     }
 }
@@ -3986,9 +4001,12 @@ fn model_popover(mode: ThemeMode) -> Screenshot {
     let mut settings = Prefs::default();
     settings.appearance.theme_mode = mode;
     settings.appearance.motion = Motion::Off;
-    let choice = |name: &str, alias: &str| ModelChoice {
+    // Billed at prices of the test's own, so a change to Arko's leaves the
+    // golden as it is.
+    let choice = |name: &str, alias: &str, billing: &str| ModelChoice {
         name: name.into(),
         alias: alias.into(),
+        billing: Some(billing.into()),
     };
     let backend = FakeBackend::sample("/arko", SystemTime::now()).with_models(ModelChoices {
         groups: vec![
@@ -3996,16 +4014,16 @@ fn model_popover(mode: ThemeMode) -> Screenshot {
                 name: "Anthropic API, billed per token".into(),
                 needs: None,
                 models: vec![
-                    choice("claude-opus-5-5", "opus"),
-                    choice("claude-sonnet-5-5", "sonnet"),
+                    choice("claude-opus-5-5", "opus", "API, $4/$20"),
+                    choice("claude-sonnet-5-5", "sonnet", "API, $2/$10"),
                 ],
             },
             ModelGroup {
                 name: "OpenRouter, billed per token".into(),
                 needs: None,
                 models: vec![
-                    choice("openrouter:moonshotai/kimi-k3", ""),
-                    choice("openrouter:z-ai/glm-5", ""),
+                    choice("openrouter:moonshotai/kimi-k3", "", "API"),
+                    choice("openrouter:z-ai/glm-5", "", "API"),
                 ],
             },
         ],

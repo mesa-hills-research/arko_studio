@@ -310,14 +310,12 @@ fn sections(
         };
         let way = way(&group.name);
         let spoken = |label: &str, billing: Option<&String>| {
-            let label = match billing {
-                Some(billing) => format!("{label}, {way}, {billing}"),
-                None => format!("{label}, {way}"),
-            };
-            match group.needs {
-                Some(_) => format!("{label}, can’t be used yet"),
-                None => label,
-            }
+            spoken_row(
+                label,
+                &group.name,
+                billing.map(String::as_str),
+                group.needs.is_none(),
+            )
         };
         let billing = |name: &str| models.and_then(|models| models.billing(name));
         let mut rows: Vec<Row> = group
@@ -373,6 +371,36 @@ fn sections(
 /// API" for "Anthropic API, billed per token".
 fn way(group: &str) -> &str {
     group.split(',').next().unwrap_or(group).trim()
+}
+
+/// What a screen reader hears for the row of the model `label` in the
+/// group `group` of a list of models, billed as `billing` says: "Opus 5.5,
+/// Anthropic API, $4/$20", and "can’t be used yet" after it when the group
+/// isn't `usable`.
+pub(crate) fn spoken_row(label: &str, group: &str, billing: Option<&str>, usable: bool) -> String {
+    let way = way(group);
+    let label = match billing.and_then(|billing| spoken_billing(way, billing)) {
+        Some(billing) => format!("{label}, {way}, {billing}"),
+        None => format!("{label}, {way}"),
+    };
+    if usable {
+        label
+    } else {
+        format!("{label}, can’t be used yet")
+    }
+}
+
+/// What a screen reader hears of a row's `billing` after its `way`: Arko's
+/// label, less the "API" the way already says ("Anthropic API, $4/$20", not
+/// "Anthropic API, API, $4/$20"). `None` when nothing is left.
+fn spoken_billing<'a>(way: &str, billing: &'a str) -> Option<&'a str> {
+    if !way.ends_with("API") {
+        return Some(billing);
+    }
+    let rest = billing
+        .strip_prefix("API")
+        .map_or(billing, |rest| rest.trim_start_matches(',').trim_start());
+    (!rest.is_empty()).then_some(rest)
 }
 
 /// The model `name` as the button names it: "Opus 5.5 · Anthropic API",
@@ -595,7 +623,7 @@ impl ListDelegate for ModelList {
 
 #[cfg(test)]
 mod tests {
-    use super::{Row, label_of, sections};
+    use super::{Row, label_of, sections, spoken_billing, spoken_row};
     use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
 
     pub(crate) fn models() -> ModelChoices {
@@ -607,6 +635,7 @@ mod tests {
                 .map(|(name, alias)| ModelChoice {
                     name: (*name).into(),
                     alias: (*alias).into(),
+                    billing: None,
                 })
                 .collect(),
         };
@@ -650,6 +679,44 @@ mod tests {
             "Glm 5 · OpenRouter"
         );
         assert_eq!(label_of("gpt-9", Some(&models), &known), "gpt-9");
+    }
+
+    /// A screen reader hears the billing without the "API" the way already
+    /// says, and nothing more when that was all of it.
+    #[test]
+    fn the_spoken_billing_says_api_once() {
+        assert_eq!(
+            spoken_billing("Anthropic API", "API, $4/$20"),
+            Some("$4/$20")
+        );
+        assert_eq!(spoken_billing("Anthropic API", "API"), None);
+        assert_eq!(spoken_billing("OpenRouter", "API"), Some("API"));
+        assert_eq!(spoken_billing("OpenAI", "API, $2/$8"), Some("API, $2/$8"));
+    }
+
+    /// A row is heard with its name, its way and its billing, the same in
+    /// the message box's list and in Settings, and as unusable while its
+    /// group needs something.
+    #[test]
+    fn a_row_is_heard_with_its_way_and_billing() {
+        let anthropic = "Anthropic API, billed per token";
+        assert_eq!(
+            spoken_row("Opus 5.5", anthropic, Some("API, $4/$20"), true),
+            "Opus 5.5, Anthropic API, $4/$20"
+        );
+        assert_eq!(
+            spoken_row("Opus 5.5", "Claude Code, on your Claude plan", None, true),
+            "Opus 5.5, Claude Code"
+        );
+        assert_eq!(
+            spoken_row(
+                "Kimi K3",
+                "OpenRouter, billed per token",
+                Some("API"),
+                false
+            ),
+            "Kimi K3, OpenRouter, API, can’t be used yet"
+        );
     }
 
     /// A model from OpenRouter's catalog joins the OpenRouter group, before

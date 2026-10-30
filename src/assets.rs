@@ -8,9 +8,9 @@ use gpui_kit::{AssetSource, Result, SharedString};
 // The composer's and the dialogs' (Plug and MessageCircleQuestionMark come
 // with the transcript's).
 gpui_kit::assets::icon_assets!(pub ExtraIcons, [Paperclip, Maximize2, Minimize2, MessageSquare, KeyRound]);
-// The transcript's: tool icons, the question label, and Edit, Branch and
-// Regenerate.
-gpui_kit::assets::icon_assets!(pub TranscriptIcons, [FilePen, FolderTree, Plug, Wrench, Activity, MessageCircleQuestionMark, SquarePen, GitBranch, RotateCcw]);
+// The transcript's: tool icons, the question label, Edit, Branch and
+// Regenerate, and the line that opens a turn Arko started.
+gpui_kit::assets::icon_assets!(pub TranscriptIcons, [FilePen, FolderTree, Plug, Wrench, Activity, MessageCircleQuestionMark, SquarePen, GitBranch, RotateCcw, Inbox]);
 // The status bar's cache timer.
 gpui_kit::assets::icon_assets!(pub StatusIcons, [Timer]);
 // The worker profiles page and its editor, and the sidebar's mark of a
@@ -67,6 +67,8 @@ mod tests {
             IconName::RotateCcw,
             // A monitor's calls.
             IconName::Activity,
+            // The line that opens a turn Arko started.
+            IconName::Inbox,
             // The worker profiles page.
             IconName::UserCog,
             IconName::Trash,

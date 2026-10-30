@@ -1024,7 +1024,8 @@ impl SessionView {
             .into_iter()
             .cloned()
             .collect();
-        // The question being typed in, if it is no longer open.
+        // The question with the keyboard (its field or a chip), if it is no
+        // longer open.
         let left = self
             .answer_panel()
             .and_then(|panel| panel.read(cx).focused_question(window, cx))
@@ -2794,15 +2795,17 @@ impl SessionView {
                                 .map(|known| known.details())
                                 .filter(|details| !details.is_empty());
                             // How a model billed per token is billed, at the
-                            // row's end, as the terminal's picker shows it.
-                            // OpenRouter's own details say it for its models.
-                            let billing = details
-                                .is_none()
-                                .then(|| match &session_models {
-                                    Some(models) => arko::models::billing(models, &model.name),
-                                    None => choices.billing(&model.name),
-                                })
-                                .flatten();
+                            // row's end, as the terminal's picker and the
+                            // Settings lists show it.
+                            let billing = choices.billing(&model.name);
+                            // What a screen reader hears: as in the Settings
+                            // lists, then what its tooltip says.
+                            let spoken = crate::model_select::spoken_row(
+                                &label,
+                                &group.name,
+                                billing.as_deref(),
+                                usable,
+                            );
                             // What to know before choosing it, in the row's
                             // tooltip, marked by an (i) after its name.
                             let note = arko::models::note(&model.name);
@@ -2816,33 +2819,29 @@ impl SessionView {
                                 .justify_start()
                                 .disabled(!usable || locked)
                                 .when(checked, |this| this.icon(IconName::Check))
+                                .accessibility_label(match (note, &details) {
+                                    (Some(note), _) => format!("{spoken}. {note}"),
+                                    (None, Some(details)) => format!("{spoken}. {details}"),
+                                    (None, None) => spoken,
+                                })
                                 .when_some(note, |this, note| {
-                                    this.tooltip(note)
-                                        .accessibility_label(format!("{label}. {note}"))
-                                        .child(
-                                            div()
-                                                .id(SharedString::from(format!(
-                                                    "model-note-{group_ix}-{ix}"
-                                                )))
-                                                .test_support()
-                                                .flex()
-                                                .child(
-                                                    Icon::new(IconName::Info)
-                                                        .xsmall()
-                                                        .text_color(theme.muted_foreground),
-                                                ),
-                                        )
+                                    this.tooltip(note).child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "model-note-{group_ix}-{ix}"
+                                            )))
+                                            .test_support()
+                                            .flex()
+                                            .child(
+                                                Icon::new(IconName::Info)
+                                                    .xsmall()
+                                                    .text_color(theme.muted_foreground),
+                                            ),
+                                    )
                                 })
-                                .when_some(details, |this, details| {
-                                    this.tooltip(details.clone())
-                                        .accessibility_label(format!("{label}. {details}"))
-                                })
+                                .when_some(details, |this, details| this.tooltip(details))
                                 .when_some(billing, |this, billing| {
-                                    let spoken = match note {
-                                        Some(note) => format!("{label}. {billing}. {note}"),
-                                        None => format!("{label}. {billing}"),
-                                    };
-                                    this.accessibility_label(spoken).child(
+                                    this.child(
                                         div()
                                             .id(SharedString::from(format!(
                                                 "model-billing-{group_ix}-{ix}"
@@ -2874,6 +2873,14 @@ impl SessionView {
                         .children(found.into_iter().enumerate().map(|(ix, model)| {
                             let checked = current.as_deref() == Some(model.name.as_str());
                             let details = model.details();
+                            // Billed and heard as the group's own rows are.
+                            let billing = choices.billing(&model.name);
+                            let spoken = crate::model_select::spoken_row(
+                                &model.label,
+                                &group.name,
+                                billing.as_deref(),
+                                usable,
+                            );
                             let (view, popover) = (view.clone(), popover.clone());
                             Button::new(SharedString::from(format!("model-found-{ix}")))
                                 .ghost()
@@ -2882,9 +2889,21 @@ impl SessionView {
                                 .justify_start()
                                 .disabled(!usable || locked)
                                 .when(checked, |this| this.icon(IconName::Check))
-                                .when(!details.is_empty(), |this| {
-                                    this.tooltip(details.clone())
-                                        .accessibility_label(format!("{}. {details}", model.label))
+                                .accessibility_label(if details.is_empty() {
+                                    spoken
+                                } else {
+                                    format!("{spoken}. {details}")
+                                })
+                                .when(!details.is_empty(), |this| this.tooltip(details.clone()))
+                                .when_some(billing, |this, billing| {
+                                    this.child(
+                                        div()
+                                            .flex_none()
+                                            .pl_1()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(billing),
+                                    )
                                 })
                                 .label(model.label.clone())
                                 .on_click(move |_, window, cx| {

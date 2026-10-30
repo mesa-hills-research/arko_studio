@@ -661,6 +661,25 @@ fn the_question_typed_in_leaving_closes_the_panel(cx: &mut TestAppContext) {
     assert!(app.sent(cx).is_empty());
 }
 
+/// The same goes for a chip the keyboard is on: its question answered
+/// elsewhere closes the panel, which says so, and the keyboard goes back
+/// to the message box.
+#[gpui_kit::test]
+fn the_question_of_a_focused_chip_leaving_closes_the_panel(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, three());
+    app.fill(cx, 0, "");
+    // "You decide" comes before the field.
+    act(cx, app.window, |window, cx| window.focus_prev(cx));
+    assert_eq!(app.focused_question(cx).as_deref(), Some("q1"));
+    // q1 answered on the web page.
+    app.ask(cx, three().into_iter().skip(1).collect());
+    assert!(!app.shows(cx, "answer-panel"));
+    assert_eq!(app.notifications(cx), 1);
+    assert!(app.composer_focused(cx));
+    assert!(app.sent(cx).is_empty());
+}
+
 /// "Choose any" follows a question that takes several of its choices, and
 /// only such a question.
 #[gpui_kit::test]

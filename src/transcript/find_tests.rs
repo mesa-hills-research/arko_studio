@@ -631,6 +631,53 @@ fn found_text_stays_selectable(cx: &mut TestAppContext) {
     assert_eq!(copied, "A needle in the hay");
 }
 
+/// The matches on a warning take a shade of its color that reads on their
+/// highlight, the current one's and the others', and so do the matches of
+/// other lines in theirs.
+#[gpui_kit::test]
+fn matches_take_a_shade_of_their_lines_color_that_reads(cx: &mut TestAppContext) {
+    use gpui_kit::component::ActiveTheme as _;
+
+    let feed = Feed::new("main");
+    feed.user("Why is it retrying?", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.notice(
+        arko::remote::Level::Warn,
+        "rate limited, retrying in 4 s, then retrying again",
+    );
+    feed.turn_ended("2 s", None);
+    let (window, view) = open_feed(cx, &feed, View::Full, 600.);
+    assert_eq!(find(cx, window, &view, "retrying").total, 3);
+    let warning = entry(cx, &view, "rate limited");
+    let message = entry(cx, &view, "Why is it");
+    cx.update(|cx| {
+        let theme = cx.theme();
+        let amber = super::Ink::new(theme.warning);
+        let bubble = super::Ink::on(theme.foreground, super::super::row::bubble_color(theme));
+        let (all, current) = super::match_colors(cx);
+        let view = view.read(cx);
+        let colors = |entry: u64, ink| {
+            let text = view.model.entry(entry).unwrap().item.text.clone();
+            view.highlights(entry, Place::Text, &text, ink, cx)
+                .into_iter()
+                .map(|(_, style)| (style.background_color.unwrap(), style.color))
+                .collect::<Vec<_>>()
+        };
+        let shade = |ink, highlight| Some(super::readable_on(ink, highlight, cx));
+        // The latest match is the current one.
+        assert_eq!(
+            colors(warning, amber),
+            [(all, shade(amber, all)), (current, shade(amber, current))]
+        );
+        assert_ne!(
+            shade(amber, current),
+            Some(amber.text),
+            "amber doesn't read on it"
+        );
+        assert_eq!(colors(message, bubble), [(all, shade(bubble, all))]);
+    });
+}
+
 fn top(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> gpui_kit::ListOffset {
     cx.read(|cx| view.read(cx).list.top())
 }
