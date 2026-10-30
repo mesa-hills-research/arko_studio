@@ -30,8 +30,9 @@ fn find_highlights_use_the_themes_search_colors(cx: &mut TestAppContext) {
 /// The text of every match reads on its highlight in every bundled theme,
 /// the current match's and the others': plain and muted text, a warning's
 /// and a failure's, on the transcript (the window's background or the
-/// workers panel's), in the user's bubble and in a call's details. A color
-/// that reads there already stays as it is.
+/// sidebar's over it in the workers panel), in the user's bubble and in a
+/// call's details, whose fill may be translucent. A color that reads there
+/// already stays as it is.
 #[gpui_kit::test]
 fn matched_text_reads_in_every_bundled_theme(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -41,20 +42,26 @@ fn matched_text_reads_in_every_bundled_theme(cx: &mut TestAppContext) {
             Theme::update(cx, |theme| theme.apply_config(&Rc::new(config)));
             let theme = cx.theme().clone();
             let bubble = super::row::bubble_color(&theme);
+            let none = gpui_kit::transparent_black();
+            // Each text, and the fills under it, as the rows paint them.
             let inks = [
-                ("plain", Ink::new(theme.foreground)),
-                ("muted", Ink::new(theme.muted_foreground)),
-                ("warning", Ink::new(theme.warning)),
-                ("failure", Ink::new(theme.danger)),
-                ("bubble", Ink::on(theme.foreground, bubble)),
-                ("details", Ink::on(theme.foreground, theme.muted)),
+                ("plain", Ink::new(theme.foreground), none),
+                ("muted", Ink::new(theme.muted_foreground), none),
+                ("warning", Ink::new(theme.warning), none),
+                ("failure", Ink::new(theme.danger), none),
+                ("bubble", Ink::on(theme.foreground, bubble), bubble),
+                (
+                    "details",
+                    Ink::on(theme.foreground, theme.muted),
+                    theme.muted,
+                ),
             ];
             let (all, current) = super::find::match_colors(cx);
-            for (what, ink) in inks {
-                let surfaces = match ink.surface {
-                    Some(surface) => vec![surface],
-                    None => vec![theme.background, theme.sidebar],
-                };
+            for (what, ink, fill) in inks {
+                // Painted over the window's background, or over the sidebar
+                // painted over it.
+                let surfaces = [theme.background, theme.background.blend(theme.sidebar)]
+                    .map(|transcript| transcript.blend(fill));
                 for highlight in [all, current] {
                     let contrast = |text: Hsla| {
                         surfaces

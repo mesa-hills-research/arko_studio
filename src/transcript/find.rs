@@ -1363,15 +1363,14 @@ pub(super) fn match_colors(cx: &App) -> (Hsla, Hsla) {
 /// The contrast matched text needs on its highlight, WCAG's for body text.
 pub(super) const MATCH_CONTRAST: f32 = 4.5;
 
-/// The colors a plain text of a row is drawn in: its own, and what it's
-/// drawn on.
+/// The colors a plain text of a row is drawn in: its own, and what's
+/// under it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Ink {
     pub text: Hsla,
-    /// A surface of its own, such as a bubble's. `None` for the
-    /// transcript's, which is the window's background in a session and the
-    /// sidebar's in the workers panel.
-    pub surface: Option<Hsla>,
+    /// What the row paints under the text, over the transcript: nothing,
+    /// or a box's fill, which may be translucent.
+    pub fill: Hsla,
 }
 
 impl Ink {
@@ -1379,25 +1378,22 @@ impl Ink {
     pub fn new(text: Hsla) -> Self {
         Self {
             text,
-            surface: None,
+            fill: transparent_black(),
         }
     }
 
-    /// `text` on `surface`, such as a bubble or a call's details.
-    pub fn on(text: Hsla, surface: Hsla) -> Self {
-        Self {
-            text,
-            surface: Some(surface),
-        }
+    /// `text` on `fill`, such as a bubble or a call's details.
+    pub fn on(text: Hsla, fill: Hsla) -> Self {
+        Self { text, fill }
     }
 
-    /// What it may be drawn on.
-    fn surfaces(&self, cx: &App) -> Vec<Hsla> {
+    /// What it may be drawn on, opaque: its fill over the transcript, which
+    /// is the window's background in a session and the sidebar's over it in
+    /// the workers panel.
+    pub(super) fn surfaces(&self, cx: &App) -> [Hsla; 2] {
         let theme = cx.theme();
-        match self.surface {
-            Some(surface) => vec![surface],
-            None => vec![theme.background, theme.sidebar],
-        }
+        [theme.background, theme.background.blend(theme.sidebar)]
+            .map(|transcript| transcript.blend(self.fill))
     }
 }
 
@@ -1408,11 +1404,7 @@ impl Ink {
 /// on both highlights in light ones.
 pub(super) fn readable_on(ink: Ink, highlight: Hsla, cx: &App) -> Hsla {
     use crate::segmented::contrast_ratio;
-    let under: Vec<Hsla> = ink
-        .surfaces(cx)
-        .into_iter()
-        .map(|surface| surface.blend(highlight))
-        .collect();
+    let under = ink.surfaces(cx).map(|surface| surface.blend(highlight));
     // The least it reads at on any surface it may be drawn on.
     let contrast = |color: Hsla| {
         under
