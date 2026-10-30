@@ -2116,11 +2116,12 @@ impl TranscriptView {
                     .flex_1()
                     .min_w_0()
                     .when(regenerate.is_some(), |this| this.pr(rems(REGENERATE_ROOM)))
-                    .child(self.marked(
+                    .child(self.marked_in(
                         ("notice-text", id),
                         id,
                         Place::Text,
                         item.text.clone(),
+                        (item.level == Some(Level::Warn)).then_some(text_color),
                         cx,
                     )),
             )

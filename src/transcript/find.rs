@@ -1247,8 +1247,23 @@ impl TranscriptView {
         text: impl Into<SharedString>,
         cx: &App,
     ) -> AnyElement {
+        self.marked_in(id, entry, place, text, None, cx)
+    }
+
+    /// As [`marked`](Self::marked), for text drawn in `color` when it's
+    /// `Some` (a warning's): its matches take a shade of it that reads on
+    /// their highlight.
+    pub(super) fn marked_in(
+        &self,
+        id: impl Into<ElementId>,
+        entry: u64,
+        place: Place,
+        text: impl Into<SharedString>,
+        color: Option<Hsla>,
+        cx: &App,
+    ) -> AnyElement {
         let text = text.into();
-        let highlights = self.highlights(entry, place, &text, cx);
+        let highlights = self.highlights(entry, place, &text, color, cx);
         let selectable = self.selectable(id, entry, place, text);
         if highlights.is_empty() {
             return selectable.into_any_element();
@@ -1266,7 +1281,7 @@ impl TranscriptView {
         cx: &App,
     ) -> AnyElement {
         let text = text.into();
-        let highlights = self.highlights(entry, place, &text, cx);
+        let highlights = self.highlights(entry, place, &text, None, cx);
         if highlights.is_empty() {
             return text.into_any_element();
         }
@@ -1278,12 +1293,14 @@ impl TranscriptView {
     }
 
     /// The matches of `place` in `text`, painted with the current one
-    /// stronger.
+    /// stronger. Text drawn in `color` (a warning's) has its matches in a
+    /// shade of it that reads on their highlight.
     fn highlights(
         &self,
         entry: u64,
         place: Place,
         text: &str,
+        color: Option<Hsla>,
         cx: &App,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
         let ranges = self.match_ranges(entry, place);
@@ -1291,6 +1308,8 @@ impl TranscriptView {
             return Vec::new();
         }
         let (all, strong) = match_colors(cx);
+        let on = |highlight: Hsla| color.map(|color| readable_on(color, highlight, cx));
+        let (on_all, on_strong) = (on(all), on(strong));
         ranges
             .into_iter()
             .filter(|(range, _)| text.get(range.clone()).is_some())
@@ -1298,6 +1317,7 @@ impl TranscriptView {
                 (
                     range,
                     HighlightStyle {
+                        color: if current { on_strong } else { on_all },
                         background_color: Some(if current { strong } else { all }),
                         ..HighlightStyle::default()
                     },
@@ -1332,6 +1352,31 @@ impl TranscriptView {
 pub(super) fn match_colors(cx: &App) -> (Hsla, Hsla) {
     let theme = cx.theme();
     (theme.search_match, theme.search_match_active)
+}
+
+/// The contrast matched text needs on its highlight, WCAG's for body text.
+pub(super) const MATCH_CONTRAST: f32 = 4.5;
+
+/// `color`, the color of a line's text, for its matches on the highlight
+/// `highlight` over the transcript: as it is while it reads there at
+/// [`MATCH_CONTRAST`], else darkened (or, on a dark highlight, lightened)
+/// until it does. A warning's amber is too light on the highlight in light
+/// themes, and on the current match's in dark ones.
+pub(super) fn readable_on(color: Hsla, highlight: Hsla, cx: &App) -> Hsla {
+    use crate::segmented::contrast_ratio;
+    let background = cx.theme().background.blend(highlight);
+    let contrast = |color: Hsla| contrast_ratio(background.blend(color), background);
+    // Black or white, whichever stands out more, always reads.
+    let (black, white) = (gpui_kit::black(), gpui_kit::white());
+    let toward = if contrast(black) >= contrast(white) {
+        black
+    } else {
+        white
+    };
+    (0..=20)
+        .map(|step| color.blend(toward.opacity(step as f32 / 20.)))
+        .find(|shade| contrast(*shade) >= MATCH_CONTRAST)
+        .unwrap_or(toward)
 }
 
 #[path = "find_text.rs"]

@@ -631,6 +631,47 @@ fn found_text_stays_selectable(cx: &mut TestAppContext) {
     assert_eq!(copied, "A needle in the hay");
 }
 
+/// The matches on a warning take a shade of its color that reads on their
+/// highlight, the current one's and the others'. Matches elsewhere keep
+/// their line's color.
+#[gpui_kit::test]
+fn matches_on_a_warning_take_a_shade_that_reads(cx: &mut TestAppContext) {
+    use gpui_kit::component::ActiveTheme as _;
+
+    let feed = Feed::new("main");
+    feed.user("Why is it retrying?", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.notice(
+        arko::remote::Level::Warn,
+        "rate limited, retrying in 4 s, then retrying again",
+    );
+    feed.turn_ended("2 s", None);
+    let (window, view) = open_feed(cx, &feed, View::Full, 600.);
+    assert_eq!(find(cx, window, &view, "retrying").total, 3);
+    let warning = entry(cx, &view, "rate limited");
+    let message = entry(cx, &view, "Why is it");
+    cx.update(|cx| {
+        let amber = cx.theme().warning;
+        let (all, current) = super::match_colors(cx);
+        let view = view.read(cx);
+        let colors = |entry: u64, color| {
+            let text = view.model.entry(entry).unwrap().item.text.clone();
+            view.highlights(entry, Place::Text, &text, color, cx)
+                .into_iter()
+                .map(|(_, style)| (style.background_color.unwrap(), style.color))
+                .collect::<Vec<_>>()
+        };
+        // The latest match is the current one.
+        let shade = |highlight| Some(super::readable_on(amber, highlight, cx));
+        assert_eq!(
+            colors(warning, Some(amber)),
+            [(all, shade(all)), (current, shade(current))]
+        );
+        assert_ne!(shade(current), Some(amber), "amber doesn't read on it");
+        assert_eq!(colors(message, None), [(all, None)]);
+    });
+}
+
 fn top(cx: &mut TestAppContext, view: &Entity<TranscriptView>) -> gpui_kit::ListOffset {
     cx.read(|cx| view.read(cx).list.top())
 }

@@ -75,7 +75,7 @@ fn track_outline(theme: &Theme) -> Hsla {
 }
 
 /// The WCAG 2 contrast ratio of two opaque colors, from 1 to 21.
-fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
+pub(crate) fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
     fn luminance(color: Hsla) -> f32 {
         let channel = |c: f32| {
             if c <= 0.04045 {
