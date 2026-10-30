@@ -621,8 +621,9 @@ fn a_row_says_the_workers_model_profile_and_cost(cx: &mut TestAppContext) {
     assert_eq!(facts, "Running · 0 s · 0 calls");
 }
 
-/// A worker on a model billed per token says so in its row and its view,
-/// as Arko's list of workers does. One on a plan says nothing of it.
+/// A worker on a model billed per token says so in its view as Arko's list
+/// of workers does, and in its row in a word, "API", which a screen reader
+/// hears in full. One on a plan says nothing of it.
 #[gpui_kit::test]
 fn a_worker_billed_per_token_says_so(cx: &mut TestAppContext) {
     use arko::remote::WorkerState::Running;
@@ -653,11 +654,19 @@ fn a_worker_billed_per_token_says_so(cx: &mut TestAppContext) {
             panel.row_views[id].read(cx).facts.setup.clone()
         })
     };
-    assert_eq!(
-        setup("r1", cx).as_deref(),
-        Some("opus · high · billed per token")
-    );
+    assert_eq!(setup("r1", cx).as_deref(), Some("opus · high · API"));
     assert_eq!(setup("r2", cx).as_deref(), Some("cc:opus"));
+    let label = |cx: &mut TestAppContext, row: usize| {
+        cx.update_window(panel.window, |_, window, _| {
+            window.find(("worker", row)).label().map(str::to_string)
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        label(cx, 0).as_deref(),
+        Some("r1, Task of r1, Running, billed per token")
+    );
+    assert_eq!(label(cx, 1).as_deref(), Some("r2, Task of r2, Running"));
 }
 
 /// A worker narrowed to some skills and servers says how many in its row

@@ -127,6 +127,10 @@ pub fn setup_label(worker: &WorkerSummary) -> Option<String> {
 /// worker on one of the user's plans says nothing.
 pub const BILLED_PER_TOKEN: &str = "billed per token";
 
+/// The same in a word, as the model lists say it beside a model billed per
+/// token, for a worker's row, where room is short.
+pub const BILLED_PER_TOKEN_SHORT: &str = "API";
+
 /// Whether `worker` runs on a model billed per token in the session of
 /// `models`, as Arko bills it. A worker whose model isn't recorded yet
 /// doesn't.

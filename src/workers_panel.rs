@@ -695,7 +695,10 @@ impl WorkersPanel {
             return div().into_any_element();
         };
         let open = id.clone();
-        let label = self.worker(id).map(workers::row_label).unwrap_or_default();
+        let label = self
+            .worker(id)
+            .map(|worker| self.row_label(worker))
+            .unwrap_or_default();
         row_base(("worker", index), selected, cx)
             .role(Role::ListItem)
             .aria_label(SharedString::from(label))
@@ -728,7 +731,7 @@ impl WorkersPanel {
             calls: worker.tool_calls,
             level,
             meta,
-            setup: self.setup(worker),
+            setup: self.setup(worker, workers::BILLED_PER_TOKEN_SHORT),
             narrowed: workers::narrowed_sentence(worker),
             cost: workers::costs_label(worker),
         }
@@ -738,22 +741,35 @@ impl WorkersPanel {
     /// all do once any worker has something to put in it, so the rows stay
     /// as tall as one another.
     fn has_meta(&self) -> bool {
-        self.source
-            .workers
-            .iter()
-            .any(|worker| self.setup(worker).is_some() || workers::costs_label(worker).is_some())
+        self.source.workers.iter().any(|worker| {
+            workers::setup_label(worker).is_some() || workers::costs_label(worker).is_some()
+        })
     }
 
     /// `worker`'s setup in a few words ([`workers::setup_label`]), and
-    /// "billed per token" for a model billed per token, as Arko's list of
-    /// workers says it.
-    fn setup(&self, worker: &WorkerSummary) -> Option<String> {
-        let billed = self.source.billed_per_token.contains(&worker.id);
+    /// `billed` for a model billed per token: "billed per token" as Arko's
+    /// list of workers says it, or "API" where room is short.
+    fn setup(&self, worker: &WorkerSummary, billed: &str) -> Option<String> {
         let parts: Vec<String> = workers::setup_label(worker)
             .into_iter()
-            .chain(billed.then(|| workers::BILLED_PER_TOKEN.to_string()))
+            .chain(self.billed_per_token(worker).then(|| billed.to_string()))
             .collect();
         (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+
+    fn billed_per_token(&self, worker: &WorkerSummary) -> bool {
+        self.source.billed_per_token.contains(&worker.id)
+    }
+
+    /// A worker's row as a screen reader names it ([`workers::row_label`]),
+    /// with "billed per token" for a model billed per token, which the row
+    /// shows as "API".
+    fn row_label(&self, worker: &WorkerSummary) -> String {
+        let mut label = workers::row_label(worker);
+        if self.billed_per_token(worker) {
+            label.push_str(&format!(", {}", workers::BILLED_PER_TOKEN));
+        }
+        label
     }
 
     /// Brings the workers' rows up to date: a row whose facts changed draws
@@ -837,7 +853,7 @@ impl WorkersPanel {
                     .as_ref()
                     .map(|parent| format!("under {parent}")),
             );
-            facts.extend(self.setup(worker));
+            facts.extend(self.setup(worker, workers::BILLED_PER_TOKEN));
             if let Some(total) = workers::run_time_ms(worker, now) {
                 facts.push(workers::elapsed_label(total));
             }
