@@ -2174,6 +2174,7 @@ fn workers_window(mode: ThemeMode) -> Screenshot {
         images: None,
         movable: Vec::new(),
         usual: arko_studio::workers::Usual::default(),
+        billed_per_token: Default::default(),
         key: None,
     };
     let window = app
@@ -2257,6 +2258,7 @@ fn workers_narrowed_window(mode: ThemeMode) -> Screenshot {
         images: None,
         movable: Vec::new(),
         usual: arko_studio::workers::Usual::default(),
+        billed_per_token: Default::default(),
         key: None,
     };
     let window = app
@@ -2427,6 +2429,17 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
         handover_at: None,
         compacts: false,
     };
+    // The session reaches OpenAI by the ChatGPT login, so only the workers
+    // on the Anthropic API are billed per token.
+    let session = arko::remote::Models {
+        openai_auth: Some("ChatGPT login".into()),
+        ..Default::default()
+    };
+    let billed_per_token = all
+        .iter()
+        .filter(|worker| arko_studio::workers::billed_per_token(worker, &session))
+        .map(|worker| worker.id.clone())
+        .collect();
     PanelSource {
         workers: all,
         agents: vec![
@@ -2438,6 +2451,7 @@ fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
         images: None,
         movable: Vec::new(),
         usual: arko_studio::workers::Usual::default(),
+        billed_per_token,
         key: None,
     }
 }

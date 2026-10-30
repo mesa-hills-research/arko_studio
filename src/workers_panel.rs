@@ -82,6 +82,8 @@ pub struct PanelSource {
     /// What workers start with unless told otherwise, which the cards in a
     /// worker's transcript name only when a worker runs another.
     pub usual: workers::Usual,
+    /// The workers whose model is billed per token, by id.
+    pub billed_per_token: HashSet<String>,
     /// Changes when the session (or its opening) changes: the transcripts
     /// kept are another feed's then.
     pub key: Option<(EntityId, u64)>,
@@ -89,7 +91,14 @@ pub struct PanelSource {
 
 impl PanelSource {
     fn of(session: &LiveSession, id: EntityId) -> Self {
+        let models = &session.reading().models;
         Self {
+            billed_per_token: session
+                .workers()
+                .iter()
+                .filter(|worker| workers::billed_per_token(worker, models))
+                .map(|worker| worker.id.clone())
+                .collect(),
             workers: session.workers().to_vec(),
             agents: session.reading().agents.clone(),
             feed: session.feed().cloned(),
@@ -719,7 +728,7 @@ impl WorkersPanel {
             calls: worker.tool_calls,
             level,
             meta,
-            setup: workers::setup_label(worker),
+            setup: self.setup(worker),
             narrowed: workers::narrowed_sentence(worker),
             cost: workers::costs_label(worker),
         }
@@ -729,9 +738,22 @@ impl WorkersPanel {
     /// all do once any worker has something to put in it, so the rows stay
     /// as tall as one another.
     fn has_meta(&self) -> bool {
-        self.source.workers.iter().any(|worker| {
-            workers::setup_label(worker).is_some() || workers::costs_label(worker).is_some()
-        })
+        self.source
+            .workers
+            .iter()
+            .any(|worker| self.setup(worker).is_some() || workers::costs_label(worker).is_some())
+    }
+
+    /// `worker`'s setup in a few words ([`workers::setup_label`]), and
+    /// "billed per token" for a model billed per token, as Arko's list of
+    /// workers says it.
+    fn setup(&self, worker: &WorkerSummary) -> Option<String> {
+        let billed = self.source.billed_per_token.contains(&worker.id);
+        let parts: Vec<String> = workers::setup_label(worker)
+            .into_iter()
+            .chain(billed.then(|| workers::BILLED_PER_TOKEN.to_string()))
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(" · "))
     }
 
     /// Brings the workers' rows up to date: a row whose facts changed draws
@@ -815,7 +837,7 @@ impl WorkersPanel {
                     .as_ref()
                     .map(|parent| format!("under {parent}")),
             );
-            facts.extend(workers::setup_label(worker));
+            facts.extend(self.setup(worker));
             if let Some(total) = workers::run_time_ms(worker, now) {
                 facts.push(workers::elapsed_label(total));
             }
@@ -1124,8 +1146,9 @@ struct RowFacts {
     /// Whether the row has a line under the others for its setup and cost,
     /// as every row of the list does once one has something for it.
     meta: bool,
-    /// Its model, effort and profile, as the terminal lists them, and the
-    /// skills and servers it was narrowed to.
+    /// Its model, effort and profile, as the terminal lists them, the
+    /// skills and servers it was narrowed to, and whether it's billed per
+    /// token.
     setup: Option<String>,
     /// What it was narrowed to, in a sentence, for the setup's tooltip.
     narrowed: Option<String>,

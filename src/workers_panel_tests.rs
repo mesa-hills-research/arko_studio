@@ -89,6 +89,7 @@ fn source(feed: &Feed, key: gpui_kit::EntityId) -> PanelSource {
         images: None,
         movable: Vec::new(),
         usual: crate::workers::Usual::default(),
+        billed_per_token: Default::default(),
         key: Some((key, 0)),
     }
 }
@@ -618,6 +619,45 @@ fn a_row_says_the_workers_model_profile_and_cost(cx: &mut TestAppContext) {
     );
     let facts = cx.read(|cx| panel.panel.read(cx).facts("r2", now));
     assert_eq!(facts, "Running · 0 s · 0 calls");
+}
+
+/// A worker on a model billed per token says so in its row and its view,
+/// as Arko's list of workers does. One on a plan says nothing of it.
+#[gpui_kit::test]
+fn a_worker_billed_per_token_says_so(cx: &mut TestAppContext) {
+    use arko::remote::WorkerState::Running;
+    let panel = open(cx);
+    let mut api = summary("r1", None, Running, None);
+    api.model = Some("claude-opus-5-5".into());
+    api.effort = Some("high".into());
+    let mut plan = summary("r2", None, Running, None);
+    plan.model = Some("cc:claude-opus-5-5".into());
+    panel.panel.update(cx, |panel, cx| {
+        let mut source = panel.source.clone();
+        source.workers = vec![api, plan];
+        source.billed_per_token = ["r1".to_string()].into();
+        panel.set_source(source, cx);
+    });
+    panel.draw(cx);
+    let now = *panel.now.borrow();
+    let facts =
+        |id: &str, cx: &mut TestAppContext| cx.read(|cx| panel.panel.read(cx).facts(id, now));
+    assert_eq!(
+        facts("r1", cx),
+        "Running · opus · high · billed per token · 0 s · 0 calls"
+    );
+    assert_eq!(facts("r2", cx), "Running · cc:opus · 0 s · 0 calls");
+    let setup = |id: &str, cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let panel = panel.panel.read(cx);
+            panel.row_views[id].read(cx).facts.setup.clone()
+        })
+    };
+    assert_eq!(
+        setup("r1", cx).as_deref(),
+        Some("opus · high · billed per token")
+    );
+    assert_eq!(setup("r2", cx).as_deref(), Some("cc:opus"));
 }
 
 /// A worker narrowed to some skills and servers says how many in its row
