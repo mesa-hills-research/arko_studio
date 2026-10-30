@@ -4747,9 +4747,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e50d03f4e9f8aad81445985486264faed162a4e0a238c44188f7360dd761b9c"
+checksum = "ee968ab59568c3a9ef8a140f2de22baa1ac8afb29b21e0f3b949a367cd899f95"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -4820,9 +4820,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-apple"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8796595b72fa5b089995daa3e15d494aba2b75b42d8dda2ebc6a2319e2fcd3c0"
+checksum = "970bf8983ac6756f743e38f15e25f3e1590d6c01b3493621ec763e9cfcf401f4"
 dependencies = [
  "anyhow",
  "async-task",
@@ -4850,9 +4850,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit"
-version = "0.7.9"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1adb34e859ee38db61a31204dce5183ff3d2c8b99694e79e807654a6adac3387"
+checksum = "261a27b9923d53eb421b55c8774a4448d2f5a4fd347eb8c838fee769da7c25ad"
 dependencies = [
  "mhr-gpui",
  "mhr-gpui-kit-assets",
@@ -4865,9 +4865,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-assets"
-version = "0.7.9"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb072756c0277a29267cc1c09afca39439e9ea69c71910bee5d10128b57a7e22"
+checksum = "9bf90b9bec5487d7e4580c503ac99bb425a6d8af32e5c2611b8dc37bae3cd513"
 dependencies = [
  "anyhow",
  "gpui-pre-reqwest",
@@ -4880,9 +4880,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-base"
-version = "0.7.9"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c90fa4ee7dc1d6af38141f9aa1b57b2175e9eba7b17864abcae2b6c306399cb6"
+checksum = "6ef9391d867f2551a74a08b1e703742f2d71f5cabce28c2b4d890e1eb1f2069f"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -4923,9 +4923,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-component"
-version = "0.7.9"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77f895e0920e51ea43e73ca000eea0f9673b3914f741c633e0232a5f92f69363"
+checksum = "06ee37ce0ef2ee136ca259d1cf00030eb51b8da93ed728a01b403316e55943c8"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5018,9 +5018,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-component-macros"
-version = "0.7.9"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a543a97f81b8130875b8f8d1b0673c5d0ff3fddd95825cd48ed8077acf0fe16f"
+checksum = "644181af4b45958ee14982fbdec6ea59d7fb88c68eee99b8a85f1fa0ae2c8c56"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -5030,9 +5030,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-writing"
-version = "0.7.9"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd7fa868c5256fcc9267cea3f63fa1a27c81612490336ba8736455faae2a18e9"
+checksum = "a48a412e9c424177bd89dec4e06d06cc13f666ba9514d6ab8d4798fac8dd04d9"
 dependencies = [
  "anyhow",
  "log",
@@ -5044,9 +5044,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-linux"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92a9551ada4c03804e995c6ec939601d0049a84574602a637cf3bf9c171e585d"
+checksum = "f064a5efeb848af402aab75d81e3cdf254ba4b16f04e7e3f05b43f62c21b1ac8"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -5089,9 +5089,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-macos"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "409e91263813d7cf21774f54cbcb234fd01d686896b358340c19d9c6a063f863"
+checksum = "3f7320651cd8ead2da0eb5e5cb2264fc195a0bc44fd14127947b6d8b969d4aa8"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -5148,9 +5148,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-platform"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3a9d0a6b37148845db8da044ae7d9210fdfb245f4c773b6a7114a9a3053da8"
+checksum = "b62586920621737673aed290fdae0db01bfc9cec99b3121b83600ad06c97e88c"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -5164,9 +5164,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-screenshot"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db3f8bfdaa599bbd047c3f2ae1bae1bf323359ea93611de10912d912fda94815"
+checksum = "4436694ecfaf5adab657b7d17b713310a2bd31cee5ab1f5282a1888023be7c0c"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5201,9 +5201,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-web"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6afb350e93f7e2a04bfbaf4e7d3def508edfc3ac20ff27e070de830c0c645542"
+checksum = "c6fc60454f357ae10d10f2c64b5cb2287fc223a93ba10f0e2faaafa375c3e5b2"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -5230,9 +5230,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-wgpu"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c42f5654d2a8330e0b5a0efc40de472120f277e8874fd900cc5bb48f58267759"
+checksum = "cdce9d4ab39aced9a84f598234a75ddf8a8cf5c0e580e4ae67da23792b58c0b6"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5258,9 +5258,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-windows"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3566f5937f84ff5a91e7ea0ae4ef067527faabe662f3993ea6364b98611841b"
+checksum = "8b6f66f3e4305664449c0a922d922e6bf0a2455215a9e811d1a844d06d3308da"
 dependencies = [
  "accesskit",
  "accesskit_windows",
