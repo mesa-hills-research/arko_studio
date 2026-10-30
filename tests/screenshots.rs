@@ -2871,8 +2871,9 @@ fn continue_worker_window(mode: ThemeMode) -> Screenshot {
             plan: None,
         },
     };
+    let warning = cache.warning(chrono::Utc::now());
     app.update_window(window, |_, window, cx| {
-        arko_studio::prompts::confirm_continue(&cache, window, cx, |_, _| {})
+        arko_studio::prompts::confirm_continue("r3", &warning, window, cx, |_, _| {})
     })
     .unwrap();
     app.capture(window).unwrap()

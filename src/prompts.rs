@@ -745,27 +745,23 @@ pub fn confirm_model_switch(
     });
 }
 
-/// The dialog's title and description before a message continues the
-/// worker of `cache` at `now`, with Arko's warning of what that costs.
-pub fn continue_text(
-    cache: &arko::worker_cache::WorkerCache,
-    now: chrono::DateTime<chrono::Utc>,
-) -> (String, String) {
-    (
-        format!("Continue {}?", cache.worker),
-        workers::curly(&cache.warning(now)),
-    )
+/// The dialog's title and description before a message continues
+/// `worker`, with Arko's `warning` of what that costs.
+pub fn continue_text(worker: &str, warning: &str) -> (String, String) {
+    (format!("Continue {worker}?"), workers::curly(warning))
 }
 
-/// Asks before a message continues a finished worker whose prompt cache
-/// expired (`cache`). `answer` hears Continue.
+/// Asks before a message continues `worker`, a finished worker whose prompt
+/// cache expired, with Arko's `warning` of what that costs. `answer` hears
+/// Continue.
 pub fn confirm_continue(
-    cache: &arko::worker_cache::WorkerCache,
+    worker: &str,
+    warning: &str,
     window: &mut Window,
     cx: &mut App,
     answer: impl Fn(&mut Window, &mut App) + 'static,
 ) {
-    let (title, description) = continue_text(cache, chrono::Utc::now());
+    let (title, description) = continue_text(worker, warning);
     let answer = std::rc::Rc::new(answer);
     window.open_alert_dialog(cx, move |alert, _, _| {
         let ok = answer.clone();
@@ -918,7 +914,7 @@ mod tests {
         let worker = crate::workers::ended_with_cache("r3", 2 * 3_600_000 + 60_000, 340_000);
         let cache = worker.cache().unwrap();
         assert_eq!(
-            continue_text(&cache, chrono::Utc::now()),
+            continue_text("r3", &cache.warning(chrono::Utc::now())),
             (
                 "Continue r3?".to_string(),
                 "r3’s cache expired 2 hours ago. Continuing re-reads about 340k tokens without it (≈ $1.36 at API prices).".to_string()

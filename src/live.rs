@@ -190,6 +190,13 @@ pub enum LiveEvent {
     /// model began its report for a switch: its words, as arko's notice
     /// repeats them.
     NotSent(String),
+    /// Arko didn't send a `/message` that would continue `worker`, whose
+    /// prompt cache expired. `warning` says what continuing re-reads, in
+    /// arko's words.
+    NotContinued {
+        worker: String,
+        warning: String,
+    },
 }
 
 /// A worker that finished or failed, as a notification tells of it.
@@ -346,6 +353,9 @@ struct Drained {
     /// The words of the messages arko didn't send while a report was
     /// written.
     not_sent: Vec<String>,
+    /// The workers arko didn't continue because their cache expired, each
+    /// with arko's warning.
+    not_continued: Vec<(String, String)>,
 }
 
 impl Drained {
@@ -356,6 +366,7 @@ impl Drained {
             && self.ended.is_empty()
             && self.quit_asks.is_empty()
             && self.not_sent.is_empty()
+            && self.not_continued.is_empty()
     }
 }
 
@@ -373,6 +384,20 @@ fn not_sent_words(notice: &str) -> Option<&str> {
         return Some("");
     }
     what.strip_prefix('“')?.strip_suffix("” wasn't sent.")
+}
+
+/// How arko's notice ends when it didn't send a `/message` that would
+/// continue a worker whose prompt cache expired.
+const CONTINUE_AGAIN: &str = "The same /message again continues it.";
+
+/// The worker and arko's warning, from its notice that it didn't continue
+/// the worker ("r3's cache expired 2 hours ago. Continuing re-reads about
+/// 340k tokens without it (≈ $1.36 at API prices). The same /message again
+/// continues it.").
+fn not_continued(notice: &str) -> Option<(&str, &str)> {
+    let warning = notice.strip_suffix(CONTINUE_AGAIN)?.trim_end();
+    let (worker, _) = warning.split_once("'s cache expired ")?;
+    Some((worker, warning))
 }
 
 /// What the user did with the agent's questions in this app, beside what
@@ -776,6 +801,7 @@ impl LiveSession {
                     let mut workers = Vec::new();
                     let mut ended = Vec::new();
                     let mut not_sent = Vec::new();
+                    let mut uncached = Vec::new();
                     for update in batch {
                         match update {
                             Update::Activity => activity = Some(feed.activity()),
@@ -783,6 +809,9 @@ impl LiveSession {
                             Update::WorkerEnded { id, .. } => ended.push(id),
                             Update::Item(item) if item.kind == arko::remote::Kind::Notice => {
                                 not_sent.extend(not_sent_words(&item.text).map(str::to_string));
+                                uncached.extend(not_continued(&item.text).map(
+                                    |(worker, warning)| (worker.to_string(), warning.to_string()),
+                                ));
                             }
                             _ => {}
                         }
@@ -791,6 +820,7 @@ impl LiveSession {
                         && workers.is_empty()
                         && ended.is_empty()
                         && not_sent.is_empty()
+                        && uncached.is_empty()
                     {
                         continue;
                     }
@@ -802,6 +832,7 @@ impl LiveSession {
                         drained.workers.extend(workers);
                         drained.ended.extend(ended);
                         drained.not_sent.extend(not_sent);
+                        drained.not_continued.extend(uncached);
                     }
                     wake.notify_one();
                 }
@@ -894,6 +925,9 @@ impl LiveSession {
         }
         for words in drained.not_sent {
             cx.emit(LiveEvent::NotSent(words));
+        }
+        for (worker, warning) in drained.not_continued {
+            cx.emit(LiveEvent::NotContinued { worker, warning });
         }
         self.update_indicator(cx);
         cx.notify();
@@ -1086,6 +1120,14 @@ impl LiveSession {
             },
             cx,
         );
+    }
+
+    /// Follows `feed` as if the engine had opened with it (tests).
+    #[cfg(test)]
+    pub fn follow_feed(&mut self, feed: Feed, cx: &mut Context<Self>) {
+        let (_, status) = tokio::sync::watch::channel(self.reading.clone());
+        let (_, quit_asks) = mpsc::unbounded_channel();
+        self.drain(feed, status, quit_asks, cx);
     }
 
     /// Takes the requests waiting for the engine (tests).
@@ -1773,7 +1815,10 @@ pub fn init(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Drained, LiveEvent, LiveSession, LiveSessions, Phase, first_line, not_sent_words};
+    use super::{
+        Drained, LiveEvent, LiveSession, LiveSessions, Phase, first_line, not_continued,
+        not_sent_words,
+    };
     use arko::remote::{Activity, Reading};
     use gpui_kit::{AppContext as _, TestAppContext};
 
@@ -1795,6 +1840,27 @@ mod tests {
         assert_eq!(not_sent_words("Skipped gpt-6-luna's report."), None);
         assert_eq!(
             not_sent_words("“A” wasn't sent because the session closed."),
+            None
+        );
+    }
+
+    /// The worker arko didn't continue, and its warning, come from arko's
+    /// notice, which ends by saying the same /message again continues it.
+    #[test]
+    fn a_worker_not_continued_is_read_from_arkos_notice() {
+        let cache = crate::workers::ended_with_cache("r12", 2 * 3_600_000 + 60_000, 340_000)
+            .cache()
+            .unwrap();
+        let warning = cache.warning(chrono::Utc::now());
+        let notice = format!("{warning} The same /message again continues it.");
+        assert_eq!(not_continued(&notice), Some(("r12", warning.as_str())));
+        assert_eq!(
+            warning,
+            "r12's cache expired 2 hours ago. Continuing re-reads about 340k tokens without it (≈ $1.36 at API prices)."
+        );
+        assert_eq!(not_continued(&warning), None);
+        assert_eq!(
+            not_continued("“Go on.” wasn't sent. The report is being written. Stopping skips it."),
             None
         );
     }

@@ -242,16 +242,23 @@ pub struct SessionView {
     /// Once the conversation has started, the model list is the new
     /// workers' (`true`) or the main agent's.
     lists_worker_models: bool,
-    /// The latest message given to the shown session for the main agent,
-    /// which comes back to the composer if arko didn't send it (it came as
-    /// the old model began its report for a switch).
+    /// The latest message given to the shown session for the main agent or
+    /// a worker, which comes back to the composer if arko didn't send it
+    /// (it came as the old model began its report for a switch, or the
+    /// worker's cache expired before arko continued it).
     unsent: Option<Unsent>,
 }
 
-/// A message given to the session, as the composer held it.
+/// A message given to the session, as the composer held it, and whom it
+/// went to.
 struct Unsent {
     text: String,
     images: Vec<Attached>,
+    /// The worker the composer wrote to, or none when it wrote to Arko.
+    target: Option<SharedString>,
+    /// The worker it continues: the composer's, or the one a `/message`
+    /// typed to Arko names.
+    worker: Option<String>,
     /// The questions it answered.
     answers: Vec<String>,
 }
@@ -886,10 +893,15 @@ impl SessionView {
             self._session.push(cx.subscribe_in(
                 session,
                 window,
-                |this, _, event: &LiveEvent, window, cx| {
-                    if let LiveEvent::NotSent(words) = event {
-                        this.restore_unsent(words, window, cx);
+                |this, _, event: &LiveEvent, window, cx| match event {
+                    LiveEvent::NotSent(words) => {
+                        let to_arko = |unsent: &Unsent| unsent.worker.is_none() && unsent.is(words);
+                        this.restore_unsent(to_arko, window, cx);
                     }
+                    LiveEvent::NotContinued { worker, warning } => {
+                        this.not_continued(worker, warning, window, cx)
+                    }
+                    _ => {}
                 },
             ));
         }
@@ -2364,21 +2376,21 @@ impl SessionView {
         let to_worker = worker
             .as_ref()
             .map(|worker| format!("/message {worker} {}", text.trim()));
+        let line = to_worker.as_deref().unwrap_or(&text);
+        let continues = arko::worker_cache::message_parts(line).map(|(to, _)| to.to_string());
         // Continuing a worker whose prompt cache expired re-reads its whole
         // conversation, so the message waits for the user's answer.
         if !continue_uncached
             && let Some(session) = &self.session
-            && let Some(cache) = workers::asks_to_continue(
-                to_worker.as_deref().unwrap_or(&text),
-                session.read(cx).workers(),
-                chrono::Utc::now(),
-            )
+            && let Some(cache) =
+                workers::asks_to_continue(line, session.read(cx).workers(), chrono::Utc::now())
         {
+            let warning = cache.warning(chrono::Utc::now());
             let outgoing = Outgoing {
                 text,
                 images: attached,
             };
-            self.ask_continue(&cache, outgoing, window, cx);
+            self.ask_continue(&cache.worker, &warning, outgoing, window, cx);
             return;
         }
         let images: Vec<arko::Attachment> = attached.iter().map(|image| image.to_arko()).collect();
@@ -2394,9 +2406,12 @@ impl SessionView {
             },
             continue_uncached,
         };
-        let unsent = (self.session.is_some() && worker.is_none() && !command).then(|| Unsent {
+        let kept = continues.is_some() || worker.is_none() && !command;
+        let unsent = (self.session.is_some() && kept).then(|| Unsent {
             text: text.clone(),
             images: attached.clone(),
+            target: worker.clone(),
+            worker: continues,
             answers: message.answers.clone(),
         });
         let result = match (&self.session, to_worker) {
@@ -2429,14 +2444,15 @@ impl SessionView {
         }
     }
 
-    /// Asks before `outgoing` continues the finished worker of `cache`,
-    /// whose prompt cache expired. It stays in the composer meanwhile.
-    /// Continue sends it while the view shows the same session and the
-    /// composer still holds it for the same worker. Otherwise nothing goes,
-    /// since the question was about another message.
+    /// Asks, with Arko's `warning`, before `outgoing` continues `worker`, a
+    /// finished worker whose prompt cache expired. It stays in the composer
+    /// meanwhile. Continue sends it while the view shows the same session
+    /// and the composer still holds it for the same worker. Otherwise
+    /// nothing goes, since the question was about another message.
     fn ask_continue(
         &mut self,
-        cache: &arko::worker_cache::WorkerCache,
+        worker: &str,
+        warning: &str,
         outgoing: Outgoing,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2444,7 +2460,7 @@ impl SessionView {
         let session = self.session.as_ref().map(Entity::entity_id);
         let target = self.target.clone();
         let view = cx.entity().downgrade();
-        crate::prompts::confirm_continue(cache, window, cx, move |window, cx| {
+        crate::prompts::confirm_continue(worker, warning, window, cx, move |window, cx| {
             view.update(cx, |view, cx| {
                 let holds = view.session.as_ref().map(Entity::entity_id) == session
                     && view.target == target
@@ -2465,41 +2481,69 @@ impl SessionView {
             .is_some_and(|session| session.read(cx).is_reporting())
     }
 
-    /// Puts the message arko didn't send (its `words`) back in the
-    /// composer, to Arko and with the questions it answered, unless
-    /// something else was typed since.
-    fn restore_unsent(&mut self, words: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.unsent.as_ref().is_some_and(|unsent| unsent.is(words)) {
-            return;
+    /// Puts the message arko didn't send back in the composer, to whom it
+    /// went and with the questions it answered, unless something else was
+    /// typed since or a message is being edited. `is` says whether it is the
+    /// message arko's notice is about. Gives back what returned.
+    fn restore_unsent(
+        &mut self,
+        is: impl FnOnce(&Unsent) -> bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Outgoing> {
+        if !self.unsent.as_ref().is_some_and(is) {
+            return None;
         }
         let empty = {
             let composer = self.composer.read(cx);
             composer.text(cx).is_empty() && composer.images().is_empty()
         };
         if !empty || self.editing.is_some() {
-            return;
+            return None;
         }
-        let Some(Unsent {
+        let Unsent {
             text,
             images,
+            target,
             answers,
-        }) = self.unsent.take()
-        else {
-            return;
-        };
-        self.set_target(None, window, cx);
+            ..
+        } = self.unsent.take()?;
+        self.set_target(target, window, cx);
         if let Some(session) = &self.session {
             session.update(cx, |session, cx| session.reattach_questions(&answers, cx));
         }
         self.composer_empty = false;
         self.composer.update(cx, |composer, cx| {
             composer.set_text(&text, window, cx);
-            for image in images {
+            for image in images.iter().cloned() {
                 composer.attach_image(image, cx);
             }
         });
         self.keep_draft(cx);
         cx.notify();
+        Some(Outgoing { text, images })
+    }
+
+    /// Arko didn't continue `worker`, whose prompt cache expired, with the
+    /// message given to it last. The message comes back to the composer,
+    /// and the dialog asks with Arko's `warning` whether to continue the
+    /// worker.
+    fn not_continued(
+        &mut self,
+        worker: &str,
+        warning: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let goes_to_worker = |unsent: &Unsent| {
+            unsent
+                .worker
+                .as_deref()
+                .is_some_and(|to| to.eq_ignore_ascii_case(worker))
+        };
+        if let Some(outgoing) = self.restore_unsent(goes_to_worker, window, cx) {
+            self.ask_continue(worker, warning, outgoing, window, cx);
+        }
     }
 
     /// Runs Arko's command `name` as if typed: at once when it takes no

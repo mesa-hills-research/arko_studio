@@ -895,6 +895,86 @@ fn switching_sessions_drops_the_question_about_continuing_a_worker(cx: &mut Test
     assert!(queued_continues(&other, cx).is_empty());
 }
 
+/// Studio asks before continuing a worker by what it knows of the worker,
+/// which Arko may know better a moment later: the cache expired between
+/// the two, or the worker's end hadn't reached the window yet. Arko then
+/// doesn't send the message, and says why. The message comes back to the
+/// composer, for Arko or for the worker as it was written, even when the
+/// composer was set to write elsewhere meanwhile. The question then asks
+/// with Arko's words, and only Continue marks the message as confirmed.
+#[gpui_kit::test]
+fn a_message_arko_did_not_continue_comes_back_and_asks(cx: &mut TestAppContext) {
+    use crate::workers::ended_with_cache;
+    use arko::remote::{Feed, WorkerState};
+
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let feed = Feed::new("main");
+    session.update(cx, |session, cx| session.follow_feed(feed.clone(), cx));
+    cx.run_until_parked();
+    // The window still sees r1 running.
+    let two_hours = 2 * 3_600_000;
+    let mut running = ended_with_cache("r1", two_hours, 340_000);
+    running.state = WorkerState::Running;
+    session.update(cx, |session, cx| {
+        session.set_workers(vec![running], &[], cx)
+    });
+    let warning = ended_with_cache("r1", two_hours, 340_000)
+        .cache()
+        .unwrap()
+        .warning(chrono::Utc::now());
+    let refuse = |cx: &mut TestAppContext| {
+        feed.notice(
+            arko::Level::Warn,
+            &format!("{warning} The same /message again continues it."),
+        );
+        cx.executor().advance_clock(crate::live::FRAME * 2);
+        cx.run_until_parked();
+    };
+    let set_target = |cx: &mut TestAppContext, target: Option<&str>| {
+        act(cx, window, |window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_target(target.map(Into::into), window, cx)
+            })
+        });
+    };
+    let target = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).target().cloned());
+
+    for (to, typed, elsewhere) in [
+        (None, "/message r1 Go on.", Some("r2")),
+        (Some("r1"), "Go on.", None),
+    ] {
+        set_target(cx, to);
+        let queued = queued_continues(&session, cx).len();
+        send_text(cx, window, typed);
+        assert!(!shows_dialog(cx, window), "{to:?}");
+        assert_eq!(composer_text(&view, cx), "", "{to:?}");
+        assert_eq!(
+            queued_continues(&session, cx)[queued..],
+            [("/message r1 Go on.".to_string(), false)]
+        );
+        set_target(cx, elsewhere);
+
+        refuse(cx);
+        assert!(shows_dialog(cx, window), "{to:?}");
+        assert_eq!(composer_text(&view, cx), typed);
+        assert_eq!(target(cx).as_deref(), to, "{to:?}");
+        assert_eq!(queued_continues(&session, cx).len(), queued + 1, "{to:?}");
+
+        answer_dialog(cx, window, "ok");
+        assert_eq!(
+            queued_continues(&session, cx)[queued + 1..],
+            [("/message r1 Go on.".to_string(), true)]
+        );
+        assert_eq!(composer_text(&view, cx), "", "{to:?}");
+    }
+    // Not over what was typed since.
+    act(cx, window, |window, cx| window.input("Wait.", cx));
+    refuse(cx);
+    assert!(!shows_dialog(cx, window));
+    assert_eq!(composer_text(&view, cx), "Wait.");
+}
+
 /// The confirmation names the worker and reads as a sentence.
 #[test]
 fn the_confirmation_of_a_message_to_a_worker_reads_as_a_sentence() {
