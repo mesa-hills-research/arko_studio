@@ -6,9 +6,10 @@
 //! last five minutes, then a collapsed "Finished" group with the rest. Each
 //! row gives the worker's state, task, time over all its runs, its last
 //! action, its context and its calls, the figures right-aligned in tabular
-//! figures so they line up. Choosing a worker shows its own transcript, with
-//! Stop and Message. While the worker's view has the focus, the composer
-//! writes to that worker.
+//! figures so they line up. A worker's workers stand under it, joined to it
+//! by tree lines. Choosing a worker shows its own transcript, with Stop and
+//! Message. While the worker's view has the focus, the composer writes to
+//! that worker.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -21,6 +22,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
+    nested_radius,
     tooltip::{ManagedTooltipExt as _, Tooltip},
     v_flex,
 };
@@ -664,13 +666,29 @@ impl WorkersPanel {
         }
         let cursor = self.cursor_ring(&rows, window, cx);
         let height = WorkerRow::height(window, self.meta);
+        let levels: Vec<Option<usize>> = rows
+            .iter()
+            .map(|row| match row {
+                PanelRow::Worker(id) => self
+                    .row_views
+                    .get(id.as_ref())
+                    .map(|view| view.read(cx).facts.level),
+                PanelRow::Finished(_) => None,
+            })
+            .collect();
+        let lines = tree_lines(&levels);
+        let geometry = LineGeometry::new(window, cx);
         let children: Vec<AnyElement> = rows
             .iter()
+            .zip(&lines)
             .enumerate()
-            .map(|(index, row)| {
+            .map(|(index, (row, lines))| {
                 let selected = cursor == Some(index);
                 match row {
-                    PanelRow::Worker(id) => self.render_row(index, id, height, selected, cx),
+                    PanelRow::Worker(id) => {
+                        let lines = lines.guides(&geometry);
+                        self.render_row(index, id, height, selected, lines, cx)
+                    }
                     PanelRow::Finished(count) => self.render_group(index, *count, selected, cx),
                 }
             })
@@ -691,13 +709,15 @@ impl WorkersPanel {
     }
 
     /// A worker's row: the frame, which shows the keyboard's place and the
-    /// pointer's, around the worker's own view.
+    /// pointer's, around the worker's own view, with the tree `lines` that
+    /// join it to its family.
     fn render_row(
         &self,
         index: usize,
         id: &SharedString,
         height: Pixels,
         selected: bool,
+        lines: Vec<Div>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(view) = self.row_views.get(id.as_ref()) else {
@@ -711,6 +731,7 @@ impl WorkersPanel {
         row_base(("worker", index), selected, cx)
             .role(Role::ListItem)
             .aria_label(SharedString::from(label))
+            .children(lines)
             .child(
                 view.clone()
                     .cached(StyleRefinement::default().w_full().h(height)),
@@ -1064,6 +1085,148 @@ fn row_base(
             this.bg(theme.sidebar_accent.opacity(0.8))
                 .text_color(theme.sidebar_accent_foreground)
         })
+}
+
+/// The tree lines beside a worker's row, which join it to the worker that
+/// started it and to that worker's other workers, as in a file tree.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TreeLines {
+    /// How many workers the row's worker is under.
+    level: usize,
+    /// For each level from 1 up to the row's own, whether the line of that
+    /// level's workers runs past the row to another worker further down.
+    passing: Vec<bool>,
+    /// Whether the line from the row's starter goes on past the row to
+    /// another of its workers (├), or ends at the row (└).
+    continues: bool,
+    /// Whether a line leaves from under the row's mark down to its workers.
+    starts: bool,
+}
+
+/// The tree lines of each row of a list of rows `levels` deep, in the order
+/// they show, each worker followed by its workers. `None` is a row that isn't
+/// a worker's, such as a group's header, which no line crosses.
+fn tree_lines(levels: &[Option<usize>]) -> Vec<TreeLines> {
+    let mut lines = vec![TreeLines::default(); levels.len()];
+    // Seen from the row reached, going up the list: for each level, whether a
+    // row of that level lies further down with no row less deep in between.
+    let mut below: Vec<bool> = Vec::new();
+    let mut next: Option<usize> = None;
+    for (index, level) in levels.iter().enumerate().rev() {
+        let Some(level) = *level else {
+            below.clear();
+            next = None;
+            continue;
+        };
+        below.resize(below.len().max(level + 1), false);
+        lines[index] = TreeLines {
+            level,
+            passing: below.get(1..level).unwrap_or_default().to_vec(),
+            continues: level > 0 && below[level],
+            starts: next == Some(level + 1),
+        };
+        // Deeper lines stop at this row, and its own goes on up from it.
+        below.truncate(level + 1);
+        below[level] = true;
+        next = Some(level);
+    }
+    lines
+}
+
+/// Where a row's tree lines go in its frame, measured from inside the
+/// frame's border.
+struct LineGeometry {
+    /// How far a level stands in, a mark's width.
+    indent: Pixels,
+    /// Half a mark's width and height.
+    half: Pixels,
+    /// The middle of a top-level worker's mark, from the frame's left.
+    mark_x: Pixels,
+    /// The middle of a row's mark, from the frame's top.
+    mark_y: Pixels,
+    /// How far a line goes on above the frame to meet the row above, across
+    /// the frame's border and the gap between rows.
+    above: Pixels,
+    /// How far a line goes on below the frame, across its border, where the
+    /// next row's line takes over.
+    below: Pixels,
+    /// The curve where an edge leaves its line.
+    radius: Pixels,
+    color: Hsla,
+}
+
+impl LineGeometry {
+    fn new(window: &Window, cx: &App) -> Self {
+        let theme = cx.theme();
+        let rem = window.rem_size();
+        let (title, _) = WorkerRow::lines(window);
+        // `row_base`'s padding, and the list's gap between rows.
+        let (padding_x, padding_y, gap) = (rem * 0.5, rem * 0.375, rem * 0.125);
+        let border = px(1.);
+        let half = rem * 0.5;
+        Self {
+            indent: rem,
+            half,
+            mark_x: padding_x + half,
+            mark_y: padding_y + title / 2.,
+            above: border + gap,
+            below: border,
+            radius: nested_radius(theme.radius, padding_x),
+            // Quiet, behind the marks and the text. A light theme's border
+            // nearly vanishes on its panel, so the lines take a little of
+            // the muted text's colour there.
+            color: if theme.is_dark() {
+                theme.sidebar_border
+            } else {
+                theme
+                    .sidebar_border
+                    .blend(theme.muted_foreground.opacity(0.25))
+            },
+        }
+    }
+}
+
+impl TreeLines {
+    /// The lines, as 1 px strokes placed in the row's frame.
+    fn guides(&self, geometry: &LineGeometry) -> Vec<Div> {
+        let g = geometry;
+        let stroke = px(1.);
+        // The line of `level`'s workers runs under the marks of their
+        // starters, one level less in.
+        let column = |level: usize| g.mark_x + g.indent * (level - 1) as f32;
+        let line = |x: Pixels| div().absolute().left(x - stroke / 2.).w(stroke).bg(g.color);
+        let mut guides: Vec<Div> = (1..)
+            .zip(&self.passing)
+            .filter(|(_, passing)| **passing)
+            .map(|(level, _)| line(column(level)).top(-g.above).bottom(-g.below))
+            .collect();
+        if self.level > 0 {
+            let x = column(self.level);
+            // Down from the row above, then across to the left of the mark,
+            // turning in a small curve.
+            guides.push(
+                div()
+                    .absolute()
+                    .left(x - stroke / 2.)
+                    .top(-g.above)
+                    .w(g.indent - g.half + stroke / 2.)
+                    .h(g.above + g.mark_y + stroke / 2.)
+                    .border_l(stroke)
+                    .border_b(stroke)
+                    .rounded_bl(g.radius)
+                    .border_color(g.color),
+            );
+            if self.continues {
+                let top = g.mark_y + stroke / 2. - g.radius;
+                guides.push(line(x).top(top).bottom(-g.below));
+            }
+        }
+        if self.starts {
+            let x = column(self.level + 1);
+            guides.push(line(x).top(g.mark_y + g.half).bottom(-g.below));
+        }
+        guides
+    }
 }
 
 /// Digits of equal width (OpenType `tnum`), so figures in rows line up.

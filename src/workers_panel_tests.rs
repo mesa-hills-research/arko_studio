@@ -343,6 +343,58 @@ fn a_workers_workers_stand_under_it_indented(cx: &mut TestAppContext) {
     assert_eq!(r4, r1);
 }
 
+/// A worker's row joins the line of its starter's workers. That line goes on
+/// past the row while another of them follows, past the row's own workers
+/// too, and ends at the last one. Top-level workers have no line of their
+/// own, and no line crosses the "Finished" group's header.
+#[test]
+fn tree_lines_join_each_worker_to_the_one_that_started_it() {
+    use super::{TreeLines, tree_lines};
+    let lines = |level, passing: &[bool], continues, starts| TreeLines {
+        level,
+        passing: passing.to_vec(),
+        continues,
+        starts,
+    };
+    let levels = [
+        Some(0), // r1
+        Some(1), //   r3
+        Some(2), //     r7
+        Some(3), //       r8
+        Some(1), //   r4
+        Some(0), // r2
+        None,    // Finished
+        Some(0), // r5
+        Some(1), //   r6
+        Some(1), //   r9
+    ];
+    assert_eq!(
+        tree_lines(&levels),
+        [
+            // r1's line starts under its mark.
+            lines(0, &[], false, true),
+            // ├ r3, and its own line starts.
+            lines(1, &[], true, true),
+            // │ └ r7, with r1's line passing on to r4.
+            lines(2, &[true], false, true),
+            // │   └ r8, r3's line done with.
+            lines(3, &[true, false], false, false),
+            // └ r4, the last of r1's.
+            lines(1, &[], false, false),
+            lines(0, &[], false, false),
+            TreeLines::default(),
+            lines(0, &[], false, true),
+            lines(1, &[], true, false),
+            lines(1, &[], false, false),
+        ]
+    );
+    // A line ends at a header, whatever comes after it.
+    assert_eq!(
+        tree_lines(&[Some(0), Some(1), None, Some(1)])[1],
+        lines(1, &[], false, false)
+    );
+}
+
 /// A screen reader hears whose worker a row is, as Arko's notices say it,
 /// and the rows are a list of that name.
 #[gpui_kit::test]

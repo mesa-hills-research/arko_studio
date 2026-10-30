@@ -2440,7 +2440,7 @@ const WORKERS_NOW: i64 = 1_760_000_000_000;
 /// finished a moment ago, each row with its model, profile and cost, the
 /// workers that started others with what their family cost, and a finished
 /// family in the collapsed group. The session lists them as they started, and
-/// the panel puts a worker's workers under it.
+/// the panel puts a worker's workers under it, joined to it by tree lines.
 fn workers_family_source() -> arko_studio::workers_panel::PanelSource {
     use arko::remote::{AgentStatus, WorkerState, WorkerSummary};
     use arko_studio::workers_panel::PanelSource;
