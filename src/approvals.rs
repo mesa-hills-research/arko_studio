@@ -561,22 +561,6 @@ impl ApprovalTray {
     }
 }
 
-/// The shortcut of `action`, as its button shows it after its label.
-fn shortcut(action: &dyn Action, window: &Window) -> Option<impl IntoElement + use<>> {
-    let binding =
-        window.highest_precedence_binding_for_action_in_context(action, KeyContext::default())?;
-    let stroke = binding.keystrokes().first()?.as_keystroke().clone();
-    let selector = format!("kbd:{}", stroke.unparse());
-    Some(
-        div()
-            // Lets a test ask whether the shortcut was drawn.
-            .debug_selector(move || selector)
-            .text_xs()
-            .opacity(0.7)
-            .child(Kbd::new(stroke).appearance(false)),
-    )
-}
-
 impl Render for ApprovalTray {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus.is_focused(window);
@@ -590,9 +574,16 @@ impl Render for ApprovalTray {
         let heading = approvals_heading(count);
         let approve = approve_label(self.selected(), count);
         let reject = reject_label(count);
-        let approve_key = shortcut(&ApproveSelected, window);
-        let reject_key = shortcut(&RejectAll, window);
         let theme = cx.theme();
+        // A grey cap would sit like a sticker on Approve's fill, so its cap
+        // takes the button's text color.
+        let on_fill = theme.button_primary_foreground;
+        let approve_key = Kbd::global_binding_for_action(&ApproveSelected, window).map(|kbd| {
+            kbd.bg(on_fill.opacity(0.15))
+                .border_color(on_fill.opacity(0.35))
+                .text_color(on_fill.opacity(0.85))
+        });
+        let reject_key = Kbd::global_binding_for_action(&RejectAll, window);
         v_flex()
             .id("approval-tray")
             .test_support()
