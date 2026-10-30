@@ -1336,13 +1336,22 @@ impl LiveSession {
     }
 
     /// A message that answered the questions `ids` wasn't sent after all, so
-    /// those still open are open here again, and attached to the message
-    /// box.
+    /// those still open are open here again.
+    pub fn reopen_questions(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        let settled = self.questions.settled.len();
+        self.questions.settled.retain(|id| !ids.contains(id));
+        if self.questions.settled.len() != settled {
+            cx.notify();
+        }
+    }
+
+    /// A message that answered the questions `ids` comes back to the message
+    /// box, so those still open are open here again, and attached to it.
     pub fn reattach_questions(&mut self, ids: &[String], cx: &mut Context<Self>) {
         if ids.is_empty() {
             return;
         }
-        self.questions.settled.retain(|id| !ids.contains(id));
+        self.reopen_questions(ids, cx);
         let attached = &self.questions.attached;
         let open: Vec<String> = self
             .open_questions()

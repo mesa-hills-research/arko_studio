@@ -381,21 +381,25 @@ fn answer_in_chat_attaches_the_questions_to_the_next_message(cx: &mut TestAppCon
 
 /// A reply that arko didn't send (it came as the old model began its report
 /// for a switch) comes back replying to the same questions, open again, so
-/// the next message answers them.
+/// the next message answers them. When something else was typed since, the
+/// reply stays away, and its questions are open again all the same.
 #[gpui_kit::test]
 fn a_reply_arko_did_not_send_comes_back_replying_to_its_questions(cx: &mut TestAppContext) {
     let app = start(cx);
+    let not_sent = |cx: &mut TestAppContext| {
+        app.session.update(cx, |_, cx| {
+            cx.emit(crate::live::LiveEvent::NotSent(
+                "Spaces, all of them, main.".into(),
+            ))
+        });
+        cx.run_until_parked();
+    };
     app.ask(cx, three());
     app.click(cx, "answer-in-chat");
     app.type_text(cx, "Spaces, all of them, main.");
     app.press(cx, "enter");
     assert!(!app.shows(cx, "questions-replying"));
-    app.session.update(cx, |_, cx| {
-        cx.emit(crate::live::LiveEvent::NotSent(
-            "Spaces, all of them, main.".into(),
-        ))
-    });
-    cx.run_until_parked();
+    not_sent(cx);
     assert!(app.shows(cx, "questions-replying"));
     assert!(!app.shows(cx, "questions-chip"));
     app.press(cx, "enter");
@@ -405,6 +409,20 @@ fn a_reply_arko_did_not_send_comes_back_replying_to_its_questions(cx: &mut TestA
         ..Default::default()
     });
     assert_eq!(app.sent(cx), [reply.clone(), reply]);
+
+    assert!(!app.shows(cx, "questions-chip"));
+    app.type_text(cx, "Wait.");
+    not_sent(cx);
+    let composer = cx.read(|cx| {
+        let view = app.workspace.read(cx).session_view().clone();
+        view.read(cx).composer().read(cx).text(cx)
+    });
+    assert_eq!(composer, "Wait.");
+    assert!(!app.shows(cx, "questions-replying"));
+    assert_eq!(
+        app.label(cx, "questions-open").as_deref(),
+        Some("3 open questions")
+    );
 }
 
 /// Esc in the panel does what "Answer in chat" does, and the keyboard goes

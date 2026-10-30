@@ -2483,16 +2483,19 @@ impl SessionView {
 
     /// Puts the message arko didn't send back in the composer, to whom it
     /// went and with the questions it answered, unless something else was
-    /// typed since or a message is being edited. `is` says whether it is the
-    /// message arko's notice is about. Gives back what returned.
+    /// typed since or a message is being edited. The questions are open
+    /// again either way. `is` says whether it is the message arko's notice
+    /// is about. Gives back what returned.
     fn restore_unsent(
         &mut self,
         is: impl FnOnce(&Unsent) -> bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Outgoing> {
-        if !self.unsent.as_ref().is_some_and(is) {
-            return None;
+        let unsent = self.unsent.as_ref().filter(|unsent| is(unsent))?;
+        if let Some(session) = &self.session {
+            let answers = unsent.answers.clone();
+            session.update(cx, |session, cx| session.reopen_questions(&answers, cx));
         }
         let empty = {
             let composer = self.composer.read(cx);
