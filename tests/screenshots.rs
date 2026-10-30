@@ -2004,6 +2004,146 @@ fn transcript_find_dark() {
     );
 }
 
+/// An image's thumbnail shows the keyboard's ring when Tab reaches it, and
+/// none when a press of the mouse gives it the focus.
+#[test]
+fn a_thumbnail_is_ringed_from_the_keyboard_alone() {
+    use arko::images::ImageRef;
+    use arko::remote::{CallStatus, Feed, Item, Kind};
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        AppContext as _, Focusable as _, InputEvent as _, Modifiers, MouseButton, MouseDownEvent,
+        MouseMoveEvent,
+    };
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let feed = Feed::new("main");
+    let mut read = Item::new(Kind::Call, "read assets/icon.png");
+    read.id = 1;
+    read.tool = Some("read_file".into());
+    read.status = Some(CallStatus::Ok);
+    read.images = vec![ImageRef {
+        id: 1,
+        mime: "image/png".into(),
+        label: "assets/icon.png".into(),
+        bytes: PNG.len(),
+    }];
+    feed.restore(vec![read]);
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(600.), px(300.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
+                    view.set_image_lookup(|_| Some((PNG.into(), "image/png".into())), cx);
+                    view
+                })
+            })
+            .map(|(window, view)| {
+                opened = Some(view);
+                window
+            })
+        })
+        .unwrap();
+    let view = opened.unwrap();
+    let tile = ("image", 1u64);
+    // The thumbnail's pixels, and whether it has the focus.
+    let thumbnail = |app: &mut ScreenshotApp| {
+        let image = app.capture(window).unwrap().image;
+        app.update_window(window, |_, window, _| {
+            let found = window.find(tile);
+            let bounds = found.bounds();
+            let (x, y) = (u32::from(bounds.origin.x), u32::from(bounds.origin.y));
+            let (width, height) = (u32::from(bounds.size.width), u32::from(bounds.size.height));
+            let pixels: Vec<[u8; 4]> = (y..y + height)
+                .flat_map(|y| (x..x + width).map(move |x| (x, y)))
+                .map(|(x, y)| image.get_pixel(x, y).0)
+                .collect();
+            (pixels, found.focused())
+        })
+        .unwrap()
+    };
+    let differing = |a: &[[u8; 4]], b: &[[u8; 4]]| a.iter().zip(b).filter(|(a, b)| a != b).count();
+    let focus_transcript = |app: &mut ScreenshotApp| {
+        app.update_window(window, |_, window, cx| {
+            view.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .unwrap();
+    };
+    // The pointer rests on the thumbnail in every capture, so only the
+    // focus differs between them.
+    let mouse = |app: &mut ScreenshotApp, down: bool| {
+        app.update_window(window, |_, window, cx| {
+            let position = window.find(tile).bounds().center();
+            let event = if down {
+                MouseDownEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }
+                .to_platform_input()
+            } else {
+                MouseMoveEvent {
+                    position,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                }
+                .to_platform_input()
+            };
+            window.dispatch_event(event, cx);
+        })
+        .unwrap();
+    };
+
+    let press = |app: &mut ScreenshotApp, key: &str| {
+        app.update_window(window, |_, window, cx| window.press(key, cx))
+            .unwrap();
+    };
+
+    mouse(&mut app, false);
+    let (plain, focused) = thumbnail(&mut app);
+    assert_eq!(focused, Some(false));
+
+    // Tab reaches it past the call's own button, and shows the ring that
+    // Shift+Tab takes away again.
+    focus_transcript(&mut app);
+    let mut keyed = None;
+    for _ in 0..4 {
+        press(&mut app, "tab");
+        let (pixels, focused) = thumbnail(&mut app);
+        if focused == Some(true) {
+            keyed = Some(pixels);
+            break;
+        }
+    }
+    let keyed = keyed.expect("Tab reaches the thumbnail");
+    press(&mut app, "shift-tab");
+    let (left, focused) = thumbnail(&mut app);
+    assert_eq!(focused, Some(false));
+    assert!(differing(&keyed, &left) > 0, "the keyboard rings it");
+
+    focus_transcript(&mut app);
+    mouse(&mut app, false);
+    mouse(&mut app, true);
+    let (pressed, focused) = thumbnail(&mut app);
+    assert_eq!(focused, Some(true), "the press gives it the focus");
+    assert_eq!(
+        differing(&plain, &pressed),
+        0,
+        "a press leaves it as it was"
+    );
+}
+
 /// The composer of an agent's new session, with the files an "@" mentions
 /// listed above it.
 fn mention_window(mode: ThemeMode) -> Screenshot {

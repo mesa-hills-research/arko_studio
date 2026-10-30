@@ -2757,7 +2757,8 @@ impl RenderOnce for Thumbnail {
             .border_1()
             .border_color(theme.border)
             .bg(theme.muted)
-            .focus(|this| this.border_color(theme.ring))
+            // Ringed only while the keyboard is in use.
+            .focus_visible(|this| this.border_color(theme.ring))
             .managed_tooltip(move |window, cx| Tooltip::new(caption.clone()).build(window, cx))
             .map(|this| match self.image {
                 Some(image) => {
