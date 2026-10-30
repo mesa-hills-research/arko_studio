@@ -1746,3 +1746,25 @@ fn the_chip_names_the_conversations_model(cx: &mut TestAppContext) {
         assert!(window.try_find("switch-model").is_some());
     });
 }
+
+/// While the old model writes its report for a new conversation, the
+/// session works: the button is Stop, and it sends the interrupt that
+/// skips the report.
+#[gpui_kit::test]
+fn stop_skips_the_report_of_a_switch(cx: &mut TestAppContext) {
+    let (window, _, session) = started_session(cx);
+    let reporting = arko::remote::Activity {
+        working: true,
+        since: Some(crate::figures::now_ms()),
+        ..Default::default()
+    };
+    session.update(cx, |session, cx| {
+        session.set_status(started_reading(), reporting, cx)
+    });
+    act(cx, window, |window, _| {
+        assert_eq!(window.find("stop").label(), Some("Stop"));
+        assert!(window.try_find("send").is_none());
+    });
+    act(cx, window, |window, cx| window.click("stop", cx));
+    assert!(cx.read(|cx| matches!(session.read(cx).queued(), [arko::Input::Interrupt])));
+}

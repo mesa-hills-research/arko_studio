@@ -2170,3 +2170,45 @@ fn resizing_the_sidebar_leaves_no_selection_following_the_pointer(cx: &mut TestA
     });
     app.close_all(cx);
 }
+
+/// `/new continue` asks the agent for a report first, and the session works
+/// meanwhile. Stop skips the report, and the new conversation opens with
+/// its marker.
+#[gpui_kit::test]
+fn stop_skips_the_report_for_a_new_conversation(cx: &mut TestAppContext) {
+    const REQUEST: &str = "a new conversation that goes on from a report you write now";
+    let mock = Mock::start(|_, body| {
+        if body.contains(REQUEST) {
+            answer("The report.", Duration::from_secs(60))
+        } else {
+            answer("Hello.", Duration::ZERO)
+        }
+    });
+    let app = start(cx, &mock);
+    let working = |cx: &mut TestAppContext| {
+        app.shown(cx)
+            .is_some_and(|session| cx.read(|cx| session.read(cx).is_working()))
+    };
+    app.send(cx, "Say hello.");
+    app.wait_for_text(cx, "Hello.");
+    wait_until(cx, "the turn to end", |cx| !working(cx));
+    app.send(cx, "/new continue");
+    wait_until(cx, "the report to be asked for", |cx| {
+        mock.was_sent(REQUEST) && working(cx)
+    });
+    act(cx, app.window, |window, cx| {
+        assert_eq!(window.find("stop").label(), Some("Stop"));
+        window.click("stop", cx);
+    });
+    app.wait_for_text(cx, "report.");
+    wait_until(cx, "the new conversation", |cx| {
+        app.feed(cx).iter().any(|text| text == "New conversation")
+    });
+    wait_until(cx, "the switch to end", |cx| !working(cx));
+    assert!(
+        app.feed(cx).iter().any(|text| text.starts_with("Skipped")),
+        "{:?}",
+        app.feed(cx)
+    );
+    app.close_all(cx);
+}
