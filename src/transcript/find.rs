@@ -1702,7 +1702,7 @@ impl ShadeKey {
 }
 
 fn work_out_shade(ink: Ink, highlight: Hsla, cx: &App) -> Hsla {
-    use crate::segmented::contrast_ratio;
+    use gpui_kit::component::contrast_ratio;
     #[cfg(test)]
     SHADES_WORKED.with(|worked| worked.set(worked.get() + 1));
     let under = ink.surfaces(cx).map(|surface| surface.blend(highlight));

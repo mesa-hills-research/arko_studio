@@ -118,7 +118,7 @@ pub(crate) const WARNING_CONTRAST: f32 = 4.5;
 /// (or, on a dark fill, lightened) until it does. Most light themes' amber
 /// is too light for a hovered row.
 pub(crate) fn warning_color(theme: &Theme) -> Hsla {
-    use crate::segmented::contrast_ratio;
+    use gpui_kit::component::contrast_ratio;
     let fill = theme.background.blend(theme.popover);
     let surfaces = [fill, fill.blend(theme.secondary_hover)];
     let least = |color: Hsla| {
@@ -941,7 +941,7 @@ pub(crate) fn request(json: serde_json::Value) -> ApprovalRequest {
 #[cfg(test)]
 mod tests {
     use super::{WARNING_CONTRAST, code_spans, warning_color};
-    use crate::segmented::contrast_ratio;
+    use gpui_kit::component::contrast_ratio;
     use gpui_kit::component::{ActiveTheme as _, Theme};
     use gpui_kit::{Hsla, TestAppContext};
 

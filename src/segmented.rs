@@ -4,7 +4,9 @@
 //! shortcut: this mirrors the kit's private segmented-tab rule, so use the
 //! kit's own helpers if it exposes them.
 
-use gpui_kit::component::{ActiveTheme as _, StyledExt as _, Theme, concentric_radius, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, StyledExt as _, Theme, concentric_radius, contrast_ratio, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -72,23 +74,6 @@ fn track_outline(theme: &Theme) -> Hsla {
         alpha = (alpha - 0.05).max(0.);
     }
     theme.border.opacity(alpha)
-}
-
-/// The WCAG 2 contrast ratio of two opaque colors, from 1 to 21.
-pub(crate) fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
-    fn luminance(color: Hsla) -> f32 {
-        let channel = |c: f32| {
-            if c <= 0.04045 {
-                c / 12.92
-            } else {
-                ((c + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        let rgb = color.to_rgb();
-        0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b)
-    }
-    let (a, b) = (luminance(a), luminance(b));
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 /// The gap between the track's outer edge and each segment's edge, on every

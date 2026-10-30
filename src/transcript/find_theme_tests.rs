@@ -6,7 +6,7 @@ use gpui_kit::component::{ActiveTheme as _, Colorize as _, Theme};
 use gpui_kit::{Hsla, TestAppContext, hsla};
 
 use super::find::{Ink, MATCH_CONTRAST, MarkdownInks, readable_on};
-use crate::segmented::contrast_ratio;
+use gpui_kit::component::contrast_ratio;
 
 /// Matches are yellow, the current one stronger, unless the theme sets its
 /// own colors for them.
