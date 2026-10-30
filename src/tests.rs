@@ -684,6 +684,46 @@ fn a_message_to_a_worker_says_it_went_unless_its_transcript_shows(cx: &mut TestA
     assert_eq!(notifications(cx, window), 2);
 }
 
+/// A line that reads as a command but isn't one stays in the composer, to
+/// the main agent and to a worker, and a notification says why. A space
+/// before the slash sends it as a message, and a command goes as before.
+#[gpui_kit::test]
+fn a_mistyped_command_stays_in_the_composer(cx: &mut TestAppContext) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let composer =
+        |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).composer().read(cx).text(cx));
+    let clear = |cx: &mut TestAppContext| {
+        act(cx, window, |window, cx| {
+            let composer = view.read(cx).composer().clone();
+            composer.update(cx, |composer, cx| composer.set_text("", window, cx));
+        })
+    };
+    for (target, sent) in [
+        (None, [" /quiet", "/cost"]),
+        (Some("r1"), ["/message r1 /quiet", "/message r1 /cost"]),
+    ] {
+        act(cx, window, |window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_target(target.map(Into::into), window, cx)
+            })
+        });
+        let (queued, shown) = (
+            queued_messages(&session, cx).len(),
+            notifications(cx, window),
+        );
+        send_text(cx, window, "/quiet");
+        assert_eq!(composer(cx), "/quiet", "{target:?}");
+        assert_eq!(notifications(cx, window), shown + 1, "{target:?}");
+        assert_eq!(queued_messages(&session, cx).len(), queued, "{target:?}");
+        clear(cx);
+        send_text(cx, window, " /quiet");
+        assert_eq!(composer(cx), "", "{target:?}");
+        send_text(cx, window, "/cost");
+        assert_eq!(queued_messages(&session, cx)[queued..], sent, "{target:?}");
+    }
+}
+
 /// The confirmation names the worker and reads as a sentence.
 #[test]
 fn the_confirmation_of_a_message_to_a_worker_reads_as_a_sentence() {

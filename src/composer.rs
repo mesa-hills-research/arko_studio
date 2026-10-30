@@ -251,6 +251,14 @@ fn offered(command: &arko::commands::Command) -> bool {
     command.runs == arko::commands::Runs::Session || APP_COMMANDS.contains(&command.name)
 }
 
+/// The commands the app offers, which a mistyped command's warning names
+/// the closest of.
+pub fn offered_commands() -> impl Iterator<Item = &'static arko::commands::Command> {
+    arko::commands::COMMANDS
+        .iter()
+        .filter(|command| offered(command))
+}
+
 /// The slash menu for `text`, from the commands and the session's status
 /// `reading`, or `None` when it isn't a command being typed.
 pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
@@ -1560,7 +1568,10 @@ impl Render for Composer {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{PASTE_TOKEN_BYTES, SendKey, SubmitKey, paste_label, pastes_as_token, slash_menu};
+    use super::{
+        APP_COMMANDS, PASTE_TOKEN_BYTES, SendKey, SubmitKey, offered_commands, paste_label,
+        pastes_as_token, slash_menu,
+    };
     use arko::remote::Reading;
 
     #[test]
@@ -1588,6 +1599,44 @@ mod tests {
         assert!(pastes_as_token(&"x".repeat(PASTE_TOKEN_BYTES + 1), 20));
         assert_eq!(paste_label(&lines), "Pasted 21 lines");
         assert_eq!(paste_label(&"x".repeat(3000)), "Pasted 3 KB");
+    }
+
+    /// The commands the app runs itself, and those it sends the session on
+    /// the user's behalf, are commands. A mistyped one names the closest
+    /// the app offers, and not one only the terminal's full-screen view
+    /// runs.
+    #[test]
+    fn the_apps_own_commands_are_known_and_a_mistyped_one_names_the_closest() {
+        let unknown = |text: &str| arko::commands::unknown(text, offered_commands());
+        for text in [
+            "/view full",
+            "/view quiet",
+            "/view messages",
+            "/settings",
+            "/model sonnet high",
+            "/model worker main",
+            "/message r1 Use tabs.",
+            "/stop-workers",
+            "/stop-workers r1",
+            "/resume 2",
+            "/handover",
+            "/handover-at main 300k",
+            "/notes remove 1",
+            "/message-copies off",
+        ] {
+            assert_eq!(unknown(text), None, "{text}");
+        }
+        assert!(APP_COMMANDS.iter().all(|name| unknown(name).is_none()));
+        assert_eq!(
+            unknown("/quiet").as_deref(),
+            Some(
+                "/quiet isn't a command. Did you mean /view quiet? Start with a space to send it as a message."
+            )
+        );
+        assert!(unknown("/setings").unwrap().contains("/settings?"));
+        // The full-screen view's /copy isn't offered here.
+        assert!(!unknown("/cpy").unwrap().contains("/copy"));
+        assert_eq!(unknown(" /quiet"), None);
     }
 
     #[test]

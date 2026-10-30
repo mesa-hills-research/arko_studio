@@ -2251,6 +2251,14 @@ impl SessionView {
                 }
             }
         }
+        // A line that reads as a command but isn't one stays in the
+        // composer to put right. The session would say so too, but only
+        // once the composer had emptied, and a worker would get the line
+        // as a message. A space before the slash sends it as one.
+        if let Some(why) = arko::commands::unknown(&text, crate::composer::offered_commands()) {
+            window.push_notification(why, cx);
+            return;
+        }
         let attached = images;
         // Images the model can't take stay, with the message, until the
         // user removes them or picks another model.
