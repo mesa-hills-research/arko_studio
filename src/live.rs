@@ -1662,16 +1662,20 @@ fn first_line(text: &str) -> SharedString {
 }
 
 /// The model of the conversation the next message goes to, as `/model`
-/// takes it, and its effort when arko says it. That's the model new
-/// conversations start on, unless `/resume` went back to a conversation on
-/// another one, whose effort isn't known.
+/// takes it, and its effort when arko says it. They differ from those new
+/// conversations start on after `/resume` went back to a conversation on
+/// another model or effort. (An Arko that doesn't say the conversation's
+/// model gives the new conversations'.)
 pub fn conversation_model(models: &arko::remote::Models) -> (&str, Option<&str>) {
-    let effort = Some(models.main_effort.as_str()).filter(|effort| !effort.is_empty());
-    if models.conversation.is_empty() || models.conversation == models.main {
-        (&models.main, effort)
+    let (model, effort) = if models.conversation.is_empty() {
+        (&models.main, &models.main_effort)
     } else {
-        (&models.conversation, None)
-    }
+        (&models.conversation, &models.conversation_effort)
+    };
+    (
+        model,
+        Some(effort.as_str()).filter(|effort| !effort.is_empty()),
+    )
 }
 
 /// Why a session didn't open, for the user.

@@ -4349,6 +4349,7 @@ fn model_popover_started(mode: ThemeMode, pick: Option<&'static str>) -> Screens
                     main: "cc:claude-opus-5-5".into(),
                     main_effort: "high".into(),
                     conversation: "cc:claude-opus-5-5".into(),
+                    conversation_effort: "high".into(),
                     workers: "cc:claude-sonnet-5-5".into(),
                     workers_effort: "high".into(),
                     started: true,

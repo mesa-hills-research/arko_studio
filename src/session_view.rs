@@ -3273,6 +3273,7 @@ impl SessionView {
         let models = session.read(cx).reading().models.clone();
         let (current, current_effort) = crate::live::conversation_model(&models);
         let keeps_model = model == current;
+        // (An effort not known to be the conversation's may differ.)
         if keeps_model && (effort.is_none() || effort.as_deref() == current_effort) {
             return;
         }
@@ -3290,13 +3291,14 @@ impl SessionView {
             return;
         }
         // Another model's effort is chosen in the dialog, from the one the
-        // main agent runs at, as arko would fit it.
+        // conversation runs at, as arko would fit it.
         let efforts = if keeps_model {
             Vec::new()
         } else {
             arko::commands::dynamic_choices(&arko::remote::Reading::default(), "/model", &[&model])
         };
-        let effort = effort.or_else(|| fit_effort(&efforts, &models.main_effort));
+        let from = current_effort.unwrap_or(&models.main_effort);
+        let effort = effort.or_else(|| fit_effort(&efforts, from));
         let label = self
             .openrouter_model(&model)
             .map(|known| known.label.clone())

@@ -1562,6 +1562,7 @@ fn started_reading() -> arko::remote::Reading {
             main: "claude-opus-5-5".into(),
             main_effort: "high".into(),
             conversation: "claude-opus-5-5".into(),
+            conversation_effort: "high".into(),
             workers: "claude-sonnet-5-5".into(),
             workers_effort: "high".into(),
             started: true,
@@ -1724,20 +1725,21 @@ fn the_main_agents_models_wait_for_the_turn(cx: &mut TestAppContext) {
 }
 
 /// In a conversation `/resume` went back to on another model, the chip
-/// names that model, without the effort of new conversations, and the
-/// list checks it.
+/// names that model at its own effort, not the effort of new
+/// conversations.
 #[gpui_kit::test]
 fn the_chip_names_the_conversations_model(cx: &mut TestAppContext) {
     let (window, workspace, session) = started_session(cx);
     let mut reading = started_reading();
     reading.models.conversation = "claude-sonnet-5-5".into();
+    reading.models.conversation_effort = "medium".into();
     session.update(cx, |session, cx| {
         session.set_status(reading, Default::default(), cx)
     });
     act(cx, window, |_, _| {});
     let view = session_view(&workspace, cx);
     let label = cx.read(|cx| view.read(cx).chip_label(cx));
-    assert!(label.ends_with("Sonnet 5.5"), "{label}");
+    assert!(label.ends_with("Sonnet 5.5 · medium"), "{label}");
     // Opus is another model here: it asks.
     act(cx, window, |window, cx| window.click("mode-model", cx));
     let opus = model_row(window, "Opus 5.5, Anthropic API", cx);
@@ -1767,4 +1769,47 @@ fn stop_skips_the_report_of_a_switch(cx: &mut TestAppContext) {
     });
     act(cx, window, |window, cx| window.click("stop", cx));
     assert!(cx.read(|cx| matches!(session.read(cx).queued(), [arko::Input::Interrupt])));
+}
+
+/// Back in a conversation that runs another effort than new conversations
+/// start at, the chip and the list say the conversation's own: picking it
+/// sends nothing, and picking the other asks. An effort arko doesn't know
+/// isn't shown.
+#[gpui_kit::test]
+fn a_conversation_gone_back_to_keeps_its_own_effort(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    // Conversation 1 ran at high, conversation 2 at low, and `/resume 1`
+    // went back to the first.
+    let mut reading = started_reading();
+    reading.models.main_effort = "low".into();
+    session.update(cx, |session, cx| {
+        session.set_status(reading.clone(), Default::default(), cx)
+    });
+    act(cx, window, |_, _| {});
+    let view = session_view(&workspace, cx);
+    let label = cx.read(|cx| view.read(cx).chip_label(cx));
+    assert!(label.ends_with("Opus 5.5 · high"), "{label}");
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| {
+        assert_eq!(window.find("effort-high").label(), Some("high, chosen"));
+        window.click("effort-high", cx);
+    });
+    act(cx, window, |window, _| {
+        assert!(window.try_find("switch-model").is_none());
+    });
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("effort-low", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("switch-model").is_some());
+        window.within("dialog").click("cancel", cx);
+    });
+    assert!(sent(&session, cx).is_empty());
+    // Without the conversation's effort, the chip names the model alone.
+    reading.models.conversation_effort = String::new();
+    session.update(cx, |session, cx| {
+        session.set_status(reading, Default::default(), cx)
+    });
+    act(cx, window, |_, _| {});
+    let label = cx.read(|cx| view.read(cx).chip_label(cx));
+    assert!(label.ends_with("Opus 5.5"), "{label}");
 }
