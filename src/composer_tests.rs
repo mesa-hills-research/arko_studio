@@ -1543,7 +1543,19 @@ fn started_session(
     Entity<Workspace>,
     Entity<crate::live::LiveSession>,
 ) {
-    let (_, window, workspace) = start(cx);
+    started_session_on(cx, FakeBackend::sample("/arko", SystemTime::now()))
+}
+
+fn started_session_on(
+    cx: &mut TestAppContext,
+    backend: FakeBackend,
+) -> (
+    AnyWindowHandle,
+    Entity<Workspace>,
+    Entity<crate::live::LiveSession>,
+) {
+    cx.update(|cx| crate::init(Startup::for_tests(Arc::new(backend)), cx));
+    let (window, workspace) = open(cx, 1300.);
     let session = cx.new(|cx| crate::live::LiveSession::for_tests("s1", cx));
     session.update(cx, |session, cx| {
         session.set_status(started_reading(), Default::default(), cx)
@@ -1812,4 +1824,95 @@ fn a_conversation_gone_back_to_keeps_its_own_effort(cx: &mut TestAppContext) {
     act(cx, window, |_, _| {});
     let label = cx.read(|cx| view.read(cx).chip_label(cx));
     assert!(label.ends_with("Opus 5.5"), "{label}");
+}
+
+/// Opus 5.5 and Sonnet 5.5 on the Anthropic API, as an open session's
+/// models.
+fn two_models() -> FakeBackend {
+    use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
+    let choice = |name: &str, alias: &str| ModelChoice {
+        name: name.into(),
+        alias: alias.into(),
+        billing: None,
+    };
+    FakeBackend::sample("/arko", SystemTime::now()).with_session_models(ModelChoices {
+        groups: vec![ModelGroup {
+            name: "Anthropic API, billed per token".into(),
+            needs: None,
+            models: vec![
+                choice("claude-opus-5-5", "opus"),
+                choice("claude-sonnet-5-5", "sonnet"),
+            ],
+        }],
+        default: None,
+        note: None,
+    })
+}
+
+/// Whether `id` has the keyboard.
+fn has_keyboard(
+    window: AnyWindowHandle,
+    id: impl Into<gpui_kit::ElementId>,
+    cx: &mut TestAppContext,
+) -> bool {
+    let id = id.into();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).and_then(|found| found.focused()) == Some(true)
+    })
+    .unwrap()
+}
+
+/// Presses Tab until `id` has the keyboard.
+fn tab_to(window: AnyWindowHandle, id: &'static str, cx: &mut TestAppContext) {
+    for _ in 0..40 {
+        if has_keyboard(window, id, cx) {
+            return;
+        }
+        act(cx, window, |window, cx| window.press("tab", cx));
+    }
+    panic!("Tab never reached {id}");
+}
+
+/// Enter chooses a model in the list from the keyboard. The dialog that
+/// asks before a switch then gives the keyboard back to the model chip,
+/// whether Esc or Cancel closes it or Switch confirms it.
+#[gpui_kit::test]
+fn the_switch_dialog_gives_the_keyboard_back_to_the_chip(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session_on(cx, two_models());
+    let view = session_view(&workspace, cx);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx))
+    });
+    for close in ["escape", "cancel", "ok"] {
+        tab_to(window, "mode-model", cx);
+        act(cx, window, |window, cx| window.press("enter", cx));
+        tab_to(window, "model-0-1", cx);
+        act(cx, window, |window, cx| window.press("enter", cx));
+        act(cx, window, |window, cx| {
+            assert!(window.try_find("switch-model").is_some());
+            assert!(window.try_find("model-list").is_none(), "closed first");
+            match close {
+                "escape" => window.press("escape", cx),
+                button => window.within("dialog").click(button, cx),
+            }
+        });
+        // (Switch closes the dialog once it has faded.)
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        act(cx, window, |window, cx| {
+            assert!(!window.has_active_dialog(cx), "{close}");
+        });
+        assert!(has_keyboard(window, "mode-model", cx), "after {close}");
+    }
+    assert_eq!(sent(&session, cx), ["/model claude-sonnet-5-5 high"]);
+    // So does another effort's.
+    act(cx, window, |window, cx| window.press("enter", cx));
+    tab_to(window, "effort-low", cx);
+    act(cx, window, |window, cx| window.press("enter", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("switch-model").is_some());
+        window.press("escape", cx);
+    });
+    assert!(has_keyboard(window, "mode-model", cx), "after an effort");
 }

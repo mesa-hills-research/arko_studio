@@ -101,6 +101,19 @@ struct FindBar {
 /// The key context of the find bar.
 pub const FIND_CONTEXT: &str = "FindBar";
 
+/// The key context of the chip's popover, Chat or Agent and the models.
+const MODE_CHOICE_CONTEXT: &str = "ModeChoice";
+
+/// Enter and Space press the button that has the keyboard in the chip's
+/// popover. GPUI Kit's popover binds them to close itself, which would
+/// close the list without choosing.
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("enter", NoAction, Some(MODE_CHOICE_CONTEXT)),
+        KeyBinding::new("space", NoAction, Some(MODE_CHOICE_CONTEXT)),
+    ]);
+}
+
 /// A message of the user's being edited in the composer.
 struct Editing {
     /// The message, by its item.
@@ -2882,14 +2895,16 @@ impl SessionView {
                                     // list stays open on them. After the
                                     // start, the switch asks for its effort.
                                     let stays = !started && reasons(&name);
-                                    view.update(cx, |view, cx| {
-                                        view.choose_model(name, workers_only, window, cx)
-                                    })
-                                    .ok();
+                                    // Closed first, so a dialog that asks
+                                    // gives the keyboard back to the chip.
                                     if !stays {
                                         popover
                                             .update(cx, |popover, cx| popover.dismiss(window, cx));
                                     }
+                                    view.update(cx, |view, cx| {
+                                        view.choose_model(name, workers_only, window, cx)
+                                    })
+                                    .ok();
                                 })
                         }))
                         .children(found.into_iter().enumerate().map(|(ix, model)| {
@@ -2931,14 +2946,16 @@ impl SessionView {
                                 .on_click(move |_, window, cx| {
                                     let name = model.name.clone();
                                     let stays = !started && reasons(&name);
-                                    view.update(cx, |view, cx| {
-                                        view.choose_model(name, workers_only, window, cx)
-                                    })
-                                    .ok();
+                                    // Closed first, so a dialog that asks
+                                    // gives the keyboard back to the chip.
                                     if !stays {
                                         popover
                                             .update(cx, |popover, cx| popover.dismiss(window, cx));
                                     }
+                                    view.update(cx, |view, cx| {
+                                        view.choose_model(name, workers_only, window, cx)
+                                    })
+                                    .ok();
                                 })
                         }))
                         .when(loading, |this| {
@@ -3000,6 +3017,7 @@ impl SessionView {
 
         v_flex()
             .id("mode-choice")
+            .key_context(MODE_CHOICE_CONTEXT)
             .w(rems(18.))
             .max_h(rems(28.))
             .gap_2()
@@ -3127,11 +3145,11 @@ impl SessionView {
                                 .label(effort.clone())
                                 .on_click(move |_, window, cx| {
                                     let (model, effort) = (model.clone(), effort.clone());
+                                    popover.update(cx, |popover, cx| popover.dismiss(window, cx));
                                     view.update(cx, |view, cx| {
                                         view.choose_effort(model, effort, window, cx)
                                     })
                                     .ok();
-                                    popover.update(cx, |popover, cx| popover.dismiss(window, cx));
                                 })
                         })),
                 )
