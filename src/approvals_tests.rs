@@ -14,7 +14,7 @@ use arko::approvals::{
 use arko::remote::{Activity, Reading};
 use gpui_kit::Focusable as _;
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
+use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, px};
 
 use crate::Startup;
 use crate::approvals::{part, request};
@@ -136,6 +136,16 @@ fn update(id: &str) -> ApprovalRequest {
             ..SkillApproval::default()
         }),
     }
+}
+
+/// [`update`] with 60 changed lines, more than their box shows at once.
+fn long_update(id: &str) -> ApprovalRequest {
+    let mut long = update(id);
+    if let Approval::Skill(skill) = &mut long.approval {
+        let diff: Vec<String> = (1..=60).map(|n| format!("+ Line {n}.")).collect();
+        skill.update.as_mut().unwrap().diff = diff.join("\n");
+    }
+    long
 }
 
 /// The answer naming each of `choices` (an id and whether it is approved),
@@ -405,6 +415,111 @@ fn the_message_box_words_go_with_the_answer(cx: &mut TestAppContext) {
         [answers(&[("a1", false)], Some("Run it on opus instead"))]
     );
     assert_eq!(app.composer_text(cx), "");
+}
+
+/// A long update's changed lines are read from the keyboard. Tab reaches
+/// their box, ↓ and Page Down scroll it, End shows its last line and Home
+/// its first, and Esc closes the details with the tray keeping the keyboard.
+#[gpui_kit::test]
+fn a_long_diff_scrolls_to_its_end_by_keyboard(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.request(cx, vec![long_update("a1")]);
+    let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
+    act(cx, app.window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx))
+    });
+    app.press(cx, "alt-a");
+    app.press(cx, "right");
+    app.press(cx, "tab");
+    let diff = part("approval-diff", "a1");
+    let place = |cx: &mut TestAppContext| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            let shown = window.find(diff.clone());
+            assert_eq!(shown.focused(), Some(true));
+            let lines = window.find(part("approval-diff-lines", "a1")).bounds();
+            (shown.bounds(), lines)
+        })
+        .unwrap()
+    };
+    let (shown, start) = place(cx);
+    assert_eq!(
+        app.label(cx, diff.clone()).as_deref(),
+        Some("Changed lines")
+    );
+    assert!(start.bottom() > shown.bottom() + px(500.), "{start:?}");
+    let top = |cx: &mut TestAppContext| place(cx).1.top();
+    app.press(cx, "down");
+    let row = start.size.height / 60.;
+    let after_row = start.top() - top(cx);
+    assert!((after_row - row).abs() < px(1.), "{after_row:?} {row:?}");
+    app.press(cx, "pagedown");
+    let page = start.top() - top(cx) - after_row;
+    assert!(
+        page > row * 5. && page < shown.size.height,
+        "{page:?} {shown:?}"
+    );
+    app.press(cx, "end");
+    let (shown, end) = place(cx);
+    // Its last line shows at the foot of the box, inside the focus ring.
+    let below = shown.bottom() - end.bottom();
+    assert!(below >= px(0.) && below < px(2.), "{below:?}");
+    app.press(cx, "home");
+    assert_eq!(top(cx), start.top());
+    // ↑ and ↓ scrolled the box and stayed on the row.
+    assert!(app.shows(cx, part("approval-details", "a1")));
+    app.press(cx, "escape");
+    assert!(!app.shows(cx, part("approval-details", "a1")));
+    assert!(app.tray_focused(cx));
+}
+
+/// The wheel over a box of text scrolls the box alone, and over the rest
+/// of the details it scrolls the tray's rows.
+#[gpui_kit::test]
+fn the_wheel_over_a_box_scrolls_the_box_alone(cx: &mut TestAppContext) {
+    use gpui_kit::{InputEvent as _, ScrollDelta, ScrollWheelEvent, point};
+
+    let app = start(cx);
+    app.request(cx, vec![long_update("a1")]);
+    app.click(cx, part("approval-row", "a1"));
+    let tops = |cx: &mut TestAppContext| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            let top = |name: &str| window.find(part(name, "a1")).bounds().top();
+            (top("approval-question"), top("approval-diff-lines"))
+        })
+        .unwrap()
+    };
+    let wheel = |cx: &mut TestAppContext, name: &str| {
+        let at = cx
+            .update_window(app.window, |_, window, cx| {
+                window.render_frame(cx);
+                window.find(part(name, "a1")).bounds().center()
+            })
+            .unwrap();
+        cx.update_window(app.window, |_, window, cx| {
+            window.dispatch_event(
+                ScrollWheelEvent {
+                    position: at,
+                    delta: ScrollDelta::Pixels(point(px(0.), px(-40.))),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let (question, lines) = tops(cx);
+    wheel(cx, "approval-diff");
+    let (box_question, box_lines) = tops(cx);
+    assert_eq!(box_question, question);
+    assert!(box_lines < lines, "{box_lines:?} {lines:?}");
+    wheel(cx, "approval-question");
+    let (rows_question, rows_lines) = tops(cx);
+    assert!(rows_question < box_question, "the rows scroll");
+    assert_eq!(rows_question - box_question, rows_lines - box_lines);
 }
 
 /// Words too long to reach the agent aren't sent. The tray says why and

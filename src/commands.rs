@@ -332,6 +332,31 @@ pub fn commands() -> Vec<Command> {
             .keys(&["escape"])
             .context(approvals::CONTEXT)
             .not_in_palette(),
+        // A box of text in the details, once Tab reaches it.
+        Command::new(Approvals, "Scroll Up", approvals::ScrollUp)
+            .keys(&["up"])
+            .context(approvals::BOX_CONTEXT)
+            .not_in_palette(),
+        Command::new(Approvals, "Scroll Down", approvals::ScrollDown)
+            .keys(&["down"])
+            .context(approvals::BOX_CONTEXT)
+            .not_in_palette(),
+        Command::new(Approvals, "Scroll Up a Page", approvals::ScrollPageUp)
+            .keys(&["pageup"])
+            .context(approvals::BOX_CONTEXT)
+            .not_in_palette(),
+        Command::new(Approvals, "Scroll Down a Page", approvals::ScrollPageDown)
+            .keys(&["pagedown"])
+            .context(approvals::BOX_CONTEXT)
+            .not_in_palette(),
+        Command::new(Approvals, "Scroll to the Start", approvals::ScrollToStart)
+            .keys(&["home"])
+            .context(approvals::BOX_CONTEXT)
+            .not_in_palette(),
+        Command::new(Approvals, "Scroll to the End", approvals::ScrollToEnd)
+            .keys(&["end"])
+            .context(approvals::BOX_CONTEXT)
+            .not_in_palette(),
         Command::new(Transcript, "Full Transcript", ViewFull),
         Command::new(Transcript, "Quiet Transcript", ViewQuiet),
         Command::new(Transcript, "Messages Only", ViewMessages),

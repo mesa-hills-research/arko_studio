@@ -4396,11 +4396,18 @@ fn approval_requests() -> Vec<arko::approvals::ApprovalRequest> {
 /// A sample session whose approval tray holds the requests `ids` of
 /// [`approval_requests`], once the elements `clicks` were clicked.
 fn approvals_window(mode: ThemeMode, ids: &[&str], clicks: &[&str]) -> Screenshot {
-    approvals_window_of(mode, 800., ids, clicks)
+    approvals_window_of(mode, 800., ids, clicks, &[])
 }
 
-/// [`approvals_window`] in a window `height` tall.
-fn approvals_window_of(mode: ThemeMode, height: f32, ids: &[&str], clicks: &[&str]) -> Screenshot {
+/// [`approvals_window`] in a window `height` tall, with the `keys` pressed
+/// after the clicks.
+fn approvals_window_of(
+    mode: ThemeMode,
+    height: f32,
+    ids: &[&str],
+    clicks: &[&str],
+    keys: &[&str],
+) -> Screenshot {
     use gpui_kit::test::TestWindowExt as _;
 
     let mut app = ScreenshotApp::with_assets(Assets).unwrap();
@@ -4443,6 +4450,14 @@ fn approvals_window_of(mode: ThemeMode, height: f32, ids: &[&str], clicks: &[&st
         app.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.click(id, cx);
+        })
+        .unwrap();
+        app.run_until_parked();
+    }
+    for key in keys {
+        app.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(key, cx);
         })
         .unwrap();
         app.run_until_parked();
@@ -4508,7 +4523,7 @@ fn approvals_option_dark() {
 /// changed lines in a box of their own, and the files with SKILL.md in
 /// theirs.
 fn approvals_update(mode: ThemeMode) -> Screenshot {
-    approvals_window_of(mode, 1100., &["a5"], &["approval-row-a5"])
+    approvals_window_of(mode, 1100., &["a5"], &["approval-row-a5"], &[])
 }
 
 #[test]
@@ -4522,6 +4537,28 @@ fn approvals_update_light() {
 #[test]
 fn approvals_update_dark() {
     goldens().assert("approvals-update-dark", &approvals_update(ThemeMode::Dark));
+}
+
+/// The update open to its details from the keyboard, which Tab took to the
+/// box of its changed lines, ringed while it has the keyboard.
+fn approvals_update_keyboard(mode: ThemeMode) -> Screenshot {
+    approvals_window_of(mode, 1100., &["a5"], &[], &["alt-a", "right", "tab"])
+}
+
+#[test]
+fn approvals_update_keyboard_light() {
+    goldens().assert(
+        "approvals-update-keyboard-light",
+        &approvals_update_keyboard(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn approvals_update_keyboard_dark() {
+    goldens().assert(
+        "approvals-update-keyboard-dark",
+        &approvals_update_keyboard(ThemeMode::Dark),
+    );
 }
 
 /// A card of the agent's questions in the transcript: its line, and the

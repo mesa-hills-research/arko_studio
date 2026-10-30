@@ -12,7 +12,9 @@
 //! message box too. Alt+A gives the tray the keyboard, where ↑ and ↓ move
 //! between the rows, Space checks one, A checks all or none, → opens a
 //! row's details, Enter approves, and Esc closes the details, then gives the
-//! keyboard back to the message box.
+//! keyboard back to the message box. Tab reaches the boxes of text in the
+//! details, where ↑ and ↓ scroll a line, Page Up and Page Down a box's
+//! height, and Home and End to its start and end.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -71,8 +73,23 @@ gpui_kit::actions!(
         /// Closes the details, or gives the keyboard back to the message
         /// box when none are open (Esc).
         CloseDetails,
+        /// Scrolls a box of text in the details up a line (↑).
+        ScrollUp,
+        /// Scrolls a box of text down a line (↓).
+        ScrollDown,
+        /// Scrolls a box of text up by its height (Page Up).
+        ScrollPageUp,
+        /// Scrolls a box of text down by its height (Page Down).
+        ScrollPageDown,
+        /// Scrolls a box of text to its start (Home).
+        ScrollToStart,
+        /// Scrolls a box of text to its end (End).
+        ScrollToEnd,
     ]
 );
+
+/// The key context of a box of text in a request's details.
+pub const BOX_CONTEXT: &str = "ApprovalBox";
 
 /// What the tray asks of the session view.
 #[derive(Debug, Clone, PartialEq)]
@@ -486,28 +503,14 @@ impl ApprovalTray {
             .as_ref()
             .and_then(|files| files[0].text.as_deref())
             .map(str::trim_end);
-        let scroll_box = |name: &str, text: String| {
-            div()
-                .id(part(name, &id))
-                .test_support()
-                .child(
-                    div()
-                        .max_h(rems(10.))
-                        .overflow_y_scrollbar()
-                        // Each box keeps its own place.
-                        .id(part(&format!("{name}-scroll"), &id))
-                        .p_2()
-                        .rounded(theme.radius)
-                        .bg(theme.muted)
-                        .font_family(theme.mono_font_family.clone())
-                        .text_xs()
-                        .child(SelectableText::new(
-                            part(&format!("{name}-text"), &id),
-                            text,
-                        )),
-                )
-                .into_any_element()
+        let text_box = |name: &str, label: &str, text: String| TextBox {
+            name: name.to_string(),
+            request: id.clone(),
+            label: label.to_string().into(),
+            text,
         };
+        // A box is named by the heading above it.
+        let mut heading = String::new();
         let mut lines: Vec<AnyElement> = Vec::new();
         for (n, detail) in approval.details().into_iter().enumerate() {
             let line_id = (SharedString::from(format!("approval-line-{id}")), n);
@@ -522,12 +525,15 @@ impl ApprovalTray {
                         .highlights(code.into_iter().map(|range| (range, style)))
                         .into_any_element()
                 }
-                Look::Heading => div()
-                    .pt_1()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(detail.text)
-                    .into_any_element(),
+                Look::Heading => {
+                    heading.clone_from(&detail.text);
+                    div()
+                        .pt_1()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(detail.text)
+                        .into_any_element()
+                }
                 Look::Warning => div()
                     .text_color(warning)
                     .child(SelectableText::new(line_id, detail.text))
@@ -535,8 +541,10 @@ impl ApprovalTray {
                 // A skill's files show below, with the one chosen in the box.
                 Look::Box if main_text == Some(detail.text.as_str()) => continue,
                 Look::File if files.is_some() => continue,
-                Look::Box if files.is_some() => scroll_box("approval-diff", detail.text),
-                Look::Box => scroll_box("approval-box", detail.text),
+                Look::Box if files.is_some() => {
+                    text_box("approval-diff", "Changed lines", detail.text).into_any_element()
+                }
+                Look::Box => text_box("approval-box", &heading, detail.text).into_any_element(),
                 Look::File => SelectableText::new(line_id, detail.text).into_any_element(),
             });
         }
@@ -572,10 +580,8 @@ impl ApprovalTray {
                             }))
                     }))
             });
-            v_flex()
-                .gap_1()
-                .children(chips)
-                .child(scroll_box("approval-box", text))
+            let file_box = text_box("approval-box", &files[shown].path, text);
+            v_flex().gap_1().children(chips).child(file_box)
         });
         let option = approval.option().map(|option| {
             let id = id.clone();
@@ -608,6 +614,215 @@ impl ApprovalTray {
             .children(option)
             .into_any_element()
     }
+}
+
+/// A box of text in a request's details, such as SKILL.md or an update's
+/// changed lines, at most 10 rem tall. It scrolls by the wheel and its
+/// scrollbar, and once Tab reaches it, by ↑ and ↓ a line at a time, Page Up
+/// and Page Down, Home and End.
+#[derive(IntoElement)]
+struct TextBox {
+    /// What its parts are named after, with the request's id.
+    name: String,
+    request: String,
+    /// What a screen reader calls it.
+    label: SharedString,
+    text: String,
+}
+
+impl RenderOnce for TextBox {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let id = part(&self.name, &self.request);
+        let name = |of: &str| part(&format!("{}-{of}", self.name), &self.request);
+        let focus = window
+            .use_keyed_state(id.clone(), cx, |_, cx| cx.focus_handle().tab_stop(true))
+            .read(cx)
+            .clone();
+        // Each box keeps its own place.
+        let scroll = window
+            .use_keyed_state(name("scroll"), cx, |_, _| ScrollHandle::default())
+            .read(cx)
+            .clone();
+        let wheel = window.use_keyed_state(name("wheel"), cx, |_, _| Wheel::default());
+        let rows = self.text.lines().count().max(1);
+        let keys = |step: Step| {
+            let scroll = scroll.clone();
+            move |window: &mut Window| scroll_text(&scroll, step, rows, window)
+        };
+        let theme = cx.theme();
+        let ring = theme.ring;
+        div()
+            .id(id)
+            .test_support()
+            .role(Role::ScrollView)
+            .aria_label(self.label)
+            .key_context(BOX_CONTEXT)
+            .track_focus(&focus)
+            .on_action({
+                let to = keys(Step::Rows(-1.));
+                move |_: &ScrollUp, window, _| to(window)
+            })
+            .on_action({
+                let to = keys(Step::Rows(1.));
+                move |_: &ScrollDown, window, _| to(window)
+            })
+            .on_action({
+                let to = keys(Step::Pages(-1.));
+                move |_: &ScrollPageUp, window, _| to(window)
+            })
+            .on_action({
+                let to = keys(Step::Pages(1.));
+                move |_: &ScrollPageDown, window, _| to(window)
+            })
+            .on_action({
+                let to = keys(Step::Start);
+                move |_: &ScrollToStart, window, _| to(window)
+            })
+            .on_action({
+                let to = keys(Step::End);
+                move |_: &ScrollToEnd, window, _| to(window)
+            })
+            // The ring sits just outside the fill, so the focus moves
+            // nothing, and shows only while the keyboard is in use.
+            .m(px(-1.))
+            .border_1()
+            .border_color(transparent_black())
+            .rounded(theme.radius + px(1.))
+            .focus_visible(move |this| this.border_color(ring))
+            .relative()
+            // Before the text, so it sees each wheel event on both sides of
+            // the text's own handling.
+            .child(wheel_stays(wheel, &scroll))
+            .child(
+                div()
+                    .id(name("area"))
+                    .max_h(rems(10.))
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll)
+                    .child(
+                        div()
+                            .id(name("lines"))
+                            .test_support()
+                            .p_2()
+                            .rounded(theme.radius)
+                            .bg(theme.muted)
+                            .font_family(theme.mono_font_family.clone())
+                            .text_xs()
+                            .child(SelectableText::new(name("text"), self.text)),
+                    ),
+            )
+            .vertical_scrollbar(&scroll)
+    }
+}
+
+/// What [`wheel_stays`] keeps of the wheel events over a box.
+#[derive(Default)]
+struct Wheel {
+    /// The box's place before it handled the event being dispatched.
+    before: Option<Point<Pixels>>,
+    /// When the last event over the box came.
+    last: Option<std::time::Instant>,
+    /// The box moved during the current gesture.
+    moved: bool,
+}
+
+/// A pause between wheel events this long starts a new gesture.
+const GESTURE_GAP: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Keeps the wheel over a box of text from scrolling the tray's rows too.
+/// GPUI gives each wheel event to every scroll area under the pointer, so
+/// this reads the box's place before the box handles an event, and once the
+/// box has moved, the event goes no further. At the box's end the event
+/// goes on to the rows, unless the box moved earlier in the same gesture.
+///
+/// shortcut: this mirrors GPUI Kit's private nested scrolling, which its
+/// own scroll areas have, because those keep their scroll handle to
+/// themselves and the keys need it. Use the kit's once it gives a handle.
+fn wheel_stays(wheel: Entity<Wheel>, scroll: &ScrollHandle) -> impl IntoElement {
+    let scroll = scroll.clone();
+    canvas(
+        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        move |_, hitbox, window, _| {
+            window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                let now = cx.background_executor().now();
+                wheel.update(cx, |wheel, cx| {
+                    if !hitbox.should_handle_scroll(window) {
+                        // The pointer is elsewhere, so the box's gesture is over.
+                        wheel.last = None;
+                        wheel.moved = false;
+                        return;
+                    }
+                    match phase {
+                        DispatchPhase::Capture => wheel.before = Some(clamped_offset(&scroll)),
+                        DispatchPhase::Bubble => {
+                            let Some(before) = wheel.before.take() else {
+                                return;
+                            };
+                            let new_gesture = event.touch_phase == TouchPhase::Started
+                                || wheel.last.is_none_or(|at| {
+                                    now.saturating_duration_since(at) >= GESTURE_GAP
+                                });
+                            if new_gesture {
+                                wheel.moved = false;
+                            }
+                            wheel.last = Some(now);
+                            if clamped_offset(&scroll) != before {
+                                wheel.moved = true;
+                            }
+                            if wheel.moved {
+                                cx.stop_propagation();
+                            }
+                        }
+                    }
+                });
+            });
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// The box's place within its range. A div adds a wheel's move to its
+/// place at once and keeps it in range when it's next laid out, so a move
+/// at the end would otherwise look like one.
+fn clamped_offset(scroll: &ScrollHandle) -> Point<Pixels> {
+    let most = scroll.max_offset();
+    let offset = scroll.offset();
+    point(
+        offset.x.clamp(-most.x, px(0.)),
+        offset.y.clamp(-most.y, px(0.)),
+    )
+}
+
+/// How far a key scrolls a [`TextBox`].
+#[derive(Debug, Clone, Copy)]
+enum Step {
+    /// Rows of its text, up when negative.
+    Rows(f32),
+    /// Its height less a row, up when negative.
+    Pages(f32),
+    Start,
+    End,
+}
+
+/// Scrolls the text of a [`TextBox`] that `scroll` moves by `step`. A row
+/// is its text's height over its `rows` lines.
+fn scroll_text(scroll: &ScrollHandle, step: Step, rows: usize, window: &mut Window) {
+    let most = scroll.max_offset().y;
+    let viewport = scroll.bounds().size.height;
+    // The text, without the box's padding.
+    let text = most + viewport - window.rem_size();
+    let row = (text / rows as f32).max(px(1.));
+    let down = -scroll.offset().y;
+    let to = match step {
+        Step::Rows(rows) => down + row * rows,
+        Step::Pages(pages) => down + (viewport - row).max(row) * pages,
+        Step::Start => px(0.),
+        Step::End => most,
+    };
+    let offset = scroll.offset();
+    scroll.set_offset(point(offset.x, -to.clamp(px(0.), most)));
+    window.refresh();
 }
 
 impl Render for ApprovalTray {
