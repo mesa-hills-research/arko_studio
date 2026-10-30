@@ -2,9 +2,10 @@
 //! what the app asks before it stops or removes something. An open
 //! session's own live settings are in its Session info.
 
+use gpui_kit::component::alert::Alert;
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
-use gpui_kit::component::{ActiveTheme as _, IconName};
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _};
 use gpui_kit::*;
 
 use super::fields::{self, TextKind, TextSetting};
@@ -293,7 +294,12 @@ impl SessionsPage {
                 new.worker_models,
                 new.worker_billing,
                 new.api_budget,
-                (self.billing_env.worker_billing, self.billing_env.api_budget),
+                (
+                    self.billing_env.worker_billing,
+                    self.billing_env.api_budget,
+                    &self.billing_env.bad_worker_billing,
+                    &self.billing_env.bad_api_budget,
+                ),
                 new.worker_depth,
                 new.worker_retry_cap,
                 new.message_copies,
@@ -333,8 +339,8 @@ impl SessionsPage {
     pub(super) fn agent_items(&self, cx: &App) -> Vec<SettingItem> {
         let defaults = NewSessions::default();
         let new = &prefs::get(cx).new_sessions;
-        let env = self.billing_env;
-        vec![
+        let env = &self.billing_env;
+        let mut items = vec![
             self.handover.item("Handover size", "handover-at")
             .description(format!(
                 "When the main agent’s context reaches it, the agent writes a report and goes on in a fresh conversation. Like 950k or 1.2M, at least {}k, and held under 95% of what its model takes.",
@@ -356,7 +362,7 @@ impl SessionsPage {
             )
             .description(models_about(new.worker_models))
             .keywords(["workers", "profiles", "model", "worker-models", "agent chooses"]),
-            worker_billing_item(env)
+            worker_billing_item(env.worker_billing)
             .description(with_variable(
                 billing_about(env.worker_billing(new.worker_billing)),
                 env.worker_billing.is_some(),
@@ -371,12 +377,34 @@ impl SessionsPage {
                 "worker-billing",
                 WORKER_BILLING_VARIABLE,
             ]),
+        ];
+        // A variable Arko doesn't take keeps new sessions from starting
+        // while the setting is left to it.
+        items.extend(
+            env.bad_worker_billing
+                .as_deref()
+                .filter(|_| new.worker_billing.is_none())
+                .map(|value| {
+                    variable_warning(
+                        "worker-billing-variable",
+                        bad_billing_words(value),
+                        [
+                            "workers",
+                            "billing",
+                            "worker-billing",
+                            WORKER_BILLING_VARIABLE,
+                        ],
+                    )
+                }),
+        );
+        let budget_env = env.clone();
+        items.push(
             SettingItem::new(
                 workers::BUDGET_NAME,
                 SettingField::switch(
                     move |cx: &App| {
                         let chosen = prefs::get(cx).new_sessions.api_budget;
-                        env.api_budget(chosen).is_some()
+                        budget_env.api_budget(chosen).is_some()
                     },
                     |on: bool, cx: &mut App| {
                         prefs::update(cx, |prefs| prefs.new_sessions.api_budget = Some(on))
@@ -401,6 +429,20 @@ impl SessionsPage {
                 "api-budget",
                 API_BUDGET_VARIABLE,
             ]),
+        );
+        items.extend(
+            env.bad_api_budget
+                .as_deref()
+                .filter(|_| new.api_budget.is_none())
+                .map(|value| {
+                    variable_warning(
+                        "api-budget-variable",
+                        bad_budget_words(value),
+                        ["workers", "budget", "api-budget", API_BUDGET_VARIABLE],
+                    )
+                }),
+        );
+        items.extend([
             super::choice_of(
                 workers::DEPTH_NAME,
                 (1..=workers::MAX_DEPTH)
@@ -504,7 +546,8 @@ impl SessionsPage {
                 defaults.worker_project_instructions,
             )
             .keywords(["AGENTS.md", "CLAUDE.md", "workers"]),
-        ]
+        ]);
+        items
     }
 
     fn chat_group(&self) -> SettingGroup {
@@ -560,9 +603,42 @@ fn with_variable(about: String, set: bool, variable: &str) -> String {
     }
 }
 
-/// Worker billing's menu, which shows the preference, else what `env`'s
-/// variable says, else Arko's default. Reset leaves it to them again.
-fn worker_billing_item(env: BillingFromEnv) -> SettingItem {
+/// What Worker billing says when [`WORKER_BILLING_VARIABLE`] holds `value`,
+/// which Arko doesn't take, while the setting is left to it.
+fn bad_billing_words(value: &str) -> String {
+    format!(
+        "{WORKER_BILLING_VARIABLE} is “{value}”, so new sessions won’t start. Choose one here, or set it to plans, ask or api."
+    )
+}
+
+/// What the daily API budget says when [`API_BUDGET_VARIABLE`] holds
+/// `value`, which Arko doesn't take, while the setting is left to it.
+fn bad_budget_words(value: &str) -> String {
+    format!(
+        "{API_BUDGET_VARIABLE} is “{value}”, so new sessions won’t start. Turn it on or off here, or set it to dollars, such as 20, or off."
+    )
+}
+
+/// The warning `text` under a setting whose variable holds a value Arko
+/// doesn't take, found by `keywords` with the setting.
+fn variable_warning(id: &'static str, text: String, keywords: [&'static str; 4]) -> SettingItem {
+    SettingItem::render(move |_, _, _| {
+        div()
+            .id(id)
+            .test_support()
+            .child(Alert::warning(id, text.clone()).small())
+    })
+    .keywords(keywords)
+}
+
+/// Worker billing's menu, which shows the preference, else what its
+/// variable says (`from_env`), else Arko's default. Reset leaves it to them
+/// again.
+fn worker_billing_item(from_env: Option<WorkerBilling>) -> SettingItem {
+    let env = BillingFromEnv {
+        worker_billing: from_env,
+        ..BillingFromEnv::default()
+    };
     let label = |billing: WorkerBilling| SharedString::from(billing.label());
     SettingItem::new(
         workers::BILLING_NAME,
@@ -680,9 +756,23 @@ pub fn shown_background_after(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_background_after, parse_handover, parse_monitor_wakes, shown_background_after,
-        shown_tokens,
+        bad_billing_words, bad_budget_words, parse_background_after, parse_handover,
+        parse_monitor_wakes, shown_background_after, shown_tokens,
     };
+
+    /// A variable Arko doesn't take is named with its value, says what it
+    /// stops, and what to do.
+    #[test]
+    fn a_variable_arko_refuses_says_what_to_do() {
+        assert_eq!(
+            bad_billing_words("sometimes"),
+            "ARKO_WORKER_BILLING is “sometimes”, so new sessions won’t start. Choose one here, or set it to plans, ask or api."
+        );
+        assert_eq!(
+            bad_budget_words("lots"),
+            "ARKO_API_BUDGET is “lots”, so new sessions won’t start. Turn it on or off here, or set it to dollars, such as 20, or off."
+        );
+    }
 
     #[test]
     fn handover_sizes_read_as_arko_reads_them() {

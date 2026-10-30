@@ -627,6 +627,7 @@ fn worker_billing_and_the_budget_show_what_the_variables_say(cx: &mut TestAppCon
         FakeBackend::sample("/arko", SystemTime::now()).with_billing_from_env(BillingFromEnv {
             worker_billing: Some(WorkerBilling::Plans),
             api_budget: Some(Some(20.0)),
+            ..BillingFromEnv::default()
         });
     let backend = start_on(cx, backend, prefs::Prefs::default());
     let (window, _, settings) = settings_window(cx, SESSIONS_PAGE, 900.);
@@ -706,6 +707,61 @@ fn worker_billing_and_the_budget_show_what_the_variables_say(cx: &mut TestAppCon
     });
     assert_eq!(billing(cx), "Plans only");
     assert!(budget_on(cx));
+}
+
+/// A variable Arko doesn't take keeps new sessions from starting while
+/// worker billing or the budget is left to it, so the setting says so
+/// under it, in the warning style, until a choice is made there. The
+/// setting shows Arko's default meanwhile.
+#[gpui_kit::test]
+fn a_variable_arko_refuses_is_flagged_on_its_setting(cx: &mut TestAppContext) {
+    use crate::backend::BillingFromEnv;
+
+    let backend =
+        FakeBackend::sample("/arko", SystemTime::now()).with_billing_from_env(BillingFromEnv {
+            bad_worker_billing: Some("sometimes".into()),
+            bad_api_budget: Some("lots".into()),
+            ..BillingFromEnv::default()
+        });
+    start_on(cx, backend, prefs::Prefs::default());
+    let (window, _, _) = settings_window(cx, SESSIONS_PAGE, 1200.);
+    let shows = |cx: &mut TestAppContext, id: &'static str| {
+        let mut shown = false;
+        act(cx, window, |window, _| {
+            shown = window.try_find(id).is_some()
+        });
+        shown
+    };
+    let billing = |cx: &mut TestAppContext| {
+        let mut label = None;
+        act(cx, window, |window, _| {
+            label = window
+                .within("group-0")
+                .within("item-3")
+                .find("btn")
+                .label()
+                .map(str::to_string);
+        });
+        label.unwrap()
+    };
+    assert!(shows(cx, "worker-billing-variable"));
+    assert!(shows(cx, "api-budget-variable"));
+    assert_eq!(billing(cx), "Ask before API");
+    // Chosen there, worker billing no longer reads the variable.
+    act(cx, window, |window, cx| {
+        window.within("group-0").within("item-3").click("btn", cx)
+    });
+    act(cx, window, |window, cx| {
+        window.within("popup-menu").click(0usize, cx)
+    });
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.worker_billing),
+        Some(arko::WorkerBilling::Plans)
+    );
+    assert!(!shows(cx, "worker-billing-variable"));
+    assert!(shows(cx, "api-budget-variable"));
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.new_sessions.api_budget = Some(false)));
+    assert!(!shows(cx, "api-budget-variable"));
 }
 
 /// The chat instructions type as Settings › Input says, as it changes

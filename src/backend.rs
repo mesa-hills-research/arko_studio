@@ -1562,7 +1562,7 @@ impl Backend for FakeBackend {
     }
 
     fn billing_from_env(&self) -> BillingFromEnv {
-        self.with_state(|state| state.billing_from_env)
+        self.with_state(|state| state.billing_from_env.clone())
     }
 
     fn set_session_names(&self, ways: &[Way]) -> Result<(), String> {
