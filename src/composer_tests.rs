@@ -455,10 +455,14 @@ fn the_model_list_says_how_a_model_is_billed(cx: &mut TestAppContext) {
     act(cx, window, |window, _| {
         assert!(window.try_find("model-billing-0-0").is_none());
         assert!(window.try_find("model-billing-1-0").is_some());
-        assert_eq!(window.find("model-0-0").label(), Some("Opus 5.5"));
+        // Heard as in the Settings lists, its way named once.
+        assert_eq!(
+            window.find("model-0-0").label(),
+            Some("Opus 5.5, Claude Code")
+        );
         assert_eq!(
             window.find("model-1-0").label(),
-            Some(format!("Opus 5.5. {billing}").as_str())
+            Some("Opus 5.5, Anthropic API, $4/$20")
         );
     });
 }
@@ -1092,10 +1096,10 @@ fn start_with_openrouter(
     catalog: crate::backend::Catalog,
 ) -> (Arc<FakeBackend>, AnyWindowHandle, Entity<Workspace>) {
     use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
-    let choice = |name: &str, alias: &str| ModelChoice {
+    let choice = |name: &str, alias: &str, billing: &str| ModelChoice {
         name: name.into(),
         alias: alias.into(),
-        billing: None,
+        billing: Some(billing.into()),
     };
     let backend = FakeBackend::sample("/arko", SystemTime::now())
         .with_models(ModelChoices {
@@ -1103,12 +1107,12 @@ fn start_with_openrouter(
                 ModelGroup {
                     name: "Anthropic API, billed per token".into(),
                     needs: None,
-                    models: vec![choice("claude-opus-5-5", "opus")],
+                    models: vec![choice("claude-opus-5-5", "opus", "API, $4/$20")],
                 },
                 ModelGroup {
                     name: "OpenRouter, billed per token".into(),
                     needs: None,
-                    models: vec![choice("openrouter:moonshotai/kimi-k3", "")],
+                    models: vec![choice("openrouter:moonshotai/kimi-k3", "", "API")],
                 },
             ],
             default: Some("claude-opus-5-5".into()),
@@ -1195,7 +1199,9 @@ fn a_search_finds_openrouter_models_in_the_catalog(cx: &mut TestAppContext) {
     act(cx, window, |window, _| {
         assert_eq!(
             window.find("model-1-0").label(),
-            Some("Kimi K3. 262k context, $0.60 in and $2.50 out per million tokens")
+            Some(
+                "Kimi K3, OpenRouter, API. 262k context, $0.60 in and $2.50 out per million tokens"
+            )
         );
         assert_eq!(
             window.find("model-browse").label(),
