@@ -135,3 +135,29 @@ fn matched_text_reads_in_every_bundled_theme(cx: &mut TestAppContext) {
         }
     });
 }
+
+/// A match's shade is worked out once for its colors, its highlight and
+/// the theme, and again when the theme changes.
+#[gpui_kit::test]
+fn shades_are_worked_out_once_a_theme(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        let worked = || super::find::shades_worked();
+        let (all, _) = super::find::match_colors(cx);
+        let ink = Ink::new(cx.theme().muted_foreground);
+        let before = worked();
+        let shade = readable_on(ink, all, cx);
+        assert_eq!(worked(), before + 1);
+        assert_eq!(readable_on(ink, all, cx), shade);
+        assert_eq!(worked(), before + 1, "the second is the first's");
+        let themes = crate::appearance::parse_bundled();
+        let other = themes
+            .into_iter()
+            .find(|theme| theme.name.as_ref() == "Ayu Light")
+            .unwrap();
+        Theme::update(cx, |theme| theme.apply_config(&Rc::new(other)));
+        let (all, _) = super::find::match_colors(cx);
+        readable_on(Ink::new(cx.theme().muted_foreground), all, cx);
+        assert_eq!(worked(), before + 2);
+    });
+}

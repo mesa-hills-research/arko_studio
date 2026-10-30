@@ -1413,7 +1413,65 @@ impl Ink {
 /// control's normal fill and on its hovered one, it reads on the normal one
 /// and as well as any color can on the hovered one.
 pub(super) fn readable_on(ink: Ink, highlight: Hsla, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    // Worked out once for each color, fill, highlight and theme.
+    let key = ShadeKey::new([
+        ink.text,
+        ink.fills[0],
+        ink.fills[1],
+        highlight,
+        theme.background,
+        theme.sidebar,
+    ]);
+    if let Some(shade) = SHADES.with_borrow(|shades| shades.get(&key).copied()) {
+        return shade;
+    }
+    let shade = work_out_shade(ink, highlight, cx);
+    SHADES.with_borrow_mut(|shades| {
+        // A few themes' worth.
+        if shades.len() >= SHADES_KEPT {
+            shades.clear();
+        }
+        shades.insert(key, shade);
+    });
+    shade
+}
+
+/// How many shades [`readable_on`] worked out (tests).
+#[cfg(test)]
+pub(super) fn shades_worked() -> usize {
+    SHADES_WORKED.with(std::cell::Cell::get)
+}
+
+/// The shades [`readable_on`] worked out, for as long as they're kept.
+const SHADES_KEPT: usize = 256;
+
+thread_local! {
+    static SHADES: std::cell::RefCell<HashMap<ShadeKey, Hsla>> = Default::default();
+    /// How many shades were worked out (tests).
+    #[cfg(test)]
+    static SHADES_WORKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The colors a shade is worked out from, by their bits.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ShadeKey([u32; 24]);
+
+impl ShadeKey {
+    fn new(colors: [Hsla; 6]) -> Self {
+        let mut bits = [0; 24];
+        for (at, color) in colors.iter().enumerate() {
+            bits[at * 4..at * 4 + 4]
+                .copy_from_slice(&[color.h, color.s, color.l, color.a].map(f32::to_bits));
+        }
+        Self(bits)
+    }
+}
+
+fn work_out_shade(ink: Ink, highlight: Hsla, cx: &App) -> Hsla {
     use crate::segmented::contrast_ratio;
+    #[cfg(test)]
+    SHADES_WORKED.with(|worked| worked.set(worked.get() + 1));
     let under = ink.surfaces(cx).map(|surface| surface.blend(highlight));
     // The least it reads at on the surfaces it may be drawn on, or on
     // those where its control shows normally (the even ones).
