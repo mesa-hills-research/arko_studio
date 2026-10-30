@@ -505,8 +505,8 @@ mod tests {
     /// and is kept to say so.
     #[test]
     fn the_billing_variables_are_read_from_arkos_env_file() {
-        // The test's own environment may set them; then there's nothing
-        // to learn from the file.
+        // When the test's own environment sets them, the file has nothing
+        // to say.
         if std::env::var_os(WORKER_BILLING_VARIABLE).is_some()
             || std::env::var_os(API_BUDGET_VARIABLE).is_some()
         {

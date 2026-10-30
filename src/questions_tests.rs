@@ -661,7 +661,7 @@ fn the_question_typed_in_leaving_closes_the_panel(cx: &mut TestAppContext) {
     assert!(app.sent(cx).is_empty());
 }
 
-/// The same goes for a chip the keyboard is on: its question answered
+/// The same goes for a chip the keyboard is on. Its question answered
 /// elsewhere closes the panel, which says so, and the keyboard goes back
 /// to the message box.
 #[gpui_kit::test]
