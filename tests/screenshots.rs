@@ -4389,6 +4389,72 @@ fn model_popover_started_dark() {
     );
 }
 
+/// The composer while the old model writes its report for a switch: the
+/// message typed waits, the strip above says why, and the button is Stop.
+fn composer_reporting(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(900.), px(300.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, window, cx| {
+        let id = SessionId("20261016-091200-a1b2".into());
+        workspace.update(cx, |workspace, cx| workspace.open_session(id, window, cx));
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.update_window(window, |_, window, cx| {
+        let session = workspace.read(cx).live_session().unwrap().clone();
+        session.update(cx, |session, cx| {
+            session.show_activity(
+                arko::remote::Activity {
+                    working: true,
+                    reporting: true,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        let view = workspace.read(cx).session_view().clone();
+        view.update(cx, |view, cx| view.focus_composer(window, cx));
+        window.input("Then run the tests on Windows too.", cx);
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn composer_reporting_light() {
+    goldens().assert(
+        "composer-reporting-light",
+        &composer_reporting(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn composer_reporting_dark() {
+    goldens().assert(
+        "composer-reporting-dark",
+        &composer_reporting(ThemeMode::Dark),
+    );
+}
+
 #[test]
 fn model_switch_light() {
     goldens().assert(

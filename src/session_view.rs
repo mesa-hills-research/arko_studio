@@ -242,6 +242,28 @@ pub struct SessionView {
     /// Once the conversation has started, the model list is the new
     /// workers' (`true`) or the main agent's.
     lists_worker_models: bool,
+    /// The latest message given to the shown session for the main agent,
+    /// which comes back to the composer if arko didn't send it (it came as
+    /// the old model began its report for a switch).
+    unsent: Option<Unsent>,
+}
+
+/// A message given to the session, as the composer held it.
+struct Unsent {
+    text: String,
+    images: Vec<Attached>,
+}
+
+impl Unsent {
+    /// Whether arko's notice repeats this message's `words`: its text on one
+    /// line, cut with "…" when long.
+    fn is(&self, words: &str) -> bool {
+        let line = self.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        match words.strip_suffix('…') {
+            Some(start) => line.starts_with(start),
+            None => line == words,
+        }
+    }
 }
 
 /// Where the effort a new session starts with comes from.
@@ -411,6 +433,7 @@ impl SessionView {
             session_models_stale: false,
             _session_models: None,
             lists_worker_models: false,
+            unsent: None,
         };
         this.restore_draft(window, cx);
         this.sync_expanded(window, cx);
@@ -846,6 +869,7 @@ impl SessionView {
         self._session.clear();
         self.close_panel(window, cx);
         self.target = None;
+        self.unsent = None;
         self.session = session;
         if let Some(session) = &self.session {
             session.update(cx, |session, cx| session.set_shown(true, cx));
@@ -857,6 +881,15 @@ impl SessionView {
                     this.sync_transcript(window, cx);
                     cx.notify();
                 }));
+            self._session.push(cx.subscribe_in(
+                session,
+                window,
+                |this, _, event: &LiveEvent, window, cx| {
+                    if let LiveEvent::NotSent(words) = event {
+                        this.restore_unsent(words, window, cx);
+                    }
+                },
+            ));
         }
         self.restore_draft(window, cx);
         self.sync_questions(window, cx);
@@ -1340,7 +1373,7 @@ impl SessionView {
             "Answer Arko’s question".into()
         } else if attached > 1 {
             "Answer Arko’s questions".into()
-        } else if session.is_working() {
+        } else if session.is_working() && !session.is_reporting() {
             "Add to the task while Arko works".into()
         } else {
             "Message Arko".into()
@@ -2280,6 +2313,13 @@ impl SessionView {
             window.push_notification(why, cx);
             return;
         }
+        // While the old model writes its report for a switch, a message to
+        // the main agent waits in the composer, as the strip above it says.
+        // Commands and messages to a worker go.
+        let command = arko::commands::find(&text).is_some();
+        if !command && self.target.is_none() && self.is_reporting(cx) {
+            return;
+        }
         let attached = images;
         // Images the model can't take stay, with the message, until the
         // user removes them or picks another model.
@@ -2297,7 +2337,6 @@ impl SessionView {
         let images: Vec<arko::Attachment> = attached.iter().map(|image| image.to_arko()).collect();
         // A command runs and leaves the questions attached. Other text
         // answers them.
-        let command = arko::commands::find(&text).is_some();
         let message = arko::Message {
             text: text.clone(),
             images,
@@ -2308,6 +2347,10 @@ impl SessionView {
             },
         };
         let worker = self.session.as_ref().and(self.target.clone());
+        let unsent = (self.session.is_some() && worker.is_none() && !command).then(|| Unsent {
+            text: text.clone(),
+            images: attached.clone(),
+        });
         let result = match (&self.session, &self.target) {
             (Some(_), Some(_)) if !message.images.is_empty() => Err(
                 "A message to a worker takes text only. Remove the images, or send them to Arko."
@@ -2332,6 +2375,7 @@ impl SessionView {
                     .update(cx, |composer, cx| composer.sent(&text, window, cx));
                 self.keep_draft(cx);
                 self.composer_empty = true;
+                self.unsent = unsent;
                 if let Some(worker) = worker {
                     cx.emit(SessionViewEvent::SentToWorker(worker));
                 }
@@ -2339,6 +2383,40 @@ impl SessionView {
             }
             Err(why) => window.push_notification(why, cx),
         }
+    }
+
+    /// Whether the shown session's old model writes its report for a switch.
+    fn is_reporting(&self, cx: &App) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.read(cx).is_reporting())
+    }
+
+    /// Puts the message arko didn't send (its `words`) back in the
+    /// composer, unless something else was typed since.
+    fn restore_unsent(&mut self, words: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.unsent.as_ref().is_some_and(|unsent| unsent.is(words)) {
+            return;
+        }
+        let empty = {
+            let composer = self.composer.read(cx);
+            composer.text(cx).is_empty() && composer.images().is_empty()
+        };
+        if !empty || self.editing.is_some() {
+            return;
+        }
+        let Some(Unsent { text, images }) = self.unsent.take() else {
+            return;
+        };
+        self.composer_empty = false;
+        self.composer.update(cx, |composer, cx| {
+            composer.set_text(&text, window, cx);
+            for image in images {
+                composer.attach_image(image, cx);
+            }
+        });
+        self.keep_draft(cx);
+        cx.notify();
     }
 
     /// Runs Arko's command `name` as if typed: at once when it takes no
@@ -3742,6 +3820,30 @@ impl SessionView {
         )
     }
 
+    /// The strip above the composer while the old model writes its report
+    /// for a switch: a message to the main agent waits meanwhile.
+    fn render_reporting(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.is_reporting(cx) {
+            return None;
+        }
+        let theme = cx.theme();
+        Some(
+            h_flex()
+                .id("reporting-strip")
+                .test_support()
+                .mb_2()
+                .px_3()
+                .py_1()
+                .gap_2()
+                .text_sm()
+                .rounded(theme.radius_lg)
+                .bg(theme.secondary)
+                .text_color(theme.secondary_foreground)
+                .child(div().flex_1().min_w_0().child(crate::live::REPORTING))
+                .into_any_element(),
+        )
+    }
+
     /// The strip above the composer while it edits a message.
     fn render_editing(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let lost = images_not_kept(self.editing.as_ref()?.lost_images);
@@ -4123,6 +4225,7 @@ impl Render for SessionView {
         let questions = self.render_questions_chip(cx);
         let prompt = self.render_prompt(cx);
         let editing = self.render_editing(cx);
+        let reporting = self.render_reporting(cx);
         let find = self.render_find(window, cx);
         // The transcript spans the column (its rows centre themselves, so
         // the wheel and the scrollbar work across it), and draws again only
@@ -4176,6 +4279,7 @@ impl Render for SessionView {
                     .children(prompt)
                     .children(questions)
                     .children(editing)
+                    .children(reporting)
                     .child(self.render_composer(window, cx)),
             )
     }

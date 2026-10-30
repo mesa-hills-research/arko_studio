@@ -2212,3 +2212,62 @@ fn stop_skips_the_report_for_a_new_conversation(cx: &mut TestAppContext) {
     );
     app.close_all(cx);
 }
+
+/// On Arko's engine, while the old model writes its report, a message to
+/// the main agent waits in the composer. One that reaches the session
+/// anyway (sent as the report began) isn't sent, and the session tells it
+/// as a message arko didn't send.
+#[gpui_kit::test]
+fn a_message_waits_for_the_report_on_arkos_engine(cx: &mut TestAppContext) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    const REQUEST: &str = "a new conversation that goes on from a report you write now";
+    let mock = Mock::start(|_, body| {
+        if body.contains(REQUEST) {
+            answer("The report.", Duration::from_secs(60))
+        } else {
+            answer("Hello.", Duration::ZERO)
+        }
+    });
+    let app = start(cx, &mock);
+    let state = |cx: &mut TestAppContext| {
+        app.shown(cx).map_or((false, false), |session| {
+            cx.read(|cx| {
+                let session = session.read(cx);
+                (session.is_working(), session.is_reporting())
+            })
+        })
+    };
+    app.send(cx, "Say hello.");
+    app.wait_for_text(cx, "Hello.");
+    wait_until(cx, "the turn to end", |cx| !state(cx).0);
+    app.send(cx, "/new continue");
+    wait_until(cx, "the report", |cx| state(cx) == (true, true));
+    app.send(cx, "Carry on.");
+    assert_eq!(app.composer_text(cx), "Carry on.");
+    let session = app.shown(cx).unwrap();
+    let not_sent: Rc<RefCell<Vec<String>>> = Rc::default();
+    let _subscription = cx.update(|cx| {
+        let not_sent = not_sent.clone();
+        cx.subscribe(&session, move |_, event, _| {
+            if let crate::live::LiveEvent::NotSent(words) = event {
+                not_sent.borrow_mut().push(words.clone());
+            }
+        })
+    });
+    let message = arko::Input::Message(arko::Message {
+        text: "Straight in.".into(),
+        ..Default::default()
+    });
+    session
+        .update(cx, |session, cx| session.send(message, cx))
+        .unwrap();
+    wait_until(cx, "the message not sent", |_| {
+        *not_sent.borrow() == ["Straight in."]
+    });
+    act(cx, app.window, |window, cx| window.click("stop", cx));
+    wait_until(cx, "the switch to end", |cx| state(cx) == (false, false));
+    assert_eq!(app.composer_text(cx), "Carry on.");
+    assert!(!mock.was_sent("Carry on.") && !mock.was_sent("Straight in."));
+    app.close_all(cx);
+}

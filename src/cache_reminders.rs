@@ -1095,6 +1095,7 @@ mod tests {
                 id: 1,
                 text: "Tabs or spaces?".into(),
             }),
+            ..Activity::default()
         };
         let reading = cx.read(|cx| reminded.session.read(cx).reading().clone());
         reminded.session.update(cx, |session, cx| {

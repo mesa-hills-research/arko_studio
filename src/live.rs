@@ -186,6 +186,10 @@ pub enum LiveEvent {
     Refused(String),
     /// A worker finished or failed.
     WorkerEnded(WorkerEnd),
+    /// Arko didn't send a message to the main agent, which came as the old
+    /// model began its report for a switch: its words, as arko's notice
+    /// repeats them.
+    NotSent(String),
 }
 
 /// A worker that finished or failed, as a notification tells of it.
@@ -339,6 +343,9 @@ struct Drained {
     /// the summary of the end.
     ended: Vec<String>,
     quit_asks: Vec<arko::QuitAsk>,
+    /// The words of the messages arko didn't send while a report was
+    /// written.
+    not_sent: Vec<String>,
 }
 
 impl Drained {
@@ -348,7 +355,23 @@ impl Drained {
             && self.workers.is_empty()
             && self.ended.is_empty()
             && self.quit_asks.is_empty()
+            && self.not_sent.is_empty()
     }
+}
+
+/// Why a message to the main agent waits while the old model writes its
+/// report for a switch, in arko's words.
+pub const REPORTING: &str = "The report is being written. Stopping skips it.";
+
+/// The words of a message arko didn't send while a report was written,
+/// from its notice ("“Hello.” wasn't sent. The report is being written.
+/// Stopping skips it.").
+fn not_sent_words(notice: &str) -> Option<&str> {
+    notice
+        .strip_prefix('“')?
+        .strip_suffix(REPORTING)?
+        .trim_end()
+        .strip_suffix("” wasn't sent.")
 }
 
 /// What the user did with the agent's questions in this app, beside what
@@ -751,15 +774,23 @@ impl LiveSession {
                     let mut activity = None;
                     let mut workers = Vec::new();
                     let mut ended = Vec::new();
+                    let mut not_sent = Vec::new();
                     for update in batch {
                         match update {
                             Update::Activity => activity = Some(feed.activity()),
                             Update::Worker(worker) => workers.push(worker),
                             Update::WorkerEnded { id, .. } => ended.push(id),
+                            Update::Item(item) if item.kind == arko::remote::Kind::Notice => {
+                                not_sent.extend(not_sent_words(&item.text).map(str::to_string));
+                            }
                             _ => {}
                         }
                     }
-                    if activity.is_none() && workers.is_empty() && ended.is_empty() {
+                    if activity.is_none()
+                        && workers.is_empty()
+                        && ended.is_empty()
+                        && not_sent.is_empty()
+                    {
                         continue;
                     }
                     {
@@ -769,6 +800,7 @@ impl LiveSession {
                         }
                         drained.workers.extend(workers);
                         drained.ended.extend(ended);
+                        drained.not_sent.extend(not_sent);
                     }
                     wake.notify_one();
                 }
@@ -858,6 +890,9 @@ impl LiveSession {
         }
         for ask in drained.quit_asks {
             self.quit_asked(ask, cx);
+        }
+        for words in drained.not_sent {
+            cx.emit(LiveEvent::NotSent(words));
         }
         self.update_indicator(cx);
         cx.notify();
@@ -1149,6 +1184,13 @@ impl LiveSession {
         self.activity.working
     }
 
+    /// The old model writes its report for a switch of the main agent's
+    /// model (it works too). Arko doesn't send messages to the main agent
+    /// meanwhile, so they wait in the composer.
+    pub fn is_reporting(&self) -> bool {
+        self.activity.reporting
+    }
+
     /// The question card the agent waits on, while it waits for the
     /// user's answer (a question asked with `wait`, or Arko's own).
     pub fn question(&self) -> Option<&Question> {
@@ -1267,6 +1309,15 @@ impl LiveSession {
             .map(|question| question.id.clone())
             .collect();
         self.questions.seen.extend(open);
+    }
+
+    /// Shows `activity` as the session's (previews and screenshots, where no
+    /// session runs).
+    #[doc(hidden)]
+    pub fn show_activity(&mut self, activity: Activity, cx: &mut Context<Self>) {
+        self.activity = activity;
+        self.update_indicator(cx);
+        cx.notify();
     }
 
     /// Shows `models` as the session's (previews and screenshots, where no
@@ -1702,9 +1753,25 @@ pub fn init(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Drained, LiveEvent, LiveSession, LiveSessions, Phase, first_line};
+    use super::{Drained, LiveEvent, LiveSession, LiveSessions, Phase, first_line, not_sent_words};
     use arko::remote::{Activity, Reading};
     use gpui_kit::{AppContext as _, TestAppContext};
+
+    /// The words of a message arko didn't send come from its notice.
+    #[test]
+    fn a_message_not_sent_is_read_from_arkos_notice() {
+        assert_eq!(
+            not_sent_words(
+                "“Carry on with the tests.” wasn't sent. The report is being written. Stopping skips it."
+            ),
+            Some("Carry on with the tests.")
+        );
+        assert_eq!(not_sent_words("Skipped gpt-6-luna's report."), None);
+        assert_eq!(
+            not_sent_words("“A” wasn't sent because the session closed."),
+            None
+        );
+    }
     use std::sync::Arc;
 
     /// A session the backend refuses (open in a terminal) says why, and

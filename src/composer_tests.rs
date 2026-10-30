@@ -1972,3 +1972,109 @@ fn main_agent_or_new_workers_is_a_radio_group(cx: &mut TestAppContext) {
     });
     assert_eq!(chosen(window, cx), [false, true]);
 }
+
+/// The session's status while the old model writes its report for a switch.
+fn reporting() -> arko::remote::Activity {
+    arko::remote::Activity {
+        working: true,
+        reporting: true,
+        since: Some(crate::figures::now_ms()),
+        ..Default::default()
+    }
+}
+
+/// While the old model writes its report, a message to the main agent
+/// waits in the composer, as the strip above it says, and the button is
+/// Stop. A command and a message to a worker go. Once the report is done,
+/// the message goes.
+#[gpui_kit::test]
+fn a_message_waits_while_the_report_is_written(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    session.update(cx, |session, cx| {
+        session.set_status(started_reading(), reporting(), cx)
+    });
+    let view = session_view(&workspace, cx);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx))
+    });
+    act(cx, window, |window, cx| window.input("Carry on.", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert!(sent(&session, cx).is_empty());
+    assert_eq!(composer_text(&workspace, cx), "Carry on.");
+    act(cx, window, |window, _| {
+        assert!(window.try_find("reporting-strip").is_some());
+        assert!(window.try_find("send").is_none());
+        assert_eq!(window.find("stop").label(), Some("Stop"));
+    });
+    // A command goes.
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    act(cx, window, |window, cx| {
+        composer.update(cx, |composer, cx| composer.set_text("/cost", window, cx))
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(sent(&session, cx), ["/cost"]);
+    // So does a message to a worker.
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_target(Some("r1".into()), window, cx)
+        })
+    });
+    act(cx, window, |window, cx| window.input("Use tabs.", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(sent(&session, cx), ["/cost", "/message r1 Use tabs."]);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.set_target(None, window, cx))
+    });
+    // The report done, the strip goes, and the message goes.
+    session.update(cx, |session, cx| {
+        session.set_status(started_reading(), Default::default(), cx)
+    });
+    act(cx, window, |window, _| {
+        assert!(window.try_find("reporting-strip").is_none());
+        assert!(window.try_find("send").is_some());
+    });
+    act(cx, window, |window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.set_text("Carry on.", window, cx)
+        })
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(
+        sent(&session, cx),
+        ["/cost", "/message r1 Use tabs.", "Carry on."]
+    );
+    assert_eq!(composer_text(&workspace, cx), "");
+}
+
+/// A message sent as the report began, which arko didn't send, comes back
+/// to the composer whole, unless something else was typed since.
+#[gpui_kit::test]
+fn a_message_arko_did_not_send_comes_back(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    let view = session_view(&workspace, cx);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx))
+    });
+    act(cx, window, |window, cx| window.input("Carry on", cx));
+    act(cx, window, |window, cx| window.press("shift-enter", cx));
+    act(cx, window, |window, cx| window.input("with the tests.", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(sent(&session, cx), ["Carry on\nwith the tests."]);
+    assert_eq!(composer_text(&workspace, cx), "");
+    // Another message's words leave the box alone.
+    let not_sent = |words: &str, cx: &mut TestAppContext| {
+        let words = words.to_string();
+        session.update(cx, |_, cx| cx.emit(crate::live::LiveEvent::NotSent(words)));
+        act(cx, window, |_, _| {});
+    };
+    not_sent("Something else.", cx);
+    assert_eq!(composer_text(&workspace, cx), "");
+    // Arko's notice has it on one line.
+    not_sent("Carry on with the tests.", cx);
+    assert_eq!(composer_text(&workspace, cx), "Carry on\nwith the tests.");
+    // Once only, and not over what was typed since.
+    act(cx, window, |window, cx| window.press("enter", cx));
+    act(cx, window, |window, cx| window.input("Wait.", cx));
+    not_sent("Carry on with the tests.", cx);
+    assert_eq!(composer_text(&workspace, cx), "Wait.");
+}
