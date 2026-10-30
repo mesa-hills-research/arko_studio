@@ -90,6 +90,9 @@ pub enum Row {
         session: SessionId,
         number: u32,
         title: String,
+        /// Its model, as the chip names it, when it isn't the one new
+        /// conversations start on.
+        model: Option<String>,
         current: bool,
     },
 }
@@ -203,17 +206,17 @@ pub fn rows(
                 expanded: is_expanded,
             });
             if is_expanded {
-                rows.extend(
-                    entry
-                        .conversations
-                        .iter()
-                        .map(|conversation| Row::Conversation {
-                            session: entry.id.clone(),
-                            number: conversation.number,
-                            title: conversation.title.clone(),
-                            current: conversation.current,
-                        }),
-                );
+                rows.extend(entry.conversations.iter().map(|conversation| {
+                    Row::Conversation {
+                        session: entry.id.clone(),
+                        number: conversation.number,
+                        title: conversation.title.clone(),
+                        model: (!conversation.model.is_empty()
+                            && conversation.model != entry.main_model)
+                            .then(|| arko::models::display_name(&conversation.model)),
+                        current: conversation.current,
+                    }
+                }));
             }
         }
     }
@@ -1193,11 +1196,15 @@ impl Sidebar {
             Row::Conversation {
                 number,
                 title,
+                model,
                 current,
                 ..
             } => base
                 .role(Role::TreeItem)
-                .aria_label(SharedString::from(title.clone()))
+                .aria_label(SharedString::from(match &model {
+                    Some(model) => format!("{title}, {model}"),
+                    None => title.clone(),
+                }))
                 .pl(rems(3.25))
                 .text_color(if current {
                     theme.sidebar_foreground
@@ -1212,6 +1219,15 @@ impl Sidebar {
                         .child(number.to_string()),
                 )
                 .child(div().flex_1().min_w_0().truncate().child(title))
+                .when_some(model, |this, model| {
+                    this.child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(model),
+                    )
+                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.cursor = this.rows.get(index).map(Row::key);
                     this.open_row(index, cx);
@@ -1534,11 +1550,13 @@ mod tests {
             mode: Mode::Chat,
             workspace: None,
             model: String::new(),
+            main_model: String::new(),
             created: now - Duration::from_secs(60),
             last_active: None,
             conversations: vec![ConversationEntry {
                 number: 1,
                 title: line.into(),
+                model: String::new(),
                 current: true,
             }],
             holder: None,
@@ -1585,6 +1603,30 @@ mod tests {
         );
     }
 
+    /// A conversation names its model when that's known and isn't the one
+    /// new conversations start on.
+    #[test]
+    fn a_conversation_names_a_model_other_than_the_sessions() {
+        let (mut sessions, now) = sample();
+        let id = SessionId("20261015-171000-c3d4".into());
+        let at = sessions.iter().position(|entry| entry.id == id).unwrap();
+        sessions[at].conversations.push(ConversationEntry {
+            number: 3,
+            title: "Saved before models were kept".into(),
+            model: String::new(),
+            current: false,
+        });
+        let rows = rows(&sessions, &[], &HashSet::from([id]), "", now);
+        let models: Vec<Option<&str>> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Conversation { model, .. } => Some(model.as_deref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(models, [Some("GPT-6.1 Sol"), None, None]);
+    }
+
     #[test]
     fn a_session_with_one_conversation_has_no_disclosure() {
         let now = SystemTime::now();
@@ -1594,11 +1636,13 @@ mod tests {
             mode: Mode::Chat,
             workspace: None,
             model: String::new(),
+            main_model: String::new(),
             created: now - Duration::from_secs(60),
             last_active: None,
             conversations: vec![ConversationEntry {
                 number: 1,
                 title: "One".into(),
+                model: String::new(),
                 current: true,
             }],
             holder: None,

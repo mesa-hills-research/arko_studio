@@ -162,7 +162,8 @@ pub struct SessionPrefs {
     /// workers would stop.
     pub ask_before_quit: bool,
     /// Switching an open session between Chat and Agent asks first, with
-    /// what it costs.
+    /// what it costs, and so does moving its main agent to another model,
+    /// which starts a new conversation.
     pub ask_before_switch: bool,
     /// Editing or regenerating a message asks first, saying how many
     /// messages after it go.

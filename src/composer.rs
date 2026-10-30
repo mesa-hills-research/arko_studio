@@ -266,9 +266,17 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
         return None;
     }
     let Some(space) = text.find(char::is_whitespace) else {
-        let items: Vec<MenuItem> = arko::commands::matching(text, true)
+        let commands: Vec<_> = arko::commands::matching(text, true)
             .into_iter()
             .filter(|command| offered(command))
+            .collect();
+        // Typed in full, a command that goes without arguments is whole
+        // (`/new`, though `/new continue` is offered after a space).
+        let complete = commands
+            .iter()
+            .any(|command| command.name == text && goes_bare(command.args));
+        let items: Vec<MenuItem> = commands
+            .into_iter()
             .map(|command| MenuItem {
                 insert: command.name.to_string(),
                 label: command.name.into(),
@@ -277,7 +285,6 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
                 more: !command.args.is_empty(),
             })
             .collect();
-        let complete = items.iter().any(|item| item.insert == text && !item.more);
         return (!items.is_empty()).then_some(SlashMenu {
             items,
             selected: 0,
@@ -323,6 +330,29 @@ pub fn slash_menu(text: &str, reading: &Reading) -> Option<SlashMenu> {
         takes_enter: true,
         note: None,
     })
+}
+
+/// Whether a command whose arguments `args` reads as its help does
+/// (`[continue]`, `[main|workers] SIZE`) may go without any: one of its
+/// ways (split by `|` outside brackets) has nothing outside brackets.
+fn goes_bare(args: &str) -> bool {
+    let mut depth = 0usize;
+    let mut bare = true;
+    for c in args.chars() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 => {
+                if bare {
+                    return true;
+                }
+                bare = true;
+            }
+            c if depth == 0 && !c.is_whitespace() => bare = false,
+            _ => {}
+        }
+    }
+    bare
 }
 
 /// The menu of the files `ranked` for an @-mention over `range`, if any.
@@ -1569,8 +1599,8 @@ mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::{
-        APP_COMMANDS, PASTE_TOKEN_BYTES, SendKey, SubmitKey, offered_commands, paste_label,
-        pastes_as_token, slash_menu,
+        APP_COMMANDS, PASTE_TOKEN_BYTES, SendKey, SubmitKey, goes_bare, offered_commands,
+        paste_label, pastes_as_token, slash_menu,
     };
     use arko::remote::Reading;
 
@@ -1696,5 +1726,28 @@ mod tests {
         assert!(!slash_menu("/stop-workers r", &reading).unwrap().complete);
         assert!(slash_menu("/handover", &reading).unwrap().complete);
         assert!(!slash_menu("/hand", &reading).unwrap().complete);
+    }
+
+    /// `/new` goes as typed, and offers `continue` after a space. A
+    /// command whose arguments are all optional is whole without them.
+    #[test]
+    fn new_goes_as_typed_and_offers_continue() {
+        let reading = Reading::default();
+        let menu = slash_menu("/new", &reading).unwrap();
+        assert!(menu.complete);
+        assert_eq!(menu.items[0].hint.as_ref(), "[continue]");
+        let menu = slash_menu("/new ", &reading).unwrap();
+        let words: Vec<&str> = menu.items.iter().map(|item| item.label.as_ref()).collect();
+        assert_eq!(words, ["continue"]);
+        assert!(!slash_menu("/handover-at", &reading).unwrap().complete);
+
+        assert!(goes_bare(""));
+        assert!(goes_bare("[continue]"));
+        assert!(goes_bare("[MODEL] [EFFORT] | worker [MODEL|main] [EFFORT]"));
+        assert!(goes_bare(
+            "[NAME | add NAME MODEL [EFFORT] [DESCRIPTION] | remove NAME]"
+        ));
+        assert!(!goes_bare("[main|workers] SIZE"));
+        assert!(!goes_bare("on|off"));
     }
 }

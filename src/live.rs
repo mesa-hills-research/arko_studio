@@ -186,6 +186,17 @@ pub enum LiveEvent {
     Refused(String),
     /// A worker finished or failed.
     WorkerEnded(WorkerEnd),
+    /// Arko didn't send a message to the main agent, which came as the old
+    /// model began its report for a switch: its words, as arko's notice
+    /// repeats them.
+    NotSent(String),
+    /// Arko didn't send a `/message` that would continue `worker`, whose
+    /// prompt cache expired. `warning` says what continuing re-reads, in
+    /// arko's words.
+    NotContinued {
+        worker: String,
+        warning: String,
+    },
 }
 
 /// A worker that finished or failed, as a notification tells of it.
@@ -339,6 +350,12 @@ struct Drained {
     /// the summary of the end.
     ended: Vec<String>,
     quit_asks: Vec<arko::QuitAsk>,
+    /// The words of the messages arko didn't send while a report was
+    /// written.
+    not_sent: Vec<String>,
+    /// The workers arko didn't continue because their cache expired, each
+    /// with arko's warning.
+    not_continued: Vec<(String, String)>,
 }
 
 impl Drained {
@@ -348,7 +365,39 @@ impl Drained {
             && self.workers.is_empty()
             && self.ended.is_empty()
             && self.quit_asks.is_empty()
+            && self.not_sent.is_empty()
+            && self.not_continued.is_empty()
     }
+}
+
+/// Why a message to the main agent waits while the old model writes its
+/// report for a switch, in arko's words.
+pub const REPORTING: &str = "The report is being written. Stopping skips it.";
+
+/// The words of a message arko didn't send while a report was written,
+/// from its notice ("“Hello.” wasn't sent. The report is being written.
+/// Stopping skips it."). A message of images alone has none ("Your message
+/// wasn't sent. …").
+fn not_sent_words(notice: &str) -> Option<&str> {
+    let what = notice.strip_suffix(REPORTING)?.trim_end();
+    if what == "Your message wasn't sent." {
+        return Some("");
+    }
+    what.strip_prefix('“')?.strip_suffix("” wasn't sent.")
+}
+
+/// How arko's notice ends when it didn't send a `/message` that would
+/// continue a worker whose prompt cache expired.
+const CONTINUE_AGAIN: &str = "The same /message again continues it.";
+
+/// The worker and arko's warning, from its notice that it didn't continue
+/// the worker ("r3's cache expired 2 hours ago. Continuing re-reads about
+/// 340k tokens without it (≈ $1.36 at API prices). The same /message again
+/// continues it.").
+fn not_continued(notice: &str) -> Option<(&str, &str)> {
+    let warning = notice.strip_suffix(CONTINUE_AGAIN)?.trim_end();
+    let (worker, _) = warning.split_once("'s cache expired ")?;
+    Some((worker, warning))
 }
 
 /// What the user did with the agent's questions in this app, beside what
@@ -751,15 +800,28 @@ impl LiveSession {
                     let mut activity = None;
                     let mut workers = Vec::new();
                     let mut ended = Vec::new();
+                    let mut not_sent = Vec::new();
+                    let mut uncached = Vec::new();
                     for update in batch {
                         match update {
                             Update::Activity => activity = Some(feed.activity()),
                             Update::Worker(worker) => workers.push(worker),
                             Update::WorkerEnded { id, .. } => ended.push(id),
+                            Update::Item(item) if item.kind == arko::remote::Kind::Notice => {
+                                not_sent.extend(not_sent_words(&item.text).map(str::to_string));
+                                uncached.extend(not_continued(&item.text).map(
+                                    |(worker, warning)| (worker.to_string(), warning.to_string()),
+                                ));
+                            }
                             _ => {}
                         }
                     }
-                    if activity.is_none() && workers.is_empty() && ended.is_empty() {
+                    if activity.is_none()
+                        && workers.is_empty()
+                        && ended.is_empty()
+                        && not_sent.is_empty()
+                        && uncached.is_empty()
+                    {
                         continue;
                     }
                     {
@@ -769,6 +831,8 @@ impl LiveSession {
                         }
                         drained.workers.extend(workers);
                         drained.ended.extend(ended);
+                        drained.not_sent.extend(not_sent);
+                        drained.not_continued.extend(uncached);
                     }
                     wake.notify_one();
                 }
@@ -859,6 +923,12 @@ impl LiveSession {
         for ask in drained.quit_asks {
             self.quit_asked(ask, cx);
         }
+        for words in drained.not_sent {
+            cx.emit(LiveEvent::NotSent(words));
+        }
+        for (worker, warning) in drained.not_continued {
+            cx.emit(LiveEvent::NotContinued { worker, warning });
+        }
         self.update_indicator(cx);
         cx.notify();
     }
@@ -868,8 +938,9 @@ impl LiveSession {
             self.title = self.reading.title.clone().into();
         }
         // (Before the engine's first status, the settings are the default's.)
-        if !self.reading.models.main.is_empty() {
-            self.model = arko::models::display_name(&self.reading.models.main).into();
+        let (model, _) = conversation_model(&self.reading.models);
+        if !model.is_empty() {
+            self.model = arko::models::display_name(model).into();
         }
     }
 
@@ -1051,6 +1122,14 @@ impl LiveSession {
         );
     }
 
+    /// Follows `feed` as if the engine had opened with it (tests).
+    #[cfg(test)]
+    pub fn follow_feed(&mut self, feed: Feed, cx: &mut Context<Self>) {
+        let (_, status) = tokio::sync::watch::channel(self.reading.clone());
+        let (_, quit_asks) = mpsc::unbounded_channel();
+        self.drain(feed, status, quit_asks, cx);
+    }
+
     /// Takes the requests waiting for the engine (tests).
     #[cfg(test)]
     pub fn take_requests(&mut self) -> Vec<arko::Request> {
@@ -1146,6 +1225,13 @@ impl LiveSession {
 
     pub fn is_working(&self) -> bool {
         self.activity.working
+    }
+
+    /// The old model writes its report for a switch of the main agent's
+    /// model (it works too). Arko doesn't send messages to the main agent
+    /// meanwhile, so they wait in the composer.
+    pub fn is_reporting(&self) -> bool {
+        self.activity.reporting
     }
 
     /// The question card the agent waits on, while it waits for the
@@ -1249,6 +1335,34 @@ impl LiveSession {
         }
     }
 
+    /// A message that answered the questions `ids` wasn't sent after all, so
+    /// those still open are open here again.
+    pub fn reopen_questions(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        let settled = self.questions.settled.len();
+        self.questions.settled.retain(|id| !ids.contains(id));
+        if self.questions.settled.len() != settled {
+            cx.notify();
+        }
+    }
+
+    /// A message that answered the questions `ids` comes back to the message
+    /// box, so those still open are open here again, and attached to it.
+    pub fn reattach_questions(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        if ids.is_empty() {
+            return;
+        }
+        self.reopen_questions(ids, cx);
+        let attached = &self.questions.attached;
+        let open: Vec<String> = self
+            .open_questions()
+            .iter()
+            .map(|question| question.id.clone())
+            .filter(|id| ids.contains(id) || attached.contains(id))
+            .collect();
+        self.questions.attached = open;
+        cx.notify();
+    }
+
     /// The open questions the answer panel hasn't shown yet.
     pub fn unseen_questions(&self) -> Vec<String> {
         self.open_questions()
@@ -1268,6 +1382,24 @@ impl LiveSession {
         self.questions.seen.extend(open);
     }
 
+    /// Shows `activity` as the session's (previews and screenshots, where no
+    /// session runs).
+    #[doc(hidden)]
+    pub fn show_activity(&mut self, activity: Activity, cx: &mut Context<Self>) {
+        self.activity = activity;
+        self.update_indicator(cx);
+        cx.notify();
+    }
+
+    /// Shows `models` as the session's (previews and screenshots, where no
+    /// session runs).
+    #[doc(hidden)]
+    pub fn show_models(&mut self, models: arko::remote::Models, cx: &mut Context<Self>) {
+        Arc::make_mut(&mut self.reading).models = models;
+        self.apply_reading();
+        cx.notify();
+    }
+
     /// Shows `questions` as the agent's open questions (previews and
     /// screenshots, where no session runs).
     #[doc(hidden)]
@@ -1282,8 +1414,9 @@ impl LiveSession {
         &self.workers
     }
 
-    /// Whether the conversation has started: the main agent keeps its
-    /// model from then on.
+    /// Whether the conversation has started. From then on, another model
+    /// for the main agent starts a new conversation that carries this one
+    /// over.
     pub fn has_started(&self) -> bool {
         // A new session is created by its first message, and a sample
         // session is an old one.
@@ -1503,6 +1636,7 @@ impl LiveSession {
             mode: self.mode,
             workspace: self.workspace.clone(),
             model: self.reading.models.main.clone(),
+            main_model: self.reading.models.main.clone(),
             created: std::time::SystemTime::now(),
             last_active: None,
             conversations: Vec::new(),
@@ -1649,6 +1783,23 @@ fn first_line(text: &str) -> SharedString {
     }
 }
 
+/// The model of the conversation the next message goes to, as `/model`
+/// takes it, and its effort when arko says it. They differ from those new
+/// conversations start on after `/resume` went back to a conversation on
+/// another model or effort. (An Arko that doesn't say the conversation's
+/// model gives the new conversations'.)
+pub fn conversation_model(models: &arko::remote::Models) -> (&str, Option<&str>) {
+    let (model, effort) = if models.conversation.is_empty() {
+        (&models.main, &models.main_effort)
+    } else {
+        (&models.conversation, &models.conversation_effort)
+    };
+    (
+        model,
+        Some(effort.as_str()).filter(|effort| !effort.is_empty()),
+    )
+}
+
 /// Why a session didn't open, for the user.
 fn open_error(error: &arko::OpenError) -> String {
     match error {
@@ -1673,9 +1824,55 @@ pub fn init(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Drained, LiveEvent, LiveSession, LiveSessions, Phase, first_line};
+    use super::{
+        Drained, LiveEvent, LiveSession, LiveSessions, Phase, first_line, not_continued,
+        not_sent_words,
+    };
     use arko::remote::{Activity, Reading};
     use gpui_kit::{AppContext as _, TestAppContext};
+
+    /// The words of a message arko didn't send come from its notice.
+    #[test]
+    fn a_message_not_sent_is_read_from_arkos_notice() {
+        assert_eq!(
+            not_sent_words(
+                "“Carry on with the tests.” wasn't sent. The report is being written. Stopping skips it."
+            ),
+            Some("Carry on with the tests.")
+        );
+        assert_eq!(
+            not_sent_words(
+                "Your message wasn't sent. The report is being written. Stopping skips it."
+            ),
+            Some("")
+        );
+        assert_eq!(not_sent_words("Skipped gpt-6-luna's report."), None);
+        assert_eq!(
+            not_sent_words("“A” wasn't sent because the session closed."),
+            None
+        );
+    }
+
+    /// The worker arko didn't continue, and its warning, come from arko's
+    /// notice, which ends by saying the same /message again continues it.
+    #[test]
+    fn a_worker_not_continued_is_read_from_arkos_notice() {
+        let cache = crate::workers::ended_with_cache("r12", 2 * 3_600_000 + 60_000, 340_000)
+            .cache()
+            .unwrap();
+        let warning = cache.warning(chrono::Utc::now());
+        let notice = format!("{warning} The same /message again continues it.");
+        assert_eq!(not_continued(&notice), Some(("r12", warning.as_str())));
+        assert_eq!(
+            warning,
+            "r12's cache expired 2 hours ago. Continuing re-reads about 340k tokens without it (≈ $1.36 at API prices)."
+        );
+        assert_eq!(not_continued(&warning), None);
+        assert_eq!(
+            not_continued("“Go on.” wasn't sent. The report is being written. Stopping skips it."),
+            None
+        );
+    }
     use std::sync::Arc;
 
     /// A session the backend refuses (open in a terminal) says why, and

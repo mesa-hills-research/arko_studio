@@ -1533,3 +1533,596 @@ fn an_open_sessions_models_are_listed_once_per_status(cx: &mut TestAppContext) {
     act(cx, window, |_, _| {});
     assert_eq!(backend.session_menus(), 2, "a new status lists them again");
 }
+
+/// A session whose conversation started on Opus 5.5 at high effort, with
+/// workers on Sonnet 5.5, shown in the window. (It queues what it is sent.)
+fn started_session(
+    cx: &mut TestAppContext,
+) -> (
+    AnyWindowHandle,
+    Entity<Workspace>,
+    Entity<crate::live::LiveSession>,
+) {
+    started_session_on(cx, FakeBackend::sample("/arko", SystemTime::now()))
+}
+
+fn started_session_on(
+    cx: &mut TestAppContext,
+    backend: FakeBackend,
+) -> (
+    AnyWindowHandle,
+    Entity<Workspace>,
+    Entity<crate::live::LiveSession>,
+) {
+    cx.update(|cx| crate::init(Startup::for_tests(Arc::new(backend)), cx));
+    let (window, workspace) = open(cx, 1300.);
+    let session = cx.new(|cx| crate::live::LiveSession::for_tests("s1", cx));
+    session.update(cx, |session, cx| {
+        session.set_status(started_reading(), Default::default(), cx)
+    });
+    act(cx, window, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(session.clone(), window, cx)
+        })
+    });
+    (window, workspace, session)
+}
+
+fn started_reading() -> arko::remote::Reading {
+    arko::remote::Reading {
+        models: arko::remote::Models {
+            main: "claude-opus-5-5".into(),
+            main_effort: "high".into(),
+            conversation: "claude-opus-5-5".into(),
+            conversation_effort: "high".into(),
+            workers: "claude-sonnet-5-5".into(),
+            workers_effort: "high".into(),
+            started: true,
+            reachable: vec!["anthropic".into()],
+            has_workers: true,
+            ..arko::remote::Models::default()
+        },
+        ..arko::remote::Reading::default()
+    }
+}
+
+/// The command lines the session was sent.
+fn sent(session: &Entity<crate::live::LiveSession>, cx: &mut TestAppContext) -> Vec<String> {
+    cx.read(|cx| {
+        session
+            .read(cx)
+            .queued()
+            .iter()
+            .filter_map(|input| match input {
+                arko::Input::Message(message) => Some(message.text.clone()),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// The model list's row a screen reader hears as `spoken` first.
+fn model_row(
+    window: AnyWindowHandle,
+    spoken: &str,
+    cx: &mut TestAppContext,
+) -> gpui_kit::SharedString {
+    cx.update_window(window, |_, window, _| {
+        (0..8)
+            .flat_map(|group| (0..12).map(move |ix| format!("model-{group}-{ix}").into()))
+            .find(|id: &gpui_kit::SharedString| {
+                window
+                    .try_find(id.clone())
+                    .is_some_and(|row| row.label().is_some_and(|label| label.starts_with(spoken)))
+            })
+    })
+    .unwrap()
+    .unwrap_or_else(|| panic!("no row for {spoken}"))
+}
+
+/// Once the conversation has started, the model list is the main agent's:
+/// another model asks, then starts a new conversation on it at the effort
+/// the dialog shows, and the conversation's own model sends nothing.
+#[gpui_kit::test]
+fn after_the_start_another_main_model_asks_then_switches(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    let opus = model_row(window, "Opus 5.5, Anthropic API", cx);
+    act(cx, window, |window, cx| window.click(opus.clone(), cx));
+    assert!(sent(&session, cx).is_empty(), "its own model");
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    find_model(&workspace, window, "sonnet", cx);
+    let sonnet = model_row(window, "Sonnet 5.5, Anthropic API", cx);
+    act(cx, window, |window, cx| window.click(sonnet.clone(), cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("switch-model").is_some());
+        // The effort the conversation runs at, as Sonnet takes it, named
+        // with its label for a screen reader.
+        assert_eq!(window.find("switch-effort").label(), Some("Effort, high"));
+    });
+    assert!(sent(&session, cx).is_empty(), "it asks first");
+    // Another effort, from its list.
+    act(cx, window, |window, cx| window.click("switch-effort", cx));
+    act(cx, window, |window, cx| {
+        window.within("popup-menu").click(0usize, cx)
+    });
+    act(cx, window, |window, _| {
+        assert_eq!(window.find("switch-effort").label(), Some("Effort, low"));
+    });
+    act(cx, window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    assert_eq!(sent(&session, cx), ["/model claude-sonnet-5-5 low"]);
+}
+
+/// Told not to ask, another model switches at once, and an effort chosen
+/// for the conversation's model does too.
+#[gpui_kit::test]
+fn told_not_to_ask_a_model_switches_at_once(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.sessions.ask_before_switch = false));
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    find_model(&workspace, window, "sonnet", cx);
+    let sonnet = model_row(window, "Sonnet 5.5, Anthropic API", cx);
+    act(cx, window, |window, cx| window.click(sonnet.clone(), cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("switch-model").is_none());
+    });
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("effort-low", cx));
+    assert_eq!(
+        sent(&session, cx),
+        ["/model claude-sonnet-5-5", "/model claude-opus-5-5 low"]
+    );
+}
+
+/// An effort chosen for the conversation's model asks too, naming the
+/// effort, and Cancel sends nothing. "Don't ask again" counts on Switch.
+#[gpui_kit::test]
+fn another_effort_after_the_start_asks_too(cx: &mut TestAppContext) {
+    let (window, _, session) = started_session(cx);
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("effort-high", cx));
+    assert!(sent(&session, cx).is_empty(), "the effort it runs at");
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("effort-low", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("switch-model").is_some());
+        assert!(window.try_find("switch-effort").is_none(), "chosen already");
+        window.within("dialog").click("cancel", cx);
+    });
+    assert!(sent(&session, cx).is_empty());
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("effort-low", cx));
+    act(cx, window, |window, cx| window.click("dont-ask-switch", cx));
+    act(cx, window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    assert_eq!(sent(&session, cx), ["/model claude-opus-5-5 low"]);
+    assert!(!cx.read(|cx| prefs::get(cx).sessions.ask_before_switch));
+}
+
+/// After the start, the list switches to the new workers' models, whose
+/// pick changes the workers started from now on, as before.
+#[gpui_kit::test]
+fn after_the_start_the_new_workers_models_are_a_click_away(cx: &mut TestAppContext) {
+    let (window, _, session) = started_session(cx);
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| {
+        window.click("model-for-workers", cx)
+    });
+    let opus = model_row(window, "Opus 5.5, Anthropic API", cx);
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("effort-high").is_none(), "the main agent's");
+        window.click(opus.clone(), cx);
+    });
+    assert_eq!(sent(&session, cx), ["/model worker claude-opus-5-5"]);
+    // It opens on the main agent's again.
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("effort-high").is_some());
+    });
+}
+
+/// During a turn, the main agent's models wait for it to end.
+#[gpui_kit::test]
+fn the_main_agents_models_wait_for_the_turn(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    let working = arko::remote::Activity {
+        working: true,
+        ..Default::default()
+    };
+    session.update(cx, |session, cx| {
+        session.set_status(started_reading(), working, cx)
+    });
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    find_model(&workspace, window, "sonnet", cx);
+    let sonnet = model_row(window, "Sonnet 5.5, Anthropic API", cx);
+    act(cx, window, |window, cx| window.click(sonnet.clone(), cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("switch-model").is_none());
+    });
+    assert!(sent(&session, cx).is_empty());
+}
+
+/// In a conversation `/resume` went back to on another model, the chip
+/// names that model at its own effort, not the effort of new
+/// conversations.
+#[gpui_kit::test]
+fn the_chip_names_the_conversations_model(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    let mut reading = started_reading();
+    reading.models.conversation = "claude-sonnet-5-5".into();
+    reading.models.conversation_effort = "medium".into();
+    session.update(cx, |session, cx| {
+        session.set_status(reading, Default::default(), cx)
+    });
+    act(cx, window, |_, _| {});
+    let view = session_view(&workspace, cx);
+    let label = cx.read(|cx| view.read(cx).chip_label(cx));
+    assert!(label.ends_with("Sonnet 5.5 · medium"), "{label}");
+    // Opus is another model here: it asks.
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    let opus = model_row(window, "Opus 5.5, Anthropic API", cx);
+    act(cx, window, |window, cx| window.click(opus.clone(), cx));
+    act(cx, window, |window, _| {
+        assert!(window.try_find("switch-model").is_some());
+    });
+}
+
+/// While the old model writes its report for a new conversation, the
+/// session works: the button is Stop, and it sends the interrupt that
+/// skips the report.
+#[gpui_kit::test]
+fn stop_skips_the_report_of_a_switch(cx: &mut TestAppContext) {
+    let (window, _, session) = started_session(cx);
+    let reporting = arko::remote::Activity {
+        working: true,
+        since: Some(crate::figures::now_ms()),
+        ..Default::default()
+    };
+    session.update(cx, |session, cx| {
+        session.set_status(started_reading(), reporting, cx)
+    });
+    act(cx, window, |window, _| {
+        assert_eq!(window.find("stop").label(), Some("Stop"));
+        assert!(window.try_find("send").is_none());
+    });
+    act(cx, window, |window, cx| window.click("stop", cx));
+    assert!(cx.read(|cx| matches!(session.read(cx).queued(), [arko::Input::Interrupt])));
+}
+
+/// Back in a conversation that runs another effort than new conversations
+/// start at, the chip and the list say the conversation's own: picking it
+/// sends nothing, and picking the other asks. An effort arko doesn't know
+/// isn't shown.
+#[gpui_kit::test]
+fn a_conversation_gone_back_to_keeps_its_own_effort(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    // Conversation 1 ran at high, conversation 2 at low, and `/resume 1`
+    // went back to the first.
+    let mut reading = started_reading();
+    reading.models.main_effort = "low".into();
+    session.update(cx, |session, cx| {
+        session.set_status(reading.clone(), Default::default(), cx)
+    });
+    act(cx, window, |_, _| {});
+    let view = session_view(&workspace, cx);
+    let label = cx.read(|cx| view.read(cx).chip_label(cx));
+    assert!(label.ends_with("Opus 5.5 · high"), "{label}");
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| {
+        assert_eq!(window.find("effort-high").label(), Some("high, chosen"));
+        window.click("effort-high", cx);
+    });
+    act(cx, window, |window, _| {
+        assert!(window.try_find("switch-model").is_none());
+    });
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    act(cx, window, |window, cx| window.click("effort-low", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("switch-model").is_some());
+        window.within("dialog").click("cancel", cx);
+    });
+    assert!(sent(&session, cx).is_empty());
+    // Without the conversation's effort, the chip names the model alone.
+    reading.models.conversation_effort = String::new();
+    session.update(cx, |session, cx| {
+        session.set_status(reading, Default::default(), cx)
+    });
+    act(cx, window, |_, _| {});
+    let label = cx.read(|cx| view.read(cx).chip_label(cx));
+    assert!(label.ends_with("Opus 5.5"), "{label}");
+}
+
+/// Opus 5.5 and Sonnet 5.5 on the Anthropic API, as an open session's
+/// models.
+fn two_models() -> FakeBackend {
+    use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
+    let choice = |name: &str, alias: &str| ModelChoice {
+        name: name.into(),
+        alias: alias.into(),
+        billing: None,
+    };
+    FakeBackend::sample("/arko", SystemTime::now()).with_session_models(ModelChoices {
+        groups: vec![ModelGroup {
+            name: "Anthropic API, billed per token".into(),
+            needs: None,
+            models: vec![
+                choice("claude-opus-5-5", "opus"),
+                choice("claude-sonnet-5-5", "sonnet"),
+            ],
+        }],
+        default: None,
+        note: None,
+    })
+}
+
+/// Whether `id` has the keyboard.
+fn has_keyboard(
+    window: AnyWindowHandle,
+    id: impl Into<gpui_kit::ElementId>,
+    cx: &mut TestAppContext,
+) -> bool {
+    let id = id.into();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).and_then(|found| found.focused()) == Some(true)
+    })
+    .unwrap()
+}
+
+/// Presses Tab until `id` has the keyboard.
+fn tab_to(window: AnyWindowHandle, id: &'static str, cx: &mut TestAppContext) {
+    for _ in 0..40 {
+        if has_keyboard(window, id, cx) {
+            return;
+        }
+        act(cx, window, |window, cx| window.press("tab", cx));
+    }
+    panic!("Tab never reached {id}");
+}
+
+/// Enter chooses a model in the list from the keyboard. The dialog that
+/// asks before a switch then gives the keyboard back to the model chip,
+/// whether Esc or Cancel closes it or Switch confirms it.
+#[gpui_kit::test]
+fn the_switch_dialog_gives_the_keyboard_back_to_the_chip(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session_on(cx, two_models());
+    let view = session_view(&workspace, cx);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx))
+    });
+    for close in ["escape", "cancel", "ok"] {
+        tab_to(window, "mode-model", cx);
+        act(cx, window, |window, cx| window.press("enter", cx));
+        tab_to(window, "model-0-1", cx);
+        act(cx, window, |window, cx| window.press("enter", cx));
+        act(cx, window, |window, cx| {
+            assert!(window.try_find("switch-model").is_some());
+            assert!(window.try_find("model-list").is_none(), "closed first");
+            match close {
+                "escape" => window.press("escape", cx),
+                button => window.within("dialog").click(button, cx),
+            }
+        });
+        // (Switch closes the dialog once it has faded.)
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        act(cx, window, |window, cx| {
+            assert!(!window.has_active_dialog(cx), "{close}");
+        });
+        assert!(has_keyboard(window, "mode-model", cx), "after {close}");
+    }
+    assert_eq!(sent(&session, cx), ["/model claude-sonnet-5-5 high"]);
+    // So does another effort's.
+    act(cx, window, |window, cx| window.press("enter", cx));
+    tab_to(window, "effort-low", cx);
+    act(cx, window, |window, cx| window.press("enter", cx));
+    act(cx, window, |window, cx| {
+        assert!(window.try_find("switch-model").is_some());
+        window.press("escape", cx);
+    });
+    assert!(has_keyboard(window, "mode-model", cx), "after an effort");
+}
+
+/// Main agent | New workers is a group of radio buttons, as Chat | Agent
+/// is. A screen reader hears which is chosen, and ←/→ choose while it has
+/// the keyboard.
+#[gpui_kit::test]
+fn main_agent_or_new_workers_is_a_radio_group(cx: &mut TestAppContext) {
+    use gpui_kit::Role;
+    let (window, workspace, _) = started_session_on(cx, two_models());
+    let view = session_view(&workspace, cx);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx))
+    });
+    tab_to(window, "mode-model", cx);
+    act(cx, window, |window, cx| window.press("enter", cx));
+    let chosen = |window: AnyWindowHandle, cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            ["model-for-main", "model-for-workers"].map(|id| {
+                let segment = window.find(id);
+                assert_eq!(segment.role(), Some(Role::RadioButton), "{id}");
+                assert_eq!(segment.checked(), segment.selected(), "{id}");
+                segment.selected() == Some(true)
+            })
+        })
+        .unwrap()
+    };
+    act(cx, window, |window, _| {
+        let group = window.find("model-for");
+        assert_eq!(group.role(), Some(Role::RadioGroup));
+        assert_eq!(group.label(), Some("Agents"));
+        assert_eq!(window.find("model-for-main").label(), Some("Main agent"));
+    });
+    assert_eq!(chosen(window, cx), [true, false]);
+    tab_to(window, "model-for", cx);
+    act(cx, window, |window, cx| window.press("right", cx));
+    assert_eq!(chosen(window, cx), [false, true]);
+    act(cx, window, |window, _| {
+        assert!(window.try_find("effort-high").is_none(), "the main agent's");
+    });
+    act(cx, window, |window, cx| window.press("left", cx));
+    assert_eq!(chosen(window, cx), [true, false]);
+    // A click chooses too.
+    act(cx, window, |window, cx| {
+        window.click("model-for-workers", cx)
+    });
+    assert_eq!(chosen(window, cx), [false, true]);
+}
+
+/// The session's status while the old model writes its report for a switch.
+fn reporting() -> arko::remote::Activity {
+    arko::remote::Activity {
+        working: true,
+        reporting: true,
+        since: Some(crate::figures::now_ms()),
+        ..Default::default()
+    }
+}
+
+/// While the old model writes its report, a message to the main agent
+/// waits in the composer, as the strip above it says, and the button is
+/// Stop. A command and a message to a worker go. Once the report is done,
+/// the message goes.
+#[gpui_kit::test]
+fn a_message_waits_while_the_report_is_written(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    session.update(cx, |session, cx| {
+        session.set_status(started_reading(), reporting(), cx)
+    });
+    let view = session_view(&workspace, cx);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx))
+    });
+    act(cx, window, |window, cx| window.input("Carry on.", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert!(sent(&session, cx).is_empty());
+    assert_eq!(composer_text(&workspace, cx), "Carry on.");
+    act(cx, window, |window, _| {
+        assert!(window.try_find("reporting-strip").is_some());
+        assert!(window.try_find("send").is_none());
+        assert_eq!(window.find("stop").label(), Some("Stop"));
+    });
+    // A command goes.
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    act(cx, window, |window, cx| {
+        composer.update(cx, |composer, cx| composer.set_text("/cost", window, cx))
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(sent(&session, cx), ["/cost"]);
+    // So does a message to a worker.
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_target(Some("r1".into()), window, cx)
+        })
+    });
+    act(cx, window, |window, cx| window.input("Use tabs.", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(sent(&session, cx), ["/cost", "/message r1 Use tabs."]);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.set_target(None, window, cx))
+    });
+    // The report done, the strip goes, and the message goes.
+    session.update(cx, |session, cx| {
+        session.set_status(started_reading(), Default::default(), cx)
+    });
+    act(cx, window, |window, _| {
+        assert!(window.try_find("reporting-strip").is_none());
+        assert!(window.try_find("send").is_some());
+    });
+    act(cx, window, |window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.set_text("Carry on.", window, cx)
+        })
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(
+        sent(&session, cx),
+        ["/cost", "/message r1 Use tabs.", "Carry on."]
+    );
+    assert_eq!(composer_text(&workspace, cx), "");
+}
+
+/// A message to Arko that arko didn't send comes back to Arko, though the
+/// composer was set to write to a worker meanwhile, so Enter sends it to
+/// Arko again.
+#[gpui_kit::test]
+fn a_message_arko_did_not_send_comes_back_to_arko(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    let view = session_view(&workspace, cx);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx))
+    });
+    act(cx, window, |window, cx| window.input("Carry on.", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_target(Some("r1".into()), window, cx)
+        })
+    });
+    session.update(cx, |_, cx| {
+        cx.emit(crate::live::LiveEvent::NotSent("Carry on.".into()))
+    });
+    act(cx, window, |_, _| {});
+    assert_eq!(composer_text(&workspace, cx), "Carry on.");
+    assert_eq!(cx.read(|cx| view.read(cx).target().cloned()), None);
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(sent(&session, cx), ["Carry on.", "Carry on."]);
+}
+
+/// A message sent as the report began, which arko didn't send, comes back
+/// to the composer whole, unless something else was typed since.
+#[gpui_kit::test]
+fn a_message_arko_did_not_send_comes_back(cx: &mut TestAppContext) {
+    let (window, workspace, session) = started_session(cx);
+    let view = session_view(&workspace, cx);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx))
+    });
+    act(cx, window, |window, cx| window.input("Carry on", cx));
+    act(cx, window, |window, cx| window.press("shift-enter", cx));
+    act(cx, window, |window, cx| window.input("with the tests.", cx));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(sent(&session, cx), ["Carry on\nwith the tests."]);
+    assert_eq!(composer_text(&workspace, cx), "");
+    // Another message's words leave the box alone.
+    let not_sent = |words: &str, cx: &mut TestAppContext| {
+        let words = words.to_string();
+        session.update(cx, |_, cx| cx.emit(crate::live::LiveEvent::NotSent(words)));
+        act(cx, window, |_, _| {});
+    };
+    not_sent("Something else.", cx);
+    assert_eq!(composer_text(&workspace, cx), "");
+    // Arko's notice has it on one line.
+    not_sent("Carry on with the tests.", cx);
+    assert_eq!(composer_text(&workspace, cx), "Carry on\nwith the tests.");
+    // Once only, and not over what was typed since.
+    act(cx, window, |window, cx| window.press("enter", cx));
+    act(cx, window, |window, cx| window.input("Wait.", cx));
+    not_sent("Carry on with the tests.", cx);
+    assert_eq!(composer_text(&workspace, cx), "Wait.");
+    // A message of an image alone comes back with its image.
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    act(cx, window, |window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.set_text("", window, cx);
+            composer.attach_image(
+                crate::composer::Attached::new(
+                    gpui_kit::ImageFormat::Png,
+                    crate::testing::PNG.to_vec(),
+                    Some("shot.png".into()),
+                ),
+                cx,
+            );
+        })
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    let images = |cx: &mut TestAppContext| cx.read(|cx| composer.read(cx).images().len());
+    assert_eq!(images(cx), 0, "sent");
+    not_sent("", cx);
+    assert_eq!(images(cx), 1);
+    assert_eq!(composer_text(&workspace, cx), "");
+}

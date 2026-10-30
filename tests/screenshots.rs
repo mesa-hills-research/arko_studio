@@ -2845,6 +2845,56 @@ fn edit_dialog_dark() {
     goldens().assert("edit-dialog-dark", &edit_dialog_window(ThemeMode::Dark));
 }
 
+/// The dialog that asks before a message continues a worker whose prompt
+/// cache expired two hours ago, over a new window.
+fn continue_worker_window(mode: ThemeMode) -> Screenshot {
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(900.), px(560.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, _)| window)
+        })
+        .unwrap();
+    let cache = arko::worker_cache::WorkerCache {
+        worker: "r3".into(),
+        expires_at: chrono::Utc::now() - chrono::Duration::minutes(121),
+        cost: arko::details::SwitchCost {
+            tokens: 340_000,
+            dollars: Some(1.36),
+            plan: None,
+        },
+    };
+    let warning = cache.warning(chrono::Utc::now());
+    app.update_window(window, |_, window, cx| {
+        arko_studio::prompts::confirm_continue("r3", &warning, window, cx, |_, _| {})
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn continue_worker_light() {
+    goldens().assert(
+        "continue-worker-light",
+        &continue_worker_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn continue_worker_dark() {
+    goldens().assert(
+        "continue-worker-dark",
+        &continue_worker_window(ThemeMode::Dark),
+    );
+}
+
 /// About Arko Studio over a window `width` × `height` logical pixels, with
 /// the built-in fonts, so all three credits show. `scroll` turns the mouse
 /// wheel that many pixels down over the dialog.
@@ -3211,6 +3261,7 @@ impl gpui_kit::Render for StatusPopovers {
         };
         let cost = CostReport {
             main: share(1.0, 420_000, 18_000),
+            main_parts: vec![share(1.0, 420_000, 18_000)],
             workers: share(0.2, 90_000, 4_000),
             plans: Vec::new(),
             embeddings: Some((120_000, 0.01)),
@@ -3265,6 +3316,91 @@ fn status_popovers_light() {
 #[test]
 fn status_popovers_dark() {
     goldens().assert("status-popovers-dark", &status_popovers(ThemeMode::Dark));
+}
+
+/// The cost's popover after the main agent moved from the Claude plan to the
+/// ChatGPT plan mid-session, with workers billed per token: a row for each
+/// plan the main agent ran on.
+struct CostParts;
+
+impl gpui_kit::Render for CostParts {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use arko::details::{CostReport, CostShare};
+        use arko_studio::status_bar::CostDetails;
+        use gpui_kit::component::ActiveTheme as _;
+        use gpui_kit::{IntoElement as _, ParentElement as _, Styled as _, div};
+
+        let theme = cx.theme();
+        let share = |billed: f64, api: f64, input: usize, output: usize, plan| CostShare {
+            billed,
+            api,
+            input,
+            output,
+            plan,
+        };
+        let main_parts = vec![
+            share(0.0, 3.0, 420_000, 18_000, Some("Claude plan")),
+            share(0.0, 1.2, 90_000, 6_000, Some("ChatGPT plan")),
+        ];
+        let cost = CostReport {
+            main: share(0.0, 4.2, 510_000, 24_000, None),
+            main_parts,
+            workers: share(0.2, 0.2, 90_000, 4_000, None),
+            plans: Vec::new(),
+            embeddings: None,
+        };
+        div()
+            .size_full()
+            .p_4()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .font_family(theme.font_family.clone())
+            .child(
+                div()
+                    .p_3()
+                    .bg(theme.popover)
+                    .text_color(theme.popover_foreground)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(theme.radius_lg)
+                    .child(CostDetails::new(Some(cost)).into_any_element()),
+            )
+    }
+}
+
+fn cost_parts(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(420.), px(260.)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| CostParts))
+                .map(|(window, _)| window)
+        })
+        .unwrap();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn cost_parts_light() {
+    goldens().assert("cost-parts-light", &cost_parts(ThemeMode::Light));
+}
+
+#[test]
+fn cost_parts_dark() {
+    goldens().assert("cost-parts-dark", &cost_parts(ThemeMode::Dark));
 }
 
 /// The last cache reminder, at 0:42 before the cache lapses, over an empty
@@ -3788,6 +3924,51 @@ fn sidebar_marks_narrow_dark() {
     );
 }
 
+/// A session's conversations listed under it, the first on GPT-6.1 Sol
+/// and the second on Opus 5.5, the model new conversations start on: only
+/// the first names its model.
+fn sidebar_conversations(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let window = app
+        .open_window_with(size(px(900.), px(420.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, _)| window)
+        })
+        .unwrap();
+    app.run_until_parked();
+    // "Fix the handover size for workers", the sixth row.
+    app.update_window(window, |_, window, cx| {
+        window.click(("conversations", 5usize), cx)
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn sidebar_conversations_light() {
+    goldens().assert(
+        "sidebar-conversations-light",
+        &sidebar_conversations(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn sidebar_conversations_dark() {
+    goldens().assert(
+        "sidebar-conversations-dark",
+        &sidebar_conversations(ThemeMode::Dark),
+    );
+}
+
 /// A session's info, as its popover shows it.
 struct InfoCard {
     info: gpui_kit::Entity<arko_studio::session_info::SessionInfo>,
@@ -4142,6 +4323,202 @@ fn model_popover_light() {
 #[test]
 fn model_popover_dark() {
     goldens().assert("model-popover-dark", &model_popover(ThemeMode::Dark));
+}
+
+/// An open session's model list once its conversation has started on
+/// Opus 5.5 through Claude Code: the main agent's models, where another one
+/// starts a new conversation, a click away from the new workers'. With
+/// `pick`, the dialog that asks before the switch to that row.
+fn model_popover_started(mode: ThemeMode, pick: Option<&'static str>) -> Screenshot {
+    use arko_studio::backend::{ModelChoice, ModelChoices, ModelGroup};
+    use gpui_kit::test::TestWindowExt as _;
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    // Billed at prices of the test's own, so a change to Arko's leaves the
+    // golden as it is.
+    let choice = |name: &str, alias: &str, billing: Option<&str>| ModelChoice {
+        name: name.into(),
+        alias: alias.into(),
+        billing: billing.map(String::from),
+    };
+    let backend =
+        FakeBackend::sample("/arko", SystemTime::now()).with_session_models(ModelChoices {
+            groups: vec![
+                ModelGroup {
+                    name: "Claude Code, on your Claude plan".into(),
+                    needs: None,
+                    models: vec![
+                        choice("cc:claude-opus-5-5", "cc:opus", None),
+                        choice("cc:claude-sonnet-5-5", "cc:sonnet", None),
+                    ],
+                },
+                ModelGroup {
+                    name: "OpenAI, on your ChatGPT plan".into(),
+                    needs: None,
+                    models: vec![
+                        choice("gpt-6.1-sol", "sol", None),
+                        choice("gpt-6-luna", "luna", None),
+                    ],
+                },
+                ModelGroup {
+                    name: "Anthropic API, billed per token".into(),
+                    needs: None,
+                    models: vec![choice("claude-opus-5-5", "opus", Some("API, $4/$20"))],
+                },
+            ],
+            default: None,
+            note: None,
+        });
+    let startup = Startup::for_tests(Arc::new(backend))
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(1300.), px(800.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, window, cx| {
+        let id = SessionId("20261016-091200-a1b2".into());
+        workspace.update(cx, |workspace, cx| workspace.open_session(id, window, cx));
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.update_window(window, |_, _, cx| {
+        let session = workspace.read(cx).live_session().unwrap().clone();
+        session.update(cx, |session, cx| {
+            session.show_models(
+                arko::remote::Models {
+                    main: "cc:claude-opus-5-5".into(),
+                    main_effort: "high".into(),
+                    conversation: "cc:claude-opus-5-5".into(),
+                    conversation_effort: "high".into(),
+                    workers: "cc:claude-sonnet-5-5".into(),
+                    workers_effort: "high".into(),
+                    started: true,
+                    has_workers: true,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.update_window(window, |_, window, cx| window.click("mode-model", cx))
+        .unwrap();
+    app.run_until_parked();
+    if let Some(pick) = pick {
+        app.update_window(window, |_, window, cx| window.click(pick, cx))
+            .unwrap();
+        app.run_until_parked();
+    }
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn model_popover_started_light() {
+    goldens().assert(
+        "model-popover-started-light",
+        &model_popover_started(ThemeMode::Light, None),
+    );
+}
+
+#[test]
+fn model_popover_started_dark() {
+    goldens().assert(
+        "model-popover-started-dark",
+        &model_popover_started(ThemeMode::Dark, None),
+    );
+}
+
+/// The composer while the old model writes its report for a switch: the
+/// message typed waits, the strip above says why, and the button is Stop.
+fn composer_reporting(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(900.), px(300.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, window, cx| {
+        let id = SessionId("20261016-091200-a1b2".into());
+        workspace.update(cx, |workspace, cx| workspace.open_session(id, window, cx));
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.update_window(window, |_, window, cx| {
+        let session = workspace.read(cx).live_session().unwrap().clone();
+        session.update(cx, |session, cx| {
+            session.show_activity(
+                arko::remote::Activity {
+                    working: true,
+                    reporting: true,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        let view = workspace.read(cx).session_view().clone();
+        view.update(cx, |view, cx| view.focus_composer(window, cx));
+        window.input("Then run the tests on Windows too.", cx);
+    })
+    .unwrap();
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn composer_reporting_light() {
+    goldens().assert(
+        "composer-reporting-light",
+        &composer_reporting(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn composer_reporting_dark() {
+    goldens().assert(
+        "composer-reporting-dark",
+        &composer_reporting(ThemeMode::Dark),
+    );
+}
+
+#[test]
+fn model_switch_light() {
+    goldens().assert(
+        "model-switch-light",
+        &model_popover_started(ThemeMode::Light, Some("model-1-0")),
+    );
+}
+
+#[test]
+fn model_switch_dark() {
+    goldens().assert(
+        "model-switch-dark",
+        &model_popover_started(ThemeMode::Dark, Some("model-1-0")),
+    );
 }
 
 /// The agent's questions: one choice with a default, several choices, and
@@ -4648,7 +5025,8 @@ fn approvals_update_keyboard_dark() {
 /// A card of the agent's questions in the transcript: its line, and the
 /// record of the questions settled, one in each state. The open one is the
 /// answer panel's. The answers given in the panel are a bubble of the
-/// user's under the card, and an answer typed in the message box follows.
+/// user's under the card, a choice and "You decide" each with words of the
+/// user's, and an answer typed in the message box follows.
 fn question_card_window(mode: ThemeMode) -> Screenshot {
     use arko::questions::{AskedQuestion, QuestionState};
     use arko::remote::{Delivery, Feed, Source};
@@ -4688,7 +5066,7 @@ fn question_card_window(mode: ThemeMode) -> Screenshot {
     feed.set_question_state(
         "q1",
         QuestionState::Answered {
-            answer: "Spaces".into(),
+            answer: "Spaces, plus “two wide, as in the old files”".into(),
         },
     );
     feed.set_question_state("q2", QuestionState::AnsweredInMessage);
@@ -4702,12 +5080,12 @@ fn question_card_window(mode: ThemeMode) -> Screenshot {
     feed.set_question_state(
         "q5",
         QuestionState::Answered {
-            answer: "Yes, and keep a re-export under the old name".into(),
+            answer: "You decide, plus “keep a re-export under the old name”".into(),
         },
     );
     feed.user("Not yet, after the review.", Source::App, Delivery::Answer);
     let window = app
-        .open_window_with(size(px(900.), px(640.)), 1., |options, cx| {
+        .open_window_with(size(px(900.), px(700.)), 1., |options, cx| {
             gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| TranscriptView::new(&feed, AgentFilter::Main, window, cx))
             })

@@ -268,6 +268,57 @@ fn the_panel_sends_what_is_filled_in(cx: &mut TestAppContext) {
     assert!(!app.shows(cx, "questions-chip"));
 }
 
+/// The words in Other go with a pick, and with "You decide". Picking a
+/// choice leaves the words as they are, typing more leaves the pick, and
+/// "You decide" lets go of the pick but not the words.
+#[gpui_kit::test]
+fn the_words_in_other_go_with_a_pick_or_you_decide(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.ask(cx, three());
+    let answer = |app: &Window, cx: &mut TestAppContext, index: usize| {
+        let panel = app.panel(cx);
+        cx.read(|cx| panel.read(cx).answers(cx).answers[index].answer.clone())
+    };
+    // q1 takes one choice: the words first, then Tabs, then more words.
+    app.fill(cx, 0, "Two wide");
+    app.click(cx, part("answer-choice", "q1", 0));
+    app.fill(cx, 0, " in the tests");
+    assert_eq!(
+        answer(&app, cx, 0),
+        Answer {
+            choices: vec!["Tabs".into()],
+            text: Some("Two wide in the tests".into()),
+            you_decide: false,
+        }
+    );
+    // Spaces instead keeps the words too.
+    app.click(cx, part("answer-choice", "q1", 1));
+    assert_eq!(
+        answer(&app, cx, 0).text.as_deref(),
+        Some("Two wide in the tests")
+    );
+    // "You decide" with words, before and after them.
+    app.click(cx, part("answer-you-decide", "q1", 0));
+    app.fill(cx, 2, "Not main");
+    app.click(cx, part("answer-you-decide", "q3", 0));
+    app.click(cx, "answer-send");
+    let you_decide = |text: &str| Answer {
+        text: Some(text.into()),
+        you_decide: true,
+        ..Answer::default()
+    };
+    assert_eq!(
+        app.sent(cx),
+        [arko::Input::AnswerQuestions(Answers {
+            answers: vec![
+                QuestionAnswer::new("q1", you_decide("Two wide in the tests")),
+                QuestionAnswer::new("q2", Answer::default()),
+                QuestionAnswer::new("q3", you_decide("Not main")),
+            ],
+        })]
+    );
+}
+
 /// Send sends what is filled in, and names the questions left unanswered,
 /// which stay open in the quiet chip. "You decide" lets go of the choices.
 #[gpui_kit::test]
@@ -326,6 +377,52 @@ fn answer_in_chat_attaches_the_questions_to_the_next_message(cx: &mut TestAppCon
         })]
     );
     assert!(!app.shows(cx, "questions-replying"));
+}
+
+/// A reply that arko didn't send (it came as the old model began its report
+/// for a switch) comes back replying to the same questions, open again, so
+/// the next message answers them. When something else was typed since, the
+/// reply stays away, and its questions are open again all the same.
+#[gpui_kit::test]
+fn a_reply_arko_did_not_send_comes_back_replying_to_its_questions(cx: &mut TestAppContext) {
+    let app = start(cx);
+    let not_sent = |cx: &mut TestAppContext| {
+        app.session.update(cx, |_, cx| {
+            cx.emit(crate::live::LiveEvent::NotSent(
+                "Spaces, all of them, main.".into(),
+            ))
+        });
+        cx.run_until_parked();
+    };
+    app.ask(cx, three());
+    app.click(cx, "answer-in-chat");
+    app.type_text(cx, "Spaces, all of them, main.");
+    app.press(cx, "enter");
+    assert!(!app.shows(cx, "questions-replying"));
+    not_sent(cx);
+    assert!(app.shows(cx, "questions-replying"));
+    assert!(!app.shows(cx, "questions-chip"));
+    app.press(cx, "enter");
+    let reply = arko::Input::Message(arko::Message {
+        text: "Spaces, all of them, main.".into(),
+        answers: vec!["q1".into(), "q2".into(), "q3".into()],
+        ..Default::default()
+    });
+    assert_eq!(app.sent(cx), [reply.clone(), reply]);
+
+    assert!(!app.shows(cx, "questions-chip"));
+    app.type_text(cx, "Wait.");
+    not_sent(cx);
+    let composer = cx.read(|cx| {
+        let view = app.workspace.read(cx).session_view().clone();
+        view.read(cx).composer().read(cx).text(cx)
+    });
+    assert_eq!(composer, "Wait.");
+    assert!(!app.shows(cx, "questions-replying"));
+    assert_eq!(
+        app.label(cx, "questions-open").as_deref(),
+        Some("3 open questions")
+    );
 }
 
 /// Esc in the panel does what "Answer in chat" does, and the keyboard goes

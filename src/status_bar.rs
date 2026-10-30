@@ -704,6 +704,41 @@ fn unread_button(unread: usize) -> AnyElement {
         .into_any_element()
 }
 
+/// Which plans cover the main agent's `parts` and the `workers`' part, and
+/// whether they cover it all ("The Claude plan covers part of it"), or
+/// `None` when no plan paid.
+fn plans_cover(
+    parts: &[arko::details::CostShare],
+    workers: &arko::details::CostShare,
+) -> Option<String> {
+    let shares = || parts.iter().chain([workers]);
+    let mut plans: Vec<&str> = Vec::new();
+    for plan in shares().filter_map(|share| share.plan) {
+        if !plans.contains(&plan) {
+            plans.push(plan);
+        }
+    }
+    let all = shares()
+        .filter(|share| share.used())
+        .all(|share| share.plan.is_some());
+    let what = if all { "it" } else { "part of it" };
+    match plans.as_slice() {
+        [] => None,
+        [plan] => Some(format!("The {plan} covers {what}")),
+        plans => {
+            let names: Vec<&str> = plans
+                .iter()
+                .map(|plan| plan.trim_end_matches(" plan"))
+                .collect();
+            let (last, rest) = names.split_last()?;
+            Some(format!(
+                "The {} and {last} plans cover {what}",
+                rest.join(", ")
+            ))
+        }
+    }
+}
+
 /// The cost's popover: what was billed and what it would cost at API
 /// prices, the main agent's part and the workers', the search indexes'
 /// embeddings and the plans' usage.
@@ -723,11 +758,18 @@ impl RenderOnce for CostDetails {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
-        let row = |name: &str, amount: String, detail: String| {
+        // A part of a part (the main agent's on one plan) is indented.
+        let row_of = |name: &str, inner: bool, amount: String, detail: String| {
             h_flex()
                 .gap_2()
                 .text_xs()
-                .child(div().w(rems(6.5)).flex_none().child(name.to_string()))
+                .child(
+                    div()
+                        .w(rems(6.5))
+                        .flex_none()
+                        .when(inner, |this| this.pl_2())
+                        .child(name.to_string()),
+                )
                 .child(
                     div()
                         .w(rems(4.5))
@@ -738,6 +780,7 @@ impl RenderOnce for CostDetails {
                 )
                 .child(div().flex_1().min_w_0().text_color(muted).child(detail))
         };
+        let row = |name: &str, amount: String, detail: String| row_of(name, false, amount, detail);
         let tokens = |input: usize, output: usize| {
             format!(
                 "{} in, {} out",
@@ -754,7 +797,12 @@ impl RenderOnce for CostDetails {
             Some(report) => {
                 let billed = report.billed();
                 let api = report.main.api + report.workers.api;
-                let plan = report.main.plan.or(report.workers.plan);
+                // The main agent's part for each way it was paid, when there
+                // are several (after a switch to a model on another plan).
+                let parts = match report.main_parts.as_slice() {
+                    [_, _, ..] => report.main_parts.as_slice(),
+                    _ => std::slice::from_ref(&report.main),
+                };
                 let part = |share: &arko::details::CostShare| match share.plan {
                     Some(_) => format!("≈ {}", figures::dollars(share.api)),
                     None => figures::dollars(share.billed),
@@ -765,31 +813,37 @@ impl RenderOnce for CostDetails {
                         .child(format!("{} billed", figures::dollars(billed)))
                         .into_any_element(),
                 ];
-                if let Some(plan) = plan {
+                if let Some(covers) = plans_cover(parts, &report.workers) {
                     lines.push(
                         div()
                             .text_xs()
                             .text_color(muted)
                             .child(format!(
-                                "≈ {} at API prices. The {plan} covers {}",
-                                figures::dollars(api),
-                                if report.main.plan.is_some() && report.workers.plan.is_some()
-                                    || report.workers.input + report.workers.output == 0
-                                    || report.main.input + report.main.output == 0
-                                {
-                                    "it"
-                                } else {
-                                    "part of it"
-                                }
+                                "≈ {} at API prices. {covers}",
+                                figures::dollars(api)
                             ))
                             .into_any_element(),
                     );
                 }
-                let mut rows = vec![row(
-                    "Main agent",
-                    part(&report.main),
-                    tokens(report.main.input, report.main.output),
-                )];
+                // Several parts go under the main agent's name, each named
+                // by its plan.
+                let mut rows: Vec<_> = match parts {
+                    [main] => vec![row(
+                        "Main agent",
+                        part(main),
+                        tokens(main.input, main.output),
+                    )],
+                    parts => std::iter::once(div().text_xs().child("Main agent"))
+                        .chain(parts.iter().map(|share| {
+                            row_of(
+                                share.plan.unwrap_or("Per token"),
+                                true,
+                                part(share),
+                                tokens(share.input, share.output),
+                            )
+                        }))
+                        .collect(),
+                };
                 if report.workers.input + report.workers.output > 0 {
                     rows.push(row(
                         "Workers",
@@ -836,9 +890,42 @@ impl RenderOnce for CostDetails {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{names, next_change, outside_words};
+    use super::{names, next_change, outside_words, plans_cover};
+    use arko::details::CostShare;
     use arko::remote::{Activity, Reading};
     use std::time::Duration;
+
+    /// The line under the bill names the plans that paid, and says whether
+    /// they paid for all of it.
+    #[test]
+    fn the_cost_names_each_plan_that_paid() {
+        let share = |plan, tokens| CostShare {
+            input: tokens,
+            plan,
+            ..CostShare::default()
+        };
+        let claude = share(Some("Claude plan"), 1_000);
+        let chatgpt = share(Some("ChatGPT plan"), 1_000);
+        let api = share(None, 1_000);
+        let none = share(None, 0);
+        assert_eq!(
+            plans_cover(std::slice::from_ref(&claude), &none).as_deref(),
+            Some("The Claude plan covers it")
+        );
+        assert_eq!(
+            plans_cover(std::slice::from_ref(&claude), &api).as_deref(),
+            Some("The Claude plan covers part of it")
+        );
+        assert_eq!(
+            plans_cover(&[claude.clone(), chatgpt.clone()], &none).as_deref(),
+            Some("The Claude and ChatGPT plans cover it")
+        );
+        assert_eq!(
+            plans_cover(&[claude, api.clone()], &chatgpt).as_deref(),
+            Some("The Claude and ChatGPT plans cover part of it")
+        );
+        assert_eq!(plans_cover(std::slice::from_ref(&api), &none), None);
+    }
 
     #[test]
     fn running_times_tick_on_their_seconds() {

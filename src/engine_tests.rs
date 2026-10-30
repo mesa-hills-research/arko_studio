@@ -432,8 +432,9 @@ impl App {
 
 /// Questions that come while the message box is empty open the answer
 /// panel by itself. Its choices, "You decide" and "Other" reach the agent
-/// as one note. The answers stay in a user bubble below the questions,
-/// including after the session resumes.
+/// as one note, the words in Other with a choice or "You decide" too. The
+/// answers stay in a user bubble below the questions, including after the
+/// session resumes.
 #[gpui_kit::test]
 fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
     let mock = asking(
@@ -462,15 +463,19 @@ fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
                 .cloned()
         })
         .unwrap();
-    act(cx, app.window, |window, cx| {
-        panel.update(cx, |panel, cx| panel.focus_field(2, window, cx));
-        window.input("main", cx);
-    });
+    for (field, words) in [(0, "2 wide"), (1, "after the review"), (2, "main")] {
+        act(cx, app.window, |window, cx| {
+            panel.update(cx, |panel, cx| panel.focus_field(field, window, cx));
+            window.input(words, cx);
+        });
+    }
     act(cx, app.window, |window, cx| window.click("answer-send", cx));
     app.wait_for_text(cx, "Thanks.");
     assert!(mock.was_sent("The user answered q1, q2 and q3."));
-    assert!(mock.was_sent("q1 Tabs or spaces? Spaces"));
-    assert!(mock.was_sent("q2 Push now? You decide (you said you'd assume: not yet)"));
+    assert!(mock.was_sent("q1 Tabs or spaces? Spaces, plus “2 wide”"));
+    assert!(mock.was_sent(
+        "q2 Push now? You decide (you said you'd assume: not yet), plus “after the review”"
+    ));
     assert!(mock.was_sent("q3 Which branch? main"));
     assert!(!app.shows(cx, "answer-panel"));
     assert!(!app.shows(cx, "questions-chip"));
@@ -489,10 +494,10 @@ fn the_agents_questions_are_answered_in_the_panel(cx: &mut TestAppContext) {
         card,
         [
             arko::questions::QuestionState::Answered {
-                answer: "Spaces".into()
+                answer: "Spaces, plus “2 wide”".into()
             },
             arko::questions::QuestionState::Answered {
-                answer: "You decide".into()
+                answer: "You decide, plus “after the review”".into()
             },
             arko::questions::QuestionState::Answered {
                 answer: "main".into()
@@ -990,6 +995,7 @@ fn a_session_open_elsewhere_says_who_has_it(cx: &mut TestAppContext) {
             mode: crate::backend::Mode::Agent,
             workspace: entry.workspace,
             model: entry.model,
+            main_model: entry.main_model,
             created: entry.created.into(),
             last_active: None,
             conversations: Vec::new(),
@@ -2167,5 +2173,106 @@ fn resizing_the_sidebar_leaves_no_selection_following_the_pointer(cx: &mut TestA
         }
         assert!(!gpui_kit::base::TextSelection::has_selection(window, cx));
     });
+    app.close_all(cx);
+}
+
+/// `/new continue` asks the agent for a report first, and the session works
+/// meanwhile. Stop skips the report, and the new conversation opens with
+/// its marker.
+#[gpui_kit::test]
+fn stop_skips_the_report_for_a_new_conversation(cx: &mut TestAppContext) {
+    const REQUEST: &str = "a new conversation that goes on from a report you write now";
+    let mock = Mock::start(|_, body| {
+        if body.contains(REQUEST) {
+            answer("The report.", Duration::from_secs(60))
+        } else {
+            answer("Hello.", Duration::ZERO)
+        }
+    });
+    let app = start(cx, &mock);
+    let working = |cx: &mut TestAppContext| {
+        app.shown(cx)
+            .is_some_and(|session| cx.read(|cx| session.read(cx).is_working()))
+    };
+    app.send(cx, "Say hello.");
+    app.wait_for_text(cx, "Hello.");
+    wait_until(cx, "the turn to end", |cx| !working(cx));
+    app.send(cx, "/new continue");
+    wait_until(cx, "the report to be asked for", |cx| {
+        mock.was_sent(REQUEST) && working(cx)
+    });
+    act(cx, app.window, |window, cx| {
+        assert_eq!(window.find("stop").label(), Some("Stop"));
+        window.click("stop", cx);
+    });
+    app.wait_for_text(cx, "report.");
+    wait_until(cx, "the new conversation", |cx| {
+        app.feed(cx).iter().any(|text| text == "New conversation")
+    });
+    wait_until(cx, "the switch to end", |cx| !working(cx));
+    assert!(
+        app.feed(cx).iter().any(|text| text.starts_with("Skipped")),
+        "{:?}",
+        app.feed(cx)
+    );
+    app.close_all(cx);
+}
+
+/// On Arko's engine, while the old model writes its report, a message to
+/// the main agent waits in the composer. One that reaches the session
+/// anyway (sent as the report began) isn't sent, and the session tells it
+/// as a message arko didn't send.
+#[gpui_kit::test]
+fn a_message_waits_for_the_report_on_arkos_engine(cx: &mut TestAppContext) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    const REQUEST: &str = "a new conversation that goes on from a report you write now";
+    let mock = Mock::start(|_, body| {
+        if body.contains(REQUEST) {
+            answer("The report.", Duration::from_secs(60))
+        } else {
+            answer("Hello.", Duration::ZERO)
+        }
+    });
+    let app = start(cx, &mock);
+    let state = |cx: &mut TestAppContext| {
+        app.shown(cx).map_or((false, false), |session| {
+            cx.read(|cx| {
+                let session = session.read(cx);
+                (session.is_working(), session.is_reporting())
+            })
+        })
+    };
+    app.send(cx, "Say hello.");
+    app.wait_for_text(cx, "Hello.");
+    wait_until(cx, "the turn to end", |cx| !state(cx).0);
+    app.send(cx, "/new continue");
+    wait_until(cx, "the report", |cx| state(cx) == (true, true));
+    app.send(cx, "Carry on.");
+    assert_eq!(app.composer_text(cx), "Carry on.");
+    let session = app.shown(cx).unwrap();
+    let not_sent: Rc<RefCell<Vec<String>>> = Rc::default();
+    let _subscription = cx.update(|cx| {
+        let not_sent = not_sent.clone();
+        cx.subscribe(&session, move |_, event, _| {
+            if let crate::live::LiveEvent::NotSent(words) = event {
+                not_sent.borrow_mut().push(words.clone());
+            }
+        })
+    });
+    let message = arko::Input::Message(arko::Message {
+        text: "Straight in.".into(),
+        ..Default::default()
+    });
+    session
+        .update(cx, |session, cx| session.send(message, cx))
+        .unwrap();
+    wait_until(cx, "the message not sent", |_| {
+        *not_sent.borrow() == ["Straight in."]
+    });
+    act(cx, app.window, |window, cx| window.click("stop", cx));
+    wait_until(cx, "the switch to end", |cx| state(cx) == (false, false));
+    assert_eq!(app.composer_text(cx), "Carry on.");
+    assert!(!mock.was_sent("Carry on.") && !mock.was_sent("Straight in."));
     app.close_all(cx);
 }

@@ -38,10 +38,6 @@ use arko::workers;
 /// Why some settings can't change any more.
 pub const FIXED: &str = "Fixed once the conversation started.";
 
-/// What the model pickers and the info say of the main agent's model once
-/// the conversation has started.
-pub const MODEL_KEPT: &str = "The main agent keeps its model once the conversation starts.";
-
 /// How long a switch or a segment shows the user's choice before the
 /// session's status does (the status comes about half a second after a
 /// change, and says why not when the session refused it).
@@ -945,14 +941,7 @@ impl Render for SessionInfo {
                 ))
             })
             .child(row(narrow, "Mode", mode.label(), cx))
-            .child(row(
-                narrow,
-                "Model",
-                v_flex().child(main_model).when(started, |this| {
-                    this.child(div().text_xs().text_color(muted).child(MODEL_KEPT))
-                }),
-                cx,
-            ))
+            .child(row(narrow, "Model", main_model, cx))
             .when_some(workers_model.filter(|_| agent), |this, model| {
                 this.child(row(narrow, "Workers’ model", model, cx))
             });
@@ -1605,23 +1594,14 @@ mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::{
-        Field, MODEL_KEPT, background_value, clicked, field_command, handover_value, index_text,
-        indexes_text, mcp_lines, shown_folder, skills_lines,
+        Field, background_value, clicked, field_command, handover_value, index_text, indexes_text,
+        mcp_lines, shown_folder, skills_lines,
     };
     use arko::details::{
         IndexEmbeddings, IndexFacts, IndexKind, IndexWatch, McpFacts, McpServerFacts, SkillFacts,
         SkillsFacts,
     };
     use std::path::{Path, PathBuf};
-
-    /// The info and the mode popover say it with the same words.
-    #[test]
-    fn the_models_sentence_is_one_wording() {
-        assert_eq!(
-            MODEL_KEPT,
-            "The main agent keeps its model once the conversation starts."
-        );
-    }
 
     #[test]
     fn fields_send_the_terminals_commands() {

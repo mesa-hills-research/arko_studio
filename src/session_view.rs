@@ -16,8 +16,8 @@ use gpui_kit::component::input::{self, Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::tooltip::{ManagedTooltipExt as _, Tooltip};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
-    ThemeStyled as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, ThemeStyled as _,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     concentric_radius, h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -35,7 +35,7 @@ use crate::layout::WidthClass;
 use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase, PromptKind};
 use crate::questions::{AnswerPanel, AnswerPanelEvent};
 use crate::transcript::{AgentFilter, FindStatus, TranscriptEvent, TranscriptView};
-use crate::workers::Usual;
+use crate::workers::{self, Usual};
 use crate::{drafts, menus, prefs, segmented};
 
 /// How many recent folders Change… offers.
@@ -100,6 +100,19 @@ struct FindBar {
 
 /// The key context of the find bar.
 pub const FIND_CONTEXT: &str = "FindBar";
+
+/// The key context of the chip's popover, Chat or Agent and the models.
+const MODE_CHOICE_CONTEXT: &str = "ModeChoice";
+
+/// Enter and Space press the button that has the keyboard in the chip's
+/// popover. GPUI Kit's popover binds them to close itself, which would
+/// close the list without choosing.
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("enter", NoAction, Some(MODE_CHOICE_CONTEXT)),
+        KeyBinding::new("space", NoAction, Some(MODE_CHOICE_CONTEXT)),
+    ]);
+}
 
 /// A message of the user's being edited in the composer.
 struct Editing {
@@ -195,6 +208,8 @@ pub struct SessionView {
     /// one in the chip's popover.
     mode_focus: FocusHandle,
     mode_menu_focus: FocusHandle,
+    /// Main agent | New workers in the chip's popover.
+    model_for_focus: FocusHandle,
     _session: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
     _models: Option<Task<()>>,
@@ -224,6 +239,46 @@ pub struct SessionView {
     /// What reaches the models changed since they were listed.
     session_models_stale: bool,
     _session_models: Option<(arko::remote::Models, Task<()>)>,
+    /// Once the conversation has started, the model list is the new
+    /// workers' (`true`) or the main agent's.
+    lists_worker_models: bool,
+    /// The latest message given to the shown session for the main agent or
+    /// a worker, which comes back to the composer if arko didn't send it
+    /// (it came as the old model began its report for a switch, or the
+    /// worker's cache expired before arko continued it).
+    unsent: Option<Unsent>,
+    /// A worker arko didn't continue because its cache expired, with arko's
+    /// warning. Arko takes the same message again as confirmed, so a
+    /// message to the worker asks with this warning until Continue, until
+    /// what the window knows of the worker says so too, or until the window
+    /// shows another session.
+    continue_refused: Option<(String, String)>,
+}
+
+/// A message given to the session, as the composer held it, and whom it
+/// went to.
+struct Unsent {
+    text: String,
+    images: Vec<Attached>,
+    /// The worker the composer wrote to, or none when it wrote to Arko.
+    target: Option<SharedString>,
+    /// The worker it continues: the composer's, or the one a `/message`
+    /// typed to Arko names.
+    worker: Option<String>,
+    /// The questions it answered.
+    answers: Vec<String>,
+}
+
+impl Unsent {
+    /// Whether arko's notice repeats this message's `words`: its text on one
+    /// line, cut with "…" when long.
+    fn is(&self, words: &str) -> bool {
+        let line = self.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        match words.strip_suffix('…') {
+            Some(start) => line.starts_with(start),
+            None => line == words,
+        }
+    }
 }
 
 /// Where the effort a new session starts with comes from.
@@ -375,6 +430,7 @@ impl SessionView {
             model_filter,
             mode_focus: cx.focus_handle().tab_stop(true),
             mode_menu_focus: cx.focus_handle().tab_stop(true),
+            model_for_focus: cx.focus_handle().tab_stop(true),
             _session: Vec::new(),
             _subscriptions: subscriptions,
             _models: None,
@@ -391,6 +447,9 @@ impl SessionView {
             session_models: None,
             session_models_stale: false,
             _session_models: None,
+            lists_worker_models: false,
+            unsent: None,
+            continue_refused: None,
         };
         this.restore_draft(window, cx);
         this.sync_expanded(window, cx);
@@ -740,6 +799,7 @@ impl SessionView {
             mode: session.mode(),
             workspace: session.workspace().cloned(),
             model: session.model().to_string(),
+            main_model: session.reading().models.main.clone(),
             created: std::time::SystemTime::now(),
             last_active: None,
             conversations: Vec::new(),
@@ -825,6 +885,8 @@ impl SessionView {
         self._session.clear();
         self.close_panel(window, cx);
         self.target = None;
+        self.unsent = None;
+        self.continue_refused = None;
         self.session = session;
         if let Some(session) = &self.session {
             session.update(cx, |session, cx| session.set_shown(true, cx));
@@ -836,6 +898,20 @@ impl SessionView {
                     this.sync_transcript(window, cx);
                     cx.notify();
                 }));
+            self._session.push(cx.subscribe_in(
+                session,
+                window,
+                |this, _, event: &LiveEvent, window, cx| match event {
+                    LiveEvent::NotSent(words) => {
+                        let to_arko = |unsent: &Unsent| unsent.worker.is_none() && unsent.is(words);
+                        this.restore_unsent(to_arko, window, cx);
+                    }
+                    LiveEvent::NotContinued { worker, warning } => {
+                        this.not_continued(worker, warning, window, cx)
+                    }
+                    _ => {}
+                },
+            ));
         }
         self.restore_draft(window, cx);
         self.sync_questions(window, cx);
@@ -1319,7 +1395,7 @@ impl SessionView {
             "Answer Arko’s question".into()
         } else if attached > 1 {
             "Answer Arko’s questions".into()
-        } else if session.is_working() {
+        } else if session.is_working() && !session.is_reporting() {
             "Add to the task while Arko works".into()
         } else {
             "Message Arko".into()
@@ -2002,6 +2078,7 @@ impl SessionView {
             text: outgoing.text,
             images: outgoing.images.iter().map(Attached::to_arko).collect(),
             answers: Vec::new(),
+            continue_uncached: false,
         };
         if !prefs::get(cx).sessions.ask_before_edit {
             self.finish_edit(Choice::Change, item, message, window, cx);
@@ -2155,6 +2232,7 @@ impl SessionView {
                         text,
                         images: images.iter().map(Attached::to_arko).collect(),
                         answers: Vec::new(),
+                        continue_uncached: false,
                     }
                 });
                 self.branch(session, Some(last), first, None, None, window, cx);
@@ -2229,8 +2307,22 @@ impl SessionView {
 
     /// Sends `text`: runs the app's own commands, starts a new session with
     /// it, or gives it to the open session as a message, a note or an
-    /// answer. The composer empties once it is taken.
+    /// answer. The composer empties once it is taken. A message that
+    /// continues a worker whose prompt cache expired asks first.
     pub fn send(&mut self, outgoing: Outgoing, window: &mut Window, cx: &mut Context<Self>) {
+        self.send_as(outgoing, false, window, cx);
+    }
+
+    /// Sends `outgoing` as [`send`](Self::send) does. With
+    /// `continue_uncached` the user agreed to continue the worker, so it
+    /// goes without asking.
+    fn send_as(
+        &mut self,
+        outgoing: Outgoing,
+        continue_uncached: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.editing.is_some() {
             self.send_edit(outgoing, window, cx);
             return;
@@ -2259,6 +2351,13 @@ impl SessionView {
             window.push_notification(why, cx);
             return;
         }
+        // While the old model writes its report for a switch, a message to
+        // the main agent waits in the composer, as the strip above it says.
+        // Commands and messages to a worker go.
+        let command = arko::commands::find(&text).is_some();
+        if !command && self.target.is_none() && self.is_reporting(cx) {
+            return;
+        }
         let attached = images;
         // Images the model can't take stay, with the message, until the
         // user removes them or picks another model.
@@ -2273,10 +2372,33 @@ impl SessionView {
             );
             return;
         }
+        let worker = self.session.as_ref().and(self.target.clone());
+        if worker.is_some() && !attached.is_empty() {
+            window.push_notification(
+                "A message to a worker takes text only. Remove the images, or send them to Arko.",
+                cx,
+            );
+            return;
+        }
+        // As `/message r1 …` typed in the terminal.
+        let to_worker = worker
+            .as_ref()
+            .map(|worker| format!("/message {worker} {}", text.trim()));
+        let line = to_worker.as_deref().unwrap_or(&text);
+        let continues = arko::worker_cache::message_parts(line).map(|(to, _)| to.to_string());
+        // Continuing a worker whose prompt cache expired re-reads its whole
+        // conversation, so the message waits for the user's answer.
+        if !continue_uncached && let Some((worker, warning)) = self.continue_question(line, cx) {
+            let outgoing = Outgoing {
+                text,
+                images: attached,
+            };
+            self.ask_continue(&worker, &warning, outgoing, window, cx);
+            return;
+        }
         let images: Vec<arko::Attachment> = attached.iter().map(|image| image.to_arko()).collect();
         // A command runs and leaves the questions attached. Other text
         // answers them.
-        let command = arko::commands::find(&text).is_some();
         let message = arko::Message {
             text: text.clone(),
             images,
@@ -2285,17 +2407,21 @@ impl SessionView {
             } else {
                 self.attached(cx)
             },
+            continue_uncached,
         };
-        let worker = self.session.as_ref().and(self.target.clone());
-        let result = match (&self.session, &self.target) {
-            (Some(_), Some(_)) if !message.images.is_empty() => Err(
-                "A message to a worker takes text only. Remove the images, or send them to Arko."
-                    .to_string(),
-            ),
-            (Some(session), Some(worker)) => {
-                // As `/message r1 …` typed in the terminal.
+        let kept = continues.is_some() || worker.is_none() && !command;
+        let unsent = (self.session.is_some() && kept).then(|| Unsent {
+            text: text.clone(),
+            images: attached.clone(),
+            target: worker.clone(),
+            worker: continues,
+            answers: message.answers.clone(),
+        });
+        let result = match (&self.session, to_worker) {
+            (Some(session), Some(line)) => {
                 let input = arko::Input::Message(arko::Message {
-                    text: format!("/message {worker} {}", text.trim()),
+                    text: line,
+                    continue_uncached,
                     ..Default::default()
                 });
                 session.update(cx, |session, cx| session.send(input, cx))
@@ -2311,12 +2437,150 @@ impl SessionView {
                     .update(cx, |composer, cx| composer.sent(&text, window, cx));
                 self.keep_draft(cx);
                 self.composer_empty = true;
+                self.unsent = unsent;
                 if let Some(worker) = worker {
                     cx.emit(SessionViewEvent::SentToWorker(worker));
                 }
                 cx.notify();
             }
             Err(why) => window.push_notification(why, cx),
+        }
+    }
+
+    /// Asks, with Arko's `warning`, before `outgoing` continues `worker`, a
+    /// finished worker whose prompt cache expired. It stays in the composer
+    /// meanwhile. Continue sends it while the view shows the same session
+    /// and the composer still holds it for the same worker. Otherwise
+    /// nothing goes, since the question was about another message.
+    fn ask_continue(
+        &mut self,
+        worker: &str,
+        warning: &str,
+        outgoing: Outgoing,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = self.session.as_ref().map(Entity::entity_id);
+        let target = self.target.clone();
+        let view = cx.entity().downgrade();
+        let confirmed = worker.to_string();
+        crate::prompts::confirm_continue(worker, warning, window, cx, move |window, cx| {
+            view.update(cx, |view, cx| {
+                let holds = view.session.as_ref().map(Entity::entity_id) == session
+                    && view.target == target
+                    && view.editing.is_none()
+                    && view.composer.read(cx).expanded_text(cx) == outgoing.text;
+                if holds {
+                    view.forget_refusal(&confirmed);
+                    view.send_as(outgoing.clone(), true, window, cx);
+                }
+            })
+            .ok();
+        });
+    }
+
+    /// The worker the message `line` continues, and the warning to ask
+    /// with, when it asks first. It asks when what the window knows of the
+    /// worker says its cache expired, or when arko didn't continue the
+    /// worker and the window doesn't know that yet.
+    fn continue_question(&mut self, line: &str, cx: &App) -> Option<(String, String)> {
+        let session = self.session.as_ref()?;
+        let now = chrono::Utc::now();
+        if let Some(cache) = workers::asks_to_continue(line, session.read(cx).workers(), now) {
+            // The window knows now what arko knew.
+            self.forget_refusal(&cache.worker);
+            return Some((cache.worker.clone(), cache.warning(now)));
+        }
+        let (to, _) = arko::worker_cache::message_parts(line)?;
+        self.continue_refused
+            .clone()
+            .filter(|(worker, _)| worker.eq_ignore_ascii_case(to))
+    }
+
+    /// Forgets that arko didn't continue `worker`, if it didn't.
+    fn forget_refusal(&mut self, worker: &str) {
+        if self
+            .continue_refused
+            .as_ref()
+            .is_some_and(|(refused, _)| refused.eq_ignore_ascii_case(worker))
+        {
+            self.continue_refused = None;
+        }
+    }
+
+    /// Whether the shown session's old model writes its report for a switch.
+    fn is_reporting(&self, cx: &App) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.read(cx).is_reporting())
+    }
+
+    /// Puts the message arko didn't send back in the composer, to whom it
+    /// went and with the questions it answered, unless something else was
+    /// typed since or a message is being edited. The questions are open
+    /// again either way. `is` says whether it is the message arko's notice
+    /// is about. Gives back what returned.
+    fn restore_unsent(
+        &mut self,
+        is: impl FnOnce(&Unsent) -> bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Outgoing> {
+        let unsent = self.unsent.as_ref().filter(|unsent| is(unsent))?;
+        if let Some(session) = &self.session {
+            let answers = unsent.answers.clone();
+            session.update(cx, |session, cx| session.reopen_questions(&answers, cx));
+        }
+        let empty = {
+            let composer = self.composer.read(cx);
+            composer.text(cx).is_empty() && composer.images().is_empty()
+        };
+        if !empty || self.editing.is_some() {
+            return None;
+        }
+        let Unsent {
+            text,
+            images,
+            target,
+            answers,
+            ..
+        } = self.unsent.take()?;
+        self.set_target(target, window, cx);
+        if let Some(session) = &self.session {
+            session.update(cx, |session, cx| session.reattach_questions(&answers, cx));
+        }
+        self.composer_empty = false;
+        self.composer.update(cx, |composer, cx| {
+            composer.set_text(&text, window, cx);
+            for image in images.iter().cloned() {
+                composer.attach_image(image, cx);
+            }
+        });
+        self.keep_draft(cx);
+        cx.notify();
+        Some(Outgoing { text, images })
+    }
+
+    /// Arko didn't continue `worker`, whose prompt cache expired, with the
+    /// message given to it last. The message comes back to the composer,
+    /// and the dialog asks with Arko's `warning` whether to continue the
+    /// worker. Messages to the worker ask too, until one is confirmed.
+    fn not_continued(
+        &mut self,
+        worker: &str,
+        warning: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.continue_refused = Some((worker.to_string(), warning.to_string()));
+        let goes_to_worker = |unsent: &Unsent| {
+            unsent
+                .worker
+                .as_deref()
+                .is_some_and(|to| to.eq_ignore_ascii_case(worker))
+        };
+        if let Some(outgoing) = self.restore_unsent(goes_to_worker, window, cx) {
+            self.ask_continue(worker, warning, outgoing, window, cx);
         }
     }
 
@@ -2522,10 +2786,10 @@ impl SessionView {
         let (model, effort) = match &self.session {
             Some(session) => {
                 let session = session.read(cx);
-                let models = &session.reading().models;
+                let (_, effort) = crate::live::conversation_model(&session.reading().models);
                 (
                     Some(session.model().to_string()).filter(|model| !model.is_empty()),
-                    Some(models.main_effort.clone()).filter(|effort| !effort.is_empty()),
+                    effort.map(str::to_string),
                 )
             }
             None => (
@@ -2557,7 +2821,11 @@ impl SessionView {
             .on_open_change(move |open, _, cx| {
                 if *open {
                     opening
-                        .update(cx, |view, cx| view.forget_last_efforts(cx))
+                        .update(cx, |view, cx| {
+                            // It opens on the main agent's models.
+                            view.lists_worker_models = false;
+                            view.forget_last_efforts(cx)
+                        })
                         .ok();
                 }
             })
@@ -2594,7 +2862,9 @@ impl SessionView {
         let filter = self.model_filter.read(cx).value().to_lowercase();
 
         // The models: the new session's, or the open session's from its
-        // status (the workers' only, once its conversation started).
+        // status. Once its conversation has started, the list is the main
+        // agent's, where another model starts a new conversation, or the
+        // new workers'.
         let session_models = self
             .session
             .as_ref()
@@ -2602,45 +2872,48 @@ impl SessionView {
         if let Some(models) = &session_models {
             self.see_session_models(models, cx);
         }
-        let (choices, current, workers_only) = match &self.session {
+        let lists_both = started
+            && session_models
+                .as_ref()
+                .is_some_and(|models| models.has_workers);
+        let workers_only = lists_both && self.lists_worker_models;
+        let (choices, current, current_effort) = match &session_models {
             None => (
                 self.models
                     .as_ref()
                     .map(|(_, models)| models.clone())
                     .unwrap_or_default(),
                 self.draft_model(cx),
-                false,
+                None,
             ),
-            Some(session) => {
-                let models = session.read(cx).reading().models.clone();
+            Some(models) => {
                 let choices = self
                     .session_models
                     .as_ref()
                     .map(|(_, choices)| choices.clone())
                     .unwrap_or_default();
-                let current = if started {
-                    Some(models.workers.clone())
+                let (current, effort) = if workers_only {
+                    (models.workers.as_str(), None)
+                } else if started {
+                    crate::live::conversation_model(models)
                 } else {
-                    Some(models.main.clone())
+                    (models.main.as_str(), Some(models.main_effort.as_str()))
                 };
-                (choices, current.filter(|model| !model.is_empty()), started)
+                (
+                    choices,
+                    Some(current.to_string()).filter(|model| !model.is_empty()),
+                    effort.map(str::to_string),
+                )
             }
         };
-        let has_workers = match &self.session {
-            Some(session) => session.read(cx).reading().models.has_workers,
-            None => true,
-        };
-        let can_switch = match &self.session {
-            None => true,
-            Some(session) => {
-                let session = session.read(cx);
-                *session.phase() == Phase::Open && !session.is_working()
-            }
-        };
-        let session_without_models = self.session.is_some() && choices.groups.is_empty();
+        // A switch waits for the turn to end.
+        let working = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.read(cx).is_working());
+        let waits = started && !workers_only && working;
 
         self.see_openrouter(cx);
-        let locked = started && !workers_only;
         let rows = choices
             .groups
             .iter()
@@ -2761,7 +3034,6 @@ impl SessionView {
                         .small()
                         .w_full()
                         .justify_start()
-                        .disabled(locked)
                         .accessibility_label(spoken)
                         .child(div().text_xs().text_color(muted).child(text))
                 };
@@ -2825,7 +3097,7 @@ impl SessionView {
                                 .small()
                                 .w_full()
                                 .justify_start()
-                                .disabled(!usable || locked)
+                                .disabled(!usable || waits)
                                 .when(checked, |this| this.icon(IconName::Check))
                                 .accessibility_label(match (note, &details) {
                                     (Some(note), _) => format!("{spoken}. {note}"),
@@ -2866,16 +3138,19 @@ impl SessionView {
                                 .on_click(move |_, window, cx| {
                                     let name = name.clone();
                                     // With its efforts to choose from, the
-                                    // list stays open on them.
-                                    let stays = !workers_only && reasons(&name);
-                                    view.update(cx, |view, cx| {
-                                        view.choose_model(name, workers_only, window, cx)
-                                    })
-                                    .ok();
+                                    // list stays open on them. After the
+                                    // start, the switch asks for its effort.
+                                    let stays = !started && reasons(&name);
+                                    // Closed first, so a dialog that asks
+                                    // gives the keyboard back to the chip.
                                     if !stays {
                                         popover
                                             .update(cx, |popover, cx| popover.dismiss(window, cx));
                                     }
+                                    view.update(cx, |view, cx| {
+                                        view.choose_model(name, workers_only, window, cx)
+                                    })
+                                    .ok();
                                 })
                         }))
                         .children(found.into_iter().enumerate().map(|(ix, model)| {
@@ -2895,7 +3170,7 @@ impl SessionView {
                                 .small()
                                 .w_full()
                                 .justify_start()
-                                .disabled(!usable || locked)
+                                .disabled(!usable || waits)
                                 .when(checked, |this| this.icon(IconName::Check))
                                 .accessibility_label(if details.is_empty() {
                                     spoken
@@ -2916,15 +3191,17 @@ impl SessionView {
                                 .label(model.label.clone())
                                 .on_click(move |_, window, cx| {
                                     let name = model.name.clone();
-                                    let stays = !workers_only && reasons(&name);
-                                    view.update(cx, |view, cx| {
-                                        view.choose_model(name, workers_only, window, cx)
-                                    })
-                                    .ok();
+                                    let stays = !started && reasons(&name);
+                                    // Closed first, so a dialog that asks
+                                    // gives the keyboard back to the chip.
                                     if !stays {
                                         popover
                                             .update(cx, |popover, cx| popover.dismiss(window, cx));
                                     }
+                                    view.update(cx, |view, cx| {
+                                        view.choose_model(name, workers_only, window, cx)
+                                    })
+                                    .ok();
                                 })
                         }))
                         .when(loading, |this| {
@@ -2976,10 +3253,9 @@ impl SessionView {
                 );
                 let chosen = match &self.session {
                     None => self.effort_for(&model, cx),
-                    Some(session) => Some((
-                        session.read(cx).reading().models.main_effort.clone(),
-                        EffortFrom::Chosen,
-                    )),
+                    Some(_) => current_effort
+                        .clone()
+                        .map(|effort| (effort, EffortFrom::Chosen)),
                 };
                 (model, efforts, chosen)
             })
@@ -2987,6 +3263,7 @@ impl SessionView {
 
         v_flex()
             .id("mode-choice")
+            .key_context(MODE_CHOICE_CONTEXT)
             .w(rems(18.))
             .max_h(rems(28.))
             .gap_2()
@@ -3011,37 +3288,35 @@ impl SessionView {
                 window,
                 cx,
             ))
-            .when(self.session.is_some() && !can_switch, |this| {
+            .when(working, |this| {
                 this.child(
                     div()
                         .text_xs()
                         .text_color(theme.muted_foreground)
-                        .child("Switching between Chat and Agent waits for the turn to end."),
+                        .child(if waits {
+                            "Switching modes or models waits for the turn to end."
+                        } else {
+                            "Switching between Chat and Agent waits for the turn to end."
+                        }),
                 )
             })
-            .when(started && !session_without_models, |this| {
+            .when(lists_both, |this| {
                 this.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(crate::session_info::MODEL_KEPT),
+                    h_flex()
+                        .justify_center()
+                        .child(self.render_model_for(window, cx)),
                 )
             })
-            .when(workers_only && has_workers, |this| {
-                this.child(div().text_xs().font_medium().child("Model for new workers"))
-            })
-            .when(!workers_only || has_workers, |this| {
-                this.child(Input::new(&self.model_filter).small().cleanable(true))
-                    .child(
-                        v_flex()
-                            .id("model-list")
-                            .test_support()
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .children(rows),
-                    )
-            })
+            .child(Input::new(&self.model_filter).small().cleanable(true))
+            .child(
+                v_flex()
+                    .id("model-list")
+                    .test_support()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
             .when_some(effort_row, |this, (model, efforts, chosen)| {
                 let view = view.clone();
                 this.child(
@@ -3087,20 +3362,84 @@ impl SessionView {
                                     }
                                     None => this.ghost(),
                                 })
-                                .disabled(started)
+                                .disabled(waits)
                                 .label(effort.clone())
                                 .on_click(move |_, window, cx| {
                                     let (model, effort) = (model.clone(), effort.clone());
+                                    popover.update(cx, |popover, cx| popover.dismiss(window, cx));
                                     view.update(cx, |view, cx| {
                                         view.choose_effort(model, effort, window, cx)
                                     })
                                     .ok();
-                                    popover.update(cx, |popover, cx| popover.dismiss(window, cx));
                                 })
                         })),
                 )
             })
             .into_any_element()
+    }
+
+    /// Main agent | New workers, once the conversation has started: whose
+    /// models the list shows. It looks and works as Chat | Agent does, a
+    /// group of radio buttons whose ←/→ choose while it has focus.
+    fn render_model_for(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let workers = self.lists_worker_models;
+        let focused = self.model_for_focus.is_focused(window) && window.last_input_was_keyboard();
+        let view = cx.entity().downgrade();
+        let choose = Rc::new(move |workers: bool, cx: &mut App| {
+            view.update(cx, |view, cx| {
+                view.lists_worker_models = workers;
+                cx.notify();
+            })
+            .ok();
+        });
+        let segment = |value: bool, id: &'static str, label: &'static str| {
+            let checked = workers == value;
+            let choose = choose.clone();
+            h_flex()
+                .id(id)
+                .test_support()
+                .role(Role::RadioButton)
+                .aria_label(label)
+                .aria_toggled(if checked {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
+                .aria_selected(checked)
+                .when(checked, |this| this.aria_active_descendant())
+                .items_center()
+                .justify_center()
+                .map(|this| segmented::segment_style(this, checked, false, cx))
+                .child(segmented::segment_label(label))
+                .when(!checked, |this| {
+                    this.cursor_pointer()
+                        .on_click(move |_, _, cx| choose(value, cx))
+                })
+        };
+        h_flex()
+            .id("model-for")
+            .test_support()
+            .track_focus(&self.model_for_focus)
+            .role(Role::RadioGroup)
+            .aria_label("Agents")
+            .map(|this| segmented::track_style(this, cx))
+            .on_key_down({
+                let choose = choose.clone();
+                move |event: &KeyDownEvent, _, cx| {
+                    let to = match event.keystroke.key.as_str() {
+                        "left" => false,
+                        "right" => true,
+                        _ => return,
+                    };
+                    cx.stop_propagation();
+                    if to != workers {
+                        choose(to, cx);
+                    }
+                }
+            })
+            .when(focused, |this| this.focus_ring_style(window, cx))
+            .child(segment(false, "model-for-main", "Main agent"))
+            .child(segment(true, "model-for-workers", "New workers"))
     }
 
     /// Chat or Agent: a new session just switches, an open one asks first
@@ -3192,16 +3531,16 @@ impl SessionView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match &self.session {
-            None => self.set_draft_model(model, None, cx),
-            Some(session) => {
-                let command = if workers {
-                    format!("/model worker {model}")
-                } else {
-                    format!("/model {model}")
-                };
-                self.run_command(session.clone(), command, window, cx);
-            }
+        let Some(session) = self.session.clone() else {
+            self.set_draft_model(model, None, cx);
+            return;
+        };
+        if workers {
+            self.run_command(session, format!("/model worker {model}"), window, cx);
+        } else if session.read(cx).has_started() {
+            self.switch_model(session, model, None, window, cx);
+        } else {
+            self.run_command(session, format!("/model {model}"), window, cx);
         }
     }
 
@@ -3212,15 +3551,81 @@ impl SessionView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match &self.session {
+        match self.session.clone() {
             None => self.set_draft_model(model, Some(effort), cx),
-            Some(session) => self.run_command(
-                session.clone(),
-                format!("/model {model} {effort}"),
+            Some(session) if session.read(cx).has_started() => {
+                self.switch_model(session, model, Some(effort), window, cx)
+            }
+            Some(session) => {
+                self.run_command(session, format!("/model {model} {effort}"), window, cx)
+            }
+        }
+    }
+
+    /// Once the conversation has started, the main agent moves to `model`
+    /// at `effort` (none: the one arko fits) in a new conversation that
+    /// carries the current one over. Settings say whether to ask first.
+    fn switch_model(
+        &mut self,
+        session: Entity<LiveSession>,
+        model: String,
+        effort: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let models = session.read(cx).reading().models.clone();
+        let (current, current_effort) = crate::live::conversation_model(&models);
+        let keeps_model = model == current;
+        // (An effort not known to be the conversation's may differ.)
+        if keeps_model && (effort.is_none() || effort.as_deref() == current_effort) {
+            return;
+        }
+        if session.read(cx).is_working() {
+            window.push_notification("Wait for the turn to end.", cx);
+            return;
+        }
+        if !prefs::get(cx).sessions.ask_before_switch {
+            self.run_command(
+                session,
+                model_command(&model, effort.as_deref()),
                 window,
                 cx,
-            ),
+            );
+            return;
         }
+        // Another model's effort is chosen in the dialog, from the one the
+        // conversation runs at, as arko would fit it.
+        let efforts = if keeps_model {
+            Vec::new()
+        } else {
+            arko::commands::dynamic_choices(&arko::remote::Reading::default(), "/model", &[&model])
+        };
+        let from = current_effort.unwrap_or(&models.main_effort);
+        let effort = effort.or_else(|| fit_effort(&efforts, from));
+        let label = self
+            .openrouter_model(&model)
+            .map(|known| known.label.clone())
+            .unwrap_or_else(|| arko::models::display_name(&model));
+        let command = move |effort: Option<&str>| model_command(&model, effort);
+        let view = cx.entity().downgrade();
+        crate::prompts::confirm_model_switch(
+            crate::prompts::ModelSwitch {
+                label,
+                effort,
+                efforts,
+                keeps_model,
+            },
+            window,
+            cx,
+            move |effort, window, cx| {
+                let command = command(effort.as_deref());
+                let session = session.clone();
+                view.update(cx, |view, cx| {
+                    view.run_command(session, command, window, cx)
+                })
+                .ok();
+            },
+        );
     }
 
     /// Sends a command line to the session, as the terminal would.
@@ -3580,6 +3985,30 @@ impl SessionView {
         )
     }
 
+    /// The strip above the composer while the old model writes its report
+    /// for a switch: a message to the main agent waits meanwhile.
+    fn render_reporting(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.is_reporting(cx) {
+            return None;
+        }
+        let theme = cx.theme();
+        Some(
+            h_flex()
+                .id("reporting-strip")
+                .test_support()
+                .mb_2()
+                .px_3()
+                .py_1()
+                .gap_2()
+                .text_sm()
+                .rounded(theme.radius_lg)
+                .bg(theme.secondary)
+                .text_color(theme.secondary_foreground)
+                .child(div().flex_1().min_w_0().child(crate::live::REPORTING))
+                .into_any_element(),
+        )
+    }
+
     /// The strip above the composer while it edits a message.
     fn render_editing(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let lost = images_not_kept(self.editing.as_ref()?.lost_images);
@@ -3851,6 +4280,14 @@ fn default_mode(cx: &App) -> Mode {
     }
 }
 
+/// The command that sets the main agent's model, at `effort` if given.
+fn model_command(model: &str, effort: Option<&str>) -> String {
+    match effort {
+        Some(effort) => format!("/model {model} {effort}"),
+        None => format!("/model {model}"),
+    }
+}
+
 /// Whether `model` takes an effort, so the model list offers its efforts.
 fn reasons(model: &str) -> bool {
     !arko::commands::dynamic_choices(&arko::remote::Reading::default(), "/model", &[model])
@@ -3953,6 +4390,7 @@ impl Render for SessionView {
         let questions = self.render_questions_chip(cx);
         let prompt = self.render_prompt(cx);
         let editing = self.render_editing(cx);
+        let reporting = self.render_reporting(cx);
         let find = self.render_find(window, cx);
         // The transcript spans the column (its rows centre themselves, so
         // the wheel and the scrollbar work across it), and draws again only
@@ -4006,6 +4444,7 @@ impl Render for SessionView {
                     .children(prompt)
                     .children(questions)
                     .children(editing)
+                    .children(reporting)
                     .child(self.render_composer(window, cx)),
             )
     }

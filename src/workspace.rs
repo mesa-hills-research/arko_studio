@@ -395,6 +395,7 @@ impl Workspace {
                         mode: crate::backend::Mode::Agent,
                         workspace: None,
                         model: String::new(),
+                        main_model: String::new(),
                         created: std::time::SystemTime::now(),
                         last_active: None,
                         conversations: Vec::new(),
