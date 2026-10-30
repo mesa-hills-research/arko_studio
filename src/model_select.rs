@@ -310,7 +310,7 @@ fn sections(
         };
         let way = way(&group.name);
         let spoken = |label: &str, billing: Option<&String>| {
-            let label = match billing {
+            let label = match billing.and_then(|billing| spoken_billing(way, billing)) {
                 Some(billing) => format!("{label}, {way}, {billing}"),
                 None => format!("{label}, {way}"),
             };
@@ -373,6 +373,19 @@ fn sections(
 /// API" for "Anthropic API, billed per token".
 fn way(group: &str) -> &str {
     group.split(',').next().unwrap_or(group).trim()
+}
+
+/// What a screen reader hears of a row's `billing` after its `way`: Arko's
+/// label, less the "API" the way already says ("Anthropic API, $4/$20", not
+/// "Anthropic API, API, $4/$20"). `None` when nothing is left.
+fn spoken_billing<'a>(way: &str, billing: &'a str) -> Option<&'a str> {
+    if !way.ends_with("API") {
+        return Some(billing);
+    }
+    let rest = billing
+        .strip_prefix("API")
+        .map_or(billing, |rest| rest.trim_start_matches(',').trim_start());
+    (!rest.is_empty()).then_some(rest)
 }
 
 /// The model `name` as the button names it: "Opus 5.5 · Anthropic API",
@@ -595,7 +608,7 @@ impl ListDelegate for ModelList {
 
 #[cfg(test)]
 mod tests {
-    use super::{Row, label_of, sections};
+    use super::{Row, label_of, sections, spoken_billing};
     use crate::backend::{ModelChoice, ModelChoices, ModelGroup};
 
     pub(crate) fn models() -> ModelChoices {
@@ -651,6 +664,19 @@ mod tests {
             "Glm 5 · OpenRouter"
         );
         assert_eq!(label_of("gpt-9", Some(&models), &known), "gpt-9");
+    }
+
+    /// A screen reader hears the billing without the "API" the way already
+    /// says, and nothing more when that was all of it.
+    #[test]
+    fn the_spoken_billing_says_api_once() {
+        assert_eq!(
+            spoken_billing("Anthropic API", "API, $4/$20"),
+            Some("$4/$20")
+        );
+        assert_eq!(spoken_billing("Anthropic API", "API"), None);
+        assert_eq!(spoken_billing("OpenRouter", "API"), Some("API"));
+        assert_eq!(spoken_billing("OpenAI", "API, $2/$8"), Some("API, $2/$8"));
     }
 
     /// A model from OpenRouter's catalog joins the OpenRouter group, before

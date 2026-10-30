@@ -1547,19 +1547,19 @@ fn the_model_rows_and_openrouter_controls_have_names(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| {
         window.click("new-sessions-model-button", cx)
     });
-    // A model billed per token is heard with its billing, as Arko says it.
-    let billed = |row: &str, name: &str| match openrouter_models().billing(name) {
-        Some(billing) => format!("{row}, {billing}"),
-        None => row.to_string(),
-    };
-    let opus = billed("Opus 5.5, Anthropic API", "claude-opus-5-5");
-    let kimi = billed("Kimi K3, OpenRouter", "openrouter:moonshotai/kimi-k3");
-    assert!(opus.starts_with("Opus 5.5, Anthropic API, API, $"));
+    // A model billed per token is heard with its billing, as Arko says it,
+    // less an "API" its way already says.
     act(cx, window, |window, _| {
         let list = window.within("new-sessions-model");
         assert_eq!(list.find("model-row-0-0").label(), Some("Last used"));
-        assert_eq!(list.find("model-row-1-0").label(), Some(opus.as_str()));
-        assert_eq!(list.find("model-row-2-0").label(), Some(kimi.as_str()));
+        assert_eq!(
+            list.find("model-row-1-0").label(),
+            Some("Opus 5.5, Anthropic API, $4/$20")
+        );
+        assert_eq!(
+            list.find("model-row-2-0").label(),
+            Some("Kimi K3, OpenRouter, API")
+        );
         assert_eq!(
             list.find("model-row-2-1").label(),
             Some("All OpenRouter models")
