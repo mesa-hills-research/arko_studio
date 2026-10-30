@@ -2077,4 +2077,25 @@ fn a_message_arko_did_not_send_comes_back(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| window.input("Wait.", cx));
     not_sent("Carry on with the tests.", cx);
     assert_eq!(composer_text(&workspace, cx), "Wait.");
+    // A message of an image alone comes back with its image.
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    act(cx, window, |window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.set_text("", window, cx);
+            composer.attach_image(
+                crate::composer::Attached::new(
+                    gpui_kit::ImageFormat::Png,
+                    crate::testing::PNG.to_vec(),
+                    Some("shot.png".into()),
+                ),
+                cx,
+            );
+        })
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    let images = |cx: &mut TestAppContext| cx.read(|cx| composer.read(cx).images().len());
+    assert_eq!(images(cx), 0, "sent");
+    not_sent("", cx);
+    assert_eq!(images(cx), 1);
+    assert_eq!(composer_text(&workspace, cx), "");
 }

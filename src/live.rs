@@ -365,13 +365,14 @@ pub const REPORTING: &str = "The report is being written. Stopping skips it.";
 
 /// The words of a message arko didn't send while a report was written,
 /// from its notice ("“Hello.” wasn't sent. The report is being written.
-/// Stopping skips it.").
+/// Stopping skips it."). A message of images alone has none ("Your message
+/// wasn't sent. …").
 fn not_sent_words(notice: &str) -> Option<&str> {
-    notice
-        .strip_prefix('“')?
-        .strip_suffix(REPORTING)?
-        .trim_end()
-        .strip_suffix("” wasn't sent.")
+    let what = notice.strip_suffix(REPORTING)?.trim_end();
+    if what == "Your message wasn't sent." {
+        return Some("");
+    }
+    what.strip_prefix('“')?.strip_suffix("” wasn't sent.")
 }
 
 /// What the user did with the agent's questions in this app, beside what
@@ -1765,6 +1766,12 @@ mod tests {
                 "“Carry on with the tests.” wasn't sent. The report is being written. Stopping skips it."
             ),
             Some("Carry on with the tests.")
+        );
+        assert_eq!(
+            not_sent_words(
+                "Your message wasn't sent. The report is being written. Stopping skips it."
+            ),
+            Some("")
         );
         assert_eq!(not_sent_words("Skipped gpt-6-luna's report."), None);
         assert_eq!(
