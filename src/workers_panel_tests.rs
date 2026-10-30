@@ -836,6 +836,25 @@ fn a_worker_billed_per_token_says_so(cx: &mut TestAppContext) {
     );
 }
 
+/// A worker's billing that changes on its own (the session switched how
+/// it reaches OpenAI) shows at once in its row.
+#[gpui_kit::test]
+fn a_change_of_billing_alone_shows_in_the_row(cx: &mut TestAppContext) {
+    use arko::remote::WorkerState::Running;
+    let panel = open(cx);
+    let mut sol = summary("r1", None, Running, None);
+    sol.model = Some("gpt-6.1-sol".into());
+    panel.show(cx, vec![sol]);
+    assert_eq!(panel.chip(cx, "r1").as_deref(), Some("sol"));
+    panel.panel.update(cx, |panel, cx| {
+        let mut source = panel.source.clone();
+        source.billed_per_token = ["r1".to_string()].into();
+        panel.set_source(source, cx);
+    });
+    panel.draw(cx);
+    assert_eq!(panel.chip(cx, "r1").as_deref(), Some("sol · API"));
+}
+
 /// When a row's second line is short of room, the context and the calls
 /// give way first, each whole, the context before the calls, and the last
 /// action takes the room they leave. It keeps a few words until they've

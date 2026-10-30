@@ -248,10 +248,11 @@ impl WorkersPanel {
             self.seen.clear();
             self.row_views.clear();
         }
-        // The rows' chips name what isn't usual.
+        // The rows' chips name what isn't usual, and how a worker is billed.
         let same = source.workers == self.source.workers
             && source.agents == self.source.agents
             && source.usual == self.source.usual
+            && source.billed_per_token == self.source.billed_per_token
             && source.key == self.source.key;
         if source.movable != self.source.movable {
             for shown in &self.transcripts {
