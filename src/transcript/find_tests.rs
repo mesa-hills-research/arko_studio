@@ -632,10 +632,10 @@ fn found_text_stays_selectable(cx: &mut TestAppContext) {
 }
 
 /// The matches on a warning take a shade of its color that reads on their
-/// highlight, the current one's and the others'. Matches elsewhere keep
-/// their line's color.
+/// highlight, the current one's and the others', and so do the matches of
+/// other lines in theirs.
 #[gpui_kit::test]
-fn matches_on_a_warning_take_a_shade_that_reads(cx: &mut TestAppContext) {
+fn matches_take_a_shade_of_their_lines_color_that_reads(cx: &mut TestAppContext) {
     use gpui_kit::component::ActiveTheme as _;
 
     let feed = Feed::new("main");
@@ -651,24 +651,30 @@ fn matches_on_a_warning_take_a_shade_that_reads(cx: &mut TestAppContext) {
     let warning = entry(cx, &view, "rate limited");
     let message = entry(cx, &view, "Why is it");
     cx.update(|cx| {
-        let amber = cx.theme().warning;
+        let theme = cx.theme();
+        let amber = super::Ink::new(theme.warning);
+        let bubble = super::Ink::on(theme.foreground, super::super::row::bubble_color(theme));
         let (all, current) = super::match_colors(cx);
         let view = view.read(cx);
-        let colors = |entry: u64, color| {
+        let colors = |entry: u64, ink| {
             let text = view.model.entry(entry).unwrap().item.text.clone();
-            view.highlights(entry, Place::Text, &text, color, cx)
+            view.highlights(entry, Place::Text, &text, ink, cx)
                 .into_iter()
                 .map(|(_, style)| (style.background_color.unwrap(), style.color))
                 .collect::<Vec<_>>()
         };
+        let shade = |ink, highlight| Some(super::readable_on(ink, highlight, cx));
         // The latest match is the current one.
-        let shade = |highlight| Some(super::readable_on(amber, highlight, cx));
         assert_eq!(
-            colors(warning, Some(amber)),
-            [(all, shade(all)), (current, shade(current))]
+            colors(warning, amber),
+            [(all, shade(amber, all)), (current, shade(amber, current))]
         );
-        assert_ne!(shade(current), Some(amber), "amber doesn't read on it");
-        assert_eq!(colors(message, None), [(all, None)]);
+        assert_ne!(
+            shade(amber, current),
+            Some(amber.text),
+            "amber doesn't read on it"
+        );
+        assert_eq!(colors(message, bubble), [(all, shade(bubble, all))]);
     });
 }
 

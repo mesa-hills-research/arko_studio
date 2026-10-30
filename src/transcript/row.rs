@@ -25,7 +25,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::find::{Place, QuestionPart};
+use super::find::{Ink, Place, QuestionPart};
 use crate::fonts::CodeFont as _;
 
 use super::height::Metrics;
@@ -1064,6 +1064,13 @@ impl TranscriptView {
             .and_then(|ui| ui.text.clone())
             .unwrap_or_else(|| item.text.clone().into());
         let muted = theme.muted_foreground;
+        // As the bubble draws it: a note the agent hasn't read is an
+        // outline in muted text.
+        let ink = if item.pending {
+            Ink::new(muted)
+        } else {
+            Ink::on(theme.foreground, bubble_color(theme))
+        };
         let copy_view = view.downgrade();
         // Edit and Branch, for a message the conversation still has.
         let changes = self.is_editable(id).then(|| {
@@ -1156,7 +1163,7 @@ impl TranscriptView {
             .children(self.thumbnails(item, view, cx))
             // As wide as its words on one line, up to the bubble's widest,
             // where it wraps.
-            .child(self.marked(("user-text", id), id, Place::Text, text, cx));
+            .child(self.marked(("user-text", id), id, Place::Text, text, ink, cx));
         at_right(bubble, Some(actions.into_any_element())).into_any_element()
     }
 
@@ -1216,7 +1223,18 @@ impl TranscriptView {
                 .when(self.shows_source(id), |this| {
                     this.code_font(theme).text_size(theme.mono_font_size)
                 })
-                .child(self.marked(("source", id), id, Place::Source(block), text, cx))
+                .child(self.marked(
+                    ("source", id),
+                    id,
+                    Place::Source(block),
+                    text,
+                    Ink::new(if thinking {
+                        theme.muted_foreground
+                    } else {
+                        theme.foreground
+                    }),
+                    cx,
+                ))
                 .into_any_element()
         } else {
             // The longest code block of the row, at the top level or inside
@@ -1514,6 +1532,7 @@ impl TranscriptView {
                             id,
                             Place::Outcome,
                             outcome,
+                            Ink::new(theme.danger),
                             cx,
                         )))
                     })
@@ -1523,6 +1542,13 @@ impl TranscriptView {
         };
         let action = self.call_action(item, job.as_ref(), view);
         let header_view = view.downgrade();
+        let marked_line = self.marked_plain(
+            id,
+            Place::Text,
+            line.clone(),
+            Ink::new(theme.muted_foreground),
+            cx,
+        );
         let header = Disclosure {
             id: ("call-toggle", id).into(),
             open,
@@ -1549,7 +1575,7 @@ impl TranscriptView {
                         .min_w_0()
                         .truncate()
                         .text_left()
-                        .child(self.marked_plain(id, Place::Text, line.clone(), cx)),
+                        .child(marked_line),
                 )
                 .children(trailing)
                 .into_any_element(),
@@ -1649,7 +1675,14 @@ impl TranscriptView {
                 .bg(theme.muted)
                 .code_font(theme)
                 .text_size(theme.mono_font_size)
-                .child(self.marked((key, id), id, place, text, cx))
+                .child(self.marked(
+                    (key, id),
+                    id,
+                    place,
+                    text,
+                    Ink::on(theme.foreground, theme.muted),
+                    cx,
+                ))
         };
         let caption = |text: String| {
             div()
@@ -1987,6 +2020,7 @@ impl TranscriptView {
                                         id,
                                         Place::Question(n, QuestionPart::Words),
                                         crate::questions::text(question),
+                                        Ink::new(theme.foreground),
                                         cx,
                                     )),
                             )
@@ -2001,6 +2035,7 @@ impl TranscriptView {
                                         id,
                                         Place::Question(n, QuestionPart::Outcome),
                                         outcome,
+                                        Ink::new(muted),
                                         cx,
                                     ))
                             })),
@@ -2045,6 +2080,7 @@ impl TranscriptView {
                                     id,
                                     Place::Answer(n),
                                     answer.to_string(),
+                                    Ink::on(theme.foreground, bubble_color(theme)),
                                     cx,
                                 )),
                         )
@@ -2123,12 +2159,12 @@ impl TranscriptView {
                     .flex_1()
                     .min_w_0()
                     .when(regenerate.is_some(), |this| this.pr(rems(REGENERATE_ROOM)))
-                    .child(self.marked_in(
+                    .child(self.marked(
                         ("notice-text", id),
                         id,
                         Place::Text,
                         item.text.clone(),
-                        (item.level == Some(Level::Warn)).then_some(text_color),
+                        Ink::new(text_color),
                         cx,
                     )),
             )
@@ -2155,7 +2191,14 @@ impl TranscriptView {
             .border_color(border)
             .code_font(theme)
             .text_size(theme.mono_font_size)
-            .child(self.marked(("output-text", id), id, Place::Text, item.text.clone(), cx))
+            .child(self.marked(
+                ("output-text", id),
+                id,
+                Place::Text,
+                item.text.clone(),
+                Ink::new(theme.foreground),
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -2177,7 +2220,13 @@ impl TranscriptView {
                     .test_support()
                     .truncate()
                     .when(regenerate.is_some(), |this| this.pr(rems(REGENERATE_ROOM)))
-                    .child(self.marked_plain(id, Place::Text, item.text.clone(), cx)),
+                    .child(self.marked_plain(
+                        id,
+                        Place::Text,
+                        item.text.clone(),
+                        Ink::new(theme.muted_foreground),
+                        cx,
+                    )),
             )
             // Over the line, centred on it, so the line keeps its height.
             .when_some(regenerate, |this, regenerate| {
@@ -2300,6 +2349,7 @@ impl TranscriptView {
         };
         let open: SharedString = worker_id.clone().into();
         let view = view.downgrade();
+        let title = self.marked_plain(id, Place::Text, title, Ink::new(theme.foreground), cx);
         let card = Button::new(("worker-card", id))
             .outline()
             .small()
@@ -2318,14 +2368,7 @@ impl TranscriptView {
                             .text_size(theme.mono_font_size)
                             .child(worker_id),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_left()
-                            .child(self.marked_plain(id, Place::Text, title, cx)),
-                    )
+                    .child(div().flex_1().min_w_0().truncate().text_left().child(title))
                     // The title gives way first, and then the setup.
                     .children(setup.map(|setup| {
                         div()

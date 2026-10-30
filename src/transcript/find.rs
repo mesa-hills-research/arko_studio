@@ -1258,32 +1258,18 @@ impl TranscriptView {
     }
 
     /// `text` as the plain text of `place` in a row, selectable as usual,
-    /// with its matches painted on it.
+    /// with its matches painted on it. The row draws it in `ink`.
     pub(super) fn marked(
         &self,
         id: impl Into<ElementId>,
         entry: u64,
         place: Place,
         text: impl Into<SharedString>,
-        cx: &App,
-    ) -> AnyElement {
-        self.marked_in(id, entry, place, text, None, cx)
-    }
-
-    /// As [`marked`](Self::marked), for text drawn in `color` when it's
-    /// `Some` (a warning's): its matches take a shade of it that reads on
-    /// their highlight.
-    pub(super) fn marked_in(
-        &self,
-        id: impl Into<ElementId>,
-        entry: u64,
-        place: Place,
-        text: impl Into<SharedString>,
-        color: Option<Hsla>,
+        ink: Ink,
         cx: &App,
     ) -> AnyElement {
         let text = text.into();
-        let highlights = self.highlights(entry, place, &text, color, cx);
+        let highlights = self.highlights(entry, place, &text, ink, cx);
         let selectable = self.selectable(id, entry, place, text);
         if highlights.is_empty() {
             return selectable.into_any_element();
@@ -1298,10 +1284,11 @@ impl TranscriptView {
         entry: u64,
         place: Place,
         text: impl Into<SharedString>,
+        ink: Ink,
         cx: &App,
     ) -> AnyElement {
         let text = text.into();
-        let highlights = self.highlights(entry, place, &text, None, cx);
+        let highlights = self.highlights(entry, place, &text, ink, cx);
         if highlights.is_empty() {
             return text.into_any_element();
         }
@@ -1312,15 +1299,15 @@ impl TranscriptView {
         )
     }
 
-    /// The matches of `place` in `text`, painted with the current one
-    /// stronger. Text drawn in `color` (a warning's) has its matches in a
-    /// shade of it that reads on their highlight.
+    /// The matches of `place` in `text`, drawn in `ink`, painted with the
+    /// current one stronger, their text in a shade of its color that reads
+    /// on their highlight.
     fn highlights(
         &self,
         entry: u64,
         place: Place,
         text: &str,
-        color: Option<Hsla>,
+        ink: Ink,
         cx: &App,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
         let ranges = self.match_ranges(entry, place);
@@ -1328,8 +1315,7 @@ impl TranscriptView {
             return Vec::new();
         }
         let (all, strong) = match_colors(cx);
-        let on = |highlight: Hsla| color.map(|color| readable_on(color, highlight, cx));
-        let (on_all, on_strong) = (on(all), on(strong));
+        let (on_all, on_strong) = (readable_on(ink, all, cx), readable_on(ink, strong, cx));
         ranges
             .into_iter()
             .filter(|(range, _)| text.get(range.clone()).is_some())
@@ -1337,7 +1323,7 @@ impl TranscriptView {
                 (
                     range,
                     HighlightStyle {
-                        color: if current { on_strong } else { on_all },
+                        color: Some(if current { on_strong } else { on_all }),
                         background_color: Some(if current { strong } else { all }),
                         ..HighlightStyle::default()
                     },
@@ -1377,15 +1363,63 @@ pub(super) fn match_colors(cx: &App) -> (Hsla, Hsla) {
 /// The contrast matched text needs on its highlight, WCAG's for body text.
 pub(super) const MATCH_CONTRAST: f32 = 4.5;
 
-/// `color`, the color of a line's text, for its matches on the highlight
-/// `highlight` over the transcript: as it is while it reads there at
-/// [`MATCH_CONTRAST`], else darkened (or, on a dark highlight, lightened)
-/// until it does. A warning's amber is too light on the highlight in light
-/// themes, and on the current match's in dark ones.
-pub(super) fn readable_on(color: Hsla, highlight: Hsla, cx: &App) -> Hsla {
+/// The colors a plain text of a row is drawn in: its own, and what it's
+/// drawn on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Ink {
+    pub text: Hsla,
+    /// A surface of its own, such as a bubble's. `None` for the
+    /// transcript's, which is the window's background in a session and the
+    /// sidebar's in the workers panel.
+    pub surface: Option<Hsla>,
+}
+
+impl Ink {
+    /// `text` on the transcript.
+    pub fn new(text: Hsla) -> Self {
+        Self {
+            text,
+            surface: None,
+        }
+    }
+
+    /// `text` on `surface`, such as a bubble or a call's details.
+    pub fn on(text: Hsla, surface: Hsla) -> Self {
+        Self {
+            text,
+            surface: Some(surface),
+        }
+    }
+
+    /// What it may be drawn on.
+    fn surfaces(&self, cx: &App) -> Vec<Hsla> {
+        let theme = cx.theme();
+        match self.surface {
+            Some(surface) => vec![surface],
+            None => vec![theme.background, theme.sidebar],
+        }
+    }
+}
+
+/// The text of `ink`'s matches on the highlight `highlight`: its color as
+/// it is while it reads there at [`MATCH_CONTRAST`], else darkened (or, on
+/// a dark highlight, lightened) until it does. Plain text is too light on
+/// the current match's highlight in most dark themes, and a warning's amber
+/// on both highlights in light ones.
+pub(super) fn readable_on(ink: Ink, highlight: Hsla, cx: &App) -> Hsla {
     use crate::segmented::contrast_ratio;
-    let background = cx.theme().background.blend(highlight);
-    let contrast = |color: Hsla| contrast_ratio(background.blend(color), background);
+    let under: Vec<Hsla> = ink
+        .surfaces(cx)
+        .into_iter()
+        .map(|surface| surface.blend(highlight))
+        .collect();
+    // The least it reads at on any surface it may be drawn on.
+    let contrast = |color: Hsla| {
+        under
+            .iter()
+            .map(|under| contrast_ratio(under.blend(color), *under))
+            .fold(f32::INFINITY, f32::min)
+    };
     // Black or white, whichever stands out more, always reads.
     let (black, white) = (gpui_kit::black(), gpui_kit::white());
     let toward = if contrast(black) >= contrast(white) {
@@ -1394,7 +1428,7 @@ pub(super) fn readable_on(color: Hsla, highlight: Hsla, cx: &App) -> Hsla {
         white
     };
     (0..=20)
-        .map(|step| color.blend(toward.opacity(step as f32 / 20.)))
+        .map(|step| ink.text.blend(toward.opacity(step as f32 / 20.)))
         .find(|shade| contrast(*shade) >= MATCH_CONTRAST)
         .unwrap_or(toward)
 }
