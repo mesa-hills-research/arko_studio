@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::input::{self, Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::tooltip::{ManagedTooltipExt as _, Tooltip};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
     ThemeStyled as _, WindowExt as _,
@@ -1826,7 +1826,7 @@ impl SessionView {
                         .child(
                             div()
                                 .id("find-previous-tip")
-                                .tooltip(key_tip("Previous match", "shift-enter"))
+                                .managed_tooltip(key_tip("Previous match", "shift-enter"))
                                 .child(
                                     Button::new("find-previous")
                                         .ghost()
@@ -1844,7 +1844,7 @@ impl SessionView {
                         .child(
                             div()
                                 .id("find-next-tip")
-                                .tooltip(key_tip("Next match", "enter"))
+                                .managed_tooltip(key_tip("Next match", "enter"))
                                 .child(
                                     Button::new("find-next")
                                         .ghost()
@@ -1862,7 +1862,7 @@ impl SessionView {
                         .child(
                             div()
                                 .id("find-close-tip")
-                                .tooltip(key_tip("Close", "escape"))
+                                .managed_tooltip(key_tip("Close", "escape"))
                                 .child(
                                     Button::new("find-close")
                                         .ghost()
@@ -3348,10 +3348,10 @@ impl SessionView {
                                 .truncate()
                                 .text_ellipsis_middle()
                                 .text_color(theme.foreground)
-                                .child(shown_folder(&folder, home.as_deref()))
-                                .tooltip(move |window, cx| {
+                                .managed_tooltip(move |window, cx| {
                                     Tooltip::new(full_path.clone()).build(window, cx)
-                                }),
+                                })
+                                .child(shown_folder(&folder, home.as_deref())),
                         )
                     })
                     .child(
@@ -3613,7 +3613,7 @@ impl SessionView {
             .child(
                 div()
                     .id("clear-target-tip")
-                    .tooltip(|window, cx| {
+                    .managed_tooltip(|window, cx| {
                         Tooltip::new("Write to Arko again")
                             .key_binding(Keystroke::parse("escape").ok().map(Kbd::new))
                             .build(window, cx)
@@ -3756,7 +3756,7 @@ impl SessionView {
                         this.child(
                             div()
                                 .id("send-or-stop")
-                                .tooltip(move |window, cx| {
+                                .managed_tooltip(move |window, cx| {
                                     Tooltip::new(label)
                                         .key_binding(chord.clone().map(Kbd::new))
                                         .build(window, cx)

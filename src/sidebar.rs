@@ -1078,14 +1078,14 @@ impl Sidebar {
                                         .id(("row-working", index))
                                         .test_support()
                                         .flex_none()
+                                        .managed_tooltip(|window, cx| {
+                                            Tooltip::new("Working").build(window, cx)
+                                        })
                                         .child(
                                             crate::spinner::spinner()
                                                 .xsmall()
                                                 .color(theme.muted_foreground),
-                                        )
-                                        .tooltip(|window, cx| {
-                                            Tooltip::new("Working").build(window, cx)
-                                        }),
+                                        ),
                                 )
                             })
                             .when(asking, |this| {
@@ -1094,17 +1094,17 @@ impl Sidebar {
                                         .id(("row-question", index))
                                         .test_support()
                                         .flex_none()
+                                        .managed_tooltip(|window, cx| {
+                                            Tooltip::new("A question waits for you")
+                                                .build(window, cx)
+                                        })
                                         .child(
                                             Icon::new(
                                                 gpui_kit::assets::IconName::MessageCircleQuestionMark,
                                             )
                                             .xsmall()
                                             .text_color(theme.warning),
-                                        )
-                                        .tooltip(|window, cx| {
-                                            Tooltip::new("A question waits for you")
-                                                .build(window, cx)
-                                        }),
+                                        ),
                                 )
                             })
                             .when(approving, |this| {
@@ -1113,14 +1113,14 @@ impl Sidebar {
                                         .id(("row-approval", index))
                                         .test_support()
                                         .flex_none()
+                                        .managed_tooltip(|window, cx| {
+                                            Tooltip::new("Needs approval").build(window, cx)
+                                        })
                                         .child(
                                             Icon::new(gpui_kit::assets::IconName::ShieldCheck)
                                                 .xsmall()
                                                 .text_color(theme.warning),
-                                        )
-                                        .tooltip(|window, cx| {
-                                            Tooltip::new("Needs approval").build(window, cx)
-                                        }),
+                                        ),
                                 )
                             })
                             .when(!working && !asking && !approving, |this| {
@@ -1333,7 +1333,7 @@ impl Render for Sidebar {
                             })
                             .child(Icon::new(IconName::Plus).xsmall())
                             .child("New session")
-                            .tooltip(|window, cx| {
+                            .managed_tooltip(|window, cx| {
                                 Tooltip::new("New session")
                                     .action(&NewSession, None)
                                     .build(window, cx)

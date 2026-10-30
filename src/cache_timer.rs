@@ -7,7 +7,7 @@
 //! and the timer shows then.
 
 use arko::remote::{Activity, CacheStatus};
-use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::tooltip::{ManagedTooltipExt as _, Tooltip};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::*;
 
@@ -175,7 +175,7 @@ pub fn cache_timer(timer: CacheTimer, cache: &CacheStatus, now: i64, cx: &App) -
         })
         .child(Icon::new(gpui_kit::assets::IconName::Timer).xsmall())
         .child(timer.label())
-        .tooltip(move |window, cx| {
+        .managed_tooltip(move |window, cx| {
             Tooltip::new(cache_tooltip(timer, &cache, now, &Times::of(cx))).build(window, cx)
         })
         .into_any_element()

@@ -19,7 +19,7 @@ use gpui_kit::component::{
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
     shimmer::ShimmerText,
-    tooltip::Tooltip,
+    tooltip::{ManagedTooltipExt as _, Tooltip},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -1940,7 +1940,7 @@ impl TranscriptView {
                 this.role(Role::Button)
                     .cursor_pointer()
                     .hover(|style| style.text_color(theme.foreground))
-                    .tooltip(|window, cx| {
+                    .managed_tooltip(|window, cx| {
                         Tooltip::new("Answer")
                             .action(&crate::questions::AnswerQuestions, None)
                             .build(window, cx)
@@ -2329,12 +2329,12 @@ impl TranscriptView {
                             .truncate()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child(setup)
                             .when_some(narrowed.clone(), |this, narrowed| {
-                                this.tooltip(move |window, cx| {
+                                this.managed_tooltip(move |window, cx| {
                                     Tooltip::new(narrowed.clone()).build(window, cx)
                                 })
                             })
+                            .child(setup)
                     }))
                     .child(
                         div()
@@ -2758,7 +2758,7 @@ impl RenderOnce for Thumbnail {
             .border_color(theme.border)
             .bg(theme.muted)
             .focus(|this| this.border_color(theme.ring))
-            .tooltip(move |window, cx| Tooltip::new(caption.clone()).build(window, cx))
+            .managed_tooltip(move |window, cx| Tooltip::new(caption.clone()).build(window, cx))
             .map(|this| match self.image {
                 Some(image) => {
                     // Decoded at the tile's size, which the rem sets (the UI

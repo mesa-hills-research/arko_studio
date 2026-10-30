@@ -19,7 +19,9 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _, Toggle, ToggleGroup},
-    h_flex, v_flex,
+    h_flex,
+    tooltip::ManagedTooltipExt as _,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -39,18 +41,6 @@ pub const FIXED: &str = "Fixed once the conversation started.";
 /// What the model pickers and the info say of the main agent's model once
 /// the conversation has started.
 pub const MODEL_KEPT: &str = "The main agent keeps its model once the conversation starts.";
-
-/// The tooltip over a setting the conversation has fixed, drawn as the
-/// kit's tooltips are. The selector lets tests see it.
-struct Fixed(AnyView);
-
-impl Render for Fixed {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .debug_selector(|| "fixed-tooltip".into())
-            .child(self.0.clone())
-    }
-}
 
 /// How long a switch or a segment shows the user's choice before the
 /// session's status does (the status comes about half a second after a
@@ -821,10 +811,8 @@ impl Render for SessionInfo {
                 .id("extra-rules-fixed")
                 .test_support()
                 .when(started, |this| {
-                    this.tooltip(|window, cx| {
-                        let said =
-                            gpui_kit::component::tooltip::Tooltip::new(FIXED).build(window, cx);
-                        cx.new(|_| Fixed(said)).into()
+                    this.managed_tooltip(|window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(FIXED).build(window, cx)
                     })
                 })
                 .child(extra_rules),
@@ -1246,15 +1234,15 @@ impl Render for SessionInfo {
                                 div()
                                     .id(("mcp-server", ix))
                                     .text_sm()
-                                    .child(line)
                                     .when_some(tools, |this, tools| {
-                                        this.tooltip(move |window, cx| {
+                                        this.managed_tooltip(move |window, cx| {
                                             gpui_kit::component::tooltip::Tooltip::new(
                                                 tools.clone(),
                                             )
                                             .build(window, cx)
                                         })
                                     })
+                                    .child(line)
                             },
                         )),
                         cx,
@@ -1312,16 +1300,16 @@ impl Render for SessionInfo {
                                                             .text_ellipsis_start()
                                                     })
                                                     .map(fit)
-                                                    .child(from)
                                                     .id(("skill-folder", ix))
                                                     .when_some(path, |this, path| {
-                                                        this.tooltip(move |window, cx| {
+                                                        this.managed_tooltip(move |window, cx| {
                                                             gpui_kit::component::tooltip::Tooltip::new(
                                                                 path.clone(),
                                                             )
                                                             .build(window, cx)
                                                         })
-                                                    }),
+                                                    })
+                                                    .child(from),
                                             )
                                         })
                                 }),
@@ -2410,7 +2398,7 @@ mod view_tests {
             .advance_clock(std::time::Duration::from_secs(2));
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        cx.debug_bounds("tooltip").is_some() || cx.debug_bounds("fixed-tooltip").is_some()
+        cx.debug_bounds("tooltip").is_some()
     }
 
     /// Once the conversation has started, the settings it fixes say so

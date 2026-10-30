@@ -381,3 +381,137 @@ fn deleting_a_session_reads_what_it_told(cx: &mut TestAppContext) {
     assert_eq!(cx.read(notifications::unread), 0);
     assert_eq!(cx.read(|cx| notifications::entries(cx).len()), 2);
 }
+
+/// The marks on a row explain themselves as the kit's tooltips do. A mark's
+/// tooltip shows once the pointer rests on it, sooner when the pointer
+/// comes from a tooltip already up, and never over the row's open menu.
+#[gpui_kit::test]
+fn a_rows_marks_explain_themselves_but_not_over_its_menu(cx: &mut TestAppContext) {
+    use gpui_kit::{
+        InputEvent as _, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+        VisualTestContext, point, px,
+    };
+    use std::time::Duration;
+
+    let app = start(&[], cx);
+    let window = app.window;
+    let split = row_of(&app.workspace, SPLIT_TITLE, cx);
+    let fonts = row_of(&app.workspace, FONTS_TITLE, cx);
+    cx.update(|cx| {
+        LiveSessions::set_indicator(
+            &SessionId(SPLIT.into()),
+            Indicator {
+                approval: true,
+                ..Indicator::default()
+            },
+            cx,
+        );
+        LiveSessions::set_indicator(
+            &SessionId(FONTS.into()),
+            Indicator {
+                question: true,
+                ..Indicator::default()
+            },
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let question = ("row-question", fonts);
+    let approval = ("row-approval", split);
+    let tooltip = |cx: &mut TestAppContext| {
+        VisualTestContext::from_window(window, cx).debug_bounds("tooltip")
+    };
+    let menu = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("popup-menu").map(|menu| menu.bounds())
+        })
+        .unwrap()
+    };
+    let wait = |ms: u64, cx: &mut TestAppContext| {
+        cx.executor().advance_clock(Duration::from_millis(ms));
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    };
+    let rest_on = |id: (&'static str, usize), cx: &mut TestAppContext| {
+        act(cx, window, |window, cx| window.hover(id, cx));
+    };
+    let move_away = |cx: &mut TestAppContext| {
+        VisualTestContext::from_window(window, cx).simulate_mouse_move(
+            point(px(20.), px(680.)),
+            None,
+            Modifiers::default(),
+        );
+        wait(1_000, cx);
+    };
+
+    // A rest on a mark shows what it means once the show delay is over.
+    rest_on(question, cx);
+    wait(400, cx);
+    assert_eq!(tooltip(cx), None, "not before the delay");
+    wait(200, cx);
+    let asked = tooltip(cx).expect("the question mark's tooltip");
+    // Moving on from it, the next mark's shows without the whole delay.
+    rest_on(approval, cx);
+    wait(200, cx);
+    let approving = tooltip(cx).expect("the approval mark's tooltip");
+    assert_ne!(asked, approving, "it moved to the approval mark");
+
+    // The row's menu hides it, and no mark of the row shows one while the
+    // menu is open.
+    act(cx, window, |window, cx| {
+        let row = window.find(("row", split)).bounds();
+        let position = point(row.origin.x + px(12.), row.center().y);
+        window.dispatch_event(
+            MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseDownEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseUpEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    let open = menu(cx).expect("the row's menu");
+    assert_eq!(tooltip(cx), None, "opening the menu hides it");
+    rest_on(approval, cx);
+    wait(1_000, cx);
+    let mark = cx
+        .update_window(window, |_, window, _| window.find(approval).bounds())
+        .unwrap();
+    assert!(!open.intersects(&mark), "the menu leaves the mark in sight");
+    assert!(menu(cx).is_some(), "the menu stays open");
+    assert_eq!(tooltip(cx), None, "no tooltip over the open menu");
+
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert_eq!(menu(cx), None);
+    move_away(cx);
+    rest_on(approval, cx);
+    wait(600, cx);
+    assert!(
+        tooltip(cx).is_some(),
+        "with the menu closed, it shows again"
+    );
+}

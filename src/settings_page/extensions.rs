@@ -16,6 +16,7 @@ use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tooltip::ManagedTooltipExt as _;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, WindowExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -724,11 +725,14 @@ fn builtin_row(skill: &BuiltinSkill, home: Option<&Path>) -> SettingItem {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis_start()
-                                .child(replaced.clone())
-                                .tooltip(move |window, cx| {
-                                    gpui_kit::component::tooltip::Tooltip::new(replaced.clone())
-                                        .build(window, cx)
-                                }),
+                                .managed_tooltip({
+                                    let replaced = replaced.clone();
+                                    move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(replaced.clone())
+                                            .build(window, cx)
+                                    }
+                                })
+                                .child(replaced),
                         ),
                 )
             })

@@ -21,7 +21,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
-    tooltip::Tooltip,
+    tooltip::{ManagedTooltipExt as _, Tooltip},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -924,10 +924,10 @@ impl WorkersPanel {
                             .truncate()
                             .text_sm()
                             .font_medium()
-                            .child(title)
-                            .tooltip(move |window, cx| {
+                            .managed_tooltip(move |window, cx| {
                                 Tooltip::new(full_title.clone()).build(window, cx)
-                            }),
+                            })
+                            .child(title),
                     )
                     .child(close_button()),
             )
@@ -949,12 +949,12 @@ impl WorkersPanel {
                             .min_w_0()
                             .truncate()
                             .font_features(tabular_figures())
-                            .child(facts)
                             .when_some(narrowed, |this, narrowed| {
-                                this.tooltip(move |window, cx| {
+                                this.managed_tooltip(move |window, cx| {
                                     Tooltip::new(narrowed.clone()).build(window, cx)
                                 })
-                            }),
+                            })
+                            .child(facts),
                     )
                     .child(
                         Button::new("worker-message")
@@ -1113,7 +1113,7 @@ fn state_mark(state: WorkerState, cx: &App) -> impl IntoElement {
         .items_center()
         .justify_center()
         .child(mark)
-        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+        .managed_tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
 }
 
 /// What a worker's row shows.
@@ -1250,12 +1250,12 @@ impl Render for WorkerRow {
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .child(facts.last.clone())
                                     .when_some(facts.error.clone(), |this, error| {
-                                        this.tooltip(move |window, cx| {
+                                        this.managed_tooltip(move |window, cx| {
                                             Tooltip::new(error.clone()).build(window, cx)
                                         })
-                                    }),
+                                    })
+                                    .child(facts.last.clone()),
                             )
                             .children(facts.context.clone().map(figures))
                             .child(calls(facts.calls, window)),
@@ -1283,12 +1283,12 @@ impl Render for WorkerRow {
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
-                                        .children(facts.setup.clone())
                                         .when_some(facts.narrowed.clone(), |this, narrowed| {
-                                            this.tooltip(move |window, cx| {
+                                            this.managed_tooltip(move |window, cx| {
                                                 Tooltip::new(narrowed.clone()).build(window, cx)
                                             })
-                                        }),
+                                        })
+                                        .children(facts.setup.clone()),
                                 )
                                 .children(facts.cost.clone().map(figures)),
                         ),

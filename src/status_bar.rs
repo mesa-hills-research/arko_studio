@@ -21,6 +21,7 @@ use gpui_kit::component::{
     h_flex,
     notification::Notification,
     popover::Popover,
+    tooltip::ManagedTooltipExt as _,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -500,10 +501,10 @@ impl StatusBar {
                 .test_support()
                 .font_features(tabular_figures())
                 .text_color(cx.theme().warning)
-                .child(figures::plan_label(window))
-                .tooltip(move |window, cx| {
+                .managed_tooltip(move |window, cx| {
                     gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
                 })
+                .child(figures::plan_label(window))
                 .into_any_element(),
         )
     }
