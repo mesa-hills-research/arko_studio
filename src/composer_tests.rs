@@ -1789,7 +1789,10 @@ fn stop_skips_the_report_of_a_switch(cx: &mut TestAppContext) {
         assert!(window.try_find("send").is_none());
     });
     act(cx, window, |window, cx| window.click("stop", cx));
-    assert!(cx.read(|cx| matches!(session.read(cx).queued(), [arko::Input::Interrupt])));
+    assert!(cx.read(|cx| matches!(
+        session.read(cx).queued().as_slice(),
+        [arko::Input::Interrupt]
+    )));
 }
 
 /// Back in a conversation that runs another effort than new conversations
@@ -1983,12 +1986,33 @@ fn reporting() -> arko::remote::Activity {
     }
 }
 
-/// While the old model writes its report, a message to the main agent
-/// waits in the composer, as the strip above it says, and the button is
-/// Stop. A command and a message to a worker go. Once the report is done,
-/// the message goes.
+/// Arko refused everything the session was sent so far, for `kind`, and
+/// the window took the refusals.
+fn refuse(
+    session: &Entity<crate::live::LiveSession>,
+    kind: arko::RefusalKind,
+    words: &str,
+    window: AnyWindowHandle,
+    cx: &mut TestAppContext,
+) {
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| arko::Verdict::refused(kind.clone(), words))
+    });
+    act(cx, window, |_, _| {});
+}
+
+fn notifications(window: AnyWindowHandle, cx: &mut TestAppContext) -> usize {
+    cx.update_window(window, |_, window, cx| window.notifications(cx).len())
+        .unwrap()
+}
+
+/// While the old model writes its report, the strip above the composer
+/// says so and the button is Stop. A message to the main agent goes, and
+/// comes back when Arko refuses it, with nothing more said, since the strip
+/// says why. A command and a message to a worker go. Once the report is
+/// done, the strip goes.
 #[gpui_kit::test]
-fn a_message_waits_while_the_report_is_written(cx: &mut TestAppContext) {
+fn a_message_arko_refuses_while_the_report_is_written_comes_back(cx: &mut TestAppContext) {
     let (window, workspace, session) = started_session(cx);
     session.update(cx, |session, cx| {
         session.set_status(started_reading(), reporting(), cx)
@@ -1999,8 +2023,17 @@ fn a_message_waits_while_the_report_is_written(cx: &mut TestAppContext) {
     });
     act(cx, window, |window, cx| window.input("Carry on.", cx));
     act(cx, window, |window, cx| window.press("enter", cx));
-    assert!(sent(&session, cx).is_empty());
+    assert_eq!(sent(&session, cx), ["Carry on."]);
+    assert_eq!(composer_text(&workspace, cx), "");
+    refuse(
+        &session,
+        arko::RefusalKind::Reporting,
+        "The report is being written. Stopping skips it.",
+        window,
+        cx,
+    );
     assert_eq!(composer_text(&workspace, cx), "Carry on.");
+    assert_eq!(notifications(window, cx), 0);
     act(cx, window, |window, _| {
         assert!(window.try_find("reporting-strip").is_some());
         assert!(window.try_find("send").is_none());
@@ -2022,10 +2055,7 @@ fn a_message_waits_while_the_report_is_written(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| window.input("Use tabs.", cx));
     act(cx, window, |window, cx| window.press("enter", cx));
     assert_eq!(sent(&session, cx), ["/cost", "/message r1 Use tabs."]);
-    act(cx, window, |window, cx| {
-        view.update(cx, |view, cx| view.set_target(None, window, cx))
-    });
-    // The report done, the strip goes, and the message goes.
+    // The report done, the strip goes.
     session.update(cx, |session, cx| {
         session.set_status(started_reading(), Default::default(), cx)
     });
@@ -2033,24 +2063,13 @@ fn a_message_waits_while_the_report_is_written(cx: &mut TestAppContext) {
         assert!(window.try_find("reporting-strip").is_none());
         assert!(window.try_find("send").is_some());
     });
-    act(cx, window, |window, cx| {
-        composer.update(cx, |composer, cx| {
-            composer.set_text("Carry on.", window, cx)
-        })
-    });
-    act(cx, window, |window, cx| window.press("enter", cx));
-    assert_eq!(
-        sent(&session, cx),
-        ["/cost", "/message r1 Use tabs.", "Carry on."]
-    );
-    assert_eq!(composer_text(&workspace, cx), "");
 }
 
-/// A message to Arko that arko didn't send comes back to Arko, though the
-/// composer was set to write to a worker meanwhile, so Enter sends it to
-/// Arko again.
+/// A message Arko refused comes back to whom it went, though the composer
+/// was set to write to a worker meanwhile, so Enter sends it to Arko again.
+/// The window says why.
 #[gpui_kit::test]
-fn a_message_arko_did_not_send_comes_back_to_arko(cx: &mut TestAppContext) {
+fn a_message_arko_refused_comes_back_to_arko(cx: &mut TestAppContext) {
     let (window, workspace, session) = started_session(cx);
     let view = session_view(&workspace, cx);
     act(cx, window, |window, cx| {
@@ -2063,20 +2082,25 @@ fn a_message_arko_did_not_send_comes_back_to_arko(cx: &mut TestAppContext) {
             view.set_target(Some("r1".into()), window, cx)
         })
     });
-    session.update(cx, |_, cx| {
-        cx.emit(crate::live::LiveEvent::NotSent("Carry on.".into()))
-    });
-    act(cx, window, |_, _| {});
+    refuse(
+        &session,
+        arko::RefusalKind::Undelivered,
+        "The message didn't reach Arko.",
+        window,
+        cx,
+    );
     assert_eq!(composer_text(&workspace, cx), "Carry on.");
     assert_eq!(cx.read(|cx| view.read(cx).target().cloned()), None);
+    assert_eq!(notifications(window, cx), 1);
     act(cx, window, |window, cx| window.press("enter", cx));
-    assert_eq!(sent(&session, cx), ["Carry on.", "Carry on."]);
+    assert_eq!(sent(&session, cx), ["Carry on."]);
 }
 
-/// A message sent as the report began, which arko didn't send, comes back
-/// to the composer whole, unless something else was typed since.
+/// A message Arko refused comes back to the composer whole, unless
+/// something else was typed since, and one Arko accepted doesn't. A message
+/// of an image alone comes back with its image.
 #[gpui_kit::test]
-fn a_message_arko_did_not_send_comes_back(cx: &mut TestAppContext) {
+fn a_message_arko_refused_comes_back_whole(cx: &mut TestAppContext) {
     let (window, workspace, session) = started_session(cx);
     let view = session_view(&workspace, cx);
     act(cx, window, |window, cx| {
@@ -2088,21 +2112,29 @@ fn a_message_arko_did_not_send_comes_back(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| window.press("enter", cx));
     assert_eq!(sent(&session, cx), ["Carry on\nwith the tests."]);
     assert_eq!(composer_text(&workspace, cx), "");
-    // Another message's words leave the box alone.
-    let not_sent = |words: &str, cx: &mut TestAppContext| {
-        let words = words.to_string();
-        session.update(cx, |_, cx| cx.emit(crate::live::LiveEvent::NotSent(words)));
-        act(cx, window, |_, _| {});
+    let refused = |cx: &mut TestAppContext| {
+        refuse(
+            &session,
+            arko::RefusalKind::Images,
+            "This model takes no images.",
+            window,
+            cx,
+        )
     };
-    not_sent("Something else.", cx);
-    assert_eq!(composer_text(&workspace, cx), "");
-    // Arko's notice has it on one line.
-    not_sent("Carry on with the tests.", cx);
+    refused(cx);
     assert_eq!(composer_text(&workspace, cx), "Carry on\nwith the tests.");
-    // Once only, and not over what was typed since.
+    // Accepted, it stays sent.
+    act(cx, window, |window, cx| window.press("enter", cx));
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| arko::Verdict::accepted(arko::remote::Delivery::Turn, None))
+    });
+    act(cx, window, |_, _| {});
+    assert_eq!(composer_text(&workspace, cx), "");
+    // Not over what was typed since.
+    act(cx, window, |window, cx| window.input("Carry on.", cx));
     act(cx, window, |window, cx| window.press("enter", cx));
     act(cx, window, |window, cx| window.input("Wait.", cx));
-    not_sent("Carry on with the tests.", cx);
+    refused(cx);
     assert_eq!(composer_text(&workspace, cx), "Wait.");
     // A message of an image alone comes back with its image.
     let composer = cx.read(|cx| view.read(cx).composer().clone());
@@ -2122,7 +2154,7 @@ fn a_message_arko_did_not_send_comes_back(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| window.press("enter", cx));
     let images = |cx: &mut TestAppContext| cx.read(|cx| composer.read(cx).images().len());
     assert_eq!(images(cx), 0, "sent");
-    not_sent("", cx);
+    refused(cx);
     assert_eq!(images(cx), 1);
     assert_eq!(composer_text(&workspace, cx), "");
 }

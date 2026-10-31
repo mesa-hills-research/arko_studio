@@ -2,7 +2,9 @@
 //! its own, several at once, whichever window shows them.
 //!
 //! A [`LiveSession`] holds what the app keeps of a session's seam: where its
-//! input goes, its feed and its figures. What the engine says (the feed's
+//! input goes, its feed and its figures. Everything the app sends goes with
+//! [`arko::Request::Send`], in the order sent, and the engine answers each
+//! send with what became of it ([`Sent`]). What the engine says (the feed's
 //! activity and workers, the status, its questions before quitting) is
 //! drained on background tasks and applied on the UI thread at most once a
 //! frame, so the engine never waits for the interface and a burst of
@@ -18,6 +20,7 @@ use arko::approvals::ApprovalRequest;
 use arko::questions::AgentQuestion;
 use arko::remote::{Activity, Feed, Question, Reading, Update, WorkerState, WorkerSummary};
 use async_trait::async_trait;
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -153,7 +156,9 @@ pub enum Phase {
 pub struct Link {
     pub info: arko::SessionInfo,
     pub feed: Feed,
-    input: mpsc::UnboundedSender<arko::Input>,
+    /// Held, because the engine takes its input closing as the end of the
+    /// session. What the app sends goes with `requests`.
+    _input: mpsc::UnboundedSender<arko::Input>,
     requests: mpsc::UnboundedSender<arko::Request>,
     pub details: Arc<arko::details::Details>,
     /// The images of the session's messages and tools, by the ids the feed
@@ -186,17 +191,16 @@ pub enum LiveEvent {
     Refused(String),
     /// A worker finished or failed.
     WorkerEnded(WorkerEnd),
-    /// Arko didn't send a message to the main agent, which came as the old
-    /// model began its report for a switch: its words, as arko's notice
-    /// repeats them.
-    NotSent(String),
-    /// Arko didn't send a `/message` that would continue `worker`, whose
-    /// prompt cache expired. `warning` says what continuing re-reads, in
-    /// arko's words.
-    NotContinued {
-        worker: String,
-        warning: String,
-    },
+}
+
+/// A send the session took, or keeps until it opens.
+pub struct Sent {
+    /// The opening of the session that reads it ([`LiveSession::opening`]).
+    /// Its verdict is of no concern to a later one.
+    pub opening: u64,
+    /// What became of it. It closes without one when the engine stopped
+    /// before it said, so the send may have gone.
+    pub verdict: oneshot::Receiver<arko::Verdict>,
 }
 
 /// A worker that finished or failed, as a notification tells of it.
@@ -350,12 +354,6 @@ struct Drained {
     /// the summary of the end.
     ended: Vec<String>,
     quit_asks: Vec<arko::QuitAsk>,
-    /// The words of the messages arko didn't send while a report was
-    /// written.
-    not_sent: Vec<String>,
-    /// The workers arko didn't continue because their cache expired, each
-    /// with arko's warning.
-    not_continued: Vec<(String, String)>,
 }
 
 impl Drained {
@@ -365,39 +363,7 @@ impl Drained {
             && self.workers.is_empty()
             && self.ended.is_empty()
             && self.quit_asks.is_empty()
-            && self.not_sent.is_empty()
-            && self.not_continued.is_empty()
     }
-}
-
-/// Why a message to the main agent waits while the old model writes its
-/// report for a switch, in arko's words.
-pub const REPORTING: &str = "The report is being written. Stopping skips it.";
-
-/// The words of a message arko didn't send while a report was written,
-/// from its notice ("“Hello.” wasn't sent. The report is being written.
-/// Stopping skips it."). A message of images alone has none ("Your message
-/// wasn't sent. …").
-fn not_sent_words(notice: &str) -> Option<&str> {
-    let what = notice.strip_suffix(REPORTING)?.trim_end();
-    if what == "Your message wasn't sent." {
-        return Some("");
-    }
-    what.strip_prefix('“')?.strip_suffix("” wasn't sent.")
-}
-
-/// How arko's notice ends when it didn't send a `/message` that would
-/// continue a worker whose prompt cache expired.
-const CONTINUE_AGAIN: &str = "The same /message again continues it.";
-
-/// The worker and arko's warning, from its notice that it didn't continue
-/// the worker ("r3's cache expired 2 hours ago. Continuing re-reads about
-/// 340k tokens without it (≈ $1.36 at API prices). The same /message again
-/// continues it.").
-fn not_continued(notice: &str) -> Option<(&str, &str)> {
-    let warning = notice.strip_suffix(CONTINUE_AGAIN)?.trim_end();
-    let (worker, _) = warning.split_once("'s cache expired ")?;
-    Some((worker, warning))
 }
 
 /// What the user did with the agent's questions in this app, beside what
@@ -431,10 +397,9 @@ impl Questions {
         new
     }
 
-    /// The questions `input` answers, dismisses or replies to are settled
-    /// here.
-    fn sent(&mut self, input: &arko::Input) {
-        let ids: Vec<String> = match input {
+    /// The questions `input` answers, dismisses or replies to.
+    fn settled_by(input: &arko::Input) -> Vec<String> {
+        match input {
             arko::Input::AnswerQuestions(answers) => answers
                 .answers
                 .iter()
@@ -444,9 +409,21 @@ impl Questions {
             arko::Input::DismissQuestions(ids) => ids.clone(),
             arko::Input::Message(message) => message.answers.clone(),
             _ => Vec::new(),
-        };
+        }
+    }
+
+    /// The questions `input` answers, dismisses or replies to are settled
+    /// here.
+    fn sent(&mut self, input: &arko::Input) {
+        let ids = Self::settled_by(input);
         self.attached.retain(|id| !ids.contains(id));
         self.settled.extend(ids);
+    }
+
+    /// `input` didn't go, so the questions it settled are open here again.
+    fn unsettle(&mut self, input: &arko::Input) {
+        let ids = Self::settled_by(input);
+        self.settled.retain(|id| !ids.contains(id));
     }
 
     /// Forgets the session's questions, which open anew with it.
@@ -514,9 +491,8 @@ pub struct LiveSession {
     workers: Vec<WorkerSummary>,
     /// How many windows show it.
     shown: usize,
-    /// Input sent before it opened, sent once it does.
-    queued: Vec<arko::Input>,
-    /// Requests made while the session opens, answered once it opens.
+    /// What the app sent and asked while the session opens, in order, sent
+    /// once it opens.
     queued_requests: std::cell::RefCell<Vec<arko::Request>>,
     /// A Stop or Close invalidates earlier Share completions in every window.
     sharing_epoch: std::cell::Cell<u64>,
@@ -575,7 +551,6 @@ impl LiveSession {
             activity: Activity::default(),
             workers: Vec::new(),
             shown: 0,
-            queued: Vec::new(),
             queued_requests: Default::default(),
             sharing_epoch: Default::default(),
             prompt: None,
@@ -606,8 +581,13 @@ impl LiveSession {
         Self::start(this, Start::Resume(entry.id.clone()), cx)
     }
 
-    /// Creates a new session, which sends `first` as soon as it opens.
-    pub fn create(new: NewSession, first: arko::Input, cx: &mut App) -> Entity<Self> {
+    /// Creates a new session, which sends `first` as soon as it opens. The
+    /// send is kept until then, `Err` when the session can't take it.
+    pub fn create(
+        new: NewSession,
+        first: arko::Input,
+        cx: &mut App,
+    ) -> (Entity<Self>, Result<Sent, String>) {
         let mut this = Self::blank(cx);
         this.mode = new.mode;
         this.workspace = new.folder.clone().filter(|_| new.mode == Mode::Agent);
@@ -621,8 +601,9 @@ impl LiveSession {
             arko::Input::Message(message) => first_line(&message.text),
             _ => "New session".into(),
         };
-        this.queued.push(first);
-        Self::start(this, Start::New(new), cx)
+        let session = Self::start(this, Start::New(new), cx);
+        let sent = session.update(cx, |session, cx| session.send(first, cx));
+        (session, sent)
     }
 
     fn start(this: Self, start: Start, cx: &mut App) -> Entity<Self> {
@@ -702,7 +683,7 @@ impl LiveSession {
             Launch::Sample(entry) => {
                 self.set_entry(&entry);
                 self.phase = Phase::Sample;
-                self.queued.clear();
+                self.drop_queued();
             }
             Launch::Refused(error) => self.phase = Phase::Failed(error.message()),
         }
@@ -712,7 +693,7 @@ impl LiveSession {
         self.prompt = None;
         let cancelled = message == CANCELLED;
         self.phase = Phase::Failed(message.clone());
-        self.queued_requests.get_mut().clear();
+        self.drop_queued();
         cx.emit(LiveEvent::Failed((!cancelled).then_some(message)));
         LiveSessions::remove(cx.entity_id(), self.id.as_ref(), cx);
         cx.notify();
@@ -747,16 +728,13 @@ impl LiveSession {
         self.questions.read(&self.reading.questions);
         self.approvals.read(&self.reading.approvals);
         // Closed before it opened, only the quit is queued.
-        for queued in self.queued.drain(..) {
-            let _ = input.send(queued);
-        }
         for request in self.queued_requests.get_mut().drain(..) {
             let _ = requests.send(request);
         }
         self.link = Some(Link {
             info: session,
             feed: feed.clone(),
-            input,
+            _input: input,
             requests,
             details,
             images,
@@ -800,28 +778,15 @@ impl LiveSession {
                     let mut activity = None;
                     let mut workers = Vec::new();
                     let mut ended = Vec::new();
-                    let mut not_sent = Vec::new();
-                    let mut uncached = Vec::new();
                     for update in batch {
                         match update {
                             Update::Activity => activity = Some(feed.activity()),
                             Update::Worker(worker) => workers.push(worker),
                             Update::WorkerEnded { id, .. } => ended.push(id),
-                            Update::Item(item) if item.kind == arko::remote::Kind::Notice => {
-                                not_sent.extend(not_sent_words(&item.text).map(str::to_string));
-                                uncached.extend(not_continued(&item.text).map(
-                                    |(worker, warning)| (worker.to_string(), warning.to_string()),
-                                ));
-                            }
                             _ => {}
                         }
                     }
-                    if activity.is_none()
-                        && workers.is_empty()
-                        && ended.is_empty()
-                        && not_sent.is_empty()
-                        && uncached.is_empty()
-                    {
+                    if activity.is_none() && workers.is_empty() && ended.is_empty() {
                         continue;
                     }
                     {
@@ -831,8 +796,6 @@ impl LiveSession {
                         }
                         drained.workers.extend(workers);
                         drained.ended.extend(ended);
-                        drained.not_sent.extend(not_sent);
-                        drained.not_continued.extend(uncached);
                     }
                     wake.notify_one();
                 }
@@ -922,12 +885,6 @@ impl LiveSession {
         }
         for ask in drained.quit_asks {
             self.quit_asked(ask, cx);
-        }
-        for words in drained.not_sent {
-            cx.emit(LiveEvent::NotSent(words));
-        }
-        for (worker, warning) in drained.not_continued {
-            cx.emit(LiveEvent::NotContinued { worker, warning });
         }
         self.update_indicator(cx);
         cx.notify();
@@ -1136,10 +1093,52 @@ impl LiveSession {
         std::mem::take(self.queued_requests.get_mut())
     }
 
-    /// The input kept until it opens (tests).
+    /// What was sent and is kept until it opens (tests).
     #[cfg(test)]
-    pub fn queued(&self) -> &[arko::Input] {
-        &self.queued
+    pub fn queued(&self) -> Vec<arko::Input> {
+        self.queued_requests
+            .borrow()
+            .iter()
+            .filter_map(|request| match request {
+                arko::Request::Send { input, .. } => Some(input.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Opens it, as far as its sends go: the opening that reads what was
+    /// sent before comes, and it takes those sends, with where each one's
+    /// verdict goes, as the engine would read them (tests).
+    #[cfg(test)]
+    pub fn read_sends(&mut self) -> Vec<(arko::Input, oneshot::Sender<arko::Verdict>)> {
+        self.opened += 1;
+        let (sends, others) = std::mem::take(self.queued_requests.get_mut())
+            .into_iter()
+            .partition(|request| matches!(request, arko::Request::Send { .. }));
+        *self.queued_requests.get_mut() = others;
+        sends
+            .into_iter()
+            .filter_map(|request| match request {
+                arko::Request::Send { input, reply } => Some((input, reply)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Opens it as [`read_sends`](Self::read_sends) does, and answers each
+    /// send with `verdict` (tests). Gives back what was sent.
+    #[cfg(test)]
+    pub fn answer_sends(
+        &mut self,
+        mut verdict: impl FnMut(&arko::Input) -> arko::Verdict,
+    ) -> Vec<arko::Input> {
+        self.read_sends()
+            .into_iter()
+            .map(|(input, reply)| {
+                let _ = reply.send(verdict(&input));
+                input
+            })
+            .collect()
     }
 
     /// Makes it as if the user last touched it at `at` (tests).
@@ -1157,7 +1156,7 @@ impl LiveSession {
 
     fn ended(&mut self, cx: &mut Context<Self>) {
         self.phase = Phase::Ended;
-        self.queued_requests.get_mut().clear();
+        self.drop_queued();
         self._feed.clear();
         self.activity = Activity::default();
         self.quit_ask = None;
@@ -1228,8 +1227,8 @@ impl LiveSession {
     }
 
     /// The old model writes its report for a switch of the main agent's
-    /// model (it works too). Arko doesn't send messages to the main agent
-    /// meanwhile, so they wait in the composer.
+    /// model (it works too). Arko refuses messages to the main agent
+    /// meanwhile.
     pub fn is_reporting(&self) -> bool {
         self.activity.reporting
     }
@@ -1270,38 +1269,6 @@ impl LiveSession {
         cx.notify();
     }
 
-    /// Why arko would refuse the answers `input` gives as too long for one
-    /// note to the agent, as the user reads it.
-    fn answer_refusal(&self, input: &arko::Input) -> Option<String> {
-        let open = &self.reading.questions;
-        match input {
-            arko::Input::AnswerApprovals(answers) => answers
-                .words
-                .as_deref()
-                .and_then(arko::approvals::approval_words_refusal),
-            arko::Input::AnswerQuestions(answers) => {
-                arko::questions::answers_refusal(open, answers)
-            }
-            // A message answers the questions attached to it, or else those
-            // the agent waits for.
-            arko::Input::Message(message) => {
-                let ids: Vec<String> = if message.answers.is_empty() {
-                    open.iter()
-                        .filter(|question| question.waits)
-                        .map(|question| question.id.clone())
-                        .collect()
-                } else {
-                    message.answers.clone()
-                };
-                if ids.is_empty() {
-                    return None;
-                }
-                arko::questions::reply_refusal(open, &ids, &message.text)
-            }
-            _ => None,
-        }
-    }
-
     /// The open questions attached to the message box, which the next
     /// message answers.
     pub fn attached_questions(&self) -> Vec<String> {
@@ -1335,23 +1302,12 @@ impl LiveSession {
         }
     }
 
-    /// A message that answered the questions `ids` wasn't sent after all, so
-    /// those still open are open here again.
-    pub fn reopen_questions(&mut self, ids: &[String], cx: &mut Context<Self>) {
-        let settled = self.questions.settled.len();
-        self.questions.settled.retain(|id| !ids.contains(id));
-        if self.questions.settled.len() != settled {
-            cx.notify();
-        }
-    }
-
     /// A message that answered the questions `ids` comes back to the message
-    /// box, so those still open are open here again, and attached to it.
+    /// box, refused, so those still open are attached to it again.
     pub fn reattach_questions(&mut self, ids: &[String], cx: &mut Context<Self>) {
         if ids.is_empty() {
             return;
         }
-        self.reopen_questions(ids, cx);
         let attached = &self.questions.attached;
         let open: Vec<String> = self
             .open_questions()
@@ -1440,35 +1396,76 @@ impl LiveSession {
     }
 
     /// Sends `input` to the engine, or keeps it until the session opens.
-    /// Answers too long to reach the agent are refused with the words to
-    /// show, before anything settles, so the drafts stay to be shortened.
-    pub fn send(&mut self, input: arko::Input, cx: &mut Context<Self>) -> Result<(), String> {
-        if let Some(why) = self.answer_refusal(&input) {
-            return Err(why);
+    /// What it settles here (questions answered or dismissed, requests in
+    /// the approval tray answered) leaves at once, and comes back should
+    /// the engine refuse it. `Err` says why the session can't take it.
+    pub fn send(&mut self, input: arko::Input, cx: &mut Context<Self>) -> Result<Sent, String> {
+        let opening = match (&self.phase, &self.link) {
+            (Phase::Open | Phase::Closing, Some(_)) => self.opened,
+            // Read by the opening to come.
+            (Phase::Opening, _) => self.opened + 1,
+            (Phase::Sample, _) => return Err("This sample session doesn’t run.".to_string()),
+            (Phase::Failed(why), _) => return Err(why.clone()),
+            _ => return Err("The session has closed.".to_string()),
+        };
+        let (reply, verdict) = oneshot::channel();
+        let request = arko::Request::Send {
+            input: input.clone(),
+            reply,
+        };
+        match &self.link {
+            Some(link) if opening == self.opened => link
+                .requests
+                .send(request)
+                .map_err(|_| "The session has closed.".to_string())?,
+            _ => self.queued_requests.get_mut().push(request),
         }
         self.questions.sent(&input);
-        // Requests stay in the tray when their answer can't go.
-        let answered = Approvals::answered_by(&input);
+        self.approvals
+            .answered
+            .extend(Approvals::answered_by(&input));
         self.touched_at = crate::figures::now_ms();
         self.changes();
-        let sent = match (&self.phase, &self.link) {
-            (Phase::Open | Phase::Closing, Some(link)) => link
-                .input
-                .send(input)
-                .map_err(|_| "The session has closed.".to_string()),
-            (Phase::Opening, _) => {
-                self.queued.push(input);
-                cx.notify();
-                Ok(())
+        cx.notify();
+        let (told, heard) = oneshot::channel();
+        cx.spawn(async move |this, cx| {
+            let Ok(verdict) = verdict.await else {
+                return;
+            };
+            if matches!(verdict, arko::Verdict::Refused(_)) {
+                this.update(cx, |this, cx| this.refused(opening, &input, cx))
+                    .ok();
             }
-            (Phase::Sample, _) => Err("This sample session doesn’t run.".to_string()),
-            (Phase::Failed(why), _) => Err(why.clone()),
-            _ => Err("The session has closed.".to_string()),
-        };
-        if sent.is_ok() {
-            self.approvals.answered.extend(answered);
+            let _ = told.send(verdict);
+        })
+        .detach();
+        Ok(Sent {
+            opening,
+            verdict: heard,
+        })
+    }
+
+    /// The engine refused `input`, which the opening `opening` read, so
+    /// what it settled here is open again, while that opening lasts.
+    fn refused(&mut self, opening: u64, input: &arko::Input, cx: &mut Context<Self>) {
+        if opening != self.opened {
+            return;
         }
-        sent
+        let answered = Approvals::answered_by(input);
+        self.approvals.answered.retain(|id| !answered.contains(id));
+        self.questions.unsettle(input);
+        self.update_indicator(cx);
+        cx.notify();
+    }
+
+    /// Refuses what was kept for the session to open, which it never
+    /// reads now.
+    fn drop_queued(&mut self) {
+        for request in self.queued_requests.get_mut().drain(..) {
+            if let arko::Request::Send { reply, .. } = request {
+                let _ = reply.send(arko::Verdict::closed());
+            }
+        }
     }
 
     /// Asks the engine to rename the session (empty: back to its
@@ -1703,9 +1700,10 @@ impl LiveSession {
                 // sending what waited for it (a new session's first message
                 // would still go to the model). A question it asks before it
                 // opens is answered: don't open.
-                self.queued.clear();
-                self.queued_requests.get_mut().clear();
-                self.queued.push(arko::Input::Quit(Some(Vec::new())));
+                self.drop_queued();
+                self.queued_requests
+                    .get_mut()
+                    .push(quit(arko::Input::Quit(Some(Vec::new()))));
                 self.quit_agreed = Some(agreed);
                 self.phase = Phase::Closing;
                 if let Some(prompt) = self.prompt.take() {
@@ -1717,7 +1715,7 @@ impl LiveSession {
                 self.quit_agreed = Some(agreed);
                 self.phase = Phase::Closing;
                 if let Some(link) = &self.link {
-                    let _ = link.input.send(arko::Input::Quit(Some(jobs)));
+                    let _ = link.requests.send(quit(arko::Input::Quit(Some(jobs))));
                 }
             }
             Phase::Sample | Phase::Failed(_) => {
@@ -1766,6 +1764,50 @@ impl LiveSession {
             cx.emit(LiveEvent::QuitAsked);
         }
     }
+}
+
+/// What the window says when Arko stopped before it said what became of a
+/// send, which may have gone.
+pub const NO_VERDICT: &str =
+    "Arko stopped before saying whether it went. Check the transcript before you send it again.";
+
+/// Shows in `window` what of `sent`, sent to `session` with nothing to give
+/// back, didn't go: why Arko refused it, or the part of it that didn't go.
+/// Nothing once the session opened again.
+pub fn tell(session: &Entity<LiveSession>, sent: Sent, window: &mut Window, cx: &mut App) {
+    let session = session.downgrade();
+    let Sent { opening, verdict } = sent;
+    window
+        .spawn(cx, async move |cx| {
+            let words = match verdict.await {
+                Ok(arko::Verdict::Refused(refusal)) => Some(refusal.words),
+                Ok(arko::Verdict::Accepted { partial, .. }) => {
+                    partial.and_then(|partial| partial.words)
+                }
+                Ok(_) => None,
+                Err(_) => Some(NO_VERDICT.to_string()),
+            };
+            let Some(words) = words else {
+                return;
+            };
+            cx.update(|window, cx| {
+                let current = session
+                    .upgrade()
+                    .is_some_and(|session| session.read(cx).opening() == opening);
+                if current {
+                    window.push_notification(words, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+}
+
+/// Sends `input`, a quit, in order with what was sent before it. Nothing
+/// waits for its verdict.
+fn quit(input: arko::Input) -> arko::Request {
+    let (reply, _) = oneshot::channel();
+    arko::Request::Send { input, reply }
 }
 
 /// The first words of `text`, cut as arko cuts a session's name, as a new
@@ -1824,55 +1866,9 @@ pub fn init(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Drained, LiveEvent, LiveSession, LiveSessions, Phase, first_line, not_continued,
-        not_sent_words,
-    };
+    use super::{Drained, LiveEvent, LiveSession, LiveSessions, Phase, first_line};
     use arko::remote::{Activity, Reading};
     use gpui_kit::{AppContext as _, TestAppContext};
-
-    /// The words of a message arko didn't send come from its notice.
-    #[test]
-    fn a_message_not_sent_is_read_from_arkos_notice() {
-        assert_eq!(
-            not_sent_words(
-                "“Carry on with the tests.” wasn't sent. The report is being written. Stopping skips it."
-            ),
-            Some("Carry on with the tests.")
-        );
-        assert_eq!(
-            not_sent_words(
-                "Your message wasn't sent. The report is being written. Stopping skips it."
-            ),
-            Some("")
-        );
-        assert_eq!(not_sent_words("Skipped gpt-6-luna's report."), None);
-        assert_eq!(
-            not_sent_words("“A” wasn't sent because the session closed."),
-            None
-        );
-    }
-
-    /// The worker arko didn't continue, and its warning, come from arko's
-    /// notice, which ends by saying the same /message again continues it.
-    #[test]
-    fn a_worker_not_continued_is_read_from_arkos_notice() {
-        let cache = crate::workers::ended_with_cache("r12", 2 * 3_600_000 + 60_000, 340_000)
-            .cache()
-            .unwrap();
-        let warning = cache.warning(chrono::Utc::now());
-        let notice = format!("{warning} The same /message again continues it.");
-        assert_eq!(not_continued(&notice), Some(("r12", warning.as_str())));
-        assert_eq!(
-            warning,
-            "r12's cache expired 2 hours ago. Continuing re-reads about 340k tokens without it (≈ $1.36 at API prices)."
-        );
-        assert_eq!(not_continued(&warning), None);
-        assert_eq!(
-            not_continued("“Go on.” wasn't sent. The report is being written. Stopping skips it."),
-            None
-        );
-    }
     use std::sync::Arc;
 
     /// A session the backend refuses (open in a terminal) says why, and
@@ -1971,7 +1967,7 @@ mod tests {
 
     /// The session tells of each request that comes to the approval tray
     /// once. Those answered here leave its tray at once, and those whose
-    /// answer can't go stay.
+    /// answer can't go, or the engine refuses, stay or come back.
     #[gpui_kit::test]
     fn requests_for_approval_are_told_once(cx: &mut TestAppContext) {
         cx.update(super::init);
@@ -2049,6 +2045,22 @@ mod tests {
         );
         assert_eq!(waiting(cx), ["a2"]);
         session.update(cx, |session, _| session.phase = Phase::Opening);
+        session
+            .update(cx, |session, cx| session.send(answer("a2"), cx))
+            .unwrap();
+        assert!(waiting(cx).is_empty());
+        let [(_, reply)] = session
+            .update(cx, |session, _| session.read_sends())
+            .try_into()
+            .unwrap();
+        reply
+            .send(arko::Verdict::refused(
+                arko::RefusalKind::TooLong,
+                "Shorten the note.",
+            ))
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(waiting(cx), ["a2"]);
         session
             .update(cx, |session, cx| session.send(answer("a2"), cx))
             .unwrap();

@@ -433,8 +433,9 @@ impl Workspace {
             text: format!("/resume {number}"),
             ..Default::default()
         });
-        if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
-            window.push_notification(why, cx);
+        match session.update(cx, |session, cx| session.send(input, cx)) {
+            Ok(sent) => crate::live::tell(&session, sent, window, cx),
+            Err(why) => window.push_notification(why, cx),
         }
     }
 
@@ -702,8 +703,9 @@ impl Workspace {
         }
         if let Some(first) = first {
             let input = arko::Input::Message(first);
-            if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
-                window.push_notification(why, cx);
+            match session.update(cx, |session, cx| session.send(input, cx)) {
+                Ok(sent) => crate::live::tell(&session, sent, window, cx),
+                Err(why) => window.push_notification(why, cx),
             }
         }
         self.show(Some(session), window, cx);
@@ -726,8 +728,9 @@ impl Workspace {
                         text: command.clone(),
                         ..Default::default()
                     });
-                    if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
-                        window.push_notification(why, cx);
+                    match session.update(cx, |session, cx| session.send(input, cx)) {
+                        Ok(sent) => crate::live::tell(&session, sent, window, cx),
+                        Err(why) => window.push_notification(why, cx),
                     }
                 }
             }
@@ -1358,8 +1361,9 @@ impl Render for Workspace {
                         text: "/handover".into(),
                         ..Default::default()
                     });
-                    if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
-                        window.push_notification(why, cx);
+                    match session.update(cx, |session, cx| session.send(input, cx)) {
+                        Ok(sent) => crate::live::tell(&session, sent, window, cx),
+                        Err(why) => window.push_notification(why, cx),
                     }
                 }
             }))

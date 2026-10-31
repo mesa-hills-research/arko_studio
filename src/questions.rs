@@ -268,6 +268,30 @@ impl AnswerPanel {
         cx.notify();
     }
 
+    /// Fills in again what `answers` gave, which Arko refused, for the
+    /// questions it shows that have nothing filled in.
+    pub fn refill(&mut self, answers: &Answers, window: &mut Window, cx: &mut Context<Self>) {
+        for given in &answers.answers {
+            let Some(draft) = self.drafts.get_mut(&given.id) else {
+                continue;
+            };
+            let blank = draft.choices.is_empty()
+                && !draft.you_decide
+                && draft.other.read(cx).value().is_empty();
+            if !blank {
+                continue;
+            }
+            draft.choices = given.answer.choices.clone();
+            draft.you_decide = given.answer.you_decide;
+            if let Some(text) = &given.answer.text {
+                draft
+                    .other
+                    .update(cx, |field, cx| field.set_value(text.clone(), window, cx));
+            }
+        }
+        cx.notify();
+    }
+
     /// Gives the keyboard to the first question's field.
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         if let Some(draft) = self

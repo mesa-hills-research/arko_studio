@@ -1189,11 +1189,16 @@ fn the_composer_writes_to_the_worker_the_panel_shows(cx: &mut TestAppContext) {
         window.input("Check the tests too.", cx)
     });
     act(cx, window, |window, cx| window.press("enter", cx));
-    // This session has no worker r1: the engine says the message didn't
-    // reach it, so it went as `/message r1 …`.
-    wait_until(cx, "the message to r1", |cx| {
-        feed_has(cx, "didn't reach r1")
+    // This session has no worker r1: the engine refuses the message as
+    // one that didn't reach it, so it went as `/message r1 …`, and it
+    // comes back to the composer, to r1.
+    wait_until(cx, "the message to r1 to come back", |cx| {
+        cx.read(|cx| view.read(cx).composer().read(cx).text(cx)) == "Check the tests too."
     });
+    assert_eq!(
+        cx.read(|cx| view.read(cx).target().cloned()).as_deref(),
+        Some("r1")
+    );
     assert!(
         !mock.was_sent("Check the tests too."),
         "not to the main agent"

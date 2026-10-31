@@ -321,8 +321,9 @@ pub(crate) fn run(session: &Entity<LiveSession>, command: &str, window: &mut Win
         text: command.to_string(),
         ..Default::default()
     });
-    if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
-        window.push_notification(why, cx);
+    match session.update(cx, |session, cx| session.send(input, cx)) {
+        Ok(sent) => crate::live::tell(session, sent, window, cx),
+        Err(why) => window.push_notification(why, cx),
     }
 }
 

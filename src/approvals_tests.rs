@@ -522,10 +522,11 @@ fn the_wheel_over_a_box_scrolls_the_box_alone(cx: &mut TestAppContext) {
     assert_eq!(rows_question - box_question, rows_lines - box_lines);
 }
 
-/// Words too long to reach the agent aren't sent. The tray says why and
-/// keeps the requests, and the words stay to be shortened.
+/// Words Arko refuses as too long to reach the agent come back to the
+/// message box, the requests come back to the tray, and the window says
+/// why.
 #[gpui_kit::test]
-fn words_too_long_to_send_stay_in_the_message_box(cx: &mut TestAppContext) {
+fn words_arko_refuses_as_too_long_come_back_to_the_message_box(cx: &mut TestAppContext) {
     let app = start(cx);
     app.request(cx, vec![profile("a1", "3d-judge")]);
     let long = "word ".repeat(4000);
@@ -535,7 +536,15 @@ fn words_too_long_to_send_stay_in_the_message_box(cx: &mut TestAppContext) {
         composer.update(cx, |composer, cx| composer.set_text(&long, window, cx));
     });
     app.click(cx, "approval-approve");
-    assert!(app.sent(cx).is_empty());
+    assert_eq!(app.sent(cx).len(), 1);
+    assert_eq!(app.composer_text(cx), "");
+    assert!(!app.shows(cx, "approval-tray"));
+    app.session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::TooLong, "Shorten the words.")
+        })
+    });
+    cx.run_until_parked();
     assert_eq!(app.notifications(cx), 1);
     assert!(app.shows(cx, "approval-tray"));
     assert_eq!(app.composer_text(cx), long);

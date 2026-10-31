@@ -581,13 +581,19 @@ fn a_message_to_a_worker_from_a_sheet_says_it_went(cx: &mut TestAppContext, widt
     });
     send_text(cx, window, "Use tabs.");
     assert_eq!(queued_messages(&session, cx), ["/message r1 Use tabs."]);
+    // Once it went.
+    assert_eq!(notifications(cx, window), 0);
+    accept_sends(&session, window, cx);
     assert_eq!(notifications(cx, window), 1);
     // Back to the main agent: its messages need no word.
     act(cx, window, |window, cx| window.press("escape", cx));
     let view = cx.read(|cx| workspace.read(cx).session_view().clone());
     assert_eq!(cx.read(|cx| view.read(cx).target().cloned()), None);
     send_text(cx, window, "And the tests.");
-    assert_eq!(cx.read(|cx| session.read(cx).queued().len()), 2);
+    assert_eq!(
+        accept_sends(&session, window, cx),
+        [("And the tests.".to_string(), false)]
+    );
     assert_eq!(notifications(cx, window), 1);
 }
 
@@ -621,10 +627,12 @@ fn a_message_to_a_worker_says_it_went_unless_its_transcript_shows(cx: &mut TestA
         });
     };
 
+    let mut went = Vec::new();
     // The panel is closed.
     assert!(!cx.read(|cx| workspace.read(cx).is_workers_open()));
     message(cx, "r1");
     send_text(cx, window, "Use tabs.");
+    went.extend(accept_sends(&session, window, cx));
     assert_eq!(notifications(cx, window), 1);
 
     // It shows r2's transcript, not r1's.
@@ -632,6 +640,10 @@ fn a_message_to_a_worker_says_it_went_unless_its_transcript_shows(cx: &mut TestA
     feed.turn_started();
     feed.worker("r1", "Fix the parser", WorkerChange::Started);
     feed.worker("r2", "Write the changelog", WorkerChange::Started);
+    // The session knows them too, so its updates keep them in the panel.
+    session.update(cx, |session, cx| {
+        session.set_workers(feed.subscribe().0.workers, &[], cx)
+    });
     act(cx, window, |window, cx| {
         window.dispatch_action(Box::new(menus::ToggleWorkersPanel), cx)
     });
@@ -639,11 +651,11 @@ fn a_message_to_a_worker_says_it_went_unless_its_transcript_shows(cx: &mut TestA
     // The panel shows `worker` from the feed above. (The session's own
     // source has no feed, and its key is the one the panel keeps its
     // transcripts for.)
-    let key = (
-        session.entity_id(),
-        cx.read(|cx| session.read(cx).opening()),
-    );
     let show = |cx: &mut TestAppContext, worker: &str| {
+        let key = (
+            session.entity_id(),
+            cx.read(|cx| session.read(cx).opening()),
+        );
         let (feed, shown) = (feed.clone(), worker.to_string());
         act(cx, window, |window, cx| {
             panel.update(cx, |panel, cx| {
@@ -667,14 +679,18 @@ fn a_message_to_a_worker_says_it_went_unless_its_transcript_shows(cx: &mut TestA
     show(cx, "r2");
     message(cx, "r1");
     send_text(cx, window, "And the tests.");
+    went.extend(accept_sends(&session, window, cx));
     assert_eq!(notifications(cx, window), 2);
 
     // It shows r1's, so the message is in sight and needs no word.
     show(cx, "r1");
     message(cx, "r1");
     send_text(cx, window, "Thanks.");
+    went.extend(accept_sends(&session, window, cx));
     assert_eq!(
-        queued_messages(&session, cx),
+        went.iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<Vec<_>>(),
         [
             "/message r1 Use tabs.",
             "/message r1 And the tests.",
@@ -876,11 +892,12 @@ fn back_and_forward_work_in_the_workers_sheet(cx: &mut TestAppContext) {
     });
 }
 
-/// A line that reads as a command but isn't one stays in the composer, to
-/// the main agent and to a worker, and a notification says why. A space
-/// before the slash sends it as a message, and a command goes as before.
+/// A line that reads as a command goes as typed, to the main agent and
+/// from a worker's view, so Arko runs it, or refuses it when it isn't one.
+/// Refused, it comes back to the composer and a notification says why. A
+/// space before the slash sends it as a message.
 #[gpui_kit::test]
-fn a_mistyped_command_stays_in_the_composer(cx: &mut TestAppContext) {
+fn a_mistyped_command_comes_back_to_the_composer(cx: &mut TestAppContext) {
     let (window, workspace, session) = session_in_workspace(cx, 1300.);
     let view = cx.read(|cx| workspace.read(cx).session_view().clone());
     let composer =
@@ -893,53 +910,43 @@ fn a_mistyped_command_stays_in_the_composer(cx: &mut TestAppContext) {
     };
     for (target, sent) in [
         (None, [" /quiet", "/cost"]),
-        (Some("r1"), ["/message r1 /quiet", "/message r1 /cost"]),
+        (Some("r1"), ["/message r1 /quiet", "/cost"]),
     ] {
         act(cx, window, |window, cx| {
             view.update(cx, |view, cx| {
                 view.set_target(target.map(Into::into), window, cx)
             })
         });
-        let (queued, shown) = (
-            queued_messages(&session, cx).len(),
-            notifications(cx, window),
-        );
+        let shown = notifications(cx, window);
         send_text(cx, window, "/quiet");
+        assert_eq!(composer(cx), "", "{target:?}");
+        assert_eq!(queued_messages(&session, cx), ["/quiet"], "{target:?}");
+        session.update(cx, |session, _| {
+            session.answer_sends(|_| {
+                arko::Verdict::refused(
+                    arko::RefusalKind::UnknownCommand,
+                    "/quiet isn't a command. Start with a space to send it as a message.",
+                )
+            })
+        });
+        act(cx, window, |_, _| {});
         assert_eq!(composer(cx), "/quiet", "{target:?}");
+        assert_eq!(
+            cx.read(|cx| view.read(cx).target().cloned()).as_deref(),
+            target
+        );
         assert_eq!(notifications(cx, window), shown + 1, "{target:?}");
-        assert_eq!(queued_messages(&session, cx).len(), queued, "{target:?}");
         clear(cx);
         send_text(cx, window, " /quiet");
         assert_eq!(composer(cx), "", "{target:?}");
         send_text(cx, window, "/cost");
-        assert_eq!(queued_messages(&session, cx)[queued..], sent, "{target:?}");
+        assert_eq!(queued_messages(&session, cx), sent, "{target:?}");
+        accept_sends(&session, window, cx);
     }
 }
 
-/// The messages the session has queued, as typed, each with whether it
-/// continues a worker whose cache expired without asking.
-fn queued_continues(
-    session: &Entity<crate::live::LiveSession>,
-    cx: &mut TestAppContext,
-) -> Vec<(String, bool)> {
-    cx.read(|cx| {
-        session
-            .read(cx)
-            .queued()
-            .iter()
-            .filter_map(|input| match input {
-                arko::Input::Message(message) => {
-                    Some((message.text.clone(), message.continue_uncached))
-                }
-                _ => None,
-            })
-            .collect()
-    })
-}
-
 /// A session in a workspace whose worker r1 finished two hours ago with a
-/// large conversation, its prompt cache long expired. r2's conversation is
-/// small, and r3's cache lasts a few more minutes.
+/// large conversation, its prompt cache long expired.
 fn session_with_uncached_worker(
     cx: &mut TestAppContext,
 ) -> (
@@ -947,18 +954,11 @@ fn session_with_uncached_worker(
     Entity<crate::session_view::SessionView>,
     Entity<crate::live::LiveSession>,
 ) {
-    use crate::workers::ended_with_cache;
-
     let (window, workspace, session) = session_in_workspace(cx, 1300.);
     let view = cx.read(|cx| workspace.read(cx).session_view().clone());
-    let two_hours = 2 * 3_600_000;
     session.update(cx, |session, cx| {
-        let workers = vec![
-            ended_with_cache("r1", two_hours, 340_000),
-            ended_with_cache("r2", two_hours, 8_000),
-            ended_with_cache("r3", -300_000, 340_000),
-        ];
-        session.set_workers(workers, &[], cx)
+        let r1 = crate::workers::ended_with_cache("r1", 2 * 3_600_000, 340_000);
+        session.set_workers(vec![r1], &[], cx)
     });
     (window, view, session)
 }
@@ -983,72 +983,113 @@ fn shows_dialog(cx: &mut TestAppContext, window: AnyWindowHandle) -> bool {
         .unwrap()
 }
 
-/// A message that continues a finished worker whose prompt cache expired
-/// stays in the composer while a dialog asks. Cancel keeps it there.
-/// Continue sends it marked as confirmed, so Arko continues the worker,
-/// and the composer empties as after any message. That holds for a
-/// `/message` typed to Arko and for a message written to the worker.
+/// Arko refuses what the session was sent, which continues r1 without its
+/// cache, until the user agrees. Gives back what was sent, each with
+/// whether the user agreed.
+fn refuse_uncached(
+    session: &Entity<crate::live::LiveSession>,
+    window: AnyWindowHandle,
+    cx: &mut TestAppContext,
+) -> Vec<(String, bool)> {
+    let sent = session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            let mut verdict = arko::Verdict::refused(
+                arko::RefusalKind::Uncached {
+                    worker: "r1".into(),
+                },
+                "r1's cache expired 2 hours ago. Continuing re-reads about 340k tokens without it (≈ $1.36 at API prices).",
+            );
+            if let arko::Verdict::Refused(refusal) = &mut verdict {
+                refusal.confirm = Some(arko::Confirm::ContinueUncached);
+            }
+            verdict
+        })
+    });
+    act(cx, window, |_, _| {});
+    continues(sent)
+}
+
+/// What the session was sent, which Arko accepts. Gives back what was
+/// sent, each with whether the user agreed to continue a worker uncached.
+fn accept_sends(
+    session: &Entity<crate::live::LiveSession>,
+    window: AnyWindowHandle,
+    cx: &mut TestAppContext,
+) -> Vec<(String, bool)> {
+    let sent = session.update(cx, |session, _| {
+        session.answer_sends(|_| arko::Verdict::accepted(arko::remote::Delivery::Command, None))
+    });
+    act(cx, window, |_, _| {});
+    continues(sent)
+}
+
+fn continues(sent: Vec<arko::Input>) -> Vec<(String, bool)> {
+    sent.into_iter()
+        .filter_map(|input| match input {
+            arko::Input::Message(message) => Some((message.text, message.continue_uncached)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A message that continues a finished worker goes at once. When Arko
+/// refuses it, because the worker's prompt cache expired, it comes back to
+/// the composer and a dialog asks with Arko's words. Cancel keeps it there.
+/// Continue sends it marked as agreed, so Arko continues the worker, and
+/// the composer empties as after any message. That holds for a `/message`
+/// typed to Arko and for a message written to the worker.
 #[gpui_kit::test]
-fn continuing_a_worker_whose_cache_expired_asks_first(cx: &mut TestAppContext) {
+fn continuing_a_worker_arko_refuses_asks_first(cx: &mut TestAppContext) {
     let (window, view, session) = session_with_uncached_worker(cx);
-    for (target, typed) in [(None, "/message R1 Go on."), (Some("r1"), "Go on.")] {
+    for (target, typed, line) in [
+        (None, "/message R1 Go on.", "/message R1 Go on."),
+        (Some("r1"), "Go on.", "/message r1 Go on."),
+    ] {
+        let went = |agreed| vec![(line.to_string(), agreed)];
         act(cx, window, |window, cx| {
             view.update(cx, |view, cx| {
                 view.set_target(target.map(Into::into), window, cx)
             })
         });
-        let queued = queued_continues(&session, cx).len();
         send_text(cx, window, typed);
+        assert_eq!(composer_text(&view, cx), "", "{target:?}");
+        assert_eq!(refuse_uncached(&session, window, cx), went(false));
         assert!(shows_dialog(cx, window), "{target:?}");
         assert_eq!(composer_text(&view, cx), typed);
-        assert_eq!(queued_continues(&session, cx).len(), queued, "{target:?}");
+        assert_eq!(
+            cx.read(|cx| view.read(cx).target().cloned()).as_deref(),
+            target
+        );
 
         answer_dialog(cx, window, "cancel");
         assert!(!shows_dialog(cx, window), "{target:?}");
         assert_eq!(composer_text(&view, cx), typed);
-        assert_eq!(queued_continues(&session, cx).len(), queued, "{target:?}");
+        assert!(accept_sends(&session, window, cx).is_empty());
 
         act(cx, window, |window, cx| window.press("enter", cx));
+        assert_eq!(refuse_uncached(&session, window, cx), went(false));
         assert!(shows_dialog(cx, window), "{target:?}");
         answer_dialog(cx, window, "ok");
         assert!(!shows_dialog(cx, window), "{target:?}");
-        let line = match target {
-            Some(_) => "/message r1 Go on.",
-            None => "/message R1 Go on.",
-        };
-        assert_eq!(
-            queued_continues(&session, cx)[queued..],
-            [(line.to_string(), true)]
-        );
         assert_eq!(composer_text(&view, cx), "", "{target:?}");
+        assert_eq!(accept_sends(&session, window, cx), went(true));
     }
-}
-
-/// A message to a worker whose conversation is small, or whose cache
-/// lasts, goes at once and continues it as usual.
-#[gpui_kit::test]
-fn continuing_a_small_or_cached_worker_goes_at_once(cx: &mut TestAppContext) {
-    let (window, view, session) = session_with_uncached_worker(cx);
-    send_text(cx, window, "/message r2 Go on.");
-    send_text(cx, window, "/message r3 Go on.");
+    // Not over what was typed since.
+    send_text(cx, window, "Go on.");
+    act(cx, window, |window, cx| window.input("Wait.", cx));
+    refuse_uncached(&session, window, cx);
     assert!(!shows_dialog(cx, window));
-    assert_eq!(
-        queued_continues(&session, cx),
-        [
-            ("/message r2 Go on.".to_string(), false),
-            ("/message r3 Go on.".to_string(), false),
-        ]
-    );
-    assert_eq!(composer_text(&view, cx), "");
+    assert_eq!(composer_text(&view, cx), "Wait.");
 }
 
 /// The question is about the message the composer held when it was asked.
 /// A different message in the composer by the time of Continue goes
-/// nowhere, and sending it asks about it in turn.
+/// nowhere, and sending it is asked about in turn.
 #[gpui_kit::test]
 fn an_edit_drops_the_question_about_continuing_a_worker(cx: &mut TestAppContext) {
     let (window, view, session) = session_with_uncached_worker(cx);
     send_text(cx, window, "/message r1 Go on.");
+    refuse_uncached(&session, window, cx);
     assert!(shows_dialog(cx, window));
     act(cx, window, |window, cx| {
         let composer = view.read(cx).composer().clone();
@@ -1058,13 +1099,14 @@ fn an_edit_drops_the_question_about_continuing_a_worker(cx: &mut TestAppContext)
     });
     answer_dialog(cx, window, "ok");
     assert!(!shows_dialog(cx, window));
-    assert!(queued_continues(&session, cx).is_empty());
+    assert!(accept_sends(&session, window, cx).is_empty());
     assert_eq!(composer_text(&view, cx), "/message r1 Start over.");
 
     act(cx, window, |window, cx| window.press("enter", cx));
+    refuse_uncached(&session, window, cx);
     answer_dialog(cx, window, "ok");
     assert_eq!(
-        queued_continues(&session, cx),
+        accept_sends(&session, window, cx),
         [("/message r1 Start over.".to_string(), true)]
     );
 }
@@ -1075,6 +1117,7 @@ fn an_edit_drops_the_question_about_continuing_a_worker(cx: &mut TestAppContext)
 fn switching_sessions_drops_the_question_about_continuing_a_worker(cx: &mut TestAppContext) {
     let (window, view, session) = session_with_uncached_worker(cx);
     send_text(cx, window, "/message r1 Go on.");
+    refuse_uncached(&session, window, cx);
     assert!(shows_dialog(cx, window));
     let other = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
     act(cx, window, |window, cx| {
@@ -1083,8 +1126,8 @@ fn switching_sessions_drops_the_question_about_continuing_a_worker(cx: &mut Test
         })
     });
     answer_dialog(cx, window, "ok");
-    assert!(queued_continues(&session, cx).is_empty());
-    assert!(queued_continues(&other, cx).is_empty());
+    assert!(accept_sends(&session, window, cx).is_empty());
+    assert!(accept_sends(&other, window, cx).is_empty());
 }
 
 /// The question is about the worker it was asked for. Once the composer
@@ -1098,12 +1141,13 @@ fn a_target_change_drops_the_question_about_continuing_a_worker(cx: &mut TestApp
         })
     });
     send_text(cx, window, "Go on.");
+    refuse_uncached(&session, window, cx);
     assert!(shows_dialog(cx, window));
     act(cx, window, |window, cx| {
         view.update(cx, |view, cx| view.set_target(None, window, cx))
     });
     answer_dialog(cx, window, "ok");
-    assert!(queued_continues(&session, cx).is_empty());
+    assert!(accept_sends(&session, window, cx).is_empty());
     assert_eq!(composer_text(&view, cx), "Go on.");
 }
 
@@ -1134,183 +1178,73 @@ fn the_question_about_continuing_a_worker_works_from_the_keyboard(cx: &mut TestA
         cx.run_until_parked();
     };
     send_text(cx, window, "/message r1 Go on.");
+    refuse_uncached(&session, window, cx);
     assert!(shows_dialog(cx, window));
     close(cx, "escape");
     assert!(!shows_dialog(cx, window));
     assert_eq!(composer_text(&view, cx), "/message r1 Go on.");
     assert!(composer_focused(&view, window, cx), "after Esc");
-    assert!(queued_continues(&session, cx).is_empty());
 
     act(cx, window, |window, cx| window.press("enter", cx));
+    refuse_uncached(&session, window, cx);
     assert!(shows_dialog(cx, window));
     close(cx, "enter");
     assert!(!shows_dialog(cx, window));
     assert_eq!(
-        queued_continues(&session, cx),
+        accept_sends(&session, window, cx),
         [("/message r1 Go on.".to_string(), true)]
     );
     assert_eq!(composer_text(&view, cx), "");
     assert!(composer_focused(&view, window, cx), "after Enter");
 }
 
-/// The worker r1 as the window sees it: running, or finished two hours
-/// ago with a large conversation, its cache long expired.
-fn r1(running: bool) -> arko::remote::WorkerSummary {
-    let mut worker = crate::workers::ended_with_cache("r1", 2 * 3_600_000, 340_000);
-    if running {
-        worker.state = arko::remote::WorkerState::Running;
-    }
-    worker
+/// Two windows show one session and send the same words. Arko refuses the
+/// second window's, and only that window gets its text back.
+#[gpui_kit::test]
+fn only_the_window_whose_send_arko_refused_gets_it_back(cx: &mut TestAppContext) {
+    let (one, workspace, session) = session_in_workspace(cx, 1300.);
+    let (two, other) = open(cx, 1300.);
+    act(cx, two, |window, cx| {
+        other.update(cx, |other, cx| {
+            other.show_session(session.clone(), window, cx)
+        })
+    });
+    let views = [&workspace, &other]
+        .map(|workspace| cx.read(|cx| workspace.read(cx).session_view().clone()));
+    send_text(cx, one, "Go on.");
+    send_text(cx, two, "Go on.");
+    let mut nth = 0;
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            nth += 1;
+            match nth {
+                1 => arko::Verdict::accepted(arko::remote::Delivery::Turn, None),
+                _ => arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go."),
+            }
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(composer_text(&views[0], cx), "");
+    assert_eq!(composer_text(&views[1], cx), "Go on.");
+    assert_eq!(notifications(cx, one), 0);
+    assert_eq!(notifications(cx, two), 1);
 }
 
-/// A session in a workspace that follows a feed, as one does once it
-/// opens, and whose worker r1 the window still sees running.
-fn session_seeing_r1_running(
-    cx: &mut TestAppContext,
-) -> (
-    AnyWindowHandle,
-    Entity<crate::session_view::SessionView>,
-    Entity<crate::live::LiveSession>,
-    arko::remote::Feed,
-) {
+/// A verdict that comes after the session opened again changes nothing.
+#[gpui_kit::test]
+fn a_verdict_after_the_session_opened_again_changes_nothing(cx: &mut TestAppContext) {
     let (window, workspace, session) = session_in_workspace(cx, 1300.);
     let view = cx.read(|cx| workspace.read(cx).session_view().clone());
-    let feed = arko::remote::Feed::new("main");
-    session.update(cx, |session, cx| session.follow_feed(feed.clone(), cx));
-    cx.run_until_parked();
-    session.update(cx, |session, cx| {
-        session.set_workers(vec![r1(true)], &[], cx)
-    });
-    (window, view, session, feed)
-}
-
-/// Arko's notice that it didn't continue r1, whose cache expired, and the
-/// frame that brings it to the window.
-fn refuse_r1(feed: &arko::remote::Feed, cx: &mut TestAppContext) {
-    let warning = r1(false).cache().unwrap().warning(chrono::Utc::now());
-    feed.notice(
-        arko::Level::Warn,
-        &format!("{warning} The same /message again continues it."),
-    );
-    cx.executor().advance_clock(crate::live::FRAME * 2);
-    cx.run_until_parked();
-}
-
-/// Studio asks before continuing a worker by what it knows of the worker,
-/// which Arko may know better a moment later: the cache expired between
-/// the two, or the worker's end hadn't reached the window yet. Arko then
-/// doesn't send the message, and says why. The message comes back to the
-/// composer, for Arko or for the worker as it was written, even when the
-/// composer was set to write elsewhere meanwhile. The question then asks
-/// with Arko's words, and only Continue marks the message as confirmed.
-#[gpui_kit::test]
-fn a_message_arko_did_not_continue_comes_back_and_asks(cx: &mut TestAppContext) {
-    let (window, view, session, feed) = session_seeing_r1_running(cx);
-    let refuse = |cx: &mut TestAppContext| refuse_r1(&feed, cx);
-    let set_target = |cx: &mut TestAppContext, target: Option<&str>| {
-        act(cx, window, |window, cx| {
-            view.update(cx, |view, cx| {
-                view.set_target(target.map(Into::into), window, cx)
-            })
-        });
-    };
-    let target = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).target().cloned());
-
-    for (to, typed, elsewhere) in [
-        (None, "/message r1 Go on.", Some("r2")),
-        (Some("r1"), "Go on.", None),
-    ] {
-        set_target(cx, to);
-        let queued = queued_continues(&session, cx).len();
-        send_text(cx, window, typed);
-        assert!(!shows_dialog(cx, window), "{to:?}");
-        assert_eq!(composer_text(&view, cx), "", "{to:?}");
-        assert_eq!(
-            queued_continues(&session, cx)[queued..],
-            [("/message r1 Go on.".to_string(), false)]
-        );
-        set_target(cx, elsewhere);
-
-        refuse(cx);
-        assert!(shows_dialog(cx, window), "{to:?}");
-        assert_eq!(composer_text(&view, cx), typed);
-        assert_eq!(target(cx).as_deref(), to, "{to:?}");
-        assert_eq!(queued_continues(&session, cx).len(), queued + 1, "{to:?}");
-
-        answer_dialog(cx, window, "ok");
-        assert_eq!(
-            queued_continues(&session, cx)[queued + 1..],
-            [("/message r1 Go on.".to_string(), true)]
-        );
-        assert_eq!(composer_text(&view, cx), "", "{to:?}");
+    send_text(cx, window, "Go on.");
+    let replies = session.update(cx, |session, _| session.read_sends());
+    // It opens again (switched between Chat and Agent).
+    session.update(cx, |session, _| session.read_sends());
+    for (_, reply) in replies {
+        let _ = reply.send(arko::Verdict::closed());
     }
-    // Not over what was typed since.
-    act(cx, window, |window, cx| window.input("Wait.", cx));
-    refuse(cx);
-    assert!(!shows_dialog(cx, window));
-    assert_eq!(composer_text(&view, cx), "Wait.");
-}
-
-/// Arko takes the same message again as confirmed after it didn't
-/// continue a worker. So once it didn't, a message to the worker asks
-/// again after Cancel, though the window still sees the worker running.
-/// It asks until Continue, until the window sees the worker's cache
-/// expired too, or until the window shows another session.
-#[gpui_kit::test]
-fn a_worker_arko_did_not_continue_asks_until_confirmed(cx: &mut TestAppContext) {
-    let (window, view, session, feed) = session_seeing_r1_running(cx);
-    let queued = |cx: &mut TestAppContext| queued_continues(&session, cx);
-    let enter = |cx: &mut TestAppContext| act(cx, window, |window, cx| window.press("enter", cx));
-    let went = |text: &str, confirmed| vec![(text.to_string(), confirmed)];
-
-    send_text(cx, window, "/message r1 Go on.");
-    refuse_r1(&feed, cx);
-    answer_dialog(cx, window, "cancel");
-    enter(cx);
-    assert!(shows_dialog(cx, window), "after Cancel");
-    assert_eq!(queued(cx).len(), 1);
-    answer_dialog(cx, window, "ok");
-    assert_eq!(queued(cx)[1..], went("/message r1 Go on.", true));
-    // Confirmed, the next message goes as the window sees r1.
-    send_text(cx, window, "/message r1 And the docs.");
-    assert!(!shows_dialog(cx, window));
-    assert_eq!(queued(cx)[2..], went("/message r1 And the docs.", false));
-
-    // Another session shown drops it.
-    refuse_r1(&feed, cx);
-    answer_dialog(cx, window, "cancel");
-    let other = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
-    for shown in [&other, &session] {
-        act(cx, window, |window, cx| {
-            view.update(cx, |view, cx| {
-                view.set_session(Some(shown.clone()), window, cx)
-            })
-        });
-    }
-    let composer = cx.read(|cx| view.read(cx).composer().clone());
-    act(cx, window, |window, cx| {
-        composer.update(cx, |composer, cx| composer.set_text("", window, cx))
-    });
-    send_text(cx, window, "/message r1 And the docs.");
-    assert!(!shows_dialog(cx, window));
-    assert_eq!(queued(cx)[3..], went("/message r1 And the docs.", false));
-
-    // So does the window seeing r1's cache expired: it asks by that, and
-    // once r1 runs again, a message to it goes at once.
-    refuse_r1(&feed, cx);
-    answer_dialog(cx, window, "cancel");
-    session.update(cx, |session, cx| {
-        session.set_workers(vec![r1(false)], &[], cx)
-    });
-    enter(cx);
-    assert!(shows_dialog(cx, window), "by the window's record");
-    answer_dialog(cx, window, "cancel");
-    session.update(cx, |session, cx| {
-        session.set_workers(vec![r1(true)], &[], cx)
-    });
-    enter(cx);
-    assert!(!shows_dialog(cx, window));
-    assert_eq!(queued(cx)[4..], went("/message r1 And the docs.", false));
+    act(cx, window, |_, _| {});
+    assert_eq!(composer_text(&view, cx), "");
+    assert_eq!(notifications(cx, window), 0);
 }
 
 /// The confirmation names the worker and reads as a sentence.
