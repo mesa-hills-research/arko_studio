@@ -1420,9 +1420,7 @@ impl TranscriptView {
 
     /// Whether thinking shows open unless the reader chose.
     pub(super) fn thinking_open_by_default(&self) -> bool {
-        self.settings.expand_thinking
-            && (self.settings.view == crate::prefs::TranscriptView::Full
-                || matches!(self.model.filter(), AgentFilter::Worker(_)))
+        self.settings.expand_thinking && self.settings.view == crate::prefs::TranscriptView::Full
     }
 
     fn thinking(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {

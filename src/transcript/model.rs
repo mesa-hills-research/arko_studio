@@ -46,6 +46,16 @@ impl AgentFilter {
     }
 }
 
+impl AgentFilter {
+    /// Whether `item` is of the agent whose transcript this is.
+    pub(crate) fn owns(&self, item: &Item) -> bool {
+        match self {
+            AgentFilter::Main => item.is_main(),
+            AgentFilter::Worker(id) => item.agent == id.as_ref(),
+        }
+    }
+}
+
 /// Whether `item` is an agent's message to the user (`message_user`). A
 /// message an agent got has its sender in `from`.
 pub(crate) fn is_to_user(item: &Item) -> bool {
@@ -588,11 +598,9 @@ impl Model {
             .rev()
             .map(|entry| &entry.item)
             .find(|item| {
-                let its = match &self.filter {
-                    AgentFilter::Main => item.is_main(),
-                    AgentFilter::Worker(id) => item.agent == id.as_ref(),
-                };
-                its && !is_aside(item) && !matches!(item.kind, Kind::Notice | Kind::Result)
+                self.filter.owns(item)
+                    && !is_aside(item)
+                    && !matches!(item.kind, Kind::Notice | Kind::Result)
             });
         let Some(latest) = latest else {
             return Waiting::Yes(0);
@@ -659,30 +667,11 @@ fn is_start(item: &Item) -> bool {
     item.kind == Kind::Call && item.started.is_some()
 }
 
-pub(crate) fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
-    if let AgentFilter::Worker(_) = filter {
-        return match item.kind {
-            Kind::Result | Kind::Turn => Show::Hidden,
-            _ => Show::Item,
-        };
-    }
-    if item.kind == Kind::WorkerLine {
-        return Show::Item;
-    }
+/// What `view` shows of an item of the agent whose transcript it is, the
+/// main agent's in the main transcript and a worker's in its own. One rule
+/// serves both, so a worker's transcript can't differ from the selected view.
+fn shows(view: View, item: &Item) -> Show {
     let warning = item.level.is_some_and(|level| level != Level::Info);
-    if !item.is_main() {
-        // A worker's message to the user shows in every view. Its calls,
-        // what went wrong for it and its stop show in Full. Its text, its
-        // report and what the user wrote to it are its own transcript's.
-        if is_to_user(item) {
-            return Show::Item;
-        }
-        return match (view, item.kind) {
-            (View::Full, Kind::Call) => Show::Item,
-            (View::Full, Kind::Notice) if warning || item.stop => Show::Item,
-            _ => Show::Hidden,
-        };
-    }
     match view {
         View::Full => match item.kind {
             Kind::Result => Show::Hidden,
@@ -707,6 +696,28 @@ pub(crate) fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
             // And a kind a later arko adds.
             _ => Show::Hidden,
         },
+    }
+}
+
+pub(crate) fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
+    if filter.owns(item) {
+        return shows(view, item);
+    }
+    if item.kind == Kind::WorkerLine {
+        return Show::Item;
+    }
+    let warning = item.level.is_some_and(|level| level != Level::Info);
+    // A worker's message to the user shows in every view of the main
+    // transcript. Its calls, what went wrong for it and its stop show in
+    // Full. Its text, its report and what the user wrote to it are its own
+    // transcript's.
+    if is_to_user(item) {
+        return Show::Item;
+    }
+    match (view, item.kind) {
+        (View::Full, Kind::Call) => Show::Item,
+        (View::Full, Kind::Notice) if warning || item.stop => Show::Item,
+        _ => Show::Hidden,
     }
 }
 
@@ -929,7 +940,7 @@ impl Rows<'_> {
     }
 
     /// The rows of one entry.
-    fn entry(&mut self, entry: &Entry, view: View, worker_view: bool) {
+    fn entry(&mut self, entry: &Entry, view: View) {
         let item = &entry.item;
         let id = item.id;
         match item.kind {
@@ -946,7 +957,7 @@ impl Rows<'_> {
             }
             Kind::Thinking => {
                 self.push(RowKey::Thinking(id), Class::Activity);
-                let default = self.layout.expand_thinking && (view == View::Full || worker_view);
+                let default = self.layout.expand_thinking && view == View::Full;
                 if (self.layout.expanded)(id).unwrap_or(default) {
                     self.blocks(id, Class::Thought);
                 }
@@ -974,12 +985,12 @@ pub(crate) fn has_questions(item: &Item) -> bool {
 /// Calls in a row past this many fold into one row in the Quiet view.
 pub(crate) const GROUP_AFTER: usize = 3;
 
-/// Whether `item` belongs in a run of the main agent's tool activity: its
+/// Whether `item` belongs in a run of the shown agent's tool activity: its
 /// calls and its thinking between them. A call the Quiet view leaves out
 /// ([`is_start`]) isn't in it, so it neither counts toward a group nor shows
 /// when one opens.
-fn in_run(item: &Item) -> bool {
-    item.is_main() && matches!(item.kind, Kind::Call | Kind::Thinking) && !is_start(item)
+fn in_run(filter: &AgentFilter, item: &Item) -> bool {
+    filter.owns(item) && matches!(item.kind, Kind::Call | Kind::Thinking) && !is_start(item)
 }
 
 /// The entries of the run of activity starting at `start`, as indexes, and
@@ -1040,8 +1051,7 @@ fn after_refresh(entries: &[Entry], ix: usize) -> usize {
 /// The rows `view` shows of `model`.
 pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
     let filter = model.filter();
-    let worker_view = matches!(filter, AgentFilter::Worker(_));
-    let view = if worker_view { View::Full } else { layout.view };
+    let view = layout.view;
     let entries = model.entries();
     let mut rows = Rows {
         out: Vec::with_capacity(entries.len()),
@@ -1077,7 +1087,7 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
             Show::Hidden => ix += 1,
             Show::Count => {
                 let (members, next) = run(entries, ix, filter, view, |item| {
-                    item.is_main() && item.kind == Kind::Call
+                    filter.owns(item) && item.kind == Kind::Call
                 });
                 let first = members.first().map_or(ix, |first| *first);
                 rows.push(RowKey::Count(entries[first].item.id), Class::Activity);
@@ -1085,8 +1095,8 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
                 waiting.extend((ix..next).filter(|at| waits(*at)));
                 ix = next.max(ix + 1);
             }
-            Show::Item if view == View::Quiet && in_run(&entry.item) => {
-                let (members, next) = run(entries, ix, filter, view, in_run);
+            Show::Item if view == View::Quiet && in_run(filter, &entry.item) => {
+                let (members, next) = run(entries, ix, filter, view, |item| in_run(filter, item));
                 let calls = members
                     .iter()
                     .filter(|member| entries[**member].item.kind == Kind::Call)
@@ -1104,14 +1114,14 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
                     .any(|member| (layout.expanded)(entries[*member].item.id) == Some(true));
                 if !folded || (layout.group_open)(id).unwrap_or(member_open) {
                     for member in members {
-                        rows.entry(&entries[member], view, worker_view);
+                        rows.entry(&entries[member], view);
                     }
                 }
                 waiting.extend((ix..next).filter(|at| waits(*at)));
                 ix = next.max(ix + 1);
             }
             Show::Item => {
-                rows.entry(entry, view, worker_view);
+                rows.entry(entry, view);
                 ix += 1;
             }
         }
@@ -1132,7 +1142,7 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
         }
     }
     for ix in waiting {
-        rows.entry(&entries[ix], view, worker_view);
+        rows.entry(&entries[ix], view);
     }
     rows.out
 }
@@ -1157,11 +1167,11 @@ pub(crate) fn run_of(model: &Model, first: u64, view: View) -> Vec<usize> {
     match view {
         View::Messages => {
             run(entries, start, filter, view, |item| {
-                item.is_main() && item.kind == Kind::Call
+                filter.owns(item) && item.kind == Kind::Call
             })
             .0
         }
-        _ => run(entries, start, filter, view, in_run).0,
+        _ => run(entries, start, filter, view, |item| in_run(filter, item)).0,
     }
 }
 
@@ -1608,8 +1618,8 @@ mod tests {
     }
 
     /// Quiet leaves out the call that started a worker, whose card stands for
-    /// it. A call still running, queued or refused shows, and Full, Messages
-    /// and a worker's own transcript keep every call.
+    /// it. A call still running, queued or refused shows, and Full and
+    /// Messages keep every call, in a worker's own transcript too.
     #[test]
     fn quiet_leaves_out_the_call_that_started_a_worker() {
         let items = vec![
@@ -1665,20 +1675,77 @@ mod tests {
         for call in &items[3..6] {
             assert_eq!(show(&filter, View::Quiet, call), Show::Item);
         }
-        // r1's own transcript shows the call that started r2, in any view.
+        // r1's own transcript follows the view: the card of r2 stands for the
+        // call that started it in Quiet, and Messages counts the call.
         let mut own = Model::new(AgentFilter::Worker("r1".into()));
         let snapshot = Snapshot {
             items,
             ..Snapshot::default()
         };
         own.load(snapshot, &mut Changes::default());
+        assert_eq!(keys(&own, View::Full), [RowKey::Call(7), RowKey::Worker(8)]);
+        assert_eq!(keys(&own, View::Quiet), [RowKey::Worker(8)]);
+        assert_eq!(
+            keys(&own, View::Messages),
+            [RowKey::Count(7), RowKey::Worker(8)]
+        );
+    }
+
+    /// A worker's own transcript is the selected view over its own items, as
+    /// the main transcript is over the main agent's: the same kinds show,
+    /// fold and count in each view.
+    #[test]
+    fn a_workers_own_transcript_follows_the_selected_view() {
+        let items_of = |lane: &str| {
+            let mut result = item(5, Kind::Result, lane, "ok");
+            result.call = Some(4);
+            vec![
+                item(1, Kind::User, lane, "use tabs"),
+                item(2, Kind::Thinking, lane, "hmm"),
+                item(3, Kind::Text, lane, "On it."),
+                item(4, Kind::Call, lane, "cargo test"),
+                result,
+                start_call(6, lane, CallStatus::Ok, Some("r2")),
+                worker_card(7, lane, "r2"),
+                item(8, Kind::Call, lane, "cargo fmt"),
+                item(9, Kind::Call, lane, "cargo build"),
+                item(10, Kind::Call, lane, "cargo clippy"),
+                item(11, Kind::Notice, lane, "slow").level(Level::Warn),
+                item(12, Kind::Message, lane, "Found it."),
+                item(13, Kind::Reply, lane, "Fixed."),
+            ]
+        };
+        let own = |items| {
+            let mut own = Model::new(AgentFilter::Worker("r1".into()));
+            let snapshot = Snapshot {
+                items,
+                ..Snapshot::default()
+            };
+            own.load(snapshot, &mut Changes::default());
+            own
+        };
+        let (worker, main) = (own(items_of("r1")), model(items_of("main")));
         for view in [View::Full, View::Quiet, View::Messages] {
-            assert_eq!(
-                keys(&own, view),
-                [RowKey::Call(7), RowKey::Worker(8)],
-                "{view:?}"
-            );
+            assert_eq!(keys(&worker, view), keys(&main, view), "{view:?}");
         }
+        // And the kinds of each view are the ones the view is for.
+        assert_eq!(
+            keys(&worker, View::Messages),
+            [
+                RowKey::User(1),
+                block(3),
+                RowKey::Count(4),
+                RowKey::Worker(7),
+                RowKey::Count(8),
+                RowKey::Notice(11),
+                block(12),
+                block(13),
+                RowKey::Actions(13),
+            ]
+        );
+        let quiet = keys(&worker, View::Quiet);
+        assert!(!quiet.contains(&RowKey::Call(6)), "{quiet:?}");
+        assert!(quiet.contains(&RowKey::Thinking(2)), "{quiet:?}");
     }
 
     /// A worker's message to the user shows in every view of the main
