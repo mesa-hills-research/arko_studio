@@ -20,7 +20,6 @@ use arko::approvals::ApprovalRequest;
 use arko::questions::AgentQuestion;
 use arko::remote::{Activity, Feed, Question, Reading, Update, WorkerState, WorkerSummary};
 use async_trait::async_trait;
-use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -195,9 +194,10 @@ pub enum LiveEvent {
 
 /// A send the session took, or keeps until it opens.
 pub struct Sent {
-    /// The opening of the session that reads it ([`LiveSession::opening`]).
-    /// Its verdict is of no concern to a later one.
-    pub opening: u64,
+    /// The attempt to open the session that takes it
+    /// ([`LiveSession::attempt`]). Its verdict is of no concern to a later
+    /// one.
+    pub attempt: u64,
     /// What became of it. It closes without one when the engine stopped
     /// before it said, so the send may have gone.
     pub verdict: oneshot::Receiver<arko::Verdict>,
@@ -513,6 +513,10 @@ pub struct LiveSession {
     input_epoch: std::cell::Cell<u64>,
     /// Counts the times it opened: each opening is a new feed.
     opened: u64,
+    /// Counts the attempts to open it, each start and each reopen. What is
+    /// sent belongs to the attempt current then, which retires when it
+    /// fails, ends or gives way to the next.
+    attempt: u64,
     /// The cache is kept warm with a short message: the next turn (or the
     /// one running) is that message's.
     refresh_coming: bool,
@@ -561,6 +565,7 @@ impl LiveSession {
             touched_at: crate::figures::now_ms(),
             input_epoch: std::cell::Cell::new(0),
             opened: 0,
+            attempt: 0,
             refresh_coming: false,
             refresh_running: false,
             refreshed_last: false,
@@ -637,6 +642,7 @@ impl LiveSession {
     }
 
     fn launch(&mut self, start: Start, cx: &mut Context<Self>) {
+        self.attempt += 1;
         let (asked, mut asks) = mpsc::unbounded_channel();
         let prompter = Arc::new(AppPrompter { asked });
         let backend = cx.global::<SharedBackend>().clone();
@@ -919,14 +925,19 @@ impl LiveSession {
         let Some(id) = self.id.clone() else {
             return self.ended(cx);
         };
-        // The old feed goes, and the tasks that drained it.
+        self.depart();
+        self.launch(Start::Resume(id), cx);
+        cx.notify();
+    }
+
+    /// Its seam goes, with the feed and the tasks that drained it, so the
+    /// attempt that opened it retires.
+    fn depart(&mut self) {
         self.link = None;
         self._feed.clear();
         self.activity = Activity::default();
         self.questions.reopened();
         self.approvals = Approvals::default();
-        self.launch(Start::Resume(id), cx);
-        cx.notify();
     }
 
     /// Switches the session between Chat and Agent (between turns): the
@@ -1087,6 +1098,12 @@ impl LiveSession {
         self.drain(feed, status, quit_asks, cx);
     }
 
+    /// A new session that hasn't opened, so it has no id yet (tests).
+    #[cfg(test)]
+    pub fn new_for_tests(cx: &mut App) -> Self {
+        Self::blank(cx)
+    }
+
     /// Takes the requests waiting for the engine (tests).
     #[cfg(test)]
     pub fn take_requests(&mut self) -> Vec<arko::Request> {
@@ -1106,12 +1123,10 @@ impl LiveSession {
             .collect()
     }
 
-    /// Opens it, as far as its sends go: the opening that reads what was
-    /// sent before comes, and it takes those sends, with where each one's
-    /// verdict goes, as the engine would read them (tests).
+    /// Takes the sends kept until it opens, with where each one's verdict
+    /// goes, as the engine would read them (tests).
     #[cfg(test)]
     pub fn read_sends(&mut self) -> Vec<(arko::Input, oneshot::Sender<arko::Verdict>)> {
-        self.opened += 1;
         let (sends, others) = std::mem::take(self.queued_requests.get_mut())
             .into_iter()
             .partition(|request| matches!(request, arko::Request::Send { .. }));
@@ -1125,8 +1140,8 @@ impl LiveSession {
             .collect()
     }
 
-    /// Opens it as [`read_sends`](Self::read_sends) does, and answers each
-    /// send with `verdict` (tests). Gives back what was sent.
+    /// Takes the sends as [`read_sends`](Self::read_sends) does, and answers
+    /// each with `verdict` (tests). Gives back what was sent.
     #[cfg(test)]
     pub fn answer_sends(
         &mut self,
@@ -1139,6 +1154,20 @@ impl LiveSession {
                 input
             })
             .collect()
+    }
+
+    /// Makes it as if it opened again, as after a switch between Chat and
+    /// Agent, without opening (tests).
+    #[cfg(test)]
+    pub fn reopen_for_tests(&mut self) {
+        self.depart();
+        self.attempt += 1;
+    }
+
+    /// Makes it as if its attempt to open failed (tests).
+    #[cfg(test)]
+    pub fn fail_for_tests(&mut self, cx: &mut Context<Self>) {
+        self.failed("It didn’t open.".into(), cx);
     }
 
     /// Makes it as if the user last touched it at `at` (tests).
@@ -1203,6 +1232,18 @@ impl LiveSession {
     /// opens again (after switching between Chat and Agent).
     pub fn opening(&self) -> u64 {
         self.opened
+    }
+
+    /// The attempt to open it that takes what is sent now, while one runs
+    /// (it opens, is open or closes).
+    pub fn attempt(&self) -> Option<u64> {
+        matches!(self.phase, Phase::Opening | Phase::Open | Phase::Closing).then_some(self.attempt)
+    }
+
+    /// Whether the attempt `attempt` failed to open it, so nothing sent to
+    /// it went.
+    pub fn never_opened(&self, attempt: u64) -> bool {
+        matches!(self.phase, Phase::Failed(_)) && attempt == self.attempt
     }
 
     pub fn link(&self) -> Option<&Link> {
@@ -1400,25 +1441,23 @@ impl LiveSession {
     /// the approval tray answered) leaves at once, and comes back should
     /// the engine refuse it. `Err` says why the session can't take it.
     pub fn send(&mut self, input: arko::Input, cx: &mut Context<Self>) -> Result<Sent, String> {
-        let opening = match (&self.phase, &self.link) {
-            (Phase::Open | Phase::Closing, Some(_)) => self.opened,
-            // Read by the opening to come.
-            (Phase::Opening, _) => self.opened + 1,
+        match (&self.phase, &self.link) {
+            (Phase::Open | Phase::Closing, Some(_)) | (Phase::Opening, _) => {}
             (Phase::Sample, _) => return Err("This sample session doesn’t run.".to_string()),
             (Phase::Failed(why), _) => return Err(why.clone()),
             _ => return Err("The session has closed.".to_string()),
-        };
+        }
         let (reply, verdict) = oneshot::channel();
         let request = arko::Request::Send {
             input: input.clone(),
             reply,
         };
         match &self.link {
-            Some(link) if opening == self.opened => link
+            Some(link) => link
                 .requests
                 .send(request)
                 .map_err(|_| "The session has closed.".to_string())?,
-            _ => self.queued_requests.get_mut().push(request),
+            None => self.queued_requests.get_mut().push(request),
         }
         self.questions.sent(&input);
         self.approvals
@@ -1426,29 +1465,31 @@ impl LiveSession {
             .extend(Approvals::answered_by(&input));
         self.touched_at = crate::figures::now_ms();
         self.changes();
+        self.update_indicator(cx);
         cx.notify();
         let (told, heard) = oneshot::channel();
+        let attempt = self.attempt;
         cx.spawn(async move |this, cx| {
             let Ok(verdict) = verdict.await else {
                 return;
             };
             if matches!(verdict, arko::Verdict::Refused(_)) {
-                this.update(cx, |this, cx| this.refused(opening, &input, cx))
+                this.update(cx, |this, cx| this.refused(attempt, &input, cx))
                     .ok();
             }
             let _ = told.send(verdict);
         })
         .detach();
         Ok(Sent {
-            opening,
+            attempt,
             verdict: heard,
         })
     }
 
-    /// The engine refused `input`, which the opening `opening` read, so
-    /// what it settled here is open again, while that opening lasts.
-    fn refused(&mut self, opening: u64, input: &arko::Input, cx: &mut Context<Self>) {
-        if opening != self.opened {
+    /// The engine refused `input`, which the attempt `attempt` took, so
+    /// what it settled here is open again, while that attempt lasts.
+    fn refused(&mut self, attempt: u64, input: &arko::Input, cx: &mut Context<Self>) {
+        if self.attempt() != Some(attempt) {
             return;
         }
         let answered = Approvals::answered_by(input);
@@ -1770,38 +1811,6 @@ impl LiveSession {
 /// send, which may have gone.
 pub const NO_VERDICT: &str =
     "Arko stopped before saying whether it went. Check the transcript before you send it again.";
-
-/// Shows in `window` what of `sent`, sent to `session` with nothing to give
-/// back, didn't go: why Arko refused it, or the part of it that didn't go.
-/// Nothing once the session opened again.
-pub fn tell(session: &Entity<LiveSession>, sent: Sent, window: &mut Window, cx: &mut App) {
-    let session = session.downgrade();
-    let Sent { opening, verdict } = sent;
-    window
-        .spawn(cx, async move |cx| {
-            let words = match verdict.await {
-                Ok(arko::Verdict::Refused(refusal)) => Some(refusal.words),
-                Ok(arko::Verdict::Accepted { partial, .. }) => {
-                    partial.and_then(|partial| partial.words)
-                }
-                Ok(_) => None,
-                Err(_) => Some(NO_VERDICT.to_string()),
-            };
-            let Some(words) = words else {
-                return;
-            };
-            cx.update(|window, cx| {
-                let current = session
-                    .upgrade()
-                    .is_some_and(|session| session.read(cx).opening() == opening);
-                if current {
-                    window.push_notification(words, cx);
-                }
-            })
-            .ok();
-        })
-        .detach();
-}
 
 /// Sends `input`, a quit, in order with what was sent before it. Nothing
 /// waits for its verdict.

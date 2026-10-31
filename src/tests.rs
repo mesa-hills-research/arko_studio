@@ -1230,21 +1230,122 @@ fn only_the_window_whose_send_arko_refused_gets_it_back(cx: &mut TestAppContext)
     assert_eq!(notifications(cx, two), 1);
 }
 
-/// A verdict that comes after the session opened again changes nothing.
+/// A verdict of an attempt to open the session that gave way to another
+/// (it opened again, switched between Chat and Agent) changes nothing,
+/// though it comes before the new attempt opens.
 #[gpui_kit::test]
 fn a_verdict_after_the_session_opened_again_changes_nothing(cx: &mut TestAppContext) {
     let (window, workspace, session) = session_in_workspace(cx, 1300.);
     let view = cx.read(|cx| workspace.read(cx).session_view().clone());
     send_text(cx, window, "Go on.");
     let replies = session.update(cx, |session, _| session.read_sends());
-    // It opens again (switched between Chat and Agent).
-    session.update(cx, |session, _| session.read_sends());
+    session.update(cx, |session, _| session.reopen_for_tests());
     for (_, reply) in replies {
         let _ = reply.send(arko::Verdict::closed());
     }
     act(cx, window, |_, _| {});
     assert_eq!(composer_text(&view, cx), "");
     assert_eq!(notifications(cx, window), 0);
+}
+
+/// The question about continuing a worker is about the attempt to open the
+/// session that refused the message. Once the session opened again,
+/// Continue sends nothing, and the message stays in the composer.
+#[gpui_kit::test]
+fn opening_again_drops_the_question_about_continuing_a_worker(cx: &mut TestAppContext) {
+    let (window, view, session) = session_with_uncached_worker(cx);
+    send_text(cx, window, "/message r1 Go on.");
+    refuse_uncached(&session, window, cx);
+    assert!(shows_dialog(cx, window));
+    session.update(cx, |session, _| session.reopen_for_tests());
+    answer_dialog(cx, window, "ok");
+    assert!(accept_sends(&session, window, cx).is_empty());
+    assert_eq!(composer_text(&view, cx), "/message r1 Go on.");
+}
+
+/// Why Arko refused a command the status bar sent shows in the window
+/// while it shows that session, and not over another.
+#[gpui_kit::test]
+fn a_refused_command_says_why_only_over_its_session(cx: &mut TestAppContext) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let run = |cx: &mut TestAppContext| {
+        act(cx, window, |window, cx| {
+            crate::status_bar::run(&session, "/handover", window, cx)
+        })
+    };
+    let refuse = |cx: &mut TestAppContext| {
+        session.update(cx, |session, _| {
+            session.answer_sends(|_| {
+                arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+            })
+        });
+        act(cx, window, |_, _| {});
+    };
+    run(cx);
+    refuse(cx);
+    assert_eq!(notifications(cx, window), 1);
+    run(cx);
+    let other = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_session(Some(other.clone()), window, cx)
+        })
+    });
+    refuse(cx);
+    assert_eq!(notifications(cx, window), 1);
+}
+
+/// What was sent to a session whose attempt to open failed never went. It
+/// goes back to the session's kept draft, in the order sent, after what
+/// the composer held, though the window left the session as it failed.
+#[gpui_kit::test]
+fn what_a_session_that_failed_to_open_was_sent_goes_back_to_its_draft(cx: &mut TestAppContext) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    send_text(cx, window, "Fix the parser.");
+    send_text(cx, window, "And the tests.");
+    act(cx, window, |window, cx| window.input("Then the docs.", cx));
+    session.update(cx, |session, cx| session.fail_for_tests(cx));
+    act(cx, window, |_, _| {});
+    assert!(cx.read(|cx| workspace.read(cx).live_session().is_none()));
+    assert_eq!(
+        cx.read(|cx| crate::drafts::get("s1", cx)).as_deref(),
+        Some("Then the docs.\n\nFix the parser.\n\nAnd the tests.")
+    );
+}
+
+/// A new session's first message, with its image, comes back to the new
+/// session's composer when the session fails to open.
+#[gpui_kit::test]
+fn a_new_sessions_first_message_comes_back_when_it_fails_to_open(cx: &mut TestAppContext) {
+    let (window, workspace, _) = session_in_workspace(cx, 1300.);
+    let session = cx.new(|cx| crate::live::LiveSession::new_for_tests(cx));
+    act(cx, window, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(session.clone(), window, cx)
+        })
+    });
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    act(cx, window, |_, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.attach_image(
+                crate::composer::Attached::new(
+                    gpui_kit::ImageFormat::Png,
+                    crate::testing::PNG.to_vec(),
+                    Some("shot.png".into()),
+                ),
+                cx,
+            )
+        })
+    });
+    send_text(cx, window, "What is this?");
+    assert_eq!(composer_text(&view, cx), "");
+    session.update(cx, |session, cx| session.fail_for_tests(cx));
+    act(cx, window, |_, _| {});
+    assert!(cx.read(|cx| workspace.read(cx).live_session().is_none()));
+    assert_eq!(composer_text(&view, cx), "What is this?");
+    assert_eq!(cx.read(|cx| composer.read(cx).images().len()), 1);
 }
 
 /// The confirmation names the worker and reads as a sentence.

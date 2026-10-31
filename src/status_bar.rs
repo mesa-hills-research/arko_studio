@@ -322,7 +322,11 @@ pub(crate) fn run(session: &Entity<LiveSession>, command: &str, window: &mut Win
         ..Default::default()
     });
     match session.update(cx, |session, cx| session.send(input, cx)) {
-        Ok(sent) => crate::live::tell(session, sent, window, cx),
+        Ok(sent) => {
+            if let Some(view) = crate::workspace::session_view_of(window, cx) {
+                view.update(cx, |view, cx| view.track(session.clone(), sent, window, cx));
+            }
+        }
         Err(why) => window.push_notification(why, cx),
     }
 }

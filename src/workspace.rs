@@ -434,7 +434,9 @@ impl Workspace {
             ..Default::default()
         });
         match session.update(cx, |session, cx| session.send(input, cx)) {
-            Ok(sent) => crate::live::tell(&session, sent, window, cx),
+            Ok(sent) => self
+                .session_view
+                .update(cx, |view, cx| view.track(session.clone(), sent, window, cx)),
             Err(why) => window.push_notification(why, cx),
         }
     }
@@ -704,7 +706,9 @@ impl Workspace {
         if let Some(first) = first {
             let input = arko::Input::Message(first);
             match session.update(cx, |session, cx| session.send(input, cx)) {
-                Ok(sent) => crate::live::tell(&session, sent, window, cx),
+                Ok(sent) => self
+                    .session_view
+                    .update(cx, |view, cx| view.track(session.clone(), sent, window, cx)),
                 Err(why) => window.push_notification(why, cx),
             }
         }
@@ -729,7 +733,9 @@ impl Workspace {
                         ..Default::default()
                     });
                     match session.update(cx, |session, cx| session.send(input, cx)) {
-                        Ok(sent) => crate::live::tell(&session, sent, window, cx),
+                        Ok(sent) => self
+                            .session_view
+                            .update(cx, |view, cx| view.track(session.clone(), sent, window, cx)),
                         Err(why) => window.push_notification(why, cx),
                     }
                 }
@@ -1232,6 +1238,16 @@ impl Workspace {
     }
 }
 
+/// The session view of the workspace `window` shows.
+pub(crate) fn session_view_of(window: &Window, cx: &App) -> Option<Entity<SessionView>> {
+    let workspace = gpui_kit::base::Root::read(window, cx)
+        .view()
+        .clone()
+        .downcast::<Workspace>()
+        .ok()?;
+    Some(workspace.read(cx).session_view().clone())
+}
+
 /// What the window says when a message to the worker `id` went and its
 /// transcript isn't in sight.
 pub(crate) fn sent_to(id: &str) -> String {
@@ -1362,7 +1378,9 @@ impl Render for Workspace {
                         ..Default::default()
                     });
                     match session.update(cx, |session, cx| session.send(input, cx)) {
-                        Ok(sent) => crate::live::tell(&session, sent, window, cx),
+                        Ok(sent) => this
+                            .session_view
+                            .update(cx, |view, cx| view.track(session.clone(), sent, window, cx)),
                         Err(why) => window.push_notification(why, cx),
                     }
                 }

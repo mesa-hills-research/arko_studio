@@ -32,7 +32,7 @@ use crate::backend::{Mode, ModelChoices, NewSession, SessionEntry, SharedBackend
 use crate::composer::{Attached, Composer, ComposerEvent, Outgoing};
 use crate::editing::{self, Change, Choice};
 use crate::layout::WidthClass;
-use crate::live::{LiveEvent, LiveSession, LiveSessions, Phase, PromptKind, Sent};
+use crate::live::{LiveSession, LiveSessions, Phase, PromptKind, Sent};
 use crate::questions::{AnswerPanel, AnswerPanelEvent};
 use crate::transcript::{AgentFilter, FindStatus, TranscriptEvent, TranscriptView};
 use crate::workers::Usual;
@@ -218,8 +218,6 @@ pub struct SessionView {
     transcripts: Vec<KeptTranscript>,
     /// Its window closed: it shows nothing and keeps no more drafts.
     closed: bool,
-    /// The first message of the new session that is opening.
-    first: Option<FirstMessage>,
     /// The images of a first message whose session didn't open, for the
     /// new session's composer.
     returned_images: Vec<Attached>,
@@ -267,6 +265,34 @@ enum Given {
     Nothing,
 }
 
+impl Given {
+    /// The message it took from the composer, if any.
+    fn into_message(self) -> Option<Unsent> {
+        match self {
+            Given::Message(unsent) => Some(unsent),
+            _ => None,
+        }
+    }
+}
+
+/// Whom a send's verdict is for: the view that waits for it, the session
+/// it went to and the attempt to open the session that took it. The
+/// verdict, and any question it asks, acts only while the view shows that
+/// attempt of that session.
+#[derive(Clone)]
+struct Owner {
+    session: Entity<LiveSession>,
+    attempt: u64,
+}
+
+impl Owner {
+    /// Whether `view` shows the attempt of the session it's of.
+    fn current(&self, view: &SessionView, cx: &App) -> bool {
+        view.session.as_ref() == Some(&self.session)
+            && self.session.read(cx).attempt() == Some(self.attempt)
+    }
+}
+
 /// Why a new session wouldn't take `text` with the images `composer`
 /// holds as its first message: a mistyped command, or images its model
 /// can't take.
@@ -278,6 +304,15 @@ fn new_session_refusal(text: &str, composer: &Entity<Composer>, cx: &App) -> Opt
     Some(format!(
         "The message wasn’t sent because {why}. Send it without images, or switch to a model that takes them."
     ))
+}
+
+/// `more` after `text`, a blank line between them when both have words.
+fn joined(text: &str, more: &str) -> String {
+    match (text.trim().is_empty(), more.trim().is_empty()) {
+        (true, _) => more.to_string(),
+        (false, true) => text.to_string(),
+        (false, false) => format!("{}\n\n{more}", text.trim_end()),
+    }
 }
 
 /// Whether `text`, as typed, reads as a command, one of Arko's or a
@@ -339,13 +374,6 @@ struct OpenRouterSeen {
 const OPENROUTER_REREAD: std::time::Duration = std::time::Duration::from_secs(30);
 /// How many of OpenRouter's models a search in the model list adds.
 pub const OPENROUTER_FOUND: usize = 5;
-
-/// A new session's first message, kept until the session opens.
-struct FirstMessage {
-    text: String,
-    images: Vec<Attached>,
-    _subscription: Subscription,
-}
 
 impl SessionView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -443,7 +471,6 @@ impl SessionView {
             _draft: None,
             transcripts: Vec::new(),
             closed: false,
-            first: None,
             returned_images: Vec::new(),
             openrouter: OpenRouterSeen::default(),
             _openrouter: None,
@@ -2399,7 +2426,7 @@ impl SessionView {
                     session.send(arko::Input::Message(message), cx)
                 })
                 .map(|sent| Some((session, sent))),
-            None => self.start_session(message, images, cx),
+            None => self.start_session(message, cx),
         };
         match sent {
             Ok(sent) => {
@@ -2416,9 +2443,21 @@ impl SessionView {
         }
     }
 
-    /// Waits for what became of `sent`, which gave `given`, and takes it
-    /// while the window shows the same opening of `session`. Each window
-    /// waits for its own sends, so another window's sends leave it alone.
+    /// Waits for what became of `sent`, a command or the like sent to
+    /// `session` that took nothing from the window, and says why Arko
+    /// refused it while the window shows the attempt it went to.
+    pub fn track(
+        &mut self,
+        session: Entity<LiveSession>,
+        sent: Sent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.follow(session, sent, Given::Nothing, window, cx);
+    }
+
+    /// Waits for what became of `sent`, sent to `session`, which took
+    /// `given` from the window, and takes it for its [`Owner`].
     fn follow(
         &mut self,
         session: Entity<LiveSession>,
@@ -2427,32 +2466,39 @@ impl SessionView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Sent { opening, verdict } = sent;
+        let Sent { attempt, verdict } = sent;
+        let owner = Owner { session, attempt };
         cx.spawn_in(window, async move |view, cx| {
             let verdict = verdict.await.ok();
             view.update_in(cx, |view, window, cx| {
-                let current = view.session.as_ref() == Some(&session)
-                    && session.read(cx).opening() == opening;
-                if current {
-                    view.take_verdict(verdict, given, window, cx);
-                }
+                view.take_verdict(owner, verdict, given, window, cx)
             })
             .ok();
         })
         .detach();
     }
 
-    /// Takes what became of a send of the shown session that gave `given`
-    /// (`None` when Arko stopped before it said). A refused send gives back
-    /// what it took, and the window says why, or asks with Arko's words
-    /// when sending it again needs the user's agreement.
+    /// Takes what became of a send that took `given` (`None` when Arko
+    /// stopped before it said, so it may have gone), while its owner is
+    /// current. A refused send, or one whose outcome isn't known, gives
+    /// back what it took, and the window says why, or asks with Arko's
+    /// words when sending it again needs the user's agreement. What an
+    /// attempt that failed to open took goes back where it came from,
+    /// wherever the window is now.
     fn take_verdict(
         &mut self,
+        owner: Owner,
         verdict: Option<arko::Verdict>,
         given: Given,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !owner.current(self, cx) {
+            if owner.session.read(cx).never_opened(owner.attempt) {
+                self.send_home(&owner.session, given, window, cx);
+            }
+            return;
+        }
         let refusal = match verdict {
             Some(arko::Verdict::Accepted { partial, .. }) => {
                 if let Given::Message(Unsent {
@@ -2482,16 +2528,16 @@ impl SessionView {
                 arko::RefusalKind::Uncached { worker },
                 Some(arko::Confirm::ContinueUncached),
                 Some(outgoing),
-            ) => self.ask_continue(worker, &refusal.words, outgoing, window, cx),
+            ) => self.ask_continue(&owner, worker, &refusal.words, outgoing, window, cx),
             // The strip above the composer says so.
             (arko::RefusalKind::Reporting, ..) if self.is_reporting(cx) => {}
             _ => window.push_notification(refusal.words, cx),
         }
     }
 
-    /// Gives back what a send took, which Arko refused: a message to the
-    /// composer, answers to the answer panel. Gives back the message that
-    /// returned.
+    /// Gives back what a send took: a message to the composer, answers to
+    /// the answer panel while the session shows them open again. Gives back
+    /// the message that returned.
     fn give_back(
         &mut self,
         given: Given,
@@ -2501,7 +2547,6 @@ impl SessionView {
         match given {
             Given::Message(unsent) => self.restore_unsent(unsent, window, cx),
             Given::Answers(answers) => {
-                // The questions are open again (the session saw to that).
                 let open = self.session.as_ref().is_some_and(|session| {
                     let open = session.read(cx).open_questions();
                     answers
@@ -2521,26 +2566,66 @@ impl SessionView {
         }
     }
 
+    /// Puts back the message an attempt to open `session` took, which
+    /// failed, so it never went: in the composer of the session it was
+    /// written for, before what that holds now. That's the new session's
+    /// composer for a session that never had an id. Where the window shows
+    /// another, it goes into that composer's kept draft.
+    fn send_home(
+        &mut self,
+        session: &Entity<LiveSession>,
+        given: Given,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Unsent { text, images, .. }) = given.into_message() else {
+            return;
+        };
+        let home = match session.read(cx).id() {
+            Some(id) => id.0.clone(),
+            None => drafts::NEW_SESSION.to_string(),
+        };
+        if self.editing.is_none() && self.draft_key(cx).as_deref() == Some(home.as_str()) {
+            let shown = self.composer.read(cx).expanded_text(cx);
+            self.composer.update(cx, |composer, cx| {
+                composer.set_text(&joined(&shown, &text), window, cx);
+                for image in images {
+                    composer.attach_image(image, cx);
+                }
+            });
+            self.composer_empty = false;
+            self.keep_draft(cx);
+            cx.notify();
+            return;
+        }
+        let kept = drafts::get(&home, cx).unwrap_or_default();
+        drafts::set(&home, &joined(&kept, &text), cx);
+        if home == drafts::NEW_SESSION {
+            self.returned_images.extend(images);
+        }
+    }
+
     /// Asks, with Arko's `warning`, before `outgoing` continues `worker`, a
     /// finished worker whose prompt cache expired or isn't known. It stays
-    /// in the composer meanwhile. Continue sends it while the view shows
-    /// the same session and the composer still holds it for the same
-    /// worker. Otherwise nothing goes, since the question was about another
-    /// message.
+    /// in the composer meanwhile. Continue sends it while `owner`, the
+    /// refused send's, is current and the composer still holds it for the
+    /// same worker. Otherwise nothing goes, since the question was about
+    /// another message, or another attempt of the session.
     fn ask_continue(
         &mut self,
+        owner: &Owner,
         worker: &str,
         warning: &str,
         outgoing: Outgoing,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let session = self.session.as_ref().map(Entity::entity_id);
+        let owner = owner.clone();
         let target = self.target.clone();
         let view = cx.entity().downgrade();
         crate::prompts::confirm_continue(worker, warning, window, cx, move |window, cx| {
             view.update(cx, |view, cx| {
-                let holds = view.session.as_ref().map(Entity::entity_id) == session
+                let holds = owner.current(view, cx)
                     && view.target == target
                     && view.editing.is_none()
                     && view.composer.read(cx).expanded_text(cx) == outgoing.text;
@@ -2682,7 +2767,6 @@ impl SessionView {
     fn start_session(
         &mut self,
         message: arko::Message,
-        images: Vec<Attached>,
         cx: &mut Context<Self>,
     ) -> Result<Option<(Entity<LiveSession>, Sent)>, String> {
         let folder = match self.draft.mode {
@@ -2702,27 +2786,12 @@ impl SessionView {
                 .and_then(|model| self.effort_for(&model, cx))
                 .map(|(effort, _)| effort),
         };
-        let text = message.text.clone();
         remember_mode(new.mode, cx);
         // (A sample session doesn't run, and one that didn't start says why.)
+        // Should it not open, the first message comes back to the new
+        // session's composer, as what its failed attempt took.
         let (session, sent) = LiveSession::create(new, arko::Input::Message(message), cx);
         drafts::set(drafts::NEW_SESSION, "", cx);
-        // Should it not open, the first message comes back to the composer.
-        let subscription = cx.subscribe(&session, |this, _, event: &LiveEvent, cx| match event {
-            LiveEvent::Failed(_) => {
-                if let Some(first) = this.first.take() {
-                    drafts::set(drafts::NEW_SESSION, &first.text, cx);
-                    this.returned_images = first.images;
-                }
-            }
-            LiveEvent::Opened => this.first = None,
-            _ => {}
-        });
-        self.first = Some(FirstMessage {
-            text,
-            images,
-            _subscription: subscription,
-        });
         self.draft.model = None;
         self.draft.effort = None;
         // The next new session starts as Settings say.
@@ -2766,7 +2835,7 @@ impl SessionView {
         }
         let input = arko::Input::Background(arko::remote::MAIN_AGENT.to_string());
         match session.update(cx, |session, cx| session.send(input, cx)) {
-            Ok(sent) => crate::live::tell(session, sent, window, cx),
+            Ok(sent) => self.track(session.clone(), sent, window, cx),
             Err(why) => window.push_notification(why, cx),
         }
     }
@@ -3657,7 +3726,7 @@ impl SessionView {
             ..Default::default()
         });
         match session.update(cx, |session, cx| session.send(input, cx)) {
-            Ok(sent) => crate::live::tell(&session, sent, window, cx),
+            Ok(sent) => self.track(session.clone(), sent, window, cx),
             Err(why) => window.push_notification(why, cx),
         }
     }
