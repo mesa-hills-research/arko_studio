@@ -603,6 +603,39 @@ impl SessionInfo {
         self.send(command, window, cx);
         cx.notify();
     }
+
+    /// The session's own keep-warm, and the cache timer's choices, which
+    /// change it for this session.
+    fn keep_warm(&self, reading: &Reading, cx: &mut Context<Self>) -> AnyElement {
+        let cache = &reading.cache;
+        let times = crate::figures::Times::of(cx);
+        let state = crate::cache_timer::keep_warm_state(cache, crate::figures::now_ms(), &times);
+        let waits = cache.keep_warm.is_some_and(|kept| kept.waits);
+        let choices = crate::cache_timer::keep_warm_choices(cache.keep_warm.is_some())
+            .iter()
+            .map(|(id, name, command)| {
+                Button::new(*id)
+                    .outline()
+                    .xsmall()
+                    .label(*name)
+                    .disabled(self.session.is_none())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.send(command.to_string(), window, cx)
+                    }))
+            });
+        let muted = cx.theme().muted_foreground;
+        v_flex()
+            .id("keep-warm")
+            .test_support()
+            .gap_1()
+            .child(state)
+            .when(waits, |this| {
+                let words = arko::cache_timer::KEEP_WARM_WAITS.replace('\'', "’");
+                this.child(div().text_xs().text_color(muted).child(words))
+            })
+            .child(h_flex().gap_2().flex_wrap().children(choices))
+            .into_any_element()
+    }
 }
 
 /// A label and its value, in the info's two columns, or the label above
@@ -699,6 +732,7 @@ impl Render for SessionInfo {
         };
         let settings = reading.settings.clone();
         let facts = self.facts.clone();
+        let keep_warm = self.keep_warm(&reading, cx);
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let view = cx.entity().downgrade();
@@ -978,6 +1012,12 @@ impl Render for SessionInfo {
                     cx,
                 ))
             });
+        // After an agent's settings, or a chat's context.
+        let mut keep_warm = Some(keep_warm);
+        let prompt_cache = |body: Div, keep_warm: AnyElement, cx: &App| {
+            body.child(heading("Prompt cache", cx))
+                .child(row(narrow, "Keep warm", keep_warm, cx))
+        };
         if agent {
             body = body
                 .child(heading("Settings", cx))
@@ -1210,6 +1250,9 @@ impl Render for SessionInfo {
                         cx,
                     ));
             }
+            if let Some(keep_warm) = keep_warm.take() {
+                body = prompt_cache(body, keep_warm, cx);
+            }
             // What the agents have besides their own tools.
             body = body.child(heading("Extensions", cx));
             body = match &facts {
@@ -1312,6 +1355,9 @@ impl Render for SessionInfo {
                         cx,
                     )),
             };
+        }
+        if let Some(keep_warm) = keep_warm.take() {
+            body = prompt_cache(body, keep_warm, cx);
         }
         // The notes the main agent keeps, when it keeps some (or when the
         // file can't be read).
@@ -2557,6 +2603,36 @@ mod view_tests {
         assert_eq!(checked(cx, "worker-depth-4"), Some(true));
         assert_eq!(checked(cx, "message-copies"), Some(false));
         assert_eq!(checked(cx, "worker-retry-cap"), Some(false));
+    }
+
+    /// The session's keep-warm shows with the cache timer's choices, which
+    /// send the terminal's commands. (A chat's shows after its context, in
+    /// sight as the info opens.)
+    #[gpui_kit::test]
+    fn keep_warm_shows_and_starts_from_the_info(cx: &mut TestAppContext) {
+        start(cx);
+        let (window, workspace) = open(cx, 1300.);
+        let session = cx.new(|cx| {
+            let mut session = LiveSession::for_tests("s1", cx);
+            session.set_mode(crate::backend::Mode::Chat);
+            session
+        });
+        let title_bar = cx.read(|cx| workspace.read(cx).title_bar().clone());
+        cx.update_window(window, |_, window, cx| {
+            title_bar.update(cx, |bar, cx| {
+                bar.set_live_session(Some(session.clone()), window, cx);
+                bar.toggle_info(cx);
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(shows(window, cx, "keep-warm"));
+        assert!(shows(window, cx, "Keep warm for 1 hour"));
+        assert!(!shows(window, cx, "Stop"));
+        act(cx, window, |window, cx| {
+            window.click("Keep warm for 8 hours", cx)
+        });
+        assert_eq!(sent(&session, cx), ["/keep-warm 8h"]);
     }
 
     /// Live settings change through the terminal's commands. Those fixed

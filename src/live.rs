@@ -1067,6 +1067,12 @@ impl LiveSession {
         self.workspace = Some(workspace);
     }
 
+    /// Is a chat or an agent session (tests).
+    #[cfg(test)]
+    pub fn set_mode(&mut self, mode: Mode) {
+        self.mode = mode;
+    }
+
     /// Takes `reading` and `activity` as if the engine had sent them
     /// (tests).
     #[cfg(test)]

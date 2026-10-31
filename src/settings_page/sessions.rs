@@ -15,6 +15,7 @@ use crate::backend::{
 use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
+mod keep_warm;
 mod names;
 
 use crate::workers::{
@@ -41,6 +42,8 @@ pub struct SessionsPage {
     instructions_typed: Option<Task<()>>,
     /// How new sessions are named, as the page last read it.
     names: names::Names,
+    /// Keep-warm for every session, as the page last read or set it.
+    keep_warm: keep_warm::KeepWarm,
     /// The preferences as the page last showed them.
     seen: prefs::Prefs,
     /// What the billing variables say, which worker billing and the budget
@@ -198,12 +201,14 @@ impl SessionsPage {
             instructions_seen: new.chat_instructions,
             instructions_typed: None,
             names: names::Names::new(),
+            keep_warm: keep_warm::KeepWarm::default(),
             seen: super::shown_prefs(prefs::get(cx)),
             billing_env: BillingFromEnv::default(),
             billing_env_read: None,
             _subscriptions: subscriptions,
         };
         this.refresh_names(cx);
+        this.read_keep_warm(cx);
         this.read_billing_env(cx);
         this
     }
@@ -325,6 +330,7 @@ impl SessionsPage {
                 self.agent_group(cx)
                     .key(super::group_key("Agent sessions", &agent)),
                 self.chat_group().key(super::group_key("Chats", &())),
+                self.keep_warm_group(this),
                 self.names_group(this),
                 confirmations_group()
                     .key(super::group_key("Confirmations", &prefs.sessions)),

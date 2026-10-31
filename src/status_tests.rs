@@ -552,6 +552,29 @@ fn the_cache_timer_counts_down_while_idle_and_warns_in_its_last_minute(cx: &mut 
     assert_eq!(bar.shown(cx).cache, None);
 }
 
+/// A click on the cache timer opens its menu, which keeps the cache warm for
+/// an hour or eight with the web page's commands.
+#[gpui_kit::test]
+fn the_cache_timers_menu_keeps_the_cache_warm(cx: &mut TestAppContext) {
+    let bar = bar(cx, 1300.);
+    let mut reading = Reading::default();
+    reading.cache.lifetime = Some(Duration::from_secs(300));
+    reading.cache.refreshed_at = Some(NOW - 180_000);
+    reading.cache.tokens = Some(180_000);
+    reading.cache.refresh_cost = Some(0.04);
+    bar.show(cx, reading, Activity::default());
+    act(cx, bar.window, |window, cx| {
+        window.click("status-cache", cx)
+    });
+    assert!(bar.find(cx, "popup-menu"));
+    cx.update_window(bar.window, |_, window, cx| {
+        window.within("popup-menu").click(1usize, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(sent(&bar.session, cx), ["/keep-warm 8h"]);
+}
+
 /// A question waiting for the user stops the turn's requests: the cache
 /// timer shows beside "Waiting for your answer".
 #[gpui_kit::test]

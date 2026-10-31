@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use arko::cache_timer::{
-    EARLY_FROM_LIFETIME, EARLY_MS, FINAL_MS, answer_choices, expiry_cost, headline,
+    CacheTimer, EARLY_FROM_LIFETIME, EARLY_MS, FINAL_MS, answer_choices, expiry_cost, headline,
     refresh_choices, requests_run,
 };
 use arko::remote::CacheStatus;
@@ -59,8 +59,8 @@ pub enum Due {
 
 /// What is due for `cache` at `now` (Unix milliseconds), and how long until
 /// it is worth looking again. Nothing while requests run (each one
-/// refreshes the cache, see [`requests_run`]), with reminders off, or where
-/// the cache's lifetime
+/// refreshes the cache, see [`requests_run`]), while keep-warm will refresh
+/// it before it lapses, with reminders off, or where the cache's lifetime
 /// isn't known. Nothing new for a session the user had left alone for an
 /// hour when the cache was last refreshed (`touched_at` is when they last
 /// touched it).
@@ -80,6 +80,12 @@ pub fn plan(
     };
     if now >= expires {
         return (sent.last.then_some(Due::Lapsed), None);
+    }
+    // Keep-warm refreshes the cache before it lapses, which starts a new
+    // idle period. Until its refresh is due, nothing is.
+    if kept_warm(cache, now) {
+        let refresh = cache.keep_warm.and_then(|kept| kept.next_at);
+        return (None, refresh.map(|at| (at - now).max(1_000)));
     }
     let early = cache
         .lifetime
@@ -109,6 +115,15 @@ pub fn plan(
     .min()
     .map(|at| at - now);
     (due, next)
+}
+
+/// Whether keep-warm's next refresh comes before `cache` lapses, as the
+/// cache timer says ([`CacheTimer::KeptWarm`]).
+fn kept_warm(cache: &CacheStatus, now: i64) -> bool {
+    matches!(
+        CacheTimer::of(cache, false, now),
+        Some(CacheTimer::KeptWarm { .. })
+    )
 }
 
 /// The clock the reminders read, in Unix milliseconds (tests set their
@@ -251,8 +266,10 @@ impl CacheReminders {
             );
             (due, next, busy, live.question().is_some())
         };
-        if busy || !enabled {
-            // A request refreshes the cache: the reminder is out of date.
+        let kept = kept_warm(&session.read(cx).reading().cache, now);
+        if busy || !enabled || kept {
+            // A request refreshes the cache, or keep-warm will, so the
+            // reminder is out of date.
             self.dismiss(cx);
             if busy {
                 self.sent = Sent::default();

@@ -309,6 +309,12 @@ pub fn next_change(reading: &Reading, activity: &Activity, now: i64) -> Option<i
             0 => 1000,
             part => part,
         }),
+        // A refresh moves the lapse, and the status says so. Without one,
+        // the timer counts again from there.
+        Some(CacheTimer::KeptWarm { .. }) => reading
+            .cache
+            .expires_at()
+            .map(|lapses| (lapses - now).max(1)),
         _ => None,
     };
     turn.into_iter().chain(cache).min()
@@ -605,9 +611,10 @@ impl StatusBar {
             },
             outside: reading.settings.outside,
             web_page: reading.page.is_some(),
-            cache: cache
-                .filter(|_| wide)
-                .map(|timer| (timer.label(), timer.warns())),
+            cache: cache.filter(|_| wide).map(|timer| {
+                let label = crate::cache_timer::cache_label(timer, now, &figures::Times::of(cx));
+                (label, timer.warns())
+            }),
             plan: figures::plan_alert(&reading.plans)
                 .filter(|_| wide)
                 .map(|(_, window)| figures::plan_label(window)),
@@ -669,7 +676,8 @@ impl Render for StatusBar {
         if let Some(timer) = CacheTimer::of(&reading.cache, requests_run(&activity), now)
             .filter(|_| shown.cache.is_some())
         {
-            bar = bar.right(cache_timer(timer, &reading.cache, now, cx));
+            let session = self.session().cloned();
+            bar = bar.right(cache_timer(timer, &reading.cache, now, session, cx));
         }
         if shown.plan.is_some()
             && let Some(plan) = self.render_plan(&reading, now, cx)

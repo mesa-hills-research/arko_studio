@@ -4,21 +4,38 @@
 //! says "cache expired" with what the next message re-caches. Hidden while
 //! a turn's requests run (each one refreshes the cache) and where the
 //! lifetime isn't known. A question waiting for the user stops the requests,
-//! and the timer shows then.
+//! and the timer shows then. While keep-warm will refresh the cache before
+//! it lapses, the timer says so instead ("cache warm until 7:00AM MDT"),
+//! without the warning. A click on it opens a menu that keeps the cache
+//! warm for an hour or eight, or stops keep-warm, as on the web page.
 //!
 //! Arko works the timer out ([`arko::cache_timer`]), counting from the
 //! latest request's send time and lapsing a safety margin early, so the
 //! app, the terminal and the web page say the same. The app shows it with
 //! the user's clock.
 
-use arko::cache_timer::{CacheTimer, recache};
+use arko::cache_timer::{CacheTimer, KEEP_WARM_WAITS, recache, refresh_each};
 use arko::remote::CacheStatus;
-use gpui_kit::component::tooltip::{ManagedTooltipExt as _, Tooltip};
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::*;
 
 use crate::figures::{Times, when};
-use crate::status_bar::tabular_figures;
+use crate::live::LiveSession;
+use crate::status_bar::{run, tabular_figures};
+
+/// The timer's words, arko's with keep-warm's end on the user's clock:
+/// "cache 3:12", "cache warm until 7:00AM MDT", "cache warm, 9 refreshes
+/// left".
+pub fn cache_label(timer: CacheTimer, now: i64, times: &Times) -> String {
+    match timer {
+        CacheTimer::KeptWarm {
+            ends_at: Some(at), ..
+        } => format!("cache warm until {}", when(at.div_euclid(1000), now, times)),
+        timer => timer.label(),
+    }
+}
 
 /// The cache timer's tooltip.
 pub fn cache_tooltip(timer: CacheTimer, cache: &CacheStatus, now: i64, times: &Times) -> String {
@@ -32,6 +49,28 @@ pub fn cache_tooltip(timer: CacheTimer, cache: &CacheStatus, now: i64, times: &T
             if let Some(recache) = recache(cache) {
                 text.push_str(&format!(" Letting it expire re-caches {recache}."));
             }
+            if cache.keep_warm.is_some_and(|kept| kept.waits) {
+                text.push(' ');
+                text.push_str(&KEEP_WARM_WAITS.replace('\'', "’"));
+            }
+            text
+        }
+        CacheTimer::KeptWarm { ends_at, left } => {
+            let mut text = "Keep-warm refreshes the prompt cache before it expires".to_string();
+            match (ends_at, left) {
+                (Some(at), _) => text.push_str(&format!(
+                    ", until {}",
+                    when(at.div_euclid(1000), now, times)
+                )),
+                (None, Some(1)) => text.push_str(" once more"),
+                (None, Some(left)) => text.push_str(&format!(", {left} more times")),
+                (None, None) => {}
+            }
+            text.push('.');
+            if let Some(each) = refresh_each(cache) {
+                text.push(' ');
+                text.push_str(&each);
+            }
             text
         }
         _ => match recache(cache) {
@@ -41,25 +80,82 @@ pub fn cache_tooltip(timer: CacheTimer, cache: &CacheStatus, now: i64, times: &T
     }
 }
 
-/// The timer, with what it means in its tooltip.
-pub fn cache_timer(timer: CacheTimer, cache: &CacheStatus, now: i64, cx: &App) -> AnyElement {
+/// The session's keep-warm, for its Session info: "On until 7:00AM MDT",
+/// "On for 9 more refreshes", "Off".
+pub fn keep_warm_state(cache: &CacheStatus, now: i64, times: &Times) -> String {
+    let Some(kept) = cache.keep_warm else {
+        return "Off".to_string();
+    };
+    match (kept.ends_at, kept.left) {
+        (Some(at), _) => format!("On until {}", when(at.div_euclid(1000), now, times)),
+        (None, Some(1)) => "On for 1 more refresh".to_string(),
+        (None, Some(left)) => format!("On for {left} more refreshes"),
+        (None, None) => "On".to_string(),
+    }
+}
+
+/// A choice of the timer's menu, with its name there, its name beside
+/// "Keep warm" in Session info, and the command it sends.
+pub type KeepWarmChoice = (&'static str, &'static str, &'static str);
+
+/// What the timer's menu offers, Stop while keep-warm is `on`, else an hour
+/// or eight of it, as on the web page.
+pub fn keep_warm_choices(on: bool) -> &'static [KeepWarmChoice] {
+    if on {
+        &[("Stop", "Stop", "/keep-warm off")]
+    } else {
+        &[
+            ("Keep warm for 1 hour", "For 1 hour", "/keep-warm 1h"),
+            ("Keep warm for 8 hours", "For 8 hours", "/keep-warm 8h"),
+        ]
+    }
+}
+
+/// The timer, with what it means in its tooltip, and its menu, which sends
+/// keep-warm's commands to `session`.
+pub fn cache_timer(
+    timer: CacheTimer,
+    cache: &CacheStatus,
+    now: i64,
+    session: Option<Entity<LiveSession>>,
+    cx: &App,
+) -> AnyElement {
     let theme = cx.theme();
-    // Written when it shows, not with every second's draw.
-    let cache = cache.clone();
-    h_flex()
-        .id("status-cache")
-        .test_support()
-        .gap_1()
+    let times = Times::of(cx);
+    let choices = keep_warm_choices(cache.keep_warm.is_some());
+    // What a refresh costs, beside the choices that start them.
+    let each = refresh_each(cache).filter(|_| cache.keep_warm.is_none());
+    Button::new("status-cache")
+        .ghost()
+        .xsmall()
         .font_features(tabular_figures())
         .text_color(if timer.warns() {
             theme.warning
         } else {
             theme.muted_foreground
         })
-        .child(Icon::new(gpui_kit::assets::IconName::Timer).xsmall())
-        .child(timer.label())
-        .managed_tooltip(move |window, cx| {
-            Tooltip::new(cache_tooltip(timer, &cache, now, &Times::of(cx))).build(window, cx)
+        .icon(Icon::new(gpui_kit::assets::IconName::Timer).xsmall())
+        .label(cache_label(timer, now, &times))
+        .tooltip(cache_tooltip(timer, cache, now, &times))
+        .dropdown_menu_with_anchor(Anchor::BottomRight, move |mut menu, _, _| {
+            for (name, _, command) in choices {
+                let session = session.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(*name)
+                        .disabled(session.is_none())
+                        .on_click(move |_, window, cx| {
+                            if let Some(session) = &session {
+                                run(session, command, window, cx);
+                            }
+                        }),
+                );
+            }
+            if let Some(each) = &each {
+                menu = menu
+                    .item(PopupMenuItem::separator())
+                    .item(PopupMenuItem::label(each.clone()));
+            }
+            menu
         })
         .into_any_element()
 }
@@ -68,7 +164,7 @@ pub fn cache_timer(timer: CacheTimer, cache: &CacheStatus, now: i64, cx: &App) -
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::cache_tooltip;
+    use super::{cache_label, cache_tooltip, keep_warm_choices};
     use crate::figures::{Times, Zone};
     use crate::prefs::HourCycle;
     use arko::cache_timer::CacheTimer;
@@ -132,6 +228,83 @@ mod tests {
         assert_eq!(
             cache_tooltip(CacheTimer::Expired, &on_plan, 400_000, &times),
             "The next message re-caches about 180k tokens of your Claude plan."
+        );
+    }
+
+    /// While keep-warm will refresh the cache before it lapses, the timer
+    /// says until when on the user's clock, or how many refreshes are left,
+    /// and its tooltip what each refresh costs.
+    #[test]
+    fn keep_warm_says_until_when_on_the_users_clock() {
+        let mut times = Times {
+            hour_cycle: HourCycle::Twelve,
+            zone: Zone::Named(jiff::tz::TimeZone::get("America/Denver").unwrap()),
+        };
+        // 2:00PM in Denver on Oct 16, 2026, kept warm for eight hours.
+        let now = 1_792_180_800_000;
+        let until = CacheTimer::KeptWarm {
+            ends_at: Some(now + 8 * 3_600_000),
+            left: None,
+        };
+        assert_eq!(
+            cache_label(until, now, &times),
+            "cache warm until 10:00PM MDT"
+        );
+        assert_eq!(
+            cache_tooltip(until, &cache(5, now), now, &times),
+            "Keep-warm refreshes the prompt cache before it expires, until 10:00PM MDT. Each refresh ≈ $0.04."
+        );
+        times.hour_cycle = HourCycle::TwentyFour;
+        assert_eq!(
+            cache_label(until, now, &times),
+            "cache warm until 22:00 MDT"
+        );
+        // Past midnight, it names the day.
+        let tomorrow = CacheTimer::KeptWarm {
+            ends_at: Some(now + 12 * 3_600_000),
+            left: None,
+        };
+        assert_eq!(
+            cache_label(tomorrow, now, &times),
+            "cache warm until Sat 02:00 MDT"
+        );
+        let counted = CacheTimer::KeptWarm {
+            ends_at: None,
+            left: Some(9),
+        };
+        assert_eq!(
+            cache_label(counted, now, &times),
+            "cache warm, 9 refreshes left"
+        );
+        assert!(!counted.warns());
+        let mut on_plan = cache(5, now);
+        on_plan.refresh_cost = None;
+        on_plan.on_plan = Some("your Claude plan");
+        assert_eq!(
+            cache_tooltip(counted, &on_plan, now, &times),
+            "Keep-warm refreshes the prompt cache before it expires, 9 more times. Each refresh reads 180k cached tokens of your Claude plan."
+        );
+        let last = CacheTimer::KeptWarm {
+            ends_at: None,
+            left: Some(1),
+        };
+        assert_eq!(cache_label(last, now, &times), "cache warm, 1 refresh left");
+    }
+
+    /// The timer's menu stops keep-warm while it's on, and otherwise starts
+    /// it for an hour or eight, with the web page's commands.
+    #[test]
+    fn the_timers_menu_offers_what_the_web_pages_does() {
+        assert_eq!(
+            keep_warm_choices(false),
+            [
+                ("Keep warm for 1 hour", "For 1 hour", "/keep-warm 1h"),
+                ("Keep warm for 8 hours", "For 8 hours", "/keep-warm 8h")
+            ]
+        );
+        assert_eq!(
+            keep_warm_choices(true),
+            [("Stop", "Stop", "/keep-warm off")]
         );
     }
 }
