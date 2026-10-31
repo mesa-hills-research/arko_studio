@@ -2,7 +2,7 @@
 name = "arko_studio"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.97"
 description = "The desktop app of the arko agent"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mesa-hills-research/arko_studio"
@@ -14,6 +14,12 @@ path = "src/lib.rs"
 [[bin]]
 name = "arko-studio"
 path = "src/main.rs"
+
+[features]
+default = ["dictation"]
+# Dictation: Arko's speech engine and the kit's microphone (cpal, which needs ALSA's
+# development files on Linux, `libasound2-dev`). Without it the record button doesn't show.
+dictation = ["arko/dictation", "gpui-kit/speech"]
 
 [dependencies]
 # GPUI Kit, Mesa Hills Research's fork, published as the `mhr-gpui-kit` crates. It pins the
@@ -93,4 +99,6 @@ resvg = { opt-level = 3 }
 ropey = { opt-level = 3 }
 rustybuzz = { opt-level = 3 }
 taffy = { opt-level = 3 }
+# The speech engine is far too slow to dictate with unoptimized.
+telmo = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }

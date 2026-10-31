@@ -17,6 +17,7 @@ pub mod chrome;
 pub mod commands;
 pub mod composer;
 pub mod context_ring;
+pub mod dictation;
 pub mod drafts;
 pub mod editing;
 pub mod export;
@@ -59,6 +60,8 @@ pub mod writing;
 mod approvals_tests;
 #[cfg(test)]
 mod composer_tests;
+#[cfg(test)]
+mod dictation_tests;
 #[cfg(test)]
 mod engine_tests;
 #[cfg(test)]
@@ -245,6 +248,7 @@ pub fn init(startup: Startup, cx: &mut App) {
     cx.observe_global::<PrefsStore>(follow_smooth_typing)
         .detach();
     cx.set_global(SharedBackend(startup.backend));
+    dictation::init(cx.global::<SharedBackend>().data_root().to_path_buf(), cx);
     backend::follow_prefs(cx);
     cx.set_global(session_view::HomeFolder(startup.home));
     cx.set_global(paths::LogsFolder(startup.logs));

@@ -4507,6 +4507,134 @@ fn composer_reporting_dark() {
     );
 }
 
+/// A dictation service with its model downloaded, whose dictations keep
+/// their sinks for the test to speak through.
+struct HeardService(std::rc::Rc<std::cell::RefCell<Vec<arko::dictation::Sink>>>);
+
+struct Heard;
+
+impl arko_studio::dictation::Opened for Heard {
+    fn push(&self, _: &[f32], _: u32) {}
+    fn finish(&mut self) {}
+}
+
+impl arko_studio::dictation::Service for HeardService {
+    fn open(
+        &self,
+        _: arko::dictation::DictationOptions,
+        sink: arko::dictation::Sink,
+    ) -> Result<Box<dyn arko_studio::dictation::Opened>, arko::dictation::DictationError> {
+        self.0.borrow_mut().push(sink);
+        Ok(Box::new(Heard))
+    }
+
+    fn downloads_without_asking(&self) -> bool {
+        false
+    }
+}
+
+/// A microphone whose audio the test gives.
+#[derive(Clone, Default)]
+struct GivenMicrophone(
+    std::rc::Rc<std::cell::RefCell<Option<gpui_kit::component::speech::AudioSink>>>,
+);
+
+impl gpui_kit::component::speech::AudioInput for GivenMicrophone {
+    fn start(
+        &self,
+        _: gpui_kit::component::speech::AudioFormat,
+        sink: gpui_kit::component::speech::AudioSink,
+        _: &mut gpui_kit::App,
+    ) -> Result<gpui_kit::Subscription, gpui_kit::component::speech::SpeechError> {
+        *self.0.borrow_mut() = Some(sink);
+        Ok(gpui_kit::Subscription::new(|| {}))
+    }
+}
+
+/// The composer while it listens: words already in the box, the tentative
+/// ones beside the button, the waveform, and the button that stops.
+fn composer_listening(mode: ThemeMode) -> Screenshot {
+    use arko::dictation::{DictationEvent, DictationUpdate};
+    use gpui_kit::test::TestWindowExt as _;
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    let sinks = std::rc::Rc::default();
+    let microphone = GivenMicrophone::default();
+    app.update(|cx| {
+        arko_studio::init(startup, cx);
+        cx.set_global(arko_studio::dictation::Speech {
+            service: std::rc::Rc::new(HeardService(std::rc::Rc::clone(&sinks))),
+            input: Some(std::rc::Rc::new(microphone.clone())),
+        });
+    });
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(900.), px(300.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, window, cx| {
+        let view = workspace.read(cx).session_view().clone();
+        view.update(cx, |view, cx| view.focus_composer(window, cx));
+        window.input("Fix the flaky test.", cx);
+        let composer = view.read(cx).composer().clone();
+        let dictation = composer.read(cx).dictation().clone();
+        dictation.update(cx, |dictation, cx| dictation.start(cx));
+    })
+    .unwrap();
+    app.run_until_parked();
+    let speak = |event| {
+        (sinks.borrow_mut()[0])(DictationUpdate { id: 1, event });
+    };
+    speak(DictationEvent::Listening);
+    speak(DictationEvent::Text {
+        settled: "Then run it on Windows".into(),
+        tentative: " and on mac".into(),
+    });
+    app.run_until_parked();
+    // Syllables and pauses, 80 ms a level at 48 kHz.
+    app.update(|cx| {
+        let audio = microphone.0.borrow().clone().unwrap();
+        for loudness in [
+            0.01, 0.4, 0.15, 0.6, 0.05, 0.002, 0.3, 0.7, 0.2, 0.03, 0.002, 0.002, 0.25, 0.5, 0.1,
+            0.45, 0.02, 0.002, 0.35, 0.6, 0.15, 0.04, 0.3, 0.12,
+        ] {
+            let samples = (0..3_840)
+                .map(|n| ((n as f32 * 0.07).sin() * loudness * f32::from(i16::MAX)) as i16)
+                .collect();
+            audio.push(samples, cx);
+        }
+    });
+    app.run_until_parked();
+    app.capture(window).unwrap()
+}
+
+#[test]
+fn composer_listening_light() {
+    goldens().assert(
+        "composer-listening-light",
+        &composer_listening(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn composer_listening_dark() {
+    goldens().assert(
+        "composer-listening-dark",
+        &composer_listening(ThemeMode::Dark),
+    );
+}
+
 #[test]
 fn model_switch_light() {
     goldens().assert(

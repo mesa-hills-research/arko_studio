@@ -4,7 +4,7 @@
 //! always sends too), smooth typing, spell checking and word suggestions
 //! from the shared writing tools, long pastes as tokens, images pasted,
 //! dropped or attached as tiles, the input history on ↑ and ↓ at its edges,
-//! and a menu of arko's slash commands. It is a
+//! a menu of arko's slash commands, and dictation ([`Dictation`]). It is a
 //! view of its own, so typing never draws the transcript or the rest of the
 //! window again. The session view around it decides what a sent message is
 //! (a message, a note, an answer, a command) and clears it once taken.
@@ -30,6 +30,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::writing::WordSuggestions;
 use gpui_kit::*;
 
+use crate::dictation::Dictation;
 use crate::fonts::CodeFont as _;
 use crate::prefs::{self, SendKey};
 use crate::writing::WritingAids;
@@ -442,6 +443,8 @@ pub struct Composer {
     mentioned: u32,
     /// The model the images go to, which says which it can't take.
     image_model: Option<String>,
+    /// Speech typed into the field, with its button beside Send.
+    dictation: Entity<Dictation>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -465,6 +468,7 @@ impl Composer {
         textarea.update(cx, |textarea, cx| {
             textarea.set_spell_checking(input.spell_check, cx)
         });
+        let dictation = cx.new(|cx| Dictation::new(textarea.clone(), window, cx));
         let subscriptions = vec![
             suggestions.follow(&textarea, cx),
             cx.subscribe_in(&textarea, window, Self::on_input_event),
@@ -492,6 +496,7 @@ impl Composer {
             narrowed: Vec::new(),
             mentioned: 0,
             image_model: None,
+            dictation,
             _subscriptions: subscriptions,
         }
     }
@@ -516,6 +521,11 @@ impl Composer {
     /// The text field's state.
     pub fn textarea(&self) -> &Entity<TextareaState> {
         &self.textarea
+    }
+
+    /// The field's dictation, whose button goes beside Send.
+    pub fn dictation(&self) -> &Entity<Dictation> {
+        &self.dictation
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
@@ -799,6 +809,13 @@ impl Composer {
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
+        // A recording stops instead, and its last words come before it sends.
+        if self
+            .dictation
+            .update(cx, |dictation, cx| dictation.stop(cx))
+        {
+            return;
+        }
         let text = self.expanded_text(cx);
         if text.trim().is_empty() && self.images.is_empty() {
             return;
@@ -1305,7 +1322,15 @@ impl Composer {
         }
     }
 
-    fn on_escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
+        // A recording ends first, taking its words with it.
+        if self
+            .dictation
+            .update(cx, |dictation, cx| dictation.cancel(window, cx))
+        {
+            cx.stop_propagation();
+            return;
+        }
         if self.menu.take().is_some() {
             self.dismissed = Some(self.text(cx));
             cx.notify();

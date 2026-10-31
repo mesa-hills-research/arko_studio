@@ -937,6 +937,8 @@ impl SessionView {
         // an edit.
         self.end_edit(window, cx);
         self.close_find(window, cx);
+        let dictation = self.composer.read(cx).dictation().clone();
+        dictation.update(cx, |dictation, cx| dictation.end(cx));
         self.keep_draft(cx);
         if let Some(old) = self.session.take() {
             old.update(cx, |old, cx| old.set_shown(false, cx));
@@ -4324,7 +4326,9 @@ impl SessionView {
                     .child(chip)
                     .children(target)
                     .children(replying)
-                    .child(div().flex_1())
+                    // Dictation's button left of Send, its words and
+                    // waveform taking the room before it.
+                    .child(self.composer.read(cx).dictation().clone())
                     .map(|this| {
                         // The tooltips name the keys: Esc stops, the send key sends.
                         let (label, chord) = if working {
