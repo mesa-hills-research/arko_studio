@@ -645,11 +645,8 @@ impl TranscriptView {
     /// Whether the find covers `entry`: what the view shows of it.
     fn finds_in(&self, entry: &Entry) -> bool {
         let filter = self.model.filter();
-        let view = match filter {
-            super::AgentFilter::Worker(_) => View::Full,
-            _ => self.settings.view,
-        };
-        model::show(filter, view, &entry.item) == Show::Item && !model::is_refresh(&entry.item)
+        model::show(filter, self.settings.view, &entry.item) == Show::Item
+            && !model::is_refresh(&entry.item)
     }
 
     /// Starts folding the texts of the entries not searched yet off the
