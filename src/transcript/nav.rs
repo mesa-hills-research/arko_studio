@@ -70,7 +70,10 @@ impl TranscriptView {
                     .unwrap_or_default();
                 match (item.kind, block) {
                     (Kind::Thinking, _) => format!("Thinking, {text}"),
-                    (_, 0) => format!("Arko, {text}"),
+                    (_, 0) => match super::model::to_you(self.model.filter(), item) {
+                        Some(to_you) => format!("{to_you}, {text}"),
+                        None => format!("Arko, {text}"),
+                    },
                     _ => text,
                 }
             }

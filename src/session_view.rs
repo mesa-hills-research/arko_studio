@@ -1139,7 +1139,14 @@ impl SessionView {
             }
         };
         panel.update(cx, |panel, cx| panel.set_questions(open, window, cx));
-        if !self.panel_open && !session.read(cx).unseen_questions().is_empty() && !self.typing(cx) {
+        // While questions are attached to the message box, a new one waits
+        // in the chip, so the next message still answers only those.
+        let attached = !session.read(cx).attached_questions().is_empty();
+        if !self.panel_open
+            && !session.read(cx).unseen_questions().is_empty()
+            && !self.typing(cx)
+            && !attached
+        {
             self.panel_open = true;
             self.sync_composer(window, cx);
             cx.notify();

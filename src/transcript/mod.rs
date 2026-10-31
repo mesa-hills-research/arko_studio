@@ -312,10 +312,10 @@ struct Run {
 }
 
 /// Whether the rows of `item`'s text are small, and whether its first
-/// block has a line over it ([`EntryUi::small`], [`EntryUi::labeled`]).
-fn text_look(item: &arko::remote::Item) -> (bool, bool) {
-    let labeled =
-        item.kind == Kind::Question || (item.kind == Kind::Message && item.from.is_some());
+/// block has a line over it in the transcript `filter` ([`EntryUi::small`],
+/// [`EntryUi::labeled`]).
+fn text_look(item: &arko::remote::Item, filter: &AgentFilter) -> (bool, bool) {
+    let labeled = item.kind == Kind::Question || row::message_label(filter, item).is_some();
     (item.kind == Kind::Thinking, labeled)
 }
 
@@ -1016,7 +1016,7 @@ impl TranscriptView {
             },
             ..EntryUi::default()
         };
-        (ui.small, ui.labeled) = text_look(&entry.item);
+        (ui.small, ui.labeled) = text_look(&entry.item, self.model.filter());
         ui.images = entry.item.images.len();
         if ui.expanded == Some(true) {
             ui.diff =
@@ -1071,7 +1071,7 @@ impl TranscriptView {
         if plain_text(entry.item.kind) {
             ui.lines = height::hard_lines(text);
         }
-        (ui.small, ui.labeled) = text_look(&entry.item);
+        (ui.small, ui.labeled) = text_look(&entry.item, self.model.filter());
         ui.images = entry.item.images.len();
         let Some(doc) = ui.doc.as_mut() else {
             if needs_doc {

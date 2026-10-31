@@ -854,6 +854,20 @@ pub(super) fn capitalized(text: &str) -> String {
     }
 }
 
+/// The line over a message in the transcript `filter`: who sent a message
+/// an agent got ("From the lead", "From r1"), and in the main transcript
+/// whose a worker's message to the user is ("r3 to you").
+pub(super) fn message_label(filter: &AgentFilter, item: &Item) -> Option<String> {
+    if item.kind != Kind::Message {
+        return None;
+    }
+    match &item.from {
+        Some(from) if from == arko::remote::MAIN_AGENT => Some("From the lead".to_string()),
+        Some(from) => Some(format!("From {from}")),
+        None => super::model::to_you(filter, item),
+    }
+}
+
 /// The muted words on the first line of a user's message, for what its
 /// place doesn't already show. A note the agent hasn't read is "Pending", and
 /// once it has, it is a message like any other. A slash command reads as one
@@ -1196,19 +1210,15 @@ impl TranscriptView {
                 .child(Icon::new(Lucide::MessageCircleQuestionMark).xsmall())
                 .child("Arko asked")
         });
-        let from = (block == 0 && item.kind == Kind::Message)
-            .then(|| item.from.clone())
+        let from = (block == 0)
+            .then(|| message_label(self.model.filter(), item))
             .flatten()
             .map(|from| {
                 div()
                     .pb_1()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(if from == arko::remote::MAIN_AGENT {
-                        "From the lead".to_string()
-                    } else {
-                        format!("From {from}")
-                    })
+                    .child(from)
             });
         let body = if source {
             // As text: the block's Markdown source, in the code font when
@@ -2878,8 +2888,9 @@ mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
     use super::{
-        CACHE_REFRESHED, Lucide, OutputViewer, REGENERATE_HINT, apply_diff_patch, code_lines,
-        duration, edit_diff, longest_code, notice_icon, preview, user_tags,
+        AgentFilter, CACHE_REFRESHED, Lucide, OutputViewer, REGENERATE_HINT, apply_diff_patch,
+        code_lines, duration, edit_diff, longest_code, message_label, notice_icon, preview,
+        user_tags,
     };
     use arko::remote::{Delivery, Item, Kind, Level, Source};
     use gpui_kit::AppContext as _;
@@ -2996,6 +3007,37 @@ mod tests {
     fn the_regenerate_buttons_share_their_words() {
         assert_eq!(REGENERATE_HINT, "Send your last message again");
         assert_eq!(CACHE_REFRESHED, "Cache refreshed");
+    }
+
+    /// The line over a message says who sent it to an agent, and in the
+    /// main transcript whose a worker's message to the user is. The worker's
+    /// own transcript and the main agent's messages need none.
+    #[test]
+    fn a_message_says_whose_it_is() {
+        let message = |agent: &str, from: Option<&str>| {
+            let mut item = Item::new(Kind::Message, "Found it.").agent(agent);
+            item.from = from.map(str::to_string);
+            item
+        };
+        let main = AgentFilter::Main;
+        let own = AgentFilter::Worker("r3".into());
+        let label = |filter, item| message_label(filter, &item);
+        assert_eq!(
+            label(&main, message("r3", None)).as_deref(),
+            Some("r3 to you")
+        );
+        assert_eq!(label(&own, message("r3", None)), None);
+        assert_eq!(label(&main, message("main", None)), None);
+        assert_eq!(
+            label(&own, message("r3", Some("main"))).as_deref(),
+            Some("From the lead")
+        );
+        assert_eq!(
+            label(&own, message("r3", Some("r1"))).as_deref(),
+            Some("From r1")
+        );
+        let text = Item::new(Kind::Text, "Found it.").agent("r3");
+        assert_eq!(label(&main, text), None);
     }
 
     #[test]

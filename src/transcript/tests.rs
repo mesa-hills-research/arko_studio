@@ -2641,6 +2641,65 @@ fn a_stop_in_the_main_transcript_names_the_worker_that_started_it(cx: &mut TestA
     );
 }
 
+/// A worker's message to the user shows in every view of the main
+/// transcript under "r3 to you", which assistive technology hears and the
+/// row's height counts. In the worker's own transcript the message has no
+/// line over it, and it is heard as the agent's words.
+#[gpui_kit::test]
+fn a_workers_message_to_the_user_says_whose_it_is(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Split the work", Source::App, Delivery::Turn);
+    feed.turn_started();
+    feed.worker("r3", "Count the words", WorkerChange::Started);
+    let parameters: HashMap<String, Value> = [("message".to_string(), Value::from("Found it."))]
+        .into_iter()
+        .collect();
+    feed.event(
+        &event(
+            "r3",
+            AgentEvent::ToolCallFormatted {
+                tool_call_id: Uuid::new_v4(),
+                tool_name: "message_user".into(),
+                parameters,
+            },
+        ),
+        Some("r3"),
+    );
+    let message = item_ids(&feed)
+        .iter()
+        .find(|(_, kind)| *kind == Kind::Message)
+        .unwrap()
+        .0;
+    let heard = |cx: &mut TestAppContext, view: &Entity<TranscriptView>| {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            let labels: Vec<String> = view
+                .rows
+                .iter()
+                .filter(|row| row.key.entry() == message)
+                .map(|row| view.row_label(row.key).to_string())
+                .collect();
+            (labels, view.ui[&message].labeled)
+        })
+    };
+    let (window, main) = open(cx, &feed, AgentFilter::Main, 720.);
+    for shown in [View::Full, View::Quiet, View::Messages] {
+        cx.update(|cx| prefs::update(cx, |prefs| prefs.view = shown));
+        settle(cx, window);
+        assert_eq!(
+            heard(cx, &main),
+            (vec!["r3 to you, Found it.".to_string()], true),
+            "{shown:?}"
+        );
+    }
+    let (_, own) = open(cx, &feed, AgentFilter::Worker("r3".into()), 720.);
+    assert_eq!(
+        heard(cx, &own),
+        (vec!["Arko, Found it.".to_string()], false)
+    );
+}
+
 /// A worker's card says its profile once the session has recorded it, and
 /// the card stays one line tall.
 #[gpui_kit::test]

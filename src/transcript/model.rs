@@ -29,18 +29,34 @@ pub enum AgentFilter {
 
 impl AgentFilter {
     /// Whether the transcript keeps `item` at all (a view may still hide
-    /// it). The main transcript keeps the workers' calls and what went wrong
-    /// for them, as the terminal does. What the user wrote to a worker is
-    /// that worker's own, and so are the cards of the workers it started.
-    /// (The main transcript has only the cards of the main agent's workers.)
+    /// it). The main transcript keeps the workers' calls, what went wrong
+    /// for them and their messages to the user, as the terminal does. What
+    /// the user wrote to a worker is that worker's own, and so are the cards
+    /// of the workers it started. (The main transcript has only the cards of
+    /// the main agent's workers.)
     fn keeps(&self, item: &Item) -> bool {
         match self {
             AgentFilter::Main => {
-                item.is_main() || matches!(item.kind, Kind::Call | Kind::Result | Kind::Notice)
+                item.is_main()
+                    || matches!(item.kind, Kind::Call | Kind::Result | Kind::Notice)
+                    || is_to_user(item)
             }
             AgentFilter::Worker(id) => item.agent == id.as_ref(),
         }
     }
+}
+
+/// Whether `item` is an agent's message to the user (`message_user`). A
+/// message an agent got has its sender in `from`.
+pub(crate) fn is_to_user(item: &Item) -> bool {
+    item.is_to_user()
+}
+
+/// "r3 to you": the line over a worker's message to the user in the main
+/// transcript. The worker's own transcript doesn't repeat whose it is.
+pub(crate) fn to_you(filter: &AgentFilter, item: &Item) -> Option<String> {
+    (matches!(filter, AgentFilter::Main) && !item.is_main() && is_to_user(item))
+        .then(|| format!("{} to you", item.agent))
 }
 
 /// The bytes of calls' parameters and whole outputs a transcript keeps, the
@@ -658,9 +674,12 @@ pub(crate) fn show(filter: &AgentFilter, view: View, item: &Item) -> Show {
     }
     let warning = item.level.is_some_and(|level| level != Level::Info);
     if !item.is_main() {
-        // A worker's calls, what went wrong for it and its stop show in
-        // Full. Its text, its report and what the user wrote to it are its
-        // own transcript's.
+        // A worker's message to the user shows in every view. Its calls,
+        // what went wrong for it and its stop show in Full. Its text, its
+        // report and what the user wrote to it are its own transcript's.
+        if is_to_user(item) {
+            return Show::Item;
+        }
         return match (view, item.kind) {
             (View::Full, Kind::Call) => Show::Item,
             (View::Full, Kind::Notice) if warning || item.stop => Show::Item,
@@ -1663,6 +1682,38 @@ mod tests {
                 "{view:?}"
             );
         }
+    }
+
+    /// A worker's message to the user shows in every view of the main
+    /// transcript, and in the worker's own. A message the worker got and its
+    /// text stay in its own transcript.
+    #[test]
+    fn a_workers_message_to_the_user_shows_in_every_view() {
+        let mut from_lead = item(4, Kind::Message, "r1", "Check the tests too.");
+        from_lead.from = Some(arko::remote::MAIN_AGENT.into());
+        let items = vec![
+            item(1, Kind::User, "main", "go"),
+            item(2, Kind::Text, "r1", "Looking."),
+            item(3, Kind::Message, "r1", "Found it."),
+            from_lead,
+            item(5, Kind::Message, "main", "Done."),
+        ];
+        let main = model(items.clone());
+        assert_eq!(ids(&main), [1, 3, 5]);
+        for view in [View::Full, View::Quiet, View::Messages] {
+            assert_eq!(
+                keys(&main, view),
+                [RowKey::User(1), block(3), block(5)],
+                "{view:?}"
+            );
+        }
+        let mut own = Model::new(AgentFilter::Worker("r1".into()));
+        let snapshot = Snapshot {
+            items: items.clone(),
+            ..Snapshot::default()
+        };
+        own.load(snapshot, &mut Changes::default());
+        assert_eq!(keys(&own, View::Messages), [block(2), block(3), block(4)]);
     }
 
     /// A hidden start doesn't count toward the calls a run folds past, and

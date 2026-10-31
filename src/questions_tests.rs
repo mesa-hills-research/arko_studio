@@ -425,6 +425,44 @@ fn a_reply_arko_did_not_send_comes_back_replying_to_its_questions(cx: &mut TestA
     );
 }
 
+/// A question that comes while others are attached to the message box
+/// waits in the chip, with the box empty and nobody typing too. The panel
+/// stays closed, so "Answer in chat" there can't attach it as well, and the
+/// next message answers only the questions attached before it came.
+#[gpui_kit::test]
+fn a_new_question_waits_while_others_are_attached(cx: &mut TestAppContext) {
+    let app = start(cx);
+    let questions = three();
+    app.ask(cx, questions[..1].to_vec());
+    assert!(app.shows(cx, "answer-panel"));
+    app.click(cx, "answer-in-chat");
+    assert!(app.shows(cx, "questions-replying"));
+
+    app.ask(cx, questions[..2].to_vec());
+    assert!(!app.shows(cx, "answer-panel"));
+    assert_eq!(
+        app.label(cx, "questions-open").as_deref(),
+        Some("Arko asks a question")
+    );
+    assert!(app.shows(cx, "questions-replying"));
+
+    app.type_text(cx, "Spaces.");
+    app.press(cx, "enter");
+    assert_eq!(
+        app.sent(cx),
+        [arko::Input::Message(arko::Message {
+            text: "Spaces.".into(),
+            answers: vec!["q1".into()],
+            ..Default::default()
+        })]
+    );
+    assert!(!app.shows(cx, "questions-replying"));
+    assert_eq!(
+        app.label(cx, "questions-open").as_deref(),
+        Some("Arko asks a question")
+    );
+}
+
 /// Esc in the panel does what "Answer in chat" does, and the keyboard goes
 /// to the message box.
 #[gpui_kit::test]
