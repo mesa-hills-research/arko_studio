@@ -20,7 +20,7 @@ use crate::settings_page::{CloseRequested, SettingsPage};
 use crate::sidebar::{Sidebar, SidebarEvent};
 use crate::status_bar::{STATUS_BAR_HEIGHT, StatusBar};
 use crate::title_bar::AppTitleBar;
-use crate::workers_panel::{WorkersPanel, WorkersPanelEvent};
+use crate::workers_panel::{self, WorkersPanel, WorkersPanelEvent};
 use crate::{about, chrome, menus, palette, prompts, quit, shortcuts};
 
 use crate::settings_page::{ACCOUNTS_PAGE, WEB_PAGE_PAGE};
@@ -1312,6 +1312,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_session))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_workers))
+            .map(|this| workers_panel::step_through_views(this, &self.workers))
             .on_action(cx.listener(Self::toggle_notifications))
             .on_action(cx.listener(Self::focus_filter))
             .on_action(cx.listener(Self::rename_session))
@@ -1483,6 +1484,7 @@ impl Render for Workspace {
                     .child(
                         div()
                             .id("main")
+                            .test_support()
                             .flex_1()
                             .min_w_0()
                             .h_full()
