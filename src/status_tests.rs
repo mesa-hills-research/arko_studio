@@ -526,6 +526,8 @@ fn the_costs_popover_shows_what_cost_says(cx: &mut TestAppContext) {
     assert!(bar.find(cx, "cost-details"));
 }
 
+/// The timer counts down to when Arko counts the cache as lapsed, 30
+/// seconds before its lifetime ends.
 #[gpui_kit::test]
 fn the_cache_timer_counts_down_while_idle_and_warns_in_its_last_minute(cx: &mut TestAppContext) {
     let bar = bar(cx, 1300.);
@@ -535,10 +537,10 @@ fn the_cache_timer_counts_down_while_idle_and_warns_in_its_last_minute(cx: &mut 
     reading.cache.tokens = Some(180_000);
     reading.cache.miss_cost = Some(0.9);
     bar.show(cx, reading.clone(), Activity::default());
-    assert_eq!(bar.shown(cx).cache, Some(("cache 2:00".into(), false)));
+    assert_eq!(bar.shown(cx).cache, Some(("cache 1:30".into(), false)));
     assert!(bar.find(cx, "status-cache"));
     assert!(cx.read(|cx| bar.bar.read(cx).is_ticking()));
-    bar.advance(cx, 61_000);
+    bar.advance(cx, 31_000);
     assert_eq!(bar.shown(cx).cache, Some(("cache 0:59".into(), true)));
     bar.advance(cx, 60_000);
     assert_eq!(bar.shown(cx).cache, Some(("cache expired".into(), false)));
@@ -568,7 +570,7 @@ fn the_cache_timer_counts_while_a_question_waits(cx: &mut TestAppContext) {
     bar.show(cx, reading, asking);
     let shown = bar.shown(cx);
     assert_eq!(shown.turn.as_deref(), Some("Waiting for your answer"));
-    assert_eq!(shown.cache, Some(("cache 2:00".into(), false)));
+    assert_eq!(shown.cache, Some(("cache 1:30".into(), false)));
     assert!(cx.read(|cx| bar.bar.read(cx).is_ticking()));
 }
 

@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arko::cache_timer::{CacheTimer, requests_run};
 use arko::details::CostReport;
 use arko::remote::{Activity, Page, Reading};
 use gpui_kit::component::status_bar::StatusBar as KitStatusBar;
@@ -27,7 +28,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::cache_timer::{CacheTimer, cache_timer, requests_run};
+use crate::cache_timer::cache_timer;
 use crate::context_ring::{ContextDetails, ContextSize, context_button};
 use crate::figures::{self, Turn};
 use crate::layout::WidthClass;

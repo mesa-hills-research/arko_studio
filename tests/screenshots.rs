@@ -3128,8 +3128,10 @@ mod status {
             output_tokens: 31_000,
             calls: 22,
         };
+        // 42 seconds left, as Arko counts it, 30 seconds before the
+        // lifetime ends.
         reading.cache.lifetime = Some(Duration::from_secs(300));
-        reading.cache.refreshed_at = Some(NOW - 258_000);
+        reading.cache.refreshed_at = Some(NOW - 228_000);
         reading.cache.tokens = Some(871_204);
         reading.cache.on_plan = Some("your Claude plan");
         reading
