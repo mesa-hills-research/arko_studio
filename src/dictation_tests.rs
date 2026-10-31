@@ -255,6 +255,21 @@ impl Test {
         textarea.update(cx, |textarea, cx| textarea.set_selected_range(range, cx));
     }
 
+    /// An input method composes `text` at the caret.
+    fn compose(&self, text: &str, cx: &mut TestAppContext) {
+        let textarea = self.textarea(cx);
+        act(cx, self.window, |window, cx| {
+            textarea.update(cx, |textarea, cx| {
+                textarea.replace_and_mark_text_in_range(None, text, None, window, cx)
+            })
+        });
+    }
+
+    fn is_recording(&self, cx: &mut TestAppContext) -> bool {
+        let dictation = self.dictation(cx);
+        cx.read(|cx| dictation.read(cx).is_recording(cx))
+    }
+
     /// Replaces the whole text, as a draft or a message to edit does.
     fn set_text(&self, text: &str, cx: &mut TestAppContext) {
         let composer = self.composer(cx);
@@ -562,26 +577,94 @@ fn the_recordings_keys_come_before_the_keymap_and_the_menus(cx: &mut TestAppCont
     assert_eq!(test.text(cx), "/");
 }
 
-/// While an input method composes, settled words wait, and go in once it's
-/// done.
+/// While an input method composes, settled words wait in the recording's
+/// queue, in order, and go in once it's done. Enter ends a composition
+/// without changing the text. Later words follow the queued ones.
 #[gpui_kit::test]
 fn words_wait_for_an_input_method(cx: &mut TestAppContext) {
     let test = Test::start(true, cx);
     let index = test.record(cx);
-    let textarea = test.textarea(cx);
-    act(cx, test.window, |window, cx| {
-        textarea.update(cx, |textarea, cx| {
-            textarea.replace_and_mark_text_in_range(None, "に", None, window, cx)
-        })
-    });
+    test.compose("に", cx);
     test.hear(index, text("Hello", ""), cx);
+    test.hear(index, text(" big", ""), cx);
     assert_eq!(test.text(cx), "に");
-    act(cx, test.window, |window, cx| {
-        textarea.update(cx, |textarea, cx| {
-            textarea.replace_text_in_range(None, "日", window, cx)
+    assert_eq!(test.words(cx).as_deref(), Some("Hello big"));
+    test.press("enter", cx);
+    assert_eq!(test.text(cx), "に Hello big");
+    test.hear(index, text(" world", ""), cx);
+    assert_eq!(test.text(cx), "に Hello big world");
+    assert_eq!(test.status(cx), SpeechStatus::Recording);
+}
+
+/// Send waits for queued words as it does for the last ones. The recording
+/// stays on until they're in, after its recognition ended too, and a new
+/// one can't start meanwhile.
+#[gpui_kit::test]
+fn send_waits_for_queued_words(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    let composer = test.composer(cx);
+    let sent = Rc::new(Cell::new(0));
+    let _counting = cx.update(|cx| {
+        let sent = sent.clone();
+        cx.subscribe(&composer, move |_, event: &ComposerEvent, _| {
+            if matches!(event, ComposerEvent::Submit(_)) {
+                sent.set(sent.get() + 1);
+            }
         })
     });
-    assert_eq!(test.text(cx), "日 Hello");
+    test.type_text("Ask ", cx);
+    let index = test.record(cx);
+    test.compose("に", cx);
+    test.hear(index, text("Hello", ""), cx);
+    act(cx, test.window, |window, cx| window.click("send", cx));
+    assert_eq!(test.status(cx), SpeechStatus::Stopping);
+    assert!(test.taken(index).borrow().finished);
+    test.hear(index, DictationEvent::Done, cx);
+    assert_eq!(test.status(cx), SpeechStatus::Idle);
+    assert!(test.is_recording(cx));
+    act(cx, test.window, |window, cx| window.click("send", cx));
+    test.click(cx);
+    assert_eq!(test.fake.opened.borrow().len(), index + 1, "none starts");
+    assert_eq!((test.text(cx).as_str(), sent.get()), ("Ask に", 0));
+    test.press("enter", cx);
+    assert_eq!(test.text(cx), "Ask に Hello");
+    assert!(!test.is_recording(cx));
+    act(cx, test.window, |window, cx| window.click("send", cx));
+    assert_eq!(sent.get(), 1);
+}
+
+/// A recording that fails while words wait puts them in once the input
+/// method is done, and then says why. The next recording has a queue and
+/// words of its own.
+#[gpui_kit::test]
+fn a_failure_while_words_wait_puts_them_in_first(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    let index = test.record(cx);
+    test.compose("に", cx);
+    test.hear(index, text("Hello", ""), cx);
+    let notes = test.notifications(cx);
+    test.hear(
+        index,
+        DictationEvent::Failed("The microphone stopped (gone).".into()),
+        cx,
+    );
+    assert_eq!(test.status(cx), SpeechStatus::Idle);
+    assert!(!test.microphone.on.get());
+    assert_eq!(test.text(cx), "に");
+    assert_eq!(test.notifications(cx), notes);
+    test.click(cx);
+    assert_eq!(test.fake.opened.borrow().len(), index + 1, "none starts");
+    test.press("enter", cx);
+    assert_eq!(test.text(cx), "に Hello");
+    assert_eq!(test.notifications(cx), notes + 1);
+    assert!(!test.is_recording(cx));
+
+    let again = test.record(cx);
+    assert_eq!(again, index + 1);
+    test.hear(again, text("Again", ""), cx);
+    assert_eq!(test.text(cx), "に Hello Again");
+    test.press("escape", cx);
+    assert_eq!(test.text(cx), "に Hello");
 }
 
 /// When the last words take too long, the recording ends with the words so
