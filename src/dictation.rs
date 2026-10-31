@@ -1,19 +1,19 @@
-//! Dictation: speech typed into the message box, recognized on this computer
-//! by Arko's dictation service.
+//! Dictation, speech typed into the message box and recognized on this
+//! computer by Arko's dictation service.
 //!
-//! The kit's [`SpeechState`] runs a recording, with its [`SpeechButton`] and
-//! [`SpeechWaveform`], and captures from the kit's microphone. Its recognizer
-//! here is Arko's service ([`ArkoRecognizer`]): settled words become the
-//! kit's committed phrases and tentative ones its hypothesis. The words that
-//! settle go into the box at the caret as they come, and the tentative ones
-//! show muted beside the button. Esc cancels, and takes out the words the
-//! recording put in that are still there, followed through the user's edits.
-//! A recording never sends.
+//! The kit's [`SpeechState`] runs each recording, with its [`SpeechButton`]
+//! and [`SpeechWaveform`], and captures from the kit's microphone. Its
+//! recognizer is Arko's service ([`ArkoRecognizer`]), whose settled words
+//! become the kit's committed phrases and whose tentative ones become its
+//! hypothesis. Settled words go into the box at the caret as they come, and
+//! the tentative ones show muted beside the button. Esc cancels, and takes
+//! out the words the recording put in that are still there, followed through
+//! the user's edits. A recording never sends.
 //!
 //! The button starts recording on press. A short click keeps it recording
 //! until the next click, and a press held past [`HOLD`] records until it's
 //! released. The first recording without a model asks before downloading
-//! it, and the download runs beside the button, without the microphone.
+//! it, and the download runs beside the button without the microphone.
 
 use std::ops::Range;
 use std::path::PathBuf;
@@ -41,8 +41,9 @@ use crate::workers::curly;
 /// A press on the button held this long records until it's released.
 pub const HOLD: Duration = Duration::from_millis(300);
 
-/// The rate the recognizer asks the kit's microphone for: most devices' own,
-/// so the kit passes their audio through and Arko's resampler converts it.
+/// The rate the recognizer asks the kit's microphone for. It's most
+/// devices' own, so the kit passes their audio through and Arko's resampler
+/// converts it.
 const RATE: u32 = 48_000;
 
 /// How long the last words may take to settle once recording stops. Arko
@@ -55,8 +56,8 @@ const MODEL_READY: &str = "Speech model downloaded.";
 /// What macOS's refusal of the microphone says.
 const MICROPHONE_DENIED: &str = "Arko Studio isn’t allowed to use the microphone. Allow it in System Settings › Privacy & Security › Microphone.";
 
-/// Arko's dictation service as recording uses it: the real one, or a fake
-/// in tests.
+/// Arko's dictation service as recording uses it, the real one or a fake in
+/// tests.
 pub trait Service: 'static {
     /// Opens a dictation whose events go to `sink`. A model that isn't
     /// downloaded is [`DictationError::NeedsDownload`], unless
@@ -75,7 +76,7 @@ pub trait Service: 'static {
 pub trait Opened {
     /// Mono audio at `rate` samples a second.
     fn push(&self, samples: &[f32], rate: u32);
-    /// Ends the audio: the last words settle, then `Done` comes.
+    /// Ends the audio. The last words settle, then `Done` comes.
     fn finish(&mut self);
 }
 
@@ -116,7 +117,7 @@ impl Service for Arko {
     }
 }
 
-/// What recordings use: Arko's service, and the audio a test gives (the
+/// What recordings use, Arko's service and the audio a test gives (the
 /// kit's microphone otherwise).
 #[derive(Clone)]
 pub struct Speech {
@@ -134,8 +135,8 @@ pub fn init(root: PathBuf, cx: &mut App) {
     });
 }
 
-/// What every dictation opens with. `download`: the user agreed to download
-/// the model.
+/// What every dictation opens with. `download` says the user agreed to
+/// download the model.
 fn options(download: bool) -> DictationOptions {
     // Arko 0.17.0's `arko::dictation::session_words`, the session's names
     // for the engine to favour, go in here once Studio builds on it.
@@ -251,12 +252,12 @@ struct Download {
 
 /// A press on the button that started a recording.
 struct Press {
-    /// Held past [`HOLD`]: the release stops the recording.
+    /// Held past [`HOLD`], so the release stops the recording.
     held: bool,
     _timer: Task<()>,
 }
 
-/// The composer's dictation: the recording, the button and what shows
+/// The composer's dictation, with the recording, the button and what shows
 /// beside it.
 pub struct Dictation {
     speech: Entity<SpeechState>,
@@ -336,8 +337,8 @@ impl Dictation {
         on
     }
 
-    /// Esc: ends the recording, and takes its words out of the box. Whether
-    /// a recording was on.
+    /// Esc while recording. It ends the recording and takes its words out of
+    /// the box. Whether a recording was on.
     pub fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.is_recording(cx) {
             return false;
@@ -357,15 +358,15 @@ impl Dictation {
         true
     }
 
-    /// Ends the recording where it is, as the box goes to another session:
-    /// the words in it stay, and those still to come don't.
+    /// Ends the recording where it is, as the box goes to another session.
+    /// The words in it stay, and those still to come don't.
     pub fn end(&mut self, cx: &mut Context<Self>) {
         self.recording = None;
         self.press = None;
         self.speech.update(cx, |speech, cx| speech.cancel(cx));
     }
 
-    /// The button pressed: starts a recording, or stops the one on.
+    /// The button pressed. It starts a recording, or stops the one on.
     fn press(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let speech = self.speech.read(cx);
         let (status, available) = (speech.status(), speech.is_available(cx));
@@ -398,7 +399,7 @@ impl Dictation {
         });
     }
 
-    /// The button released: a press held past [`HOLD`] stops the recording
+    /// The button released. A press held past [`HOLD`] stops the recording
     /// it started, and a shorter one leaves it on.
     fn release(&mut self, cx: &mut Context<Self>) {
         if self.press.take().is_some_and(|press| press.held) {
@@ -619,8 +620,8 @@ impl Dictation {
                     download.step = step;
                 }
             }
-            // Ready: the model stays loaded a while, and the microphone
-            // waits for the button.
+            // The model is ready. It stays loaded a while, and the
+            // microphone waits for the button.
             DictationEvent::Listening | DictationEvent::Done => {
                 self.download = None;
                 window.push_notification(MODEL_READY, cx);
@@ -640,8 +641,8 @@ impl Dictation {
         cx.notify();
     }
 
-    /// What shows beside the button: the download's or the model's step,
-    /// else the words that may still change.
+    /// What shows beside the button. That's the download's or the model's
+    /// step, else the words that may still change.
     pub fn words(&self) -> Option<SharedString> {
         if let Some(download) = &self.download {
             return Some(download.step.label().into());
@@ -716,9 +717,9 @@ impl Render for Dictation {
                         .on_click(cx.listener(|this, _, _, cx| this.cancel_download(cx))),
                 ),
                 None if shown => this.child(
-                    // The kit's button, pressed and released here: a press
-                    // starts, a click toggles and a long press holds. Its
-                    // own click is left to the keyboard.
+                    // The kit's button, whose presses are handled here. A
+                    // press starts, a click toggles and a long press holds,
+                    // and its own click is left to the keyboard.
                     div()
                         .id("dictate")
                         .test_support()
@@ -763,9 +764,9 @@ fn spaced(before: Option<char>, wrote: bool, text: &str) -> String {
 }
 
 /// The edit that turned `before` into `after`, with the caret at `caret` in
-/// `after`: the bytes of `before` it replaced, and the length of what went in
-/// their place. What follows the caret was kept, which tells where text
-/// typed beside its like went.
+/// `after`. It gives the bytes of `before` it replaced, and the length of
+/// what went in their place. What follows the caret was kept, which tells
+/// where text typed beside its like went.
 fn edit_between(before: &str, after: &str, caret: usize) -> (Range<usize>, usize) {
     let (b, a) = (before.as_bytes(), after.as_bytes());
     let kept = a.len() - caret.min(a.len());
@@ -791,7 +792,7 @@ fn edit_between(before: &str, after: &str, caret: usize) -> (Range<usize>, usize
     (prefix..b.len() - suffix, a.len() - suffix - prefix)
 }
 
-/// `ranges` after `replaced` became `inserted` bytes: the part of each before
+/// `ranges` after `replaced` became `inserted` bytes. The part of each before
 /// the edit stays, the part after it moves, and the part it replaced goes.
 /// Nothing that went in joins a range.
 fn follow(ranges: &mut Vec<Range<usize>>, replaced: Range<usize>, inserted: usize) {
@@ -826,7 +827,7 @@ mod tests {
     fn an_edit_is_found_where_the_caret_says() {
         // Typed at the end.
         assert_eq!(edit_between("ab", "abb", 3), (2..2, 1));
-        // Typed before its like: the caret tells which "b" is new.
+        // Typed before its like, where the caret tells which "b" is new.
         assert_eq!(edit_between("ab", "abb", 2), (1..1, 1));
         assert_eq!(edit_between("cat", "ccat", 1), (0..0, 1));
         // Deleted.
@@ -841,20 +842,20 @@ mod tests {
     #[allow(clippy::single_range_in_vec_init)]
     fn ranges_follow_edits_and_leave_out_what_went_in() {
         let mut ranges = vec![2..5];
-        // Before it: it moves.
+        // Before it, it moves.
         follow(&mut ranges, 0..0, 3);
         assert_eq!(ranges, [5..8]);
-        // At its start and its end: it stays as it is.
+        // At its start and its end, it stays as it is.
         follow(&mut ranges, 5..5, 1);
         follow(&mut ranges, 9..9, 1);
         assert_eq!(ranges, [6..9]);
-        // Inside it: it splits around what went in.
+        // Inside it, it splits around what went in.
         follow(&mut ranges, 7..7, 2);
         assert_eq!(ranges, [6..7, 9..11]);
-        // Part of it replaced: that part goes.
+        // Part of it replaced, that part goes.
         follow(&mut ranges, 10..12, 0);
         assert_eq!(ranges, [6..7, 9..10]);
-        // All of it: it goes.
+        // All of it, it goes.
         follow(&mut ranges, 0..20, 1);
         assert!(ranges.is_empty());
     }

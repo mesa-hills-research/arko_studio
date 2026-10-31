@@ -1,4 +1,4 @@
-//! Dictation in the composer, with a fake service and microphone: the
+//! Dictation in the composer, with a fake service and microphone. The
 //! service's events are given by hand, so nothing needs a model or a
 //! microphone.
 
@@ -24,7 +24,7 @@ use crate::dictation::{Dictation, HOLD, Opened, Service, Speech};
 use crate::tests::{act, open, press_mouse, row_of};
 use crate::workspace::Workspace;
 
-/// An open dictation of the fake service: what it took.
+/// What an open dictation of the fake service took.
 #[derive(Default)]
 struct Taken {
     samples: usize,
@@ -58,8 +58,8 @@ struct Open {
     taken: Rc<RefCell<Taken>>,
 }
 
-/// The fake service: whether its model is downloaded, and each dictation it
-/// opened.
+/// The fake service, with whether its model is downloaded and each
+/// dictation it opened.
 #[derive(Default)]
 struct Fake {
     installed: Cell<bool>,
@@ -275,7 +275,7 @@ fn a_click_records_until_the_next_click(cx: &mut TestAppContext) {
     assert!(test.taken(0).borrow().dropped);
     assert_eq!(test.text(cx), "Hello world.");
     assert_eq!(test.words(cx), None);
-    // The words are the user's now: Esc leaves them.
+    // The words are the user's now, and Esc leaves them.
     act(cx, test.window, |window, cx| window.press("escape", cx));
     assert_eq!(test.text(cx), "Hello world.");
 }
@@ -327,7 +327,7 @@ fn words_go_in_at_the_caret(cx: &mut TestAppContext) {
     assert_eq!(test.text(cx), "Hello big round world");
 }
 
-/// Esc cancels: the recording ends at once, and the words it put in leave
+/// Esc cancels. The recording ends at once, and the words it put in leave
 /// the box, wherever the caret took them. What was there before and what
 /// the user typed meanwhile stay, even typed alike.
 #[gpui_kit::test]
@@ -379,7 +379,7 @@ fn the_send_key_stops_a_recording_and_sends_after(cx: &mut TestAppContext) {
     test.hear(0, text("Ship it", ""), cx);
     act(cx, test.window, |window, cx| window.press("enter", cx));
     assert_eq!(test.status(cx), SpeechStatus::Stopping);
-    // Again while the last words come: it waits for them.
+    // Again while the last words come, and it waits for them.
     act(cx, test.window, |window, cx| window.press("enter", cx));
     assert_eq!(sent.get(), 0);
     test.hear(0, text(".", ""), cx);
@@ -548,7 +548,7 @@ impl AudioInput for WavMicrophone {
 }
 
 /// A WAV file dictated through the recognizer, Arko's service and Granite
-/// Speech's real pack, without a microphone: the model loads, the words go
+/// Speech's real pack, without a microphone. The model loads, the words go
 /// into the box as they settle, and a click lets the last ones come. It runs
 /// only with `ARKO_TEST_SPEECH_PACK` naming Granite's int8 pack and
 /// `ARKO_TEST_SPEECH_WAV` LibriSpeech's clip 260-123286-0018, as Arko's own
@@ -573,8 +573,8 @@ fn a_wav_file_is_dictated_through_arkos_service(cx: &mut TestAppContext) {
     std::os::unix::fs::symlink(&pack, GRANITE.pack(root.path())).unwrap();
     #[cfg(not(unix))]
     std::fs::copy(&pack, GRANITE.pack(root.path())).unwrap();
-    // The service's thread wakes the app's tasks: the test scheduler lets
-    // it, as for real I/O.
+    // The service's thread wakes the app's tasks, which the test scheduler
+    // allows as for real I/O.
     cx.executor().allow_parking();
     let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
     cx.update(|cx| {
