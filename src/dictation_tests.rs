@@ -412,6 +412,24 @@ fn another_session_ends_the_recording(cx: &mut TestAppContext) {
     assert_eq!(test.text(cx), "");
 }
 
+/// When the last words take too long, the recording ends with the words so
+/// far, and says so.
+#[gpui_kit::test]
+fn last_words_that_take_too_long_leave_the_rest(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    test.listening(cx);
+    test.hear(0, text("Half", ""), cx);
+    let notes = test.notifications(cx);
+    test.click(cx);
+    assert_eq!(test.status(cx), SpeechStatus::Stopping);
+    cx.executor().advance_clock(Duration::from_secs(31));
+    cx.run_until_parked();
+    assert_eq!(test.status(cx), SpeechStatus::Idle);
+    assert!(test.taken(0).borrow().dropped);
+    assert_eq!(test.text(cx), "Half");
+    assert_eq!(test.notifications(cx), notes + 1);
+}
+
 /// The first recording without a model asks before downloading it, and
 /// Cancel leaves it. Download runs beside the button with the service's
 /// steps, without the microphone, and says when the model is ready. The

@@ -46,12 +46,18 @@ pub const HOLD: Duration = Duration::from_millis(300);
 /// converts it.
 const RATE: u32 = 48_000;
 
-/// How long the last words may take to settle once recording stops. Arko
-/// bounds its last pass by how far recognition fell behind (30 s).
+/// How long the kit waits for the last words once recording stops, a guess.
+/// Arko's last pass covers the audio recognition hadn't caught up on, at
+/// most 30 s of it, so a computer that kept up while listening takes far
+/// less.
 const LAST_WORDS: Duration = Duration::from_secs(30);
 
 /// What the window says once the model is downloaded and ready.
 const MODEL_READY: &str = "Speech model downloaded.";
+
+/// What the window says when the last words took longer than
+/// [`LAST_WORDS`].
+const TOO_SLOW: &str = "Dictation took too long to finish. The words so far stay in the box.";
 
 /// What macOS's refusal of the microphone says.
 const MICROPHONE_DENIED: &str = "Arko Studio isn’t allowed to use the microphone. Allow it in System Settings › Privacy & Security › Microphone.";
@@ -240,6 +246,8 @@ struct Recording {
     tentative: SharedString,
     /// Making the model ready, before it listens.
     preparing: Option<Preparing>,
+    /// Arko said its last words are in.
+    done: bool,
 }
 
 /// The model downloading for the recordings to come. Dropping it stops the
@@ -422,11 +430,23 @@ impl Dictation {
                     wrote: false,
                     tentative: SharedString::default(),
                     preparing: None,
+                    done: false,
                 });
             }
             SpeechEvent::Partial(_) => {}
-            // Its words are the user's now.
-            SpeechEvent::Final(_) | SpeechEvent::Cancelled => {
+            // Its words are the user's now. The kit ends a recording whose
+            // last words didn't come in time as if they had.
+            SpeechEvent::Final(_) => {
+                let cut_short = self
+                    .recording
+                    .take()
+                    .is_some_and(|recording| !recording.done);
+                self.press = None;
+                if cut_short {
+                    window.push_notification(Notification::warning(TOO_SLOW), cx);
+                }
+            }
+            SpeechEvent::Cancelled => {
                 self.recording = None;
                 self.press = None;
             }
@@ -461,7 +481,12 @@ impl Dictation {
                     recording.tentative = tentative.trim().to_string().into();
                 }
             }
-            DictationEvent::Done | DictationEvent::Failed(_) => {}
+            DictationEvent::Done => {
+                if let Some(recording) = &mut self.recording {
+                    recording.done = true;
+                }
+            }
+            DictationEvent::Failed(_) => {}
         }
         cx.notify();
     }
