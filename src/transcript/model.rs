@@ -49,8 +49,7 @@ impl AgentFilter {
 /// Whether `item` is an agent's message to the user (`message_user`). A
 /// message an agent got has its sender in `from`.
 pub(crate) fn is_to_user(item: &Item) -> bool {
-    // shortcut: arko 0.15.1 has this as `Item::is_to_user`, use it once Studio builds on 0.15.1.
-    item.kind == Kind::Message && item.from.is_none()
+    item.is_to_user()
 }
 
 /// "r3 to you": the line over a worker's message to the user in the main
