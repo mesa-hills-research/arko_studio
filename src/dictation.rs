@@ -257,8 +257,6 @@ struct Recording {
     tentative: SharedString,
     /// Making the model ready, before it listens.
     preparing: Option<Preparing>,
-    /// Arko said its last words are in.
-    done: bool,
     /// Settled words waiting to go in while an input method composes, in
     /// the order they came. Only the front goes in, so none overtakes
     /// another.
@@ -326,7 +324,10 @@ impl Dictation {
                 .recognizer(recognizer)
                 // Windows' own recognizer sends the audio to Microsoft.
                 .system_fallback(false)
-                .stop_timeout(LAST_WORDS);
+                .stop_timeout(LAST_WORDS)
+                // Last words that don't come in time end it as a failure,
+                // not as if they had come.
+                .timeout_is_error(true);
             match input {
                 Some(input) => state.input(input),
                 None => state,
@@ -518,21 +519,15 @@ impl Dictation {
                     wrote: false,
                     tentative: SharedString::default(),
                     preparing: None,
-                    done: false,
                     queue: String::new(),
                     ended: None,
                 });
             }
             SpeechEvent::Partial(_) => {}
-            // Its words are the user's once its queue is in. The kit ends a
-            // recording whose last words didn't come in time as if they
-            // had.
+            // Its words are the user's once its queue is in.
             SpeechEvent::Final(_) => {
                 self.press = None;
                 if let Some(recording) = &mut self.recording {
-                    if !recording.done {
-                        window.push_notification(Notification::warning(TOO_SLOW), cx);
-                    }
                     recording.ended = Some(Ended::Finished);
                     recording.tentative = SharedString::default();
                 }
@@ -569,8 +564,7 @@ impl Dictation {
                 recording.tentative = tentative.trim().to_string().into();
                 self.write(settled, window, cx);
             }
-            DictationEvent::Done => recording.done = true,
-            DictationEvent::Failed(_) => {}
+            DictationEvent::Done | DictationEvent::Failed(_) => {}
         }
         cx.notify();
     }
@@ -659,6 +653,10 @@ impl Dictation {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if error.is_timeout() {
+            window.push_notification(Notification::warning(TOO_SLOW), cx);
+            return;
+        }
         let words = match error {
             SpeechError::Recognizer(error) => match error.downcast_ref::<DictationError>() {
                 Some(DictationError::NeedsDownload(model)) => {

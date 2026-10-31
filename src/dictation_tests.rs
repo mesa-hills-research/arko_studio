@@ -975,10 +975,9 @@ fn a_wav_file_is_dictated_through_arkos_service(cx: &mut TestAppContext) {
     }
 }
 
-/// Listening draws the box's row and the views around it, and leaves the
-/// other panes as they were. Without motion the waveform draws once per
-/// level (80 ms of audio). With motion the kit's waveform asks for every
-/// frame.
+/// Listening draws the session view once per level (80 ms of audio), with
+/// motion or without, and leaves the other panes as they were. The waveform
+/// scrolls in paint, so only the window's root draws on the frames between.
 #[gpui_kit::test]
 fn listening_draws_no_other_pane(cx: &mut TestAppContext) {
     let test = Test::start(true, cx);
@@ -1004,10 +1003,6 @@ fn listening_draws_no_other_pane(cx: &mut TestAppContext) {
         let drawn = cx.read(|cx| view.read(cx).render_count()) - before;
         let others = crate::testing::renders();
         assert!(others.keys().all(|view| *view == "Workspace"), "{others:?}");
-        if motion {
-            assert!(drawn <= 75, "{drawn}");
-        } else {
-            assert!(drawn <= 13, "{drawn}");
-        }
+        assert!(drawn <= 13, "motion {motion}: {drawn}");
     }
 }
