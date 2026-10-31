@@ -908,3 +908,55 @@ fn a_reply_arko_refuses_as_too_long_comes_back_to_the_message_box(cx: &mut TestA
     let text = cx.read(|cx| view.read(cx).composer().read(cx).text(cx));
     assert_eq!(text.trim(), long.trim());
 }
+
+/// When Arko stops before it says what became of answers, they may have
+/// gone. The feed says which: a question it still has open shows again,
+/// with its answer filled in, and one it has answered stays settled.
+#[gpui_kit::test]
+fn answers_whose_outcome_isnt_known_follow_the_feed(cx: &mut TestAppContext) {
+    use arko::questions::QuestionState;
+
+    let app = start(cx);
+    let feed = arko::remote::Feed::new("main");
+    crate::questions::ask(
+        &feed,
+        &[("q1", "Tabs or spaces?"), ("q2", "Which branch?")],
+        false,
+    );
+    app.session
+        .update(cx, |session, cx| session.follow_feed(feed.clone(), cx));
+    app.ask(cx, feed.open_questions());
+    let open = |cx: &mut TestAppContext| -> Vec<String> {
+        cx.read(|cx| {
+            app.session
+                .read(cx)
+                .open_questions()
+                .iter()
+                .map(|question| question.id.clone())
+                .collect()
+        })
+    };
+    // No word of them, and the feed still has both open.
+    app.fill(cx, 0, "Spaces");
+    app.click(cx, "answer-send");
+    assert!(!app.shows(cx, "answer-panel"));
+    assert_eq!(open(cx), ["q2"]);
+    drop(app.session.update(cx, |session, _| session.read_sends()));
+    cx.run_until_parked();
+    assert_eq!(open(cx), ["q1", "q2"]);
+    assert!(app.shows(cx, "answer-panel"));
+    let kept = app.panel(cx).read_with(cx, |panel, cx| panel.answers(cx));
+    assert_eq!(kept.answers[0].answer.text.as_deref(), Some("Spaces"));
+    assert_eq!(app.notifications(cx), 1);
+    // No word of them, and the feed has the answer.
+    app.click(cx, "answer-send");
+    feed.set_question_state(
+        "q1",
+        QuestionState::Answered {
+            answer: "Spaces".into(),
+        },
+    );
+    drop(app.session.update(cx, |session, _| session.read_sends()));
+    cx.run_until_parked();
+    assert_eq!(open(cx), ["q2"]);
+}

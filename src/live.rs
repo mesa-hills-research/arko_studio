@@ -203,6 +203,17 @@ pub struct Sent {
     pub verdict: oneshot::Receiver<arko::Verdict>,
 }
 
+/// What a send settles here, the questions it answers or dismisses and
+/// the approval requests it answers, while its verdict is to come. They're
+/// hidden meanwhile, settled once it's accepted, and open again once it's
+/// refused.
+struct Pending {
+    /// Which send it is.
+    id: u64,
+    questions: Vec<String>,
+    approvals: Vec<String>,
+}
+
 /// A worker that finished or failed, as a notification tells of it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkerEnd {
@@ -370,8 +381,8 @@ impl Drained {
 /// the engine's status says of them.
 #[derive(Default)]
 struct Questions {
-    /// Answered, dismissed or replied to here: hidden until the status no
-    /// longer lists them open.
+    /// Answered, dismissed or replied to here, and taken: hidden until the
+    /// status no longer lists them open.
     settled: std::collections::HashSet<String>,
     /// Attached to the message box ("Replying to 2 questions"), in the order
     /// asked.
@@ -412,20 +423,6 @@ impl Questions {
         }
     }
 
-    /// The questions `input` answers, dismisses or replies to are settled
-    /// here.
-    fn sent(&mut self, input: &arko::Input) {
-        let ids = Self::settled_by(input);
-        self.attached.retain(|id| !ids.contains(id));
-        self.settled.extend(ids);
-    }
-
-    /// `input` didn't go, so the questions it settled are open here again.
-    fn unsettle(&mut self, input: &arko::Input) {
-        let ids = Self::settled_by(input);
-        self.settled.retain(|id| !ids.contains(id));
-    }
-
     /// Forgets the session's questions, which open anew with it.
     fn reopened(&mut self) {
         *self = Self::default();
@@ -436,7 +433,8 @@ impl Questions {
 /// beside what the engine's status says of them.
 #[derive(Default)]
 struct Approvals {
-    /// Answered here: hidden until the status no longer lists them.
+    /// Answered here, and taken: hidden until the status no longer lists
+    /// them.
     answered: std::collections::HashSet<String>,
     /// The requests the status listed since the session opened.
     known: std::collections::HashSet<String>,
@@ -517,6 +515,10 @@ pub struct LiveSession {
     /// sent belongs to the attempt current then, which retires when it
     /// fails, ends or gives way to the next.
     attempt: u64,
+    /// What the sends whose verdicts are to come settle here.
+    pending: Vec<Pending>,
+    /// Counts the sends, which [`Pending`] tells apart.
+    sends: u64,
     /// The cache is kept warm with a short message: the next turn (or the
     /// one running) is that message's.
     refresh_coming: bool,
@@ -530,6 +532,9 @@ pub struct LiveSession {
     /// What a refresh of its cache answers (tests).
     #[cfg(test)]
     refresh_answer: Option<Result<arko::Refreshed, String>>,
+    /// The feed it follows without having opened (tests).
+    #[cfg(test)]
+    followed: Option<Feed>,
     _tasks: Vec<Task<()>>,
     /// The tasks draining the feed it has open: dropped with that feed.
     _feed: Vec<Task<()>>,
@@ -566,6 +571,8 @@ impl LiveSession {
             input_epoch: std::cell::Cell::new(0),
             opened: 0,
             attempt: 0,
+            pending: Vec::new(),
+            sends: 0,
             refresh_coming: false,
             refresh_running: false,
             refreshed_last: false,
@@ -573,6 +580,8 @@ impl LiveSession {
             applied: 0,
             #[cfg(test)]
             refresh_answer: None,
+            #[cfg(test)]
+            followed: None,
             _tasks: Vec::new(),
             _feed: Vec::new(),
             _rename: None,
@@ -930,14 +939,15 @@ impl LiveSession {
         cx.notify();
     }
 
-    /// Its seam goes, with the feed and the tasks that drained it, so the
-    /// attempt that opened it retires.
+    /// Its seam goes, with the feed, the tasks that drained it and what it
+    /// settled here, so the attempt that opened it retires.
     fn depart(&mut self) {
         self.link = None;
         self._feed.clear();
         self.activity = Activity::default();
         self.questions.reopened();
         self.approvals = Approvals::default();
+        self.pending.clear();
     }
 
     /// Switches the session between Chat and Agent (between turns): the
@@ -1090,11 +1100,13 @@ impl LiveSession {
         );
     }
 
-    /// Follows `feed` as if the engine had opened with it (tests).
+    /// Follows `feed` as if the engine had opened with it, and takes it as
+    /// its own (tests).
     #[cfg(test)]
     pub fn follow_feed(&mut self, feed: Feed, cx: &mut Context<Self>) {
         let (_, status) = tokio::sync::watch::channel(self.reading.clone());
         let (_, quit_asks) = mpsc::unbounded_channel();
+        self.followed = Some(feed.clone());
         self.drain(feed, status, quit_asks, cx);
     }
 
@@ -1251,7 +1263,10 @@ impl LiveSession {
     }
 
     pub fn feed(&self) -> Option<&Feed> {
-        self.link.as_ref().map(|link| &link.feed)
+        let feed = self.link.as_ref().map(|link| &link.feed);
+        #[cfg(test)]
+        let feed = feed.or(self.followed.as_ref());
+        feed
     }
 
     /// Its latest status.
@@ -1286,8 +1301,18 @@ impl LiveSession {
         self.reading
             .questions
             .iter()
-            .filter(|question| !self.questions.settled.contains(&question.id))
+            .filter(|question| !self.settled_question(&question.id))
             .collect()
+    }
+
+    /// Whether the question `id` was answered, dismissed or replied to
+    /// here, taken or not yet.
+    fn settled_question(&self, id: &str) -> bool {
+        self.questions.settled.contains(id)
+            || self
+                .pending
+                .iter()
+                .any(|pending| pending.questions.iter().any(|settled| settled == id))
     }
 
     /// The requests waiting in the approval tray, in the order they came,
@@ -1296,7 +1321,13 @@ impl LiveSession {
         self.reading
             .approvals
             .iter()
-            .filter(|request| !self.approvals.answered.contains(&request.id))
+            .filter(|request| {
+                !self.approvals.answered.contains(&request.id)
+                    && !self
+                        .pending
+                        .iter()
+                        .any(|pending| pending.approvals.contains(&request.id))
+            })
             .collect()
     }
 
@@ -1316,7 +1347,7 @@ impl LiveSession {
         self.questions
             .attached
             .iter()
-            .filter(|id| !self.questions.settled.contains(*id))
+            .filter(|id| !self.settled_question(id))
             .cloned()
             .collect()
     }
@@ -1438,8 +1469,9 @@ impl LiveSession {
 
     /// Sends `input` to the engine, or keeps it until the session opens.
     /// What it settles here (questions answered or dismissed, requests in
-    /// the approval tray answered) leaves at once, and comes back should
-    /// the engine refuse it. `Err` says why the session can't take it.
+    /// the approval tray answered) is hidden until its verdict comes, and
+    /// comes back should the engine refuse it. `Err` says why the session
+    /// can't take it.
     pub fn send(&mut self, input: arko::Input, cx: &mut Context<Self>) -> Result<Sent, String> {
         match (&self.phase, &self.link) {
             (Phase::Open | Phase::Closing, Some(_)) | (Phase::Opening, _) => {}
@@ -1459,42 +1491,83 @@ impl LiveSession {
                 .map_err(|_| "The session has closed.".to_string())?,
             None => self.queued_requests.get_mut().push(request),
         }
-        self.questions.sent(&input);
-        self.approvals
-            .answered
-            .extend(Approvals::answered_by(&input));
+        let id = self.sends;
+        self.sends += 1;
+        let questions = Questions::settled_by(&input);
+        let approvals = Approvals::answered_by(&input);
+        self.questions
+            .attached
+            .retain(|attached| !questions.contains(attached));
+        if !questions.is_empty() || !approvals.is_empty() {
+            self.pending.push(Pending {
+                id,
+                questions,
+                approvals,
+            });
+        }
         self.touched_at = crate::figures::now_ms();
         self.changes();
         self.update_indicator(cx);
         cx.notify();
         let (told, heard) = oneshot::channel();
-        let attempt = self.attempt;
         cx.spawn(async move |this, cx| {
-            let Ok(verdict) = verdict.await else {
-                return;
-            };
-            if matches!(verdict, arko::Verdict::Refused(_)) {
-                this.update(cx, |this, cx| this.refused(attempt, &input, cx))
-                    .ok();
+            let verdict = verdict.await.ok();
+            this.update(cx, |this, cx| this.settle(id, verdict.as_ref(), cx))
+                .ok();
+            if let Some(verdict) = verdict {
+                let _ = told.send(verdict);
             }
-            let _ = told.send(verdict);
         })
         .detach();
         Ok(Sent {
-            attempt,
+            attempt: self.attempt,
             verdict: heard,
         })
     }
 
-    /// The engine refused `input`, which the attempt `attempt` took, so
-    /// what it settled here is open again, while that attempt lasts.
-    fn refused(&mut self, attempt: u64, input: &arko::Input, cx: &mut Context<Self>) {
-        if self.attempt() != Some(attempt) {
+    /// Takes what became of the send `id` (`None` when the engine stopped
+    /// before it said): what it settled here is settled once it's
+    /// accepted, and open again once it's refused. Without a verdict, it
+    /// may have gone, so the feed says which of them are still open. A send
+    /// of an attempt that gave way to another settles nothing.
+    fn settle(&mut self, id: u64, verdict: Option<&arko::Verdict>, cx: &mut Context<Self>) {
+        let Some(at) = self.pending.iter().position(|pending| pending.id == id) else {
             return;
-        }
-        let answered = Approvals::answered_by(input);
-        self.approvals.answered.retain(|id| !answered.contains(id));
-        self.questions.unsettle(input);
+        };
+        let Pending {
+            questions,
+            approvals,
+            ..
+        } = self.pending.remove(at);
+        let (questions, approvals) = match (verdict, self.feed()) {
+            (Some(arko::Verdict::Accepted { .. }), _) | (None, None) => (questions, approvals),
+            (Some(arko::Verdict::Refused(_)), _) => (Vec::new(), Vec::new()),
+            (_, Some(feed)) => {
+                let open: Vec<String> = feed
+                    .open_questions()
+                    .into_iter()
+                    .map(|question| question.id)
+                    .collect();
+                let waiting: Vec<String> = feed
+                    .approvals()
+                    .into_iter()
+                    .map(|request| request.id)
+                    .collect();
+                (
+                    questions
+                        .into_iter()
+                        .filter(|id| !open.contains(id))
+                        .collect(),
+                    approvals
+                        .into_iter()
+                        .filter(|id| !waiting.contains(id))
+                        .collect(),
+                )
+            }
+            (Some(_), None) => (questions, approvals),
+        };
+        self.questions.settled.extend(questions);
+        self.approvals.answered.extend(approvals);
         self.update_indicator(cx);
         cx.notify();
     }
