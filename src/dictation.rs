@@ -11,7 +11,10 @@
 //! A recording owns the words it put in for as long as nothing else changes
 //! the box's text, and Esc then takes them out. Once anything else changes
 //! the text (typing, a paste, undo), Esc ends the recording and leaves all
-//! of it, for undo to take out.
+//! of it, for undo to take out. Esc and the send key reach a recording before
+//! the keymap and the menus do ([`Dictation::intercept`]). The composer takes
+//! its text to send, or replaces it whole, only through calls that end or
+//! wait for the recording first.
 //!
 //! The button starts recording on press. A short click keeps it recording
 //! until the next click, and a press held past [`HOLD`] records until it's
@@ -43,6 +46,10 @@ use crate::workers::curly;
 
 /// A press on the button held this long records until it's released.
 pub const HOLD: Duration = Duration::from_millis(300);
+
+/// The key context of the dictation's controls, which Esc and the send key
+/// reach a recording from, as they do from the composer's.
+const CONTEXT: &str = "Dictation";
 
 /// The rate the recognizer asks the kit's microphone for. It's most
 /// devices' own, so the kit passes their audio through and Arko's resampler
@@ -310,6 +317,8 @@ impl Dictation {
                 None => state,
             }
         });
+        let ours = window.window_handle();
+        let this = cx.weak_entity();
         let subscriptions = vec![
             cx.subscribe_in(&speech, window, Self::on_speech_event),
             cx.subscribe_in(
@@ -323,6 +332,12 @@ impl Dictation {
             ),
             // The button and the waveform follow the state.
             cx.observe(&speech, |_, _, cx| cx.notify()),
+            cx.intercept_keystrokes(move |event, window, cx| {
+                if window.window_handle() == ours {
+                    this.update(cx, |this, cx| this.intercept(event, window, cx))
+                        .ok();
+                }
+            }),
         ];
         Self {
             speech,
@@ -340,7 +355,7 @@ impl Dictation {
     }
 
     /// Whether a recording is on, from its start until its last words are in.
-    fn is_recording(&self, cx: &App) -> bool {
+    pub fn is_recording(&self, cx: &App) -> bool {
         self.speech.read(cx).status().is_active()
     }
 
@@ -351,17 +366,16 @@ impl Dictation {
         }
     }
 
-    /// Stops recording, and lets the last words come. Whether a recording
-    /// was on, so the send key waits for them rather than sending.
-    pub fn stop(&mut self, cx: &mut Context<Self>) -> bool {
+    /// Stops recording, and lets the last words come.
+    pub fn stop(&mut self, cx: &mut Context<Self>) {
         self.press = None;
-        let on = self.is_recording(cx);
         self.speech.update(cx, |speech, cx| speech.stop(cx));
-        on
     }
 
-    /// Ends the recording where it is, as the box goes to another session.
-    /// The words in it stay, and those still to come don't.
+    /// Ends the recording before the box's text is replaced whole (another
+    /// session's draft, a message to edit, the input history). The words it
+    /// put in stay with the text they were in, and those still to come go
+    /// nowhere.
     pub fn end(&mut self, cx: &mut Context<Self>) {
         self.recording = None;
         self.held.clear();
@@ -371,11 +385,8 @@ impl Dictation {
 
     /// Esc while recording. The recording ends at once, and the words it put
     /// in leave the box while it still owns them. Once something else
-    /// changed the text they all stay. Whether a recording was on.
-    pub fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if !self.is_recording(cx) {
-            return false;
-        }
+    /// changed the text they all stay.
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.press = None;
         self.held.clear();
         let owned = self.recording.take().and_then(|recording| recording.owned);
@@ -390,7 +401,47 @@ impl Dictation {
         }
         self.speech.update(cx, |speech, cx| speech.cancel(cx));
         cx.notify();
-        true
+    }
+
+    /// Esc and the send key while a recording is on, from the box or the
+    /// button, before the keymap (Vim's included) and the menus see them.
+    /// Esc cancels, and the send key stops the recording so its last words
+    /// come before anything goes. An input method that composes keeps its
+    /// keys.
+    fn intercept(&mut self, event: &KeystrokeEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_recording(cx) {
+            return;
+        }
+        let ours = event
+            .context_stack
+            .iter()
+            .any(|context| context.contains(crate::composer::CONTEXT) || context.contains(CONTEXT));
+        if !ours || self.is_composing(window, cx) {
+            return;
+        }
+        let keystroke = &event.keystroke;
+        if keystroke.key == "escape" && !keystroke.modifiers.modified() {
+            self.cancel(window, cx);
+        } else if keystroke.key == "enter" && self.sends(keystroke.modifiers, cx) {
+            self.stop(cx);
+        } else {
+            return;
+        }
+        cx.stop_propagation();
+    }
+
+    /// Whether Enter with `modifiers` is a chord that sends.
+    fn sends(&self, modifiers: Modifiers, cx: &App) -> bool {
+        let rest = Modifiers {
+            shift: false,
+            ..modifiers
+        };
+        let secondary = rest == Modifiers::secondary_key();
+        (secondary || rest == Modifiers::none())
+            && self
+                .textarea
+                .read(cx)
+                .is_submit_chord(secondary, modifiers.shift)
     }
 
     /// Whether an input method composes text in the box.
@@ -717,18 +768,11 @@ impl Render for Dictation {
         let muted = cx.theme().muted_foreground;
         h_flex()
             .id("dictation")
+            .key_context(CONTEXT)
             .flex_1()
             .min_w_0()
             .justify_end()
             .gap_2()
-            // Esc cancels from the button too, once the keyboard started it.
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                let escape =
-                    event.keystroke.key == "escape" && !event.keystroke.modifiers.modified();
-                if escape && this.cancel(window, cx) {
-                    cx.stop_propagation();
-                }
-            }))
             .children(words.map(|words| {
                 div()
                     .id("dictation-words")

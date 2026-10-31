@@ -24,6 +24,8 @@ use crate::Startup;
 use crate::backend::FakeBackend;
 use crate::composer::{Composer, ComposerEvent};
 use crate::dictation::{Dictation, HOLD, Opened, Service, Speech};
+use crate::live::LiveSession;
+use crate::prefs::Keymap;
 use crate::tests::{act, open, press_mouse, row_of};
 use crate::workspace::Workspace;
 
@@ -260,6 +262,18 @@ impl Test {
             composer.update(cx, |composer, cx| composer.set_text(text, window, cx))
         });
     }
+
+    /// Shows a session that hasn't opened, which keeps what it's sent.
+    fn show_session(&self, cx: &mut TestAppContext) -> Entity<LiveSession> {
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        let workspace = self.workspace.clone();
+        act(cx, self.window, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_session(session.clone(), window, cx)
+            })
+        });
+        session
+    }
 }
 
 fn text(settled: &str, tentative: &str) -> DictationEvent {
@@ -493,6 +507,61 @@ fn another_session_ends_the_recording(cx: &mut TestAppContext) {
     assert_eq!(test.text(cx), "");
 }
 
+/// Replacing the whole text ends the recording first, as a message to edit
+/// or the input history does, so a later Esc takes nothing out.
+#[gpui_kit::test]
+fn replacing_the_text_ends_the_recording(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    test.type_text("Draft", cx);
+    let index = test.record(cx);
+    test.hear(index, text("more", ""), cx);
+    test.set_text("Edit me", cx);
+    assert_eq!(test.status(cx), SpeechStatus::Idle);
+    assert!(test.taken(index).borrow().dropped);
+    test.hear(index, text(" late", ""), cx);
+    test.press("escape", cx);
+    assert_eq!(test.text(cx), "Edit me");
+
+    // ↑ in the empty box takes a message from the history.
+    cx.update(|cx| crate::history::add("First message", cx));
+    test.set_text("", cx);
+    let index = test.record(cx);
+    test.press("up", cx);
+    assert_eq!(test.text(cx), "First message");
+    assert_eq!(test.status(cx), SpeechStatus::Idle);
+    assert!(test.taken(index).borrow().dropped);
+}
+
+/// Esc reaches a recording before Vim does, and the send key before the
+/// slash menu does.
+#[gpui_kit::test]
+fn the_recordings_keys_come_before_the_keymap_and_the_menus(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    cx.update(|cx| crate::prefs::update(cx, |prefs| prefs.input.keymap = Keymap::Vim));
+    test.press("escape", cx);
+    test.press("i", cx);
+    test.type_text("Note: ", cx);
+    let index = test.record(cx);
+    test.hear(index, text("cat", ""), cx);
+    test.press("escape", cx);
+    assert_eq!(test.text(cx), "Note: ");
+    assert_eq!(test.status(cx), SpeechStatus::Idle);
+    // Vim stayed in insert mode.
+    test.type_text("x", cx);
+    assert_eq!(test.text(cx), "Note: x");
+
+    cx.update(|cx| crate::prefs::update(cx, |prefs| prefs.input.keymap = Keymap::Standard));
+    test.set_text("/", cx);
+    let composer = test.composer(cx);
+    composer.update(cx, |composer, cx| composer.show_menu(cx));
+    assert!(cx.read(|cx| composer.read(cx).menu().is_some()));
+    let index = test.record(cx);
+    test.press("enter", cx);
+    assert_eq!(test.status(cx), SpeechStatus::Stopping);
+    assert!(test.taken(index).borrow().finished);
+    assert_eq!(test.text(cx), "/");
+}
+
 /// While an input method composes, settled words wait, and go in once it's
 /// done.
 #[gpui_kit::test]
@@ -531,6 +600,95 @@ fn last_words_that_take_too_long_leave_the_rest(cx: &mut TestAppContext) {
     assert!(test.taken(0).borrow().dropped);
     assert_eq!(test.text(cx), "Half");
     assert_eq!(test.notifications(cx), notes + 1);
+}
+
+/// Approval answers leave out the box while a recording is on, and the box
+/// keeps its words.
+#[gpui_kit::test]
+fn an_approval_answer_leaves_a_recordings_box_alone(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    let session = test.show_session(cx);
+    session.update(cx, |session, cx| {
+        let reading = arko::remote::Reading {
+            approvals: vec![crate::approvals_tests::profile("a1", "3d-judge")],
+            ..Default::default()
+        };
+        session.set_status(reading, Default::default(), cx)
+    });
+    test.type_text("Run it on opus", cx);
+    let index = test.record(cx);
+    test.hear(index, text(" instead", ""), cx);
+    act(cx, test.window, |window, cx| {
+        window.click("approval-reject", cx)
+    });
+    assert_eq!(
+        cx.read(|cx| session.read(cx).queued().to_vec()),
+        [crate::approvals_tests::answers(&[("a1", false)], None)]
+    );
+    assert_eq!(test.text(cx), "Run it on opus instead");
+    assert_eq!(test.status(cx), SpeechStatus::Recording);
+}
+
+/// Continue after Arko asked about a worker's lapsed cache sends again, but
+/// not while a recording is on.
+#[gpui_kit::test]
+fn a_retry_waits_for_no_recording(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    let session = test.show_session(cx);
+    // Its worker r1 finished two hours ago, its prompt cache long expired.
+    session.update(cx, |session, cx| {
+        let r1 = crate::workers::ended_with_cache("r1", 2 * 3_600_000, 340_000);
+        session.set_workers(vec![r1], &[], cx)
+    });
+    let view = cx.read(|cx| test.workspace.read(cx).session_view().clone());
+    act(cx, test.window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_target(Some("r1".into()), window, cx);
+            view.focus_composer(window, cx);
+        })
+    });
+    test.type_text("Use tabs.", cx);
+    test.press("enter", cx);
+    let refused: arko::Refusal = serde_json::from_value(serde_json::json!({
+        "kind": "uncached", "worker": "r1", "words": "r1's cache expired.",
+        "confirm": "continue_uncached"
+    }))
+    .unwrap();
+    // How many sends the session answers so.
+    let answer = |verdict: arko::Verdict, cx: &mut TestAppContext| {
+        let sent = session.update(cx, |session, _| session.answer_sends(|_| verdict.clone()));
+        cx.run_until_parked();
+        sent.len()
+    };
+    let shows_dialog = |cx: &mut TestAppContext| {
+        cx.update_window(test.window, |_, window, cx| window.has_active_dialog(cx))
+            .unwrap()
+    };
+    let continue_ = |cx: &mut TestAppContext| {
+        act(cx, test.window, |window, cx| {
+            window.within("dialog").click("ok", cx)
+        });
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+    };
+    assert_eq!(answer(arko::Verdict::Refused(refused.clone()), cx), 1);
+    assert!(shows_dialog(cx));
+    continue_(cx);
+    assert_eq!(
+        answer(arko::Verdict::Refused(refused.clone()), cx),
+        1,
+        "Continue sends again"
+    );
+    assert!(shows_dialog(cx));
+    assert_eq!(test.text(cx), "Use tabs.");
+    let dictation = test.dictation(cx);
+    dictation.update(cx, |dictation, cx| dictation.start(cx));
+    cx.run_until_parked();
+    assert!(test.microphone.on.get());
+    continue_(cx);
+    let accepted = arko::Verdict::accepted(arko::remote::Delivery::Turn, None);
+    assert_eq!(answer(accepted, cx), 0);
+    assert_eq!(test.text(cx), "Use tabs.");
 }
 
 /// The first recording without a model asks before downloading it, and

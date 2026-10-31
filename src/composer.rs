@@ -558,8 +558,10 @@ impl Composer {
         text
     }
 
-    /// Replaces the text with `text` (a draft, a message to edit).
+    /// Replaces the text with `text` (a draft, a message to edit). Every
+    /// replacement of the whole text comes here, and ends a recording first.
     pub fn set_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.dictation.update(cx, |dictation, cx| dictation.end(cx));
         self.walk = None;
         self.menu = None;
         self.dismissed = None;
@@ -641,6 +643,13 @@ impl Composer {
         self.images = images;
         cx.emit(ComposerEvent::Edited);
         cx.notify();
+    }
+
+    /// What it holds, to send. Everything that sends from the composer takes
+    /// it here, and gets nothing while a recording is on, since its last
+    /// words aren't in yet.
+    pub fn to_send(&self, cx: &App) -> Option<Outgoing> {
+        (!self.dictation.read(cx).is_recording(cx)).then(|| self.draft(cx))
     }
 
     /// What it holds, as a draft to keep.
@@ -810,21 +819,16 @@ impl Composer {
 
     fn submit(&mut self, cx: &mut Context<Self>) {
         // A recording stops instead, and its last words come before it sends.
-        if self
-            .dictation
-            .update(cx, |dictation, cx| dictation.stop(cx))
-        {
+        let Some(outgoing) = self.to_send(cx) else {
+            self.dictation
+                .update(cx, |dictation, cx| dictation.stop(cx));
             return;
-        }
-        let text = self.expanded_text(cx);
-        if text.trim().is_empty() && self.images.is_empty() {
+        };
+        if outgoing.text.trim().is_empty() && outgoing.images.is_empty() {
             return;
         }
         self.menu = None;
-        cx.emit(ComposerEvent::Submit(Outgoing {
-            text,
-            images: self.images.clone(),
-        }));
+        cx.emit(ComposerEvent::Submit(outgoing));
     }
 
     /// Asks to send what is typed (the Send button).
@@ -1322,15 +1326,7 @@ impl Composer {
         }
     }
 
-    fn on_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
-        // A recording ends first, taking its words with it.
-        if self
-            .dictation
-            .update(cx, |dictation, cx| dictation.cancel(window, cx))
-        {
-            cx.stop_propagation();
-            return;
-        }
+    fn on_escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
         if self.menu.take().is_some() {
             self.dismissed = Some(self.text(cx));
             cx.notify();
