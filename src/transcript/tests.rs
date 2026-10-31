@@ -2408,6 +2408,9 @@ fn thinking_shimmers_while_it_streams_then_says_how_long(cx: &mut TestAppContext
     cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Quiet));
     settle(cx, window);
     assert!(!keys(&other, cx).iter().any(block(thinking, 0)));
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Messages));
+    settle(cx, window);
+    assert!(!keys(&other, cx).iter().any(block(thinking, 0)));
 }
 
 #[gpui_kit::test]
