@@ -6,9 +6,12 @@
 //! recognizer is Arko's service ([`ArkoRecognizer`]), whose settled words
 //! become the kit's committed phrases and whose tentative ones become its
 //! hypothesis. Settled words go into the box at the caret as they come, and
-//! the tentative ones show muted beside the button. Esc cancels, and takes
-//! out the words the recording put in that are still there, followed through
-//! the user's edits. A recording never sends.
+//! the tentative ones show muted beside the button. A recording never sends.
+//!
+//! A recording owns the words it put in for as long as nothing else changes
+//! the box's text, and Esc then takes them out. Once anything else changes
+//! the text (typing, a paste, undo), Esc ends the recording and leaves all
+//! of it, for undo to take out.
 //!
 //! The button starts recording on press. A short click keeps it recording
 //! until the next click, and a press held past [`HOLD`] records until it's
@@ -235,11 +238,8 @@ impl RecognitionSession for Session {
 
 /// The recording that's on.
 struct Recording {
-    /// The parts of the box its words went into, as the user's edits since
-    /// moved them.
-    ranges: Vec<Range<usize>>,
-    /// The box's text as last seen, to find each edit.
-    seen: String,
+    /// The words it put in, while it still owns them.
+    owned: Option<Owned>,
     /// Some of its words went in.
     wrote: bool,
     /// The words after them that may still change.
@@ -248,6 +248,14 @@ struct Recording {
     preparing: Option<Preparing>,
     /// Arko said its last words are in.
     done: bool,
+}
+
+/// Where a recording's words are in the box, in order, as its own
+/// insertions moved them. They hold while the text is as the last of those
+/// insertions left it, at `revision`.
+struct Owned {
+    ranges: Vec<Range<usize>>,
+    revision: u64,
 }
 
 /// The model downloading for the recordings to come. Dropping it stops the
@@ -309,7 +317,6 @@ impl Dictation {
                 window,
                 |this, _, event: &InputEvent, window, cx| {
                     if matches!(event, InputEvent::Change) {
-                        this.follow_edits(cx);
                         this.write_held(window, cx);
                     }
                 },
@@ -353,18 +360,29 @@ impl Dictation {
         on
     }
 
-    /// Esc while recording. It ends the recording and takes its words out of
-    /// the box. Whether a recording was on.
+    /// Ends the recording where it is, as the box goes to another session.
+    /// The words in it stay, and those still to come don't.
+    pub fn end(&mut self, cx: &mut Context<Self>) {
+        self.recording = None;
+        self.held.clear();
+        self.press = None;
+        self.speech.update(cx, |speech, cx| speech.cancel(cx));
+    }
+
+    /// Esc while recording. The recording ends at once, and the words it put
+    /// in leave the box while it still owns them. Once something else
+    /// changed the text they all stay. Whether a recording was on.
     pub fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.is_recording(cx) {
             return false;
         }
         self.press = None;
         self.held.clear();
-        self.follow_edits(cx);
-        if let Some(recording) = self.recording.take() {
+        let owned = self.recording.take().and_then(|recording| recording.owned);
+        let revision = self.textarea.read(cx).revision();
+        if let Some(owned) = owned.filter(|owned| owned.revision == revision) {
             self.textarea.update(cx, |textarea, cx| {
-                for range in recording.ranges.into_iter().rev() {
+                for range in owned.ranges.into_iter().rev() {
                     textarea.set_selected_range(range, cx);
                     textarea.replace("", window, cx);
                 }
@@ -373,15 +391,6 @@ impl Dictation {
         self.speech.update(cx, |speech, cx| speech.cancel(cx));
         cx.notify();
         true
-    }
-
-    /// Ends the recording where it is, as the box goes to another session.
-    /// The words in it stay, and those still to come don't.
-    pub fn end(&mut self, cx: &mut Context<Self>) {
-        self.recording = None;
-        self.held.clear();
-        self.press = None;
-        self.speech.update(cx, |speech, cx| speech.cancel(cx));
     }
 
     /// Whether an input method composes text in the box.
@@ -442,8 +451,10 @@ impl Dictation {
         match event {
             SpeechEvent::Started => {
                 self.recording = Some(Recording {
-                    ranges: Vec::new(),
-                    seen: self.textarea.read(cx).text().to_string(),
+                    owned: Some(Owned {
+                        ranges: Vec::new(),
+                        revision: self.textarea.read(cx).revision(),
+                    }),
                     wrote: false,
                     tentative: SharedString::default(),
                     preparing: None,
@@ -478,31 +489,17 @@ impl Dictation {
 
     /// An event of the recording's dictation, after the kit's state had it.
     fn heard(&mut self, event: &DictationEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.recording.is_none() {
+        let Some(recording) = &mut self.recording else {
             return;
-        }
+        };
         match event {
-            DictationEvent::Preparing(step) => {
-                if let Some(recording) = &mut self.recording {
-                    recording.preparing = Some(*step);
-                }
-            }
-            DictationEvent::Listening => {
-                if let Some(recording) = &mut self.recording {
-                    recording.preparing = None;
-                }
-            }
+            DictationEvent::Preparing(step) => recording.preparing = Some(*step),
+            DictationEvent::Listening => recording.preparing = None,
             DictationEvent::Text { settled, tentative } => {
+                recording.tentative = tentative.trim().to_string().into();
                 self.write(settled, window, cx);
-                if let Some(recording) = &mut self.recording {
-                    recording.tentative = tentative.trim().to_string().into();
-                }
             }
-            DictationEvent::Done => {
-                if let Some(recording) = &mut self.recording {
-                    recording.done = true;
-                }
-            }
+            DictationEvent::Done => recording.done = true,
             DictationEvent::Failed(_) => {}
         }
         cx.notify();
@@ -518,27 +515,34 @@ impl Dictation {
             self.held.push_str(settled);
             return;
         }
-        self.follow_edits(cx);
         let wrote = self
             .recording
             .as_ref()
             .is_none_or(|recording| recording.wrote);
-        let (range, text) = self.textarea.update(cx, |textarea, cx| {
+        let before = self.textarea.read(cx).revision();
+        let (at, len, landed, after) = self.textarea.update(cx, |textarea, cx| {
             let at = textarea.cursor();
             let text = textarea.text().to_string();
             let words = spaced(text[..at].chars().next_back(), wrote, settled);
             textarea.insert(words.clone(), window, cx);
-            (at..at + words.len(), textarea.text().to_string())
+            // The words, in one piece where the caret was.
+            let landed = textarea.cursor() == at + words.len()
+                && textarea.text().to_string().get(at..at + words.len()) == Some(words.as_str());
+            (at, words.len(), landed, textarea.revision())
         });
         let Some(recording) = &mut self.recording else {
             return;
         };
-        match recording.ranges.last_mut() {
-            Some(last) if last.end == range.start => last.end = range.end,
-            _ => recording.ranges.push(range),
-        }
-        recording.seen = text;
         recording.wrote = true;
+        recording.owned = recording
+            .owned
+            .take()
+            .filter(|owned| owned.revision == before && landed)
+            .map(|mut owned| {
+                own(&mut owned.ranges, at, len);
+                owned.revision = after;
+                owned
+            });
     }
 
     /// The words held while an input method composed, once it's done.
@@ -548,21 +552,6 @@ impl Dictation {
         }
         let held = std::mem::take(&mut self.held);
         self.write(&held, window, cx);
-    }
-
-    /// Moves the recording's ranges with what changed in the box since it
-    /// last looked.
-    fn follow_edits(&mut self, cx: &mut Context<Self>) {
-        let Some(recording) = &mut self.recording else {
-            return;
-        };
-        let textarea = self.textarea.read(cx);
-        let text = textarea.text().to_string();
-        if text != recording.seen {
-            let (replaced, inserted) = edit_between(&recording.seen, &text, textarea.cursor());
-            follow(&mut recording.ranges, replaced, inserted);
-            recording.seen = text;
-        }
     }
 
     /// Says why a recording ended or couldn't start, in Arko's words. A
@@ -822,56 +811,33 @@ fn spaced(before: Option<char>, wrote: bool, text: &str) -> String {
     }
 }
 
-/// The edit that turned `before` into `after`, with the caret at `caret` in
-/// `after`. It gives the bytes of `before` it replaced, and the length of
-/// what went in their place. What follows the caret was kept, which tells
-/// where text typed beside its like went.
-fn edit_between(before: &str, after: &str, caret: usize) -> (Range<usize>, usize) {
-    let (b, a) = (before.as_bytes(), after.as_bytes());
-    let kept = a.len() - caret.min(a.len());
-    let mut suffix = b
-        .iter()
-        .rev()
-        .zip(a.iter().rev())
-        .take(kept.min(b.len()))
-        .take_while(|(x, y)| x == y)
-        .count();
-    let mut prefix = b
-        .iter()
-        .zip(a)
-        .take(b.len().min(a.len()) - suffix)
-        .take_while(|(x, y)| x == y)
-        .count();
-    while !(before.is_char_boundary(prefix) && after.is_char_boundary(prefix)) {
-        prefix -= 1;
+/// `ranges` after the recording put `len` bytes in at `at`. The ranges after
+/// that point move, one it went into grows, and the new words join any
+/// range they touch.
+fn own(ranges: &mut Vec<Range<usize>>, at: usize, len: usize) {
+    for range in ranges.iter_mut() {
+        if range.start >= at {
+            range.start += len;
+            range.end += len;
+        } else if range.end > at {
+            range.end += len;
+        }
     }
-    while !(before.is_char_boundary(b.len() - suffix) && after.is_char_boundary(a.len() - suffix)) {
-        suffix -= 1;
-    }
-    (prefix..b.len() - suffix, a.len() - suffix - prefix)
-}
-
-/// `ranges` after `replaced` became `inserted` bytes. The part of each before
-/// the edit stays, the part after it moves, and the part it replaced goes.
-/// Nothing that went in joins a range.
-fn follow(ranges: &mut Vec<Range<usize>>, replaced: Range<usize>, inserted: usize) {
-    let moved = |offset: usize| offset - replaced.end + replaced.start + inserted;
-    let mut followed = Vec::with_capacity(ranges.len());
+    ranges.push(at..at + len);
+    ranges.sort_by_key(|range| range.start);
+    let mut joined: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
     for range in ranges.drain(..) {
-        if range.start < replaced.start {
-            followed.push(range.start..range.end.min(replaced.start));
-        }
-        if range.end > replaced.end {
-            followed.push(moved(range.start.max(replaced.end))..moved(range.end));
+        match joined.last_mut() {
+            Some(last) if last.end >= range.start => last.end = last.end.max(range.end),
+            _ => joined.push(range),
         }
     }
-    followed.retain(|range| !range.is_empty());
-    *ranges = followed;
+    *ranges = joined;
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{edit_between, follow, spaced};
+    use super::{own, spaced};
 
     #[test]
     fn the_first_words_get_a_space_after_a_word() {
@@ -883,39 +849,22 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_is_found_where_the_caret_says() {
-        // Typed at the end.
-        assert_eq!(edit_between("ab", "abb", 3), (2..2, 1));
-        // Typed before its like, where the caret tells which "b" is new.
-        assert_eq!(edit_between("ab", "abb", 2), (1..1, 1));
-        assert_eq!(edit_between("cat", "ccat", 1), (0..0, 1));
-        // Deleted.
-        assert_eq!(edit_between("aab", "ab", 1), (1..2, 0));
-        // Replaced a selection.
-        assert_eq!(edit_between("one two", "one 2", 5), (4..7, 1));
-        // Whole characters, also where only their last bytes differ.
-        assert_eq!(edit_between("é", "è", 2), (0..2, 2));
-    }
-
-    #[test]
     #[allow(clippy::single_range_in_vec_init)]
-    fn ranges_follow_edits_and_leave_out_what_went_in() {
-        let mut ranges = vec![2..5];
-        // Before it, it moves.
-        follow(&mut ranges, 0..0, 3);
+    fn the_recordings_own_words_move_its_ranges() {
+        let mut ranges = Vec::new();
+        own(&mut ranges, 5, 3);
         assert_eq!(ranges, [5..8]);
-        // At its start and its end, it stays as it is.
-        follow(&mut ranges, 5..5, 1);
-        follow(&mut ranges, 9..9, 1);
-        assert_eq!(ranges, [6..9]);
-        // Inside it, it splits around what went in.
-        follow(&mut ranges, 7..7, 2);
-        assert_eq!(ranges, [6..7, 9..11]);
-        // Part of it replaced, that part goes.
-        follow(&mut ranges, 10..12, 0);
-        assert_eq!(ranges, [6..7, 9..10]);
-        // All of it, it goes.
-        follow(&mut ranges, 0..20, 1);
-        assert!(ranges.is_empty());
+        // Before them, they move, and the two stay apart.
+        own(&mut ranges, 0, 4);
+        assert_eq!(ranges, [0..4, 9..12]);
+        // Right after one, it grows.
+        own(&mut ranges, 12, 2);
+        assert_eq!(ranges, [0..4, 9..14]);
+        // Inside one, it grows.
+        own(&mut ranges, 10, 1);
+        assert_eq!(ranges, [0..4, 9..15]);
+        // Right after one, it grows, and the one after moves.
+        own(&mut ranges, 4, 5);
+        assert_eq!(ranges, [0..9, 14..20]);
     }
 }

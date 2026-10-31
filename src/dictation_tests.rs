@@ -242,6 +242,24 @@ impl Test {
         assert_eq!(self.status(cx), SpeechStatus::Recording);
         index
     }
+
+    fn press(&self, key: &str, cx: &mut TestAppContext) {
+        act(cx, self.window, |window, cx| window.press(key, cx));
+    }
+
+    /// Moves the caret, or selects, without changing the text.
+    fn select(&self, range: std::ops::Range<usize>, cx: &mut TestAppContext) {
+        let textarea = self.textarea(cx);
+        textarea.update(cx, |textarea, cx| textarea.set_selected_range(range, cx));
+    }
+
+    /// Replaces the whole text, as a draft or a message to edit does.
+    fn set_text(&self, text: &str, cx: &mut TestAppContext) {
+        let composer = self.composer(cx);
+        act(cx, self.window, |window, cx| {
+            composer.update(cx, |composer, cx| composer.set_text(text, window, cx))
+        });
+    }
 }
 
 fn text(settled: &str, tentative: &str) -> DictationEvent {
@@ -340,36 +358,87 @@ fn words_go_in_at_the_caret(cx: &mut TestAppContext) {
 }
 
 /// Esc cancels. The recording ends at once, and the words it put in leave
-/// the box, wherever the caret took them. What was there before and what
-/// the user typed meanwhile stay, even typed alike.
+/// the box, wherever the caret took them. Moving the caret and selecting
+/// leave its hold on them.
 #[gpui_kit::test]
-fn esc_takes_out_only_this_recordings_words(cx: &mut TestAppContext) {
+fn esc_takes_out_the_recordings_words(cx: &mut TestAppContext) {
     let test = Test::start(true, cx);
-    test.type_text("Note:", cx);
+    test.type_text("Note: ", cx);
     test.listening(cx);
     test.hear(0, text("one two", " three"), cx);
     assert_eq!(test.text(cx), "Note: one two");
-    act(cx, test.window, |window, cx| window.press("escape", cx));
-    assert_eq!(test.text(cx), "Note:");
+    test.press("escape", cx);
+    assert_eq!(test.text(cx), "Note: ");
     assert_eq!(test.status(cx), SpeechStatus::Idle);
     assert!(!test.microphone.on.get());
     assert!(test.taken(0).borrow().dropped);
     assert_eq!(test.words(cx), None);
 
-    // Typed beside the recording's words, and alike.
-    act(cx, test.window, |window, cx| window.press("backspace", cx));
-    test.type_text(" ", cx);
-    test.click(cx);
-    test.hear(1, DictationEvent::Listening, cx);
-    test.hear(1, text("cat", ""), cx);
+    // Words put in before the earlier ones, after the caret moved.
+    let index = test.record(cx);
+    test.hear(index, text("cat", ""), cx);
+    assert_eq!(test.text(cx), "Note: cat");
+    test.select(0..0, cx);
+    test.hear(index, text(" dog", ""), cx);
+    assert_eq!(test.text(cx), " dogNote: cat");
+    test.select(1..4, cx);
+    test.press("escape", cx);
+    assert_eq!(test.text(cx), "Note: ");
+}
+
+/// Once anything else changes the text, the recording no longer holds its
+/// words. Esc then ends it and leaves everything, for undo to take out.
+/// Replacing its words, even with the same ones, typing elsewhere, undo and
+/// redo all count.
+#[gpui_kit::test]
+fn an_edit_ends_the_recordings_hold_on_its_words(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    let index = test.record(cx);
+    test.hear(index, text("cat", ""), cx);
+    test.select(0..3, cx);
+    test.type_text("car", cx);
+    test.hear(index, text(" sat", ""), cx);
+    assert_eq!(test.text(cx), "car sat");
+    test.press("escape", cx);
+    assert_eq!(test.text(cx), "car sat");
+    assert_eq!(test.status(cx), SpeechStatus::Idle);
+    assert!(test.taken(index).borrow().dropped);
+
+    test.set_text("", cx);
+    let index = test.record(cx);
+    test.hear(index, text("cat", ""), cx);
+    test.select(0..3, cx);
+    test.type_text("cat", cx);
+    test.press("escape", cx);
+    assert_eq!(test.text(cx), "cat");
+
+    test.set_text("Note ", cx);
+    let index = test.record(cx);
+    test.hear(index, text("cat", ""), cx);
+    test.select(0..0, cx);
+    test.hear(index, text(" dog", ""), cx);
+    test.select(6..6, cx);
+    test.type_text("X", cx);
+    assert_eq!(test.text(cx), " dogNoXte cat");
+    test.press("escape", cx);
+    assert_eq!(test.text(cx), " dogNoXte cat");
+
+    test.set_text("Note ", cx);
+    let index = test.record(cx);
+    test.hear(index, text("cat", ""), cx);
+    test.press("secondary-z", cx);
+    assert_eq!(test.text(cx), "Note ");
+    test.press("escape", cx);
+    assert_eq!(test.text(cx), "Note ");
+
+    test.set_text("Note ", cx);
+    let index = test.record(cx);
+    test.hear(index, text("cat", ""), cx);
+    test.press("secondary-z", cx);
+    test.press("secondary-shift-z", cx);
     assert_eq!(test.text(cx), "Note cat");
-    let textarea = test.textarea(cx);
-    textarea.update(cx, |textarea, cx| textarea.set_selected_range(5..5, cx));
-    test.type_text("cat dog ", cx);
-    test.hear(1, text(" ears", ""), cx);
-    assert_eq!(test.text(cx), "Note cat dog  earscat");
-    act(cx, test.window, |window, cx| window.press("escape", cx));
-    assert_eq!(test.text(cx), "Note cat dog ");
+    test.press("escape", cx);
+    assert_eq!(test.text(cx), "Note cat");
 }
 
 /// The send key while recording stops it rather than sending, and sends
