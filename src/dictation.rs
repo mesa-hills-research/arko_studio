@@ -271,6 +271,8 @@ pub struct Dictation {
     speech: Entity<SpeechState>,
     textarea: Entity<TextareaState>,
     recording: Option<Recording>,
+    /// Settled words that wait for an input method to finish composing.
+    held: String,
     download: Option<Download>,
     press: Option<Press>,
     _subscriptions: Vec<Subscription>,
@@ -302,11 +304,16 @@ impl Dictation {
         });
         let subscriptions = vec![
             cx.subscribe_in(&speech, window, Self::on_speech_event),
-            cx.subscribe(&textarea, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.follow_edits(cx);
-                }
-            }),
+            cx.subscribe_in(
+                &textarea,
+                window,
+                |this, _, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.follow_edits(cx);
+                        this.write_held(window, cx);
+                    }
+                },
+            ),
             // The button and the waveform follow the state.
             cx.observe(&speech, |_, _, cx| cx.notify()),
         ];
@@ -314,6 +321,7 @@ impl Dictation {
             speech,
             textarea,
             recording: None,
+            held: String::new(),
             download: None,
             press: None,
             _subscriptions: subscriptions,
@@ -352,6 +360,7 @@ impl Dictation {
             return false;
         }
         self.press = None;
+        self.held.clear();
         self.follow_edits(cx);
         if let Some(recording) = self.recording.take() {
             self.textarea.update(cx, |textarea, cx| {
@@ -370,8 +379,16 @@ impl Dictation {
     /// The words in it stay, and those still to come don't.
     pub fn end(&mut self, cx: &mut Context<Self>) {
         self.recording = None;
+        self.held.clear();
         self.press = None;
         self.speech.update(cx, |speech, cx| speech.cancel(cx));
+    }
+
+    /// Whether an input method composes text in the box.
+    fn is_composing(&self, window: &mut Window, cx: &mut App) -> bool {
+        self.textarea.update(cx, |textarea, cx| {
+            textarea.marked_text_range(window, cx).is_some()
+        })
     }
 
     /// The button pressed. It starts a recording, or stops the one on.
@@ -491,16 +508,21 @@ impl Dictation {
         cx.notify();
     }
 
-    /// Settled words go in at the caret, wherever it is.
+    /// Settled words go in at the caret, wherever it is. While an input
+    /// method composes they wait, and go in once it's done.
     fn write(&mut self, settled: &str, window: &mut Window, cx: &mut Context<Self>) {
         if settled.is_empty() {
             return;
         }
-        self.follow_edits(cx);
-        let Some(recording) = &mut self.recording else {
+        if self.is_composing(window, cx) {
+            self.held.push_str(settled);
             return;
-        };
-        let wrote = recording.wrote;
+        }
+        self.follow_edits(cx);
+        let wrote = self
+            .recording
+            .as_ref()
+            .is_none_or(|recording| recording.wrote);
         let (range, text) = self.textarea.update(cx, |textarea, cx| {
             let at = textarea.cursor();
             let text = textarea.text().to_string();
@@ -508,12 +530,24 @@ impl Dictation {
             textarea.insert(words.clone(), window, cx);
             (at..at + words.len(), textarea.text().to_string())
         });
+        let Some(recording) = &mut self.recording else {
+            return;
+        };
         match recording.ranges.last_mut() {
             Some(last) if last.end == range.start => last.end = range.end,
             _ => recording.ranges.push(range),
         }
         recording.seen = text;
         recording.wrote = true;
+    }
+
+    /// The words held while an input method composed, once it's done.
+    fn write_held(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.held.is_empty() || self.is_composing(window, cx) {
+            return;
+        }
+        let held = std::mem::take(&mut self.held);
+        self.write(&held, window, cx);
     }
 
     /// Moves the recording's ranges with what changed in the box since it

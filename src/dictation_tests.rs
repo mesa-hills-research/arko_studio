@@ -15,7 +15,10 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::input::TextareaState;
 use gpui_kit::component::speech::{AudioFormat, AudioInput, AudioSink, SpeechError, SpeechStatus};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AnyWindowHandle, App, AppContext as _, Entity, Subscription, TestAppContext};
+use gpui_kit::{
+    AnyWindowHandle, App, AppContext as _, Entity, EntityInputHandler as _, Subscription,
+    TestAppContext,
+};
 
 use crate::Startup;
 use crate::backend::FakeBackend;
@@ -230,6 +233,15 @@ impl Test {
         cx.update_window(self.window, |_, window, cx| window.notifications(cx).len())
             .unwrap()
     }
+
+    /// Another recording that listens, and its dictation's index.
+    fn record(&self, cx: &mut TestAppContext) -> usize {
+        self.click(cx);
+        let index = self.fake.opened.borrow().len() - 1;
+        self.hear(index, DictationEvent::Listening, cx);
+        assert_eq!(self.status(cx), SpeechStatus::Recording);
+        index
+    }
 }
 
 fn text(settled: &str, tentative: &str) -> DictationEvent {
@@ -410,6 +422,28 @@ fn another_session_ends_the_recording(cx: &mut TestAppContext) {
     );
     test.hear(0, text(" more", ""), cx);
     assert_eq!(test.text(cx), "");
+}
+
+/// While an input method composes, settled words wait, and go in once it's
+/// done.
+#[gpui_kit::test]
+fn words_wait_for_an_input_method(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    let index = test.record(cx);
+    let textarea = test.textarea(cx);
+    act(cx, test.window, |window, cx| {
+        textarea.update(cx, |textarea, cx| {
+            textarea.replace_and_mark_text_in_range(None, "に", None, window, cx)
+        })
+    });
+    test.hear(index, text("Hello", ""), cx);
+    assert_eq!(test.text(cx), "に");
+    act(cx, test.window, |window, cx| {
+        textarea.update(cx, |textarea, cx| {
+            textarea.replace_text_in_range(None, "日", window, cx)
+        })
+    });
+    assert_eq!(test.text(cx), "日 Hello");
 }
 
 /// When the last words take too long, the recording ends with the words so
