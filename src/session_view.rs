@@ -27,7 +27,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::approvals::{ApprovalTray, TrayEvent};
+use crate::approvals::{ApprovalTray, TrayEvent, TraySelection};
 use crate::backend::{Mode, ModelChoices, NewSession, SessionEntry, SharedBackend};
 use crate::composer::{Attached, Composer, ComposerEvent, Outgoing};
 use crate::editing::{self, Change, Choice};
@@ -242,9 +242,10 @@ pub struct SessionView {
     lists_worker_models: bool,
 }
 
-/// A message given to the session, as the composer held it, and whom it
-/// went to, which comes back to the composer should Arko refuse it.
+/// What a send took from the composer, and whom it went to, which comes
+/// back to the composer should Arko refuse it.
 struct Unsent {
+    /// The text it took, all the composer held.
     text: String,
     images: Vec<Attached>,
     /// The worker the composer wrote to, or none when it wrote to Arko.
@@ -254,14 +255,47 @@ struct Unsent {
     to_worker: bool,
     /// The questions it answered.
     answers: Vec<String>,
+    /// What the composer held once the send took its part. The draft comes
+    /// back over that only, so it never takes the place of what came since.
+    left: Left,
 }
 
-/// What a send took that comes back should Arko refuse it.
+/// What the composer holds: its text, and its images by identity.
+struct Left {
+    text: String,
+    images: Vec<Attached>,
+}
+
+impl Left {
+    fn of(composer: &Composer, cx: &App) -> Self {
+        Self {
+            text: composer.expanded_text(cx),
+            images: composer.images().to_vec(),
+        }
+    }
+
+    /// Whether `composer` holds just this.
+    fn holds(&self, composer: &Composer, cx: &App) -> bool {
+        let images = composer.images();
+        composer.expanded_text(cx) == self.text
+            && images.len() == self.images.len()
+            && images.iter().zip(&self.images).all(|(a, b)| a.is(b))
+    }
+}
+
+/// What a send took from the window, which comes back should Arko refuse
+/// it.
 enum Given {
     /// What the composer held.
     Message(Unsent),
     /// What the answer panel held.
     Answers(arko::questions::Answers),
+    /// Which requests in the approval tray were checked and which took
+    /// their option, and the words the composer gave the answer.
+    Approvals {
+        selection: TraySelection,
+        words: Option<Unsent>,
+    },
     Nothing,
 }
 
@@ -269,7 +303,11 @@ impl Given {
     /// The message it took from the composer, if any.
     fn into_message(self) -> Option<Unsent> {
         match self {
-            Given::Message(unsent) => Some(unsent),
+            Given::Message(unsent)
+            | Given::Approvals {
+                words: Some(unsent),
+                ..
+            } => Some(unsent),
             _ => None,
         }
     }
@@ -1342,7 +1380,10 @@ impl SessionView {
         } else {
             String::new()
         };
-        let answers = tray.read(cx).answers(approve, &words);
+        let (answers, selection) = {
+            let tray = tray.read(cx);
+            (tray.answers(approve, &words), tray.selection())
+        };
         let sent = session.update(cx, |session, cx| {
             session.send(arko::Input::AnswerApprovals(answers.clone()), cx)
         });
@@ -1353,23 +1394,28 @@ impl SessionView {
                 return;
             }
         };
-        // The words come back as typed, should Arko refuse the answer.
-        let given = match answers.words {
-            Some(_) => {
-                self.composer
-                    .update(cx, |composer, cx| composer.set_text("", window, cx));
-                self.keep_draft(cx);
-                Given::Message(Unsent {
-                    text: words,
-                    images: Vec::new(),
-                    target: None,
-                    to_worker: false,
-                    answers: Vec::new(),
-                })
+        // The words come back as typed, and the tray's checks as they were,
+        // should Arko refuse the answer. The images stay in the composer.
+        let words = answers.words.is_some().then(|| {
+            self.composer
+                .update(cx, |composer, cx| composer.set_text("", window, cx));
+            self.keep_draft(cx);
+            Unsent {
+                text: words,
+                images: Vec::new(),
+                target: None,
+                to_worker: false,
+                answers: Vec::new(),
+                left: Left::of(self.composer.read(cx), cx),
             }
-            None => Given::Nothing,
-        };
-        self.follow(session, sent, given, window, cx);
+        });
+        self.follow(
+            session,
+            sent,
+            Given::Approvals { selection, words },
+            window,
+            cx,
+        );
         // The tray goes, and the keyboard goes back to the message box if
         // the tray had it.
         self.sync_approvals(window, cx);
@@ -2419,6 +2465,11 @@ impl SessionView {
             target: worker,
             to_worker,
             answers: message.answers.clone(),
+            // The composer empties once the session takes it.
+            left: Left {
+                text: String::new(),
+                images: Vec::new(),
+            },
         };
         let sent = match self.session.clone() {
             Some(session) => session
@@ -2536,8 +2587,8 @@ impl SessionView {
     }
 
     /// Gives back what a send took: a message to the composer, answers to
-    /// the answer panel while the session shows them open again. Gives back
-    /// the message that returned.
+    /// the answer panel, and the tray's checks to its requests, while the
+    /// session shows them open again. Gives back the message that returned.
     fn give_back(
         &mut self,
         given: Given,
@@ -2559,6 +2610,17 @@ impl SessionView {
                     if let Some(panel) = self.panel().cloned() {
                         panel.update(cx, |panel, cx| panel.refill(&answers, window, cx));
                     }
+                }
+                None
+            }
+            Given::Approvals { selection, words } => {
+                // The tray is back with the requests open again.
+                self.sync_approvals(window, cx);
+                if let Some(tray) = self.approval_tray().cloned() {
+                    tray.update(cx, |tray, cx| tray.select(&selection, cx));
+                }
+                if let Some(words) = words {
+                    self.restore_unsent(words, window, cx);
                 }
                 None
             }
@@ -2645,19 +2707,16 @@ impl SessionView {
     }
 
     /// Puts `unsent` back in the composer, to whom it went and with the
-    /// questions it answered, unless something else was typed since or a
-    /// message is being edited. Gives back what returned.
+    /// questions it answered, while the composer holds just what the send
+    /// left in it and no message is being edited. Gives back what
+    /// returned.
     fn restore_unsent(
         &mut self,
         unsent: Unsent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Outgoing> {
-        let empty = {
-            let composer = self.composer.read(cx);
-            composer.text(cx).is_empty() && composer.images().is_empty()
-        };
-        if !empty || self.editing.is_some() {
+        if self.editing.is_some() || !unsent.left.holds(self.composer.read(cx), cx) {
             return None;
         }
         let Unsent {

@@ -106,6 +106,12 @@ impl Attached {
         }
     }
 
+    /// Whether `other` is this very image (one the composer held), not
+    /// just one alike.
+    pub fn is(&self, other: &Attached) -> bool {
+        Arc::ptr_eq(&self.image, &other.image)
+    }
+
     /// As arko sends it with a message.
     pub fn to_arko(&self) -> arko::Attachment {
         arko::Attachment {

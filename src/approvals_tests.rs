@@ -550,6 +550,70 @@ fn words_arko_refuses_as_too_long_come_back_to_the_message_box(cx: &mut TestAppC
     assert_eq!(app.composer_text(cx), long);
 }
 
+impl Window {
+    /// Arko refuses what the session was sent.
+    fn refuse(&self, cx: &mut TestAppContext) {
+        self.session.update(cx, |session, _| {
+            session.answer_sends(|_| {
+                arko::Verdict::refused(arko::RefusalKind::TooLong, "Shorten the words.")
+            })
+        });
+        cx.run_until_parked();
+    }
+}
+
+/// Answers Arko refuses come back to the tray as the user set them: a
+/// request they left unchecked stays so, and an option they turned on
+/// stays on. Approving again sends the same answer.
+#[gpui_kit::test]
+fn refused_answers_come_back_to_the_tray_as_they_were_set(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.request(cx, vec![billing("a1"), server("a2")]);
+    app.click(cx, part("approval-row", "a1"));
+    app.click(cx, part("approval-option", "a1"));
+    app.click(cx, part("approval-check", "a2"));
+    app.click(cx, "approval-approve");
+    let sent = app.sent(cx);
+    assert_eq!(sent.len(), 1);
+    assert!(!app.shows(cx, "approval-tray"));
+    app.refuse(cx);
+    assert!(app.shows(cx, "approval-tray"));
+    assert_eq!(app.checked(cx, "a1"), Some(true));
+    assert_eq!(app.checked(cx, "a2"), Some(false));
+    app.click(cx, "approval-approve");
+    assert_eq!(app.sent(cx), sent);
+}
+
+/// The words an answer Arko refused took come back to the message box
+/// beside the image it left there.
+#[gpui_kit::test]
+fn refused_words_come_back_beside_the_image_left_behind(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.request(cx, vec![profile("a1", "3d-judge")]);
+    let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    act(cx, app.window, |window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.set_text("Use opus", window, cx);
+            composer.attach_image(
+                crate::composer::Attached::new(
+                    gpui_kit::ImageFormat::Png,
+                    crate::testing::PNG.to_vec(),
+                    Some("shot.png".into()),
+                ),
+                cx,
+            );
+        })
+    });
+    let images = |cx: &mut TestAppContext| cx.read(|cx| composer.read(cx).images().len());
+    app.click(cx, "approval-approve");
+    assert_eq!(app.composer_text(cx), "");
+    assert_eq!(images(cx), 1);
+    app.refuse(cx);
+    assert_eq!(app.composer_text(cx), "Use opus");
+    assert_eq!(images(cx), 1);
+}
+
 /// Mod+Shift+A approves those checked and Mod+Shift+R rejects them all
 /// while the message box has the keyboard, which keeps it. The words typed
 /// go with the answer.
