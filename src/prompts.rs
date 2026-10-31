@@ -752,8 +752,8 @@ pub fn continue_text(worker: &str, warning: &str) -> (String, String) {
 }
 
 /// Asks before a message continues `worker`, a finished worker whose prompt
-/// cache expired, with Arko's `warning` of what that costs. `answer` hears
-/// Continue.
+/// cache expired or isn't known, with Arko's `warning` of what that costs.
+/// `answer` hears Continue.
 pub fn confirm_continue(
     worker: &str,
     warning: &str,

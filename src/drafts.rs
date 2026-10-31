@@ -1,7 +1,9 @@
-//! What the user typed in each session's composer and hasn't sent: kept
-//! when they switch sessions and across restarts, in
+//! What the user put in each session's composer and hasn't sent: kept
+//! when they switch sessions, and the text across restarts too, in
 //! `<arko folder>/studio-drafts.json`. Typing changes them in memory, and
 //! the file is written after a pause, on a background thread, never per key.
+//! A draft's images are kept in memory only, beside its text, so they're
+//! gone when Studio quits.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -9,6 +11,8 @@ use std::time::Duration;
 
 use gpui_kit::{App, AppContext as _, BorrowAppContext as _, Global, Task};
 use serde::{Deserialize, Serialize};
+
+use crate::composer::{Attached, Outgoing};
 
 /// How long typing pauses before the drafts are written.
 pub const SAVE_DELAY: Duration = Duration::from_secs(1);
@@ -33,7 +37,10 @@ type Keeper = Box<dyn Fn(&mut App)>;
 
 /// Every unsent draft.
 pub struct Drafts {
+    /// The text of each, which is saved.
     drafts: BTreeMap<String, String>,
+    /// The images of each, kept in memory only.
+    images: BTreeMap<String, Vec<Attached>>,
     path: Option<PathBuf>,
     changed: bool,
     saving: Option<Task<()>>,
@@ -57,6 +64,7 @@ pub fn load(path: &Path) -> BTreeMap<String, String> {
 pub fn init(drafts: BTreeMap<String, String>, path: Option<PathBuf>, cx: &mut App) {
     cx.set_global(Drafts {
         drafts,
+        images: BTreeMap::new(),
         path,
         changed: false,
         saving: None,
@@ -80,23 +88,45 @@ pub fn init(drafts: BTreeMap<String, String>, path: Option<PathBuf>, cx: &mut Ap
     .detach();
 }
 
-/// Has `keep` put a composer's text into the drafts before the app quits.
+/// Has `keep` put what a composer holds into the drafts before the app
+/// quits.
 pub fn keep_at_quit(keep: impl Fn(&mut App) + 'static, cx: &mut App) {
     cx.global_mut::<Drafts>().keepers.push(Box::new(keep));
 }
 
-/// The draft of `key` (a session id or [`NEW_SESSION`]).
-pub fn get(key: &str, cx: &App) -> Option<String> {
-    cx.global::<Drafts>().drafts.get(key).cloned()
+/// The draft of `key` (a session id or [`NEW_SESSION`]), as the composer
+/// restores it.
+pub fn get(key: &str, cx: &App) -> Option<Outgoing> {
+    let drafts = cx.global::<Drafts>();
+    let text = drafts.drafts.get(key);
+    let images = drafts.images.get(key);
+    if text.is_none() && images.is_none() {
+        return None;
+    }
+    Some(Outgoing {
+        text: text.cloned().unwrap_or_default(),
+        images: images.cloned().unwrap_or_default(),
+    })
 }
 
-/// Keeps `text` as the draft of `key`. Empty text forgets it.
-pub fn set(key: &str, text: &str, cx: &mut App) {
+/// Keeps `draft` as the draft of `key`: its text saved, its images in
+/// memory. A draft with neither words nor images forgets it.
+pub fn set(key: &str, draft: &Outgoing, cx: &mut App) {
+    let text = &draft.text;
     let drafts = cx.global::<Drafts>();
     let same = match drafts.drafts.get(key) {
-        Some(draft) => draft == text,
+        Some(kept) => kept == text,
         None => text.trim().is_empty(),
     };
+    let images = (!draft.images.is_empty()).then(|| draft.images.clone());
+    cx.update_global::<Drafts, _>(|drafts, _| match images {
+        Some(images) => {
+            drafts.images.insert(key.to_string(), images);
+        }
+        None => {
+            drafts.images.remove(key);
+        }
+    });
     if same {
         return;
     }
@@ -109,6 +139,18 @@ pub fn set(key: &str, text: &str, cx: &mut App) {
         drafts.changed = true;
     });
     schedule_save(cx);
+}
+
+/// Keeps `text`, with no images, as the draft of `key`.
+pub fn set_text(key: &str, text: &str, cx: &mut App) {
+    set(
+        key,
+        &Outgoing {
+            text: text.to_string(),
+            images: Vec::new(),
+        },
+        cx,
+    );
 }
 
 /// The drafts to write, when they changed since the last save.
@@ -161,8 +203,8 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         let path = file(folder.path());
         cx.update(|cx| init(BTreeMap::new(), Some(path.clone()), cx));
-        cx.update(|cx| set("s1", "Count the", cx));
-        cx.update(|cx| set("s1", "Count the pears", cx));
+        cx.update(|cx| set_text("s1", "Count the", cx));
+        cx.update(|cx| set_text("s1", "Count the pears", cx));
         cx.run_until_parked();
         assert!(!path.exists(), "written before the pause");
         cx.executor().advance_clock(SAVE_DELAY);
@@ -172,10 +214,38 @@ mod tests {
             Some("Count the pears")
         );
         // An emptied draft is forgotten.
-        cx.update(|cx| set("s1", "  ", cx));
+        cx.update(|cx| set_text("s1", "  ", cx));
         cx.executor().advance_clock(SAVE_DELAY);
         cx.run_until_parked();
         assert!(load(&path).is_empty());
-        assert_eq!(cx.read(|cx| get("s1", cx)), None);
+        assert!(cx.read(|cx| get("s1", cx)).is_none());
+    }
+
+    /// A draft's images are kept beside its text, in memory only: a draft
+    /// of an image alone is kept, and the file never has it.
+    #[gpui_kit::test]
+    async fn a_drafts_images_are_kept_in_memory_only(cx: &mut gpui_kit::TestAppContext) {
+        let folder = tempfile::tempdir().unwrap();
+        let path = file(folder.path());
+        cx.update(|cx| init(BTreeMap::new(), Some(path.clone()), cx));
+        let image = Attached::new(
+            gpui_kit::ImageFormat::Png,
+            crate::testing::PNG.to_vec(),
+            Some("shot.png".into()),
+        );
+        let draft = Outgoing {
+            text: String::new(),
+            images: vec![image.clone()],
+        };
+        cx.update(|cx| set("s1", &draft, cx));
+        cx.executor().advance_clock(SAVE_DELAY);
+        cx.run_until_parked();
+        let kept = cx.read(|cx| get("s1", cx)).unwrap();
+        assert!(kept.text.is_empty());
+        assert!(kept.images.len() == 1 && kept.images[0].is(&image));
+        assert!(load(&path).is_empty());
+        // Emptied, it's forgotten.
+        cx.update(|cx| set("s1", &Outgoing::default(), cx));
+        assert!(cx.read(|cx| get("s1", cx)).is_none());
     }
 }

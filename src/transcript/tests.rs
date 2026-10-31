@@ -2266,6 +2266,7 @@ fn a_failed_responses_text_is_taken_back_and_its_retry_streams_anew(cx: &mut Tes
         subagent: None,
         sizes: None,
         bytes_per_token: 3.0,
+        sent_at: Some(chrono::Utc::now()),
     };
     feed.event(&event("main", started()), None);
     say(&feed, "main", "Broken");

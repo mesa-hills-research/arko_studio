@@ -140,7 +140,7 @@ impl App {
         cx.read(|cx| {
             let session = self.view.read(cx).live_session()?;
             let key = session.read(cx).id()?.0.clone();
-            crate::drafts::get(&key, cx)
+            crate::drafts::get(&key, cx).map(|draft| draft.text)
         })
     }
 

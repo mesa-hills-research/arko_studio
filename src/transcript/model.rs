@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use arko::remote::{
-    Activity, CallStatus, Delivery, Item, JobSummary, Kind, Level, Snapshot, Update, WorkerState,
-    WorkerSummary,
+    Activity, CallStatus, Delivery, ENDED_JOBS, Item, JobSummary, Kind, Level, Snapshot, Update,
+    WorkerState, WorkerSummary,
 };
 use gpui_kit::SharedString;
 
@@ -64,10 +64,6 @@ pub(crate) fn to_you(filter: &AgentFilter, item: &Item) -> Option<String> {
 /// the latest calls only, and the transcript keeps what came in its
 /// updates).
 pub(crate) const KEPT_OUTPUTS: usize = 8 * 1024 * 1024;
-
-/// The background jobs that ended a transcript keeps besides those running,
-/// as many as the feed keeps.
-const ENDED_JOBS: usize = 100;
 
 /// The bytes of `item` that count in [`KEPT_OUTPUTS`].
 fn kept_size(item: &Item) -> usize {
@@ -328,8 +324,9 @@ impl Model {
         }
     }
 
-    /// Forgets the jobs that came first of those that ended, past
-    /// [`ENDED_JOBS`]. Their calls' rows say how they ended without them.
+    /// Forgets the jobs that started first of those that ended, past arko's
+    /// [`ENDED_JOBS`], so it holds the jobs a snapshot does. Their calls'
+    /// rows say how they ended without them.
     fn forget_old_jobs(&mut self) {
         let ended = self
             .jobs

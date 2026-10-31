@@ -379,18 +379,21 @@ fn answer_in_chat_attaches_the_questions_to_the_next_message(cx: &mut TestAppCon
     assert!(!app.shows(cx, "questions-replying"));
 }
 
-/// A reply that arko didn't send (it came as the old model began its report
+/// A reply that Arko refused (it came as the old model began its report
 /// for a switch) comes back replying to the same questions, open again, so
 /// the next message answers them. When something else was typed since, the
 /// reply stays away, and its questions are open again all the same.
 #[gpui_kit::test]
-fn a_reply_arko_did_not_send_comes_back_replying_to_its_questions(cx: &mut TestAppContext) {
+fn a_reply_arko_refused_comes_back_replying_to_its_questions(cx: &mut TestAppContext) {
     let app = start(cx);
-    let not_sent = |cx: &mut TestAppContext| {
-        app.session.update(cx, |_, cx| {
-            cx.emit(crate::live::LiveEvent::NotSent(
-                "Spaces, all of them, main.".into(),
-            ))
+    let refused = |cx: &mut TestAppContext| {
+        app.session.update(cx, |session, _| {
+            session.answer_sends(|_| {
+                arko::Verdict::refused(
+                    arko::RefusalKind::Reporting,
+                    "The report is being written. Stopping skips it.",
+                )
+            })
         });
         cx.run_until_parked();
     };
@@ -399,20 +402,21 @@ fn a_reply_arko_did_not_send_comes_back_replying_to_its_questions(cx: &mut TestA
     app.type_text(cx, "Spaces, all of them, main.");
     app.press(cx, "enter");
     assert!(!app.shows(cx, "questions-replying"));
-    not_sent(cx);
-    assert!(app.shows(cx, "questions-replying"));
-    assert!(!app.shows(cx, "questions-chip"));
-    app.press(cx, "enter");
     let reply = arko::Input::Message(arko::Message {
         text: "Spaces, all of them, main.".into(),
         answers: vec!["q1".into(), "q2".into(), "q3".into()],
         ..Default::default()
     });
-    assert_eq!(app.sent(cx), [reply.clone(), reply]);
+    assert_eq!(app.sent(cx), std::slice::from_ref(&reply));
+    refused(cx);
+    assert!(app.shows(cx, "questions-replying"));
+    assert!(!app.shows(cx, "questions-chip"));
+    app.press(cx, "enter");
+    assert_eq!(app.sent(cx), [reply]);
 
     assert!(!app.shows(cx, "questions-chip"));
     app.type_text(cx, "Wait.");
-    not_sent(cx);
+    refused(cx);
     let composer = cx.read(|cx| {
         let view = app.workspace.read(cx).session_view().clone();
         view.read(cx).composer().read(cx).text(cx)
@@ -849,10 +853,22 @@ impl Window {
     }
 }
 
-/// Answers too long to reach the agent in one note aren't sent. The panel
-/// says so and keeps them, to be shortened.
+impl Window {
+    /// Arko refuses what the session was sent as too long.
+    fn refuse_too_long(&self, cx: &mut TestAppContext) {
+        self.session.update(cx, |session, _| {
+            session.answer_sends(|_| {
+                arko::Verdict::refused(arko::RefusalKind::TooLong, "Shorten the answers.")
+            })
+        });
+        cx.run_until_parked();
+    }
+}
+
+/// Answers Arko refuses as too long to reach the agent in one note come
+/// back to the panel, which opens again, and the window says why.
 #[gpui_kit::test]
-fn answers_too_long_to_send_stay_in_the_panel(cx: &mut TestAppContext) {
+fn answers_arko_refuses_as_too_long_come_back_to_the_panel(cx: &mut TestAppContext) {
     let app = start(cx);
     app.ask(cx, three());
     let long = "word ".repeat(3500);
@@ -861,17 +877,20 @@ fn answers_too_long_to_send_stay_in_the_panel(cx: &mut TestAppContext) {
         panel.update(cx, |panel, cx| panel.set_field(0, &long, window, cx))
     });
     app.click(cx, "answer-send");
-    assert!(app.sent(cx).is_empty());
+    assert_eq!(app.sent(cx).len(), 1);
+    assert!(!app.shows(cx, "answer-panel"));
+    app.refuse_too_long(cx);
     assert_eq!(app.notifications(cx), 1);
     assert!(app.shows(cx, "answer-panel"));
     let kept = app.panel(cx).read_with(cx, |panel, cx| panel.answers(cx));
     assert_eq!(kept.answers[0].answer.text.as_deref(), Some(long.trim()));
 }
 
-/// A message too long to send as the answer to the questions attached
-/// isn't sent. It stays in the message box with the questions attached.
+/// A message Arko refuses as too long to send as the answer to the
+/// questions attached comes back to the message box with the questions
+/// attached.
 #[gpui_kit::test]
-fn a_reply_too_long_to_send_stays_in_the_message_box(cx: &mut TestAppContext) {
+fn a_reply_arko_refuses_as_too_long_comes_back_to_the_message_box(cx: &mut TestAppContext) {
     let app = start(cx);
     app.ask(cx, three());
     app.click(cx, "answer-in-chat");
@@ -882,9 +901,62 @@ fn a_reply_too_long_to_send_stays_in_the_message_box(cx: &mut TestAppContext) {
         composer.update(cx, |composer, cx| composer.set_text(&long, window, cx));
     });
     app.press(cx, "enter");
-    assert!(app.sent(cx).is_empty());
+    assert_eq!(app.sent(cx).len(), 1);
+    app.refuse_too_long(cx);
     assert_eq!(app.notifications(cx), 1);
     assert!(app.shows(cx, "questions-replying"));
     let text = cx.read(|cx| view.read(cx).composer().read(cx).text(cx));
     assert_eq!(text.trim(), long.trim());
+}
+
+/// When Arko stops before it says what became of answers, they may have
+/// gone. The feed says which: a question it still has open shows again,
+/// with its answer filled in, and one it has answered stays settled.
+#[gpui_kit::test]
+fn answers_whose_outcome_isnt_known_follow_the_feed(cx: &mut TestAppContext) {
+    use arko::questions::QuestionState;
+
+    let app = start(cx);
+    let feed = arko::remote::Feed::new("main");
+    crate::questions::ask(
+        &feed,
+        &[("q1", "Tabs or spaces?"), ("q2", "Which branch?")],
+        false,
+    );
+    app.session
+        .update(cx, |session, cx| session.follow_feed(feed.clone(), cx));
+    app.ask(cx, feed.open_questions());
+    let open = |cx: &mut TestAppContext| -> Vec<String> {
+        cx.read(|cx| {
+            app.session
+                .read(cx)
+                .open_questions()
+                .iter()
+                .map(|question| question.id.clone())
+                .collect()
+        })
+    };
+    // No word of them, and the feed still has both open.
+    app.fill(cx, 0, "Spaces");
+    app.click(cx, "answer-send");
+    assert!(!app.shows(cx, "answer-panel"));
+    assert_eq!(open(cx), ["q2"]);
+    drop(app.session.update(cx, |session, _| session.read_sends()));
+    cx.run_until_parked();
+    assert_eq!(open(cx), ["q1", "q2"]);
+    assert!(app.shows(cx, "answer-panel"));
+    let kept = app.panel(cx).read_with(cx, |panel, cx| panel.answers(cx));
+    assert_eq!(kept.answers[0].answer.text.as_deref(), Some("Spaces"));
+    assert_eq!(app.notifications(cx), 1);
+    // No word of them, and the feed has the answer.
+    app.click(cx, "answer-send");
+    feed.set_question_state(
+        "q1",
+        QuestionState::Answered {
+            answer: "Spaces".into(),
+        },
+    );
+    drop(app.session.update(cx, |session, _| session.read_sends()));
+    cx.run_until_parked();
+    assert_eq!(open(cx), ["q2"]);
 }

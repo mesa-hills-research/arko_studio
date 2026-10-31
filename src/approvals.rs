@@ -155,6 +155,25 @@ pub fn code_spans(text: &str) -> (String, Vec<Range<usize>>) {
     (words, code)
 }
 
+/// Which of the tray's requests the user checked and which took their
+/// option.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TraySelection {
+    /// The requests it is of.
+    requests: Vec<String>,
+    unselected: HashSet<String>,
+    options: HashSet<String>,
+}
+
+/// Puts `id` in `set` (`on`), or takes it out.
+fn set(set: &mut HashSet<String>, id: &str, on: bool) {
+    if on {
+        set.insert(id.to_string());
+    } else {
+        set.remove(id);
+    }
+}
+
 /// The requests in the tray, with what the user set for each.
 pub struct ApprovalTray {
     requests: Vec<ApprovalRequest>,
@@ -222,6 +241,34 @@ impl ApprovalTray {
             .iter()
             .filter(|request| !self.unselected.contains(&request.id))
             .count()
+    }
+
+    /// Which of its requests are checked and which take their option, to
+    /// set them back with [`select`](Self::select).
+    pub fn selection(&self) -> TraySelection {
+        TraySelection {
+            requests: self
+                .requests
+                .iter()
+                .map(|request| request.id.clone())
+                .collect(),
+            unselected: self.unselected.clone(),
+            options: self.options.clone(),
+        }
+    }
+
+    /// Checks the requests `selection` names, and their options, as it had
+    /// them. The others stay as they are.
+    pub fn select(&mut self, selection: &TraySelection, cx: &mut Context<Self>) {
+        for request in &self.requests {
+            let id = &request.id;
+            if !selection.requests.contains(id) {
+                continue;
+            }
+            set(&mut self.unselected, id, selection.unselected.contains(id));
+            set(&mut self.options, id, selection.options.contains(id));
+        }
+        cx.notify();
     }
 
     /// The answer to every request it shows, with `words` from the message

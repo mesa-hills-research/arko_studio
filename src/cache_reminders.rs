@@ -11,6 +11,10 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use arko::cache_timer::{
+    EARLY_FROM_LIFETIME, EARLY_MS, FINAL_MS, answer_choices, expiry_cost, headline,
+    refresh_choices, requests_run,
+};
 use arko::remote::CacheStatus;
 use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::component::{
@@ -21,19 +25,12 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::cache_timer::{answer_choices, expires_at, expiry_cost, refresh_choices, requests_run};
 use crate::figures::{self, clock};
 use crate::live::{LiveEvent, LiveSession};
 use crate::notify::SessionLink;
 use crate::status_bar::{Clock, tabular_figures};
 use crate::{notify, prefs};
 
-/// How long before the cache lapses the first reminder comes.
-pub const EARLY_MS: i64 = 5 * 60_000;
-/// How long before it lapses the last one comes, and stays.
-pub const FINAL_MS: i64 = 60_000;
-/// Caches that last less than this get only the last reminder.
-pub const EARLY_FROM_LIFETIME: Duration = Duration::from_secs(15 * 60);
 /// The longest the reminders wait before they look again. Timers stand
 /// still while the computer sleeps, and the cache's lifetime runs on: a
 /// reminder due meanwhile comes this long after it wakes, at the most.
@@ -78,7 +75,7 @@ pub fn plan(
     if requests_run || !enabled {
         return (None, None);
     }
-    let Some(expires) = expires_at(cache) else {
+    let Some(expires) = cache.expires_at() else {
         return (None, None);
     };
     if now >= expires {
@@ -273,8 +270,8 @@ impl CacheReminders {
                 now,
                 lifetime_ms = cache.lifetime.map(|lifetime| lifetime.as_millis() as u64),
                 refreshed_at = cache.refreshed_at,
-                expires_at = expires_at(cache),
-                left_ms = expires_at(cache).map(|at| at - now),
+                expires_at = cache.expires_at(),
+                left_ms = cache.expires_at().map(|at| at - now),
                 touched_at = live.touched_at(),
                 sent = ?self.sent,
                 "cache reminder due"
@@ -332,7 +329,7 @@ impl CacheReminders {
             let live = session.read(cx);
             (live.title().to_string(), live.reading().cache.clone())
         };
-        let Some(expires) = expires_at(&cache) else {
+        let Some(expires) = cache.expires_at() else {
             return;
         };
         // The first reminder has no Refresh: it says what the lapse costs.
@@ -455,15 +452,6 @@ impl CacheReminders {
             })
             .ok();
         }));
-    }
-}
-
-/// A reminder's headline, `left` milliseconds before the cache lapses: "The
-/// prompt cache expires in 5 minutes", "… in a minute".
-pub fn headline(left: i64) -> String {
-    match (left.max(0) + 59_999) / 60_000 {
-        0 | 1 => "The prompt cache expires in a minute".to_string(),
-        minutes => format!("The prompt cache expires in {minutes} minutes"),
     }
 }
 
@@ -689,18 +677,24 @@ mod tests {
 
     const HOUR: i64 = 3_600_000;
 
+    /// How long before its lifetime ends Arko counts a cache as lapsed.
+    const MARGIN: i64 = 30_000;
+
+    /// An hour's cache lapses 30 seconds early, as Arko counts it, and the
+    /// reminders count from then.
     #[test]
     fn an_hour_long_cache_gets_both_reminders() {
         let cache = cache(60);
         let none = Sent::default();
-        // At first: nothing, look again at 55 minutes.
+        let lapses = HOUR - MARGIN;
+        // At first: nothing, look again 5 minutes before it lapses.
         assert_eq!(
             plan(&cache, false, 0, none, true, 0),
-            (None, Some(HOUR - EARLY_MS))
+            (None, Some(lapses - EARLY_MS))
         );
-        // At 55 minutes, the first, then the last at 59.
+        // Then the first, and the last a minute before it lapses.
         assert_eq!(
-            plan(&cache, false, 0, none, true, HOUR - EARLY_MS),
+            plan(&cache, false, 0, none, true, lapses - EARLY_MS),
             (Some(Due::Early), Some(EARLY_MS - FINAL_MS))
         );
         let early = Sent {
@@ -708,7 +702,7 @@ mod tests {
             last: false,
         };
         assert_eq!(
-            plan(&cache, false, 0, early, true, HOUR - FINAL_MS),
+            plan(&cache, false, 0, early, true, lapses - FINAL_MS),
             (Some(Due::Last), Some(FINAL_MS))
         );
         // It lapses: the last one goes.
@@ -717,24 +711,19 @@ mod tests {
             last: true,
         };
         assert_eq!(
-            plan(&cache, false, 0, both, true, HOUR),
+            plan(&cache, false, 0, both, true, lapses),
             (Some(Due::Lapsed), None)
         );
-        assert_eq!(plan(&cache, false, 0, both, true, HOUR - 30_000).0, None);
+        assert_eq!(plan(&cache, false, 0, both, true, lapses - 30_000).0, None);
     }
 
     #[test]
     fn a_5_minute_cache_gets_only_the_last_reminder() {
         let cache = cache(5);
         let none = Sent::default();
-        assert_eq!(
-            plan(&cache, false, 0, none, true, 0),
-            (None, Some(4 * 60_000))
-        );
-        assert_eq!(
-            plan(&cache, false, 0, none, true, 4 * 60_000).0,
-            Some(Due::Last)
-        );
+        let last = 4 * 60_000 - MARGIN;
+        assert_eq!(plan(&cache, false, 0, none, true, 0), (None, Some(last)));
+        assert_eq!(plan(&cache, false, 0, none, true, last).0, Some(Due::Last));
     }
 
     #[test]
@@ -767,7 +756,7 @@ mod tests {
             ..cache(60)
         };
         // Sent at 0:00, the turn's last request at 2:00: the cache lapses at
-        // 62:00, the last reminder at 61:00.
+        // 61:30, the last reminder at 60:30.
         let early = Sent {
             early: true,
             last: false,
@@ -802,6 +791,9 @@ mod tests {
     const NOW: i64 = 1_800_000_000_000;
 
     impl Reminded {
+        /// A session whose cache of `lifetime_minutes` has `refreshed_ago`
+        /// of its lifetime gone, as Arko counts it, which ends 30 seconds
+        /// before the provider's does.
         fn new(cx: &mut TestAppContext, lifetime_minutes: u64, refreshed_ago: i64) -> Self {
             let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
             cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
@@ -815,7 +807,7 @@ mod tests {
             let reading = Reading {
                 title: "Fonts".into(),
                 cache: CacheStatus {
-                    refreshed_at: Some(NOW - refreshed_ago),
+                    refreshed_at: Some(NOW - refreshed_ago + MARGIN),
                     ..cache(lifetime_minutes)
                 },
                 ..Reading::default()
@@ -851,12 +843,12 @@ mod tests {
             cx.read(|cx| super::of(&self.session, cx).unwrap().read(cx).sent())
         }
 
-        /// The session's status says its cache was refreshed `ago`
-        /// milliseconds before now.
+        /// The session's status says `ago` milliseconds of its cache's
+        /// lifetime are gone, as Arko counts it.
         fn refreshed(&self, cx: &mut TestAppContext, lifetime_minutes: u64, ago: i64) {
             let reading = Reading {
                 cache: CacheStatus {
-                    refreshed_at: Some(self.now.get() - ago),
+                    refreshed_at: Some(self.now.get() - ago + MARGIN),
                     ..cache(lifetime_minutes)
                 },
                 ..Reading::default()
@@ -1237,12 +1229,12 @@ mod tests {
             }
         }
 
-        /// The session's cache lasts `lifetime_minutes` and was refreshed
-        /// `ago` milliseconds before now.
+        /// The session's cache lasts `lifetime_minutes`, and `ago`
+        /// milliseconds of it are gone, as Arko counts it.
         fn cache(&self, cx: &mut TestAppContext, session: usize, lifetime_minutes: u64, ago: i64) {
             let reading = Reading {
                 cache: CacheStatus {
-                    refreshed_at: Some(self.now.get() - ago),
+                    refreshed_at: Some(self.now.get() - ago + MARGIN),
                     ..cache(lifetime_minutes)
                 },
                 ..Reading::default()

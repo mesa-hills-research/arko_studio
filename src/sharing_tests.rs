@@ -85,12 +85,14 @@ fn closing_before_opening_cancels_requests_and_inputs(cx: &mut TestAppContext) {
         window.dispatch_action(Box::new(crate::menus::ShareWebPage), cx)
     });
     session.update(cx, |session, cx| session.close(session.running_work(), cx));
-    assert!(
-        session
-            .update(cx, |session, _| session.take_requests())
-            .is_empty()
-    );
-    assert!(cx.read(|cx| matches!(session.read(cx).queued(), [arko::Input::Quit(_)])));
+    let requests = session.update(cx, |session, _| session.take_requests());
+    assert!(matches!(
+        requests.as_slice(),
+        [arko::Request::Send {
+            input: arko::Input::Quit(_),
+            ..
+        }]
+    ));
 }
 
 #[gpui_kit::test]

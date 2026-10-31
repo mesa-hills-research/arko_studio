@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arko::cache_timer::{CacheTimer, requests_run};
 use arko::details::CostReport;
 use arko::remote::{Activity, Page, Reading};
 use gpui_kit::component::status_bar::StatusBar as KitStatusBar;
@@ -27,7 +28,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::cache_timer::{CacheTimer, cache_timer, requests_run};
+use crate::cache_timer::cache_timer;
 use crate::context_ring::{ContextDetails, ContextSize, context_button};
 use crate::figures::{self, Turn};
 use crate::layout::WidthClass;
@@ -320,8 +321,13 @@ pub(crate) fn run(session: &Entity<LiveSession>, command: &str, window: &mut Win
         text: command.to_string(),
         ..Default::default()
     });
-    if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
-        window.push_notification(why, cx);
+    match session.update(cx, |session, cx| session.send(input, cx)) {
+        Ok(sent) => {
+            if let Some(view) = crate::workspace::session_view_of(window, cx) {
+                view.update(cx, |view, cx| view.track(session.clone(), sent, window, cx));
+            }
+        }
+        Err(why) => window.push_notification(why, cx),
     }
 }
 

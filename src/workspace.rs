@@ -433,8 +433,11 @@ impl Workspace {
             text: format!("/resume {number}"),
             ..Default::default()
         });
-        if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
-            window.push_notification(why, cx);
+        match session.update(cx, |session, cx| session.send(input, cx)) {
+            Ok(sent) => self
+                .session_view
+                .update(cx, |view, cx| view.track(session.clone(), sent, window, cx)),
+            Err(why) => window.push_notification(why, cx),
         }
     }
 
@@ -689,7 +692,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(draft) = &draft {
-            crate::drafts::set(&entry.id.0, draft, cx);
+            crate::drafts::set_text(&entry.id.0, draft, cx);
         }
         let session =
             LiveSessions::find(&entry.id, cx).unwrap_or_else(|| LiveSession::resume(&entry, cx));
@@ -702,8 +705,11 @@ impl Workspace {
         }
         if let Some(first) = first {
             let input = arko::Input::Message(first);
-            if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
-                window.push_notification(why, cx);
+            match session.update(cx, |session, cx| session.send(input, cx)) {
+                Ok(sent) => self
+                    .session_view
+                    .update(cx, |view, cx| view.track(session.clone(), sent, window, cx)),
+                Err(why) => window.push_notification(why, cx),
             }
         }
         self.show(Some(session), window, cx);
@@ -726,8 +732,11 @@ impl Workspace {
                         text: command.clone(),
                         ..Default::default()
                     });
-                    if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
-                        window.push_notification(why, cx);
+                    match session.update(cx, |session, cx| session.send(input, cx)) {
+                        Ok(sent) => self
+                            .session_view
+                            .update(cx, |view, cx| view.track(session.clone(), sent, window, cx)),
+                        Err(why) => window.push_notification(why, cx),
                     }
                 }
             }
@@ -1229,6 +1238,16 @@ impl Workspace {
     }
 }
 
+/// The session view of the workspace `window` shows.
+pub(crate) fn session_view_of(window: &Window, cx: &App) -> Option<Entity<SessionView>> {
+    let workspace = gpui_kit::base::Root::read(window, cx)
+        .view()
+        .clone()
+        .downcast::<Workspace>()
+        .ok()?;
+    Some(workspace.read(cx).session_view().clone())
+}
+
 /// What the window says when a message to the worker `id` went and its
 /// transcript isn't in sight.
 pub(crate) fn sent_to(id: &str) -> String {
@@ -1358,8 +1377,11 @@ impl Render for Workspace {
                         text: "/handover".into(),
                         ..Default::default()
                     });
-                    if let Err(why) = session.update(cx, |session, cx| session.send(input, cx)) {
-                        window.push_notification(why, cx);
+                    match session.update(cx, |session, cx| session.send(input, cx)) {
+                        Ok(sent) => this
+                            .session_view
+                            .update(cx, |view, cx| view.track(session.clone(), sent, window, cx)),
+                        Err(why) => window.push_notification(why, cx),
                     }
                 }
             }))

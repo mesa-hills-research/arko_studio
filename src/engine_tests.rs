@@ -2218,10 +2218,9 @@ fn stop_skips_the_report_for_a_new_conversation(cx: &mut TestAppContext) {
     app.close_all(cx);
 }
 
-/// On Arko's engine, while the old model writes its report, a message to
-/// the main agent waits in the composer. One that reaches the session
-/// anyway (sent as the report began) isn't sent, and the session tells it
-/// as a message arko didn't send.
+/// On Arko's engine, while the old model writes its report, Arko refuses a
+/// message to the main agent, which comes back to the composer. A send the
+/// app makes gets the refusal as its verdict.
 #[gpui_kit::test]
 fn a_message_waits_for_the_report_on_arkos_engine(cx: &mut TestAppContext) {
     use std::cell::RefCell;
@@ -2249,27 +2248,31 @@ fn a_message_waits_for_the_report_on_arkos_engine(cx: &mut TestAppContext) {
     app.send(cx, "/new continue");
     wait_until(cx, "the report", |cx| state(cx) == (true, true));
     app.send(cx, "Carry on.");
-    assert_eq!(app.composer_text(cx), "Carry on.");
-    let session = app.shown(cx).unwrap();
-    let not_sent: Rc<RefCell<Vec<String>>> = Rc::default();
-    let _subscription = cx.update(|cx| {
-        let not_sent = not_sent.clone();
-        cx.subscribe(&session, move |_, event, _| {
-            if let crate::live::LiveEvent::NotSent(words) = event {
-                not_sent.borrow_mut().push(words.clone());
-            }
-        })
+    wait_until(cx, "the message to come back", |cx| {
+        app.composer_text(cx) == "Carry on."
     });
+    let session = app.shown(cx).unwrap();
     let message = arko::Input::Message(arko::Message {
         text: "Straight in.".into(),
         ..Default::default()
     });
-    session
+    let sent = session
         .update(cx, |session, cx| session.send(message, cx))
         .unwrap();
-    wait_until(cx, "the message not sent", |_| {
-        *not_sent.borrow() == ["Straight in."]
-    });
+    let verdict: Rc<RefCell<Option<arko::Verdict>>> = Rc::default();
+    cx.spawn({
+        let verdict = verdict.clone();
+        async move |_| *verdict.borrow_mut() = sent.verdict.await.ok()
+    })
+    .detach();
+    wait_until(cx, "the verdict", |_| verdict.borrow().is_some());
+    assert!(
+        matches!(
+            verdict.borrow().as_ref(),
+            Some(arko::Verdict::Refused(refusal)) if refusal.kind == arko::RefusalKind::Reporting
+        ),
+        "{verdict:?}"
+    );
     act(cx, app.window, |window, cx| window.click("stop", cx));
     wait_until(cx, "the switch to end", |cx| state(cx) == (false, false));
     assert_eq!(app.composer_text(cx), "Carry on.");
