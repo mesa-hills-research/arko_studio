@@ -105,6 +105,16 @@ closed folder shows the dot too while a session inside has one.
 conversation, send messages and commands, answer questions and stop turns. The page is not
 encrypted, so share it only on networks you trust. **New key** ends the old links.
 
+## Dictation
+
+The microphone button left of Send types what you say into the message box, recognized on your
+computer. Click it to start and again to stop, or hold it down while you talk and let go to stop.
+Esc cancels and takes out the words the recording put in. The first recording asks before it
+downloads a speech model into `models/speech/` in the Arko folder, which Arko in the terminal uses
+too. `dictation.json` there chooses the model and the language, as
+[Arko's dictation guide](https://github.com/mesa-hills-research/arko/blob/master/docs/dictation.md)
+describes.
+
 ## Logs
 
 **Help › Open Logs Folder** opens the app's log folder.

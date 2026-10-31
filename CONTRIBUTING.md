@@ -118,7 +118,7 @@ transcript goldens too.
 | `src/live.rs` | Running sessions and engine events |
 | `src/workspace.rs` | Window panes, sheets, resizing and actions |
 | `src/sidebar.rs` | Session grouping, filtering, renaming and deleting |
-| `src/session_view.rs`, `src/composer.rs` | Session controls, message input and attachments |
+| `src/session_view.rs`, `src/composer.rs`, `src/dictation.rs` | Session controls, message input, attachments and dictation |
 | `src/transcript/` | Transcript rows, selection, navigation and find |
 | `src/status_bar.rs`, `src/workers_panel.rs`, `src/workers.rs` | Session figures, the workers panel and how it lists workers |
 | `src/notify.rs`, `src/cache_reminders.rs` | Notices for turns, questions, workers and cache expiry |

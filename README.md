@@ -13,6 +13,7 @@ The native interface is written in Rust with [GPUI](https://www.gpui.rs) and
 - Run workers on models of their own, with profiles that set a model, an effort and instructions,
   and see a worker's own workers under it.
 - Read streamed replies, Markdown, highlighted code, diffs and images in one transcript.
+- Dictate messages, recognized on your computer by Arko's speech engine.
 - Answer the agent's questions while it works, in a panel above the message box (Alt+Q) or in your
   next message.
 - Approve what the agent asks to set up, such as a skill, an MCP server or a worker billed per
@@ -27,7 +28,7 @@ The native interface is written in Rust with [GPUI](https://www.gpui.rs) and
 ## Build and install
 
 Install a current stable [Rust toolchain](https://rustup.rs). The app's minimum Rust version is
-1.95. Platform build tools are also needed.
+1.97. Platform build tools are also needed.
 
 - On macOS, install Xcode and its command-line tools. With Xcode 26, install the Metal toolchain
   using `xcodebuild -downloadComponent MetalToolchain` if it is missing.
@@ -37,8 +38,11 @@ Install a current stable [Rust toolchain](https://rustup.rs). The app's minimum 
 
 ```sh
 sudo apt install build-essential pkg-config cmake libfontconfig-dev libwayland-dev \
-  libxkbcommon-x11-dev libx11-xcb-dev libvulkan1 mesa-vulkan-drivers
+  libxkbcommon-x11-dev libx11-xcb-dev libasound2-dev libvulkan1 mesa-vulkan-drivers
 ```
+
+Dictation uses ALSA for the microphone on Linux. Build with `--no-default-features` to leave
+dictation out, which also drops the need for `libasound2-dev`.
 
 Clone the repository and build it. Cargo fetches Arko, its framework, GPUI Kit (the
 `mhr-gpui-kit` crates) and GPUI (the `mhr-gpui` crates) from crates.io.
