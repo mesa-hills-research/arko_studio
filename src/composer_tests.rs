@@ -66,6 +66,7 @@ fn each_session_keeps_its_draft(cx: &mut TestAppContext) {
     // They're kept for the next run too.
     assert_eq!(
         cx.read(|cx| drafts::get("20261016-091200-a1b2", cx))
+            .map(|draft| draft.text)
             .as_deref(),
         Some("About the split")
     );
@@ -81,6 +82,7 @@ fn closing_the_window_keeps_what_was_just_typed(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(
         cx.read(|cx| drafts::get(drafts::NEW_SESSION, cx))
+            .map(|draft| draft.text)
             .as_deref(),
         Some("Half a thought")
     );

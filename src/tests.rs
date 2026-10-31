@@ -1309,9 +1309,48 @@ fn what_a_session_that_failed_to_open_was_sent_goes_back_to_its_draft(cx: &mut T
     act(cx, window, |_, _| {});
     assert!(cx.read(|cx| workspace.read(cx).live_session().is_none()));
     assert_eq!(
-        cx.read(|cx| crate::drafts::get("s1", cx)).as_deref(),
+        cx.read(|cx| crate::drafts::get("s1", cx))
+            .map(|draft| draft.text)
+            .as_deref(),
         Some("Then the docs.\n\nFix the parser.\n\nAnd the tests.")
     );
+}
+
+/// An image sent alone to a session that was resuming, whose open failed,
+/// comes back with that session's draft, so it's in the composer once the
+/// session shows again.
+#[gpui_kit::test]
+fn an_image_sent_to_a_session_that_failed_to_open_comes_back_with_it(cx: &mut TestAppContext) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let composer = cx.read(|cx| view.read(cx).composer().clone());
+    act(cx, window, |_, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.attach_image(
+                crate::composer::Attached::new(
+                    gpui_kit::ImageFormat::Png,
+                    crate::testing::PNG.to_vec(),
+                    Some("shot.png".into()),
+                ),
+                cx,
+            )
+        })
+    });
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert_eq!(cx.read(|cx| session.read(cx).queued().len()), 1);
+    assert_eq!(cx.read(|cx| composer.read(cx).images().len()), 0);
+    session.update(cx, |session, cx| session.fail_for_tests(cx));
+    act(cx, window, |_, _| {});
+    assert!(cx.read(|cx| workspace.read(cx).live_session().is_none()));
+    // Shown again, as it opens again.
+    let again = cx.new(|cx| crate::live::LiveSession::for_tests("s1", cx));
+    act(cx, window, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(again.clone(), window, cx)
+        })
+    });
+    assert_eq!(composer_text(&view, cx), "");
+    assert_eq!(cx.read(|cx| composer.read(cx).images().len()), 1);
 }
 
 /// A new session's first message, with its image, comes back to the new

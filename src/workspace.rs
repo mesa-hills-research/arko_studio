@@ -692,7 +692,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(draft) = &draft {
-            crate::drafts::set(&entry.id.0, draft, cx);
+            crate::drafts::set_text(&entry.id.0, draft, cx);
         }
         let session =
             LiveSessions::find(&entry.id, cx).unwrap_or_else(|| LiveSession::resume(&entry, cx));

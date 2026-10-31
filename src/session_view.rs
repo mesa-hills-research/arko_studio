@@ -218,9 +218,6 @@ pub struct SessionView {
     transcripts: Vec<KeptTranscript>,
     /// Its window closed: it shows nothing and keeps no more drafts.
     closed: bool,
-    /// The images of a first message whose session didn't open, for the
-    /// new session's composer.
-    returned_images: Vec<Attached>,
     /// What the model list knows of OpenRouter.
     openrouter: OpenRouterSeen,
     _openrouter: Option<Task<()>>,
@@ -509,7 +506,6 @@ impl SessionView {
             _draft: None,
             transcripts: Vec::new(),
             closed: false,
-            returned_images: Vec::new(),
             openrouter: OpenRouterSeen::default(),
             _openrouter: None,
             last_efforts: std::collections::HashMap::new(),
@@ -905,31 +901,25 @@ impl SessionView {
         if let Some(key) = self.draft_key(cx) {
             // While a message is edited, the user's draft is the one put
             // aside, not the message in the composer.
-            let text = match &self.editing {
-                Some(editing) => editing.draft.clone(),
-                None => self.composer.read(cx).expanded_text(cx),
+            let draft = match &self.editing {
+                Some(editing) => Outgoing {
+                    text: editing.draft.clone(),
+                    images: editing.images.clone(),
+                },
+                None => self.composer.read(cx).draft(cx),
             };
-            drafts::set(&key, &text, cx);
+            drafts::set(&key, &draft, cx);
         }
     }
 
     fn restore_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self
+        let draft = self
             .draft_key(cx)
             .and_then(|key| drafts::get(&key, cx))
             .unwrap_or_default();
-        let images = if self.session.is_none() {
-            std::mem::take(&mut self.returned_images)
-        } else {
-            Vec::new()
-        };
-        self.composer_empty = text.is_empty() && images.is_empty();
-        self.composer.update(cx, |composer, cx| {
-            composer.set_text(&text, window, cx);
-            for image in images {
-                composer.attach_image(image, cx);
-            }
-        });
+        self.composer_empty = draft.text.is_empty() && draft.images.is_empty();
+        self.composer
+            .update(cx, |composer, cx| composer.restore(draft, window, cx));
     }
 
     /// Shows `session`, or a new session when `None`. The composer keeps
@@ -2629,10 +2619,10 @@ impl SessionView {
     }
 
     /// Puts back the message an attempt to open `session` took, which
-    /// failed, so it never went: in the composer of the session it was
-    /// written for, before what that holds now. That's the new session's
-    /// composer for a session that never had an id. Where the window shows
-    /// another, it goes into that composer's kept draft.
+    /// failed, so it never went, text and images: in the composer of the
+    /// session it was written for, after what that holds now. That's the
+    /// new session's composer for a session that never had an id. Where
+    /// the window shows another, it goes into that composer's kept draft.
     fn send_home(
         &mut self,
         session: &Entity<LiveSession>,
@@ -2647,23 +2637,22 @@ impl SessionView {
             Some(id) => id.0.clone(),
             None => drafts::NEW_SESSION.to_string(),
         };
-        if self.editing.is_none() && self.draft_key(cx).as_deref() == Some(home.as_str()) {
-            let shown = self.composer.read(cx).expanded_text(cx);
-            self.composer.update(cx, |composer, cx| {
-                composer.set_text(&joined(&shown, &text), window, cx);
-                for image in images {
-                    composer.attach_image(image, cx);
-                }
-            });
+        let shown = self.editing.is_none() && self.draft_key(cx).as_deref() == Some(home.as_str());
+        let mut draft = if shown {
+            self.composer.read(cx).draft(cx)
+        } else {
+            drafts::get(&home, cx).unwrap_or_default()
+        };
+        draft.text = joined(&draft.text, &text);
+        draft.images.extend(images);
+        if shown {
             self.composer_empty = false;
+            self.composer
+                .update(cx, |composer, cx| composer.restore(draft, window, cx));
             self.keep_draft(cx);
             cx.notify();
-            return;
-        }
-        let kept = drafts::get(&home, cx).unwrap_or_default();
-        drafts::set(&home, &joined(&kept, &text), cx);
-        if home == drafts::NEW_SESSION {
-            self.returned_images.extend(images);
+        } else {
+            drafts::set(&home, &draft, cx);
         }
     }
 
@@ -2850,7 +2839,7 @@ impl SessionView {
         // Should it not open, the first message comes back to the new
         // session's composer, as what its failed attempt took.
         let (session, sent) = LiveSession::create(new, arko::Input::Message(message), cx);
-        drafts::set(drafts::NEW_SESSION, "", cx);
+        drafts::set(drafts::NEW_SESSION, &Outgoing::default(), cx);
         self.draft.model = None;
         self.draft.effort = None;
         // The next new session starts as Settings say.

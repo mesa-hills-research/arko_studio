@@ -137,8 +137,9 @@ pub fn image_format(path: &Path) -> Option<ImageFormat> {
     })
 }
 
-/// What the user sends: the text (tokens expanded) and the images.
-#[derive(Debug, Clone)]
+/// What the composer holds, sends or restores: the text (tokens expanded)
+/// and the images.
+#[derive(Debug, Clone, Default)]
 pub struct Outgoing {
     pub text: String,
     pub images: Vec<Attached>,
@@ -630,6 +631,20 @@ impl Composer {
         self.images = images;
         cx.emit(ComposerEvent::Edited);
         cx.notify();
+    }
+
+    /// What it holds, as a draft to keep.
+    pub fn draft(&self, cx: &App) -> Outgoing {
+        Outgoing {
+            text: self.expanded_text(cx),
+            images: self.images.clone(),
+        }
+    }
+
+    /// Holds `draft` in place of what it held.
+    pub fn restore(&mut self, draft: Outgoing, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_text(&draft.text, window, cx);
+        self.set_images(draft.images, cx);
     }
 
     /// Adds an image to the message.
