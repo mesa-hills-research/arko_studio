@@ -161,6 +161,9 @@ pub enum ComposerEvent {
     EditLast,
     /// The text changed.
     Edited,
+    /// The text was replaced whole, by a draft or a message given back, or
+    /// emptied once its words went.
+    Replaced,
 }
 
 /// The chords that send, as Settings › Input chose: Mod+Enter always sends
@@ -572,6 +575,7 @@ impl Composer {
             textarea.set_selected_range(end..end, cx);
         });
         self.suggestions.opened_with(text);
+        cx.emit(ComposerEvent::Replaced);
         cx.notify();
     }
 

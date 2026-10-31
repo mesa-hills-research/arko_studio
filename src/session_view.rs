@@ -291,6 +291,8 @@ enum Given {
     /// their option, and the words the composer gave the answer.
     Approvals {
         selection: TraySelection,
+        /// Include message as the answer went.
+        message: crate::approvals::MessageSwitch,
         words: Option<Unsent>,
     },
     Nothing,
@@ -938,6 +940,9 @@ impl SessionView {
         self.end_edit(window, cx);
         self.close_find(window, cx);
         self.keep_draft(cx);
+        if let Some(tray) = self.approval_tray().cloned() {
+            tray.update(cx, |tray, cx| tray.hidden(cx));
+        }
         if let Some(old) = self.session.take() {
             old.update(cx, |old, cx| old.set_shown(false, cx));
         }
@@ -1351,7 +1356,21 @@ impl SessionView {
                 tray
             }
         };
-        tray.update(cx, |tray, cx| tray.set_requests(requests, cx));
+        let has_text = self.composer_has_text(cx);
+        tray.update(cx, |tray, cx| tray.set_requests(requests, has_text, cx));
+    }
+
+    /// Whether the message box has words, which an approval answer can take.
+    fn composer_has_text(&self, cx: &App) -> bool {
+        !self.composer.read(cx).text(cx).trim().is_empty()
+    }
+
+    /// The tray's Include message follows the message box's words.
+    fn sync_include_message(&self, cx: &mut App) {
+        let has_text = self.composer_has_text(cx);
+        if let Some(tray) = self.approval_tray().cloned() {
+            tray.update(cx, |tray, cx| tray.edited(has_text, cx));
+        }
     }
 
     /// Answers every request in the approval tray (Mod+Shift+A approves
@@ -1365,6 +1384,12 @@ impl SessionView {
             window.push_notification("No approvals wait.", cx);
             return;
         };
+        // (Words a recording put in may have come without an edit.)
+        self.sync_include_message(cx);
+        if tray.read(cx).ready(cx).is_empty() {
+            window.push_notification("Requests show for half a second before you can answer.", cx);
+            return;
+        }
         let takes_words = self.editing.is_none() && self.target.is_none();
         let words = if takes_words {
             self.composer
@@ -1375,9 +1400,13 @@ impl SessionView {
         } else {
             String::new()
         };
-        let (answers, selection) = {
+        let (answers, selection, message) = {
             let tray = tray.read(cx);
-            (tray.answers(approve, &words), tray.selection())
+            (
+                tray.answers(approve, &words, cx),
+                tray.selection(),
+                tray.message().clone(),
+            )
         };
         let sent = session.update(cx, |session, cx| {
             session.send(arko::Input::AnswerApprovals(answers.clone()), cx)
@@ -1407,7 +1436,11 @@ impl SessionView {
         self.follow(
             session,
             sent,
-            Given::Approvals { selection, words },
+            Given::Approvals {
+                selection,
+                message,
+                words,
+            },
             window,
             cx,
         );
@@ -1582,7 +1615,9 @@ impl SessionView {
                     self.edit_message(last, window, cx);
                 }
             }
+            ComposerEvent::Replaced => self.sync_include_message(cx),
             ComposerEvent::Edited => {
+                self.sync_include_message(cx);
                 let composer = self.composer.read(cx);
                 let empty =
                     composer.textarea().read(cx).text().len() == 0 && composer.images().is_empty();
@@ -2612,14 +2647,24 @@ impl SessionView {
                 }
                 None
             }
-            Given::Approvals { selection, words } => {
+            Given::Approvals {
+                selection,
+                message,
+                words,
+            } => {
                 // The tray is back with the requests open again.
                 self.sync_approvals(window, cx);
-                if let Some(tray) = self.approval_tray().cloned() {
+                let tray = self.approval_tray().cloned();
+                if let Some(tray) = &tray {
                     tray.update(cx, |tray, cx| tray.select(&selection, cx));
                 }
                 if let Some(words) = words {
                     self.restore_unsent(words, window, cx);
+                }
+                // Include message is as it was for the words.
+                let has_text = self.composer_has_text(cx);
+                if let Some(tray) = &tray {
+                    tray.update(cx, |tray, cx| tray.restore_message(&message, has_text, cx));
                 }
                 None
             }

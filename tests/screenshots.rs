@@ -5037,6 +5037,12 @@ fn approvals_window_of(
     })
     .unwrap();
     app.run_until_parked();
+    // Answers take the requests once they showed for half a second. A
+    // whole second leaves the message box's caret where its blink began.
+    app.update_window(window, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    app.advance_clock(std::time::Duration::from_secs(1));
+    app.run_until_parked();
     for click in clicks {
         let id = gpui_kit::ElementId::from(gpui_kit::SharedString::from(click.to_string()));
         app.update_window(window, |_, window, cx| {

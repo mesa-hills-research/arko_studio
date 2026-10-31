@@ -165,8 +165,15 @@ pub(crate) fn answers(choices: &[(&str, bool)], words: Option<&str>) -> arko::In
 }
 
 impl Window {
-    /// The engine's status lists `requests` in the tray.
+    /// The engine's status lists `requests` in the tray, and they show long
+    /// enough to read.
     fn request(&self, cx: &mut TestAppContext, requests: Vec<ApprovalRequest>) {
+        self.request_unread(cx, requests);
+        self.read(cx);
+    }
+
+    /// The engine's status lists `requests` in the tray, which draws them.
+    fn request_unread(&self, cx: &mut TestAppContext, requests: Vec<ApprovalRequest>) {
         let reading = Reading {
             approvals: requests,
             ..Reading::default()
@@ -174,6 +181,15 @@ impl Window {
         self.session.update(cx, |session, cx| {
             session.set_status(reading, Activity::default(), cx)
         });
+        cx.run_until_parked();
+        cx.update_window(self.window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+
+    /// The tray's rows stay in sight for as long as reading takes.
+    fn read(&self, cx: &mut TestAppContext) {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(crate::approvals::READ_MS));
         cx.run_until_parked();
     }
 
@@ -417,6 +433,89 @@ fn the_message_box_words_go_with_the_answer(cx: &mut TestAppContext) {
     assert_eq!(app.composer_text(cx), "");
 }
 
+/// Approve and Reject answer only the requests shown for half a second,
+/// and their labels count those. A request that comes later keeps waiting.
+#[gpui_kit::test]
+fn answers_take_only_the_requests_shown_long_enough_to_read(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.request_unread(cx, vec![profile("a1", "3d-judge")]);
+    assert_eq!(
+        app.label(cx, "approval-approve").as_deref(),
+        Some("Approve")
+    );
+    app.click(cx, "approval-approve");
+    assert!(
+        app.sent(cx).is_empty(),
+        "nothing goes before it can be read"
+    );
+    app.press(cx, "secondary-shift-a");
+    assert!(app.sent(cx).is_empty());
+    assert_eq!(app.notifications(cx), 1);
+    app.read(cx);
+    app.request_unread(cx, vec![profile("a1", "3d-judge"), server("a2")]);
+    assert_eq!(
+        app.label(cx, "approval-approve").as_deref(),
+        Some("Approve 1")
+    );
+    assert_eq!(
+        app.label(cx, "approval-reject").as_deref(),
+        Some("Reject 1")
+    );
+    app.click(cx, "approval-approve");
+    assert_eq!(app.sent(cx), [answers(&[("a1", true)], None)]);
+}
+
+/// Include message shows while the message box has text. It starts off
+/// for a draft that was there when the newest request came, so the draft
+/// stays, and on for words written after the box was emptied. A click or M
+/// in the tray turns it over.
+#[gpui_kit::test]
+fn include_message_starts_off_for_a_draft_older_than_the_request(cx: &mut TestAppContext) {
+    let app = start(cx);
+    let switch = |cx: &mut TestAppContext| {
+        cx.update_window(app.window, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find("approval-message")
+                .and_then(|found| found.checked())
+        })
+        .unwrap()
+    };
+    app.type_text(cx, "Earlier draft");
+    app.request(cx, vec![profile("a1", "3d-judge")]);
+    assert_eq!(switch(cx), Some(false));
+    app.click(cx, "approval-approve");
+    assert_eq!(app.sent(cx), [answers(&[("a1", true)], None)]);
+    assert_eq!(app.composer_text(cx), "Earlier draft");
+
+    app.request(cx, vec![server("a2")]);
+    assert_eq!(switch(cx), Some(false));
+    app.press(cx, "alt-a");
+    app.press(cx, "m");
+    assert_eq!(switch(cx), Some(true));
+    app.click(cx, "approval-message");
+    assert_eq!(switch(cx), Some(false));
+    assert_eq!(app.composer_text(cx), "Earlier draft");
+    // Emptied, the box starts a message for the answer.
+    let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
+    act(cx, app.window, |window, cx| {
+        let composer = view.read(cx).composer().clone();
+        composer.update(cx, |composer, cx| composer.set_text("", window, cx));
+    });
+    assert_eq!(switch(cx), None, "no text, no switch");
+    act(cx, app.window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx))
+    });
+    app.type_text(cx, "Use opus");
+    assert_eq!(switch(cx), Some(true));
+    app.click(cx, "approval-reject");
+    assert_eq!(
+        app.sent(cx)[1..],
+        [answers(&[("a2", false)], Some("Use opus"))]
+    );
+    assert_eq!(app.composer_text(cx), "");
+}
+
 /// A long update's changed lines are read from the keyboard. Tab reaches
 /// their box, ↓ and Page Down scroll it, End shows its last line and Home
 /// its first, and Esc closes the details with the tray keeping the keyboard.
@@ -580,6 +679,8 @@ fn refused_answers_come_back_to_the_tray_as_they_were_set(cx: &mut TestAppContex
     assert!(app.shows(cx, "approval-tray"));
     assert_eq!(app.checked(cx, "a1"), Some(true));
     assert_eq!(app.checked(cx, "a2"), Some(false));
+    // Back in sight, they show again for long enough to read.
+    app.read(cx);
     app.click(cx, "approval-approve");
     assert_eq!(app.sent(cx), sent);
 }
@@ -859,6 +960,30 @@ fn the_tray_keeps_what_is_checked_for_each_session(cx: &mut TestAppContext) {
     assert_eq!(app.checked(cx, "a2"), Some(true));
 }
 
+/// A request out of sight before it could be read, while the window shows
+/// another session, needs half a second in sight again once it's back.
+#[gpui_kit::test]
+fn a_request_left_unread_waits_again_when_its_session_shows(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.request_unread(cx, vec![profile("a1", "3d-judge")]);
+    let other = cx.new(|cx| LiveSession::for_tests("s2", cx));
+    let show = |session: &Entity<LiveSession>, cx: &mut TestAppContext| {
+        act(cx, app.window, |window, cx| {
+            app.workspace.update(cx, |workspace, cx| {
+                workspace.show_session(session.clone(), window, cx)
+            })
+        });
+    };
+    show(&other, cx);
+    app.read(cx);
+    show(&app.session.clone(), cx);
+    app.click(cx, "approval-approve");
+    assert!(app.sent(cx).is_empty(), "it wasn't read");
+    app.read(cx);
+    app.click(cx, "approval-approve");
+    assert_eq!(app.sent(cx), [answers(&[("a1", true)], None)]);
+}
+
 /// An answer that can't go (a sample session doesn't run) leaves the tray
 /// and the message box as they were, and says why.
 #[gpui_kit::test]
@@ -874,6 +999,8 @@ fn an_answer_that_cant_go_leaves_the_tray(cx: &mut TestAppContext) {
         session.show_approvals(vec![profile("a1", "3d-judge")], cx)
     });
     cx.run_until_parked();
+    assert!(app.shows(cx, "approval-tray"));
+    app.read(cx);
     app.type_text(cx, "Use opus");
     app.click(cx, "approval-approve");
     assert_eq!(app.notifications(cx), 1);

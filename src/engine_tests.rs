@@ -641,6 +641,9 @@ fn a_worker_billed_per_token_starts_once_approved_in_the_tray(cx: &mut TestAppCo
     act(cx, app.window, |window, cx| {
         window.input("Keep it short", cx)
     });
+    // Approve takes it once it showed for long enough to read.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(crate::approvals::READ_MS));
     act(cx, app.window, |window, cx| {
         window.click("approval-approve", cx)
     });

@@ -3,39 +3,55 @@
 //! add, a worker to start on a model billed per token), a row each, which
 //! opens in place to its details. With several, each row has a box, all
 //! checked at first. Approve approves the rows checked and rejects the
-//! others in the same click, Reject all rejects them all, and what the
-//! message box holds goes to the agent with the answer
-//! ([`arko::Input::AnswerApprovals`]). The session view sends it (see
+//! others in the same click, and Reject all rejects them all. While the
+//! message box has text, Include message says whether it goes to the agent
+//! with the answer ([`arko::Input::AnswerApprovals`]). It starts off for a
+//! draft that was there when the newest request came, and on for one
+//! written after ([`MessageSwitch`]). Approve and Reject answer only the
+//! requests shown for half a second, and their labels count those
+//! ([`ShownApprovals`]). The session view sends the answer (see
 //! `SessionView::answer_approvals`).
 //!
 //! Mod+Shift+A and Mod+Shift+R answer from anywhere in the window, the
 //! message box too. Alt+A gives the tray the keyboard, where ↑ and ↓ move
 //! between the rows, Space checks one, A checks all or none, → opens a
-//! row's details, Enter approves, and Esc closes the details, then gives the
+//! row's details, M turns Include message on or off, Enter approves, and Esc
+//! closes the details, then gives the
 //! keyboard back to the message box. Tab reaches the boxes of text in the
 //! details, where ↑ and ↓ scroll a line, Page Up and Page Down a box's
 //! height, and Home and End to its start and end.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::rc::Rc;
+use std::time::Instant;
 
 use arko::approvals::{
-    Approval, ApprovalAnswers, ApprovalRequest, Look, approvals_heading, approve_label,
-    reject_label,
+    Approval, ApprovalAnswers, ApprovalRequest, Look, answer_labels, approvals_heading,
 };
 use gpui_kit::base::SelectableText;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, RoleOverride, Selectable as _, Sizable as _, StyledExt as _,
-    Theme,
+    ActiveTheme as _, Disableable as _, Icon, IconName, RoleOverride, Selectable as _,
+    Sizable as _, StyledExt as _, Theme,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
     scroll::ScrollableElement as _,
+    switch::Switch,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+
+mod message_switch;
+mod shown_approvals;
+
+pub use message_switch::MessageSwitch;
+#[cfg(test)]
+pub(crate) use shown_approvals::READ_MS;
+use shown_approvals::ShownApprovals;
 
 /// The key context of the tray.
 pub const CONTEXT: &str = "ApprovalTray";
@@ -70,6 +86,8 @@ gpui_kit::actions!(
         SelectAll,
         /// Opens the details of the request the keyboard is on (→).
         OpenDetails,
+        /// Turns Include message on or off (M).
+        ToggleMessage,
         /// Closes the details, or gives the keyboard back to the message
         /// box when none are open (Esc).
         CloseDetails,
@@ -174,6 +192,9 @@ fn set(set: &mut HashSet<String>, id: &str, on: bool) {
     }
 }
 
+/// Where each row's line was drawn, by request, as the rows draw.
+type DrawnLines = Rc<RefCell<Vec<(String, Bounds<Pixels>)>>>;
+
 /// The requests in the tray, with what the user set for each.
 pub struct ApprovalTray {
     requests: Vec<ApprovalRequest>,
@@ -193,6 +214,17 @@ pub struct ApprovalTray {
     focus: FocusHandle,
     /// The rows, which scroll to the one the keyboard is on.
     scroll: ScrollHandle,
+    /// Whether the message box's text goes with the answer.
+    message: MessageSwitch,
+    /// When each request came into sight, which answers take only once it
+    /// could be read.
+    shown: ShownApprovals,
+    /// What the tray's clock counts from.
+    epoch: Instant,
+    /// Where each row's line was drawn in the last frame, by request.
+    lines: DrawnLines,
+    /// Draws the tray again when its next request can be answered.
+    ready_timer: Option<(u64, Task<()>)>,
 }
 
 impl ApprovalTray {
@@ -207,15 +239,33 @@ impl ApprovalTray {
             files: HashMap::new(),
             focus: cx.focus_handle(),
             scroll: ScrollHandle::default(),
+            message: MessageSwitch::default(),
+            shown: ShownApprovals::default(),
+            epoch: cx.background_executor().now(),
+            lines: Rc::default(),
+            ready_timer: None,
         }
     }
 
-    /// Shows `requests`, in the order they came. What was set for those
-    /// gone goes, and those new join checked.
-    pub fn set_requests(&mut self, requests: Vec<ApprovalRequest>, cx: &mut Context<Self>) {
+    /// Shows `requests`, in the order they came, while the message box has
+    /// text or not (`has_text`). What was set for those gone goes, and
+    /// those new join checked.
+    pub fn set_requests(
+        &mut self,
+        requests: Vec<ApprovalRequest>,
+        has_text: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let ids: HashSet<String> = requests.iter().map(|request| request.id.clone()).collect();
+        let before = self.message.clone();
+        self.message.requests(ids.clone(), has_text);
         if requests == self.requests {
+            if self.message != before {
+                cx.notify();
+            }
             return;
         }
+        self.shown.retain(&ids);
         let waits = |id: &String| requests.iter().any(|request| request.id == *id);
         self.unselected.retain(waits);
         self.options.retain(waits);
@@ -271,16 +321,107 @@ impl ApprovalTray {
         cx.notify();
     }
 
-    /// The answer to every request it shows, with `words` from the message
-    /// box: when `approve`, those checked are approved (with their options)
-    /// and the others rejected, else all are rejected.
-    pub fn answers(&self, approve: bool, words: &str) -> ApprovalAnswers {
+    /// The message box's text changed, and has text or not.
+    pub fn edited(&mut self, has_text: bool, cx: &mut Context<Self>) {
+        let before = self.message.clone();
+        self.message.edited(has_text);
+        if self.message != before {
+            cx.notify();
+        }
+    }
+
+    /// Whether the message box's text goes with the answer, and what the
+    /// switch was as an answer went, to give back should it come back.
+    pub fn message(&self) -> &MessageSwitch {
+        &self.message
+    }
+
+    /// An answer came back, with the box holding text or not (`has_text`).
+    /// The switch is as it was when the answer went, `previous`, unless a
+    /// request came since. (The tray hid the answered requests until the
+    /// verdict, so their coming back is no new request.)
+    pub fn restore_message(
+        &mut self,
+        previous: &MessageSwitch,
+        has_text: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let ids = self.requests.iter().map(|request| request.id.clone());
+        self.message = previous.clone();
+        self.message.requests(ids.collect(), has_text);
+        cx.notify();
+    }
+
+    /// The time on the tray's clock, in milliseconds.
+    fn now_ms(&self, cx: &App) -> u64 {
+        let now = cx.background_executor().now();
+        now.saturating_duration_since(self.epoch).as_millis() as u64
+    }
+
+    /// The requests an answer takes now, those shown long enough to read.
+    pub fn ready(&self, cx: &App) -> Vec<&ApprovalRequest> {
+        let now = self.now_ms(cx);
+        self.requests
+            .iter()
+            .filter(|request| self.shown.can_answer(&request.id, now))
+            .collect()
+    }
+
+    /// The answer to the requests shown long enough to read, with `words`
+    /// from the message box if Include message is on. When `approve`, those
+    /// checked are approved (with their options) and the others rejected,
+    /// else all are rejected. The others keep waiting.
+    pub fn answers(&self, approve: bool, words: &str, cx: &App) -> ApprovalAnswers {
+        let ready: Vec<ApprovalRequest> = self.ready(cx).into_iter().cloned().collect();
+        let words = if !ready.is_empty() && self.message.includes() {
+            words
+        } else {
+            ""
+        };
         ApprovalAnswers::of(
-            &self.requests,
+            &ready,
             |id| approve && !self.unselected.contains(id),
             |id| self.options.contains(id),
             words,
         )
+    }
+
+    /// The tray goes out of sight (the window shows another session). A
+    /// request not read yet waits again when it comes back.
+    pub fn hidden(&mut self, cx: &mut Context<Self>) {
+        let now = self.now_ms(cx);
+        self.shown.visible(&HashSet::new(), now);
+        self.ready_timer = None;
+    }
+
+    /// The rows whose line the last frame drew in sight of the tray's list.
+    /// A request out of sight before it could be read waits again.
+    fn rows_drawn(&mut self, cx: &mut Context<Self>) {
+        let lines = std::mem::take(&mut *self.lines.borrow_mut());
+        let list = self.scroll.bounds();
+        let in_sight: HashSet<String> = lines
+            .into_iter()
+            .filter(|(_, line)| {
+                line.size.height > px(0.)
+                    && line.top() >= list.top() - px(1.)
+                    && line.bottom() <= list.bottom() + px(1.)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let now = self.now_ms(cx);
+        self.shown.visible(&in_sight, now);
+        let Some(ready_at) = self.shown.ready_at_ms(now) else {
+            self.ready_timer = None;
+            return;
+        };
+        if self.ready_timer.as_ref().map(|(at, _)| *at) != Some(ready_at) {
+            let wait = std::time::Duration::from_millis(ready_at - now);
+            let timer = cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                this.update(cx, |_, cx| cx.notify()).ok();
+            });
+            self.ready_timer = Some((ready_at, timer));
+        }
     }
 
     /// Gives the tray the keyboard, on the row it was last on (Alt+A).
@@ -386,6 +527,11 @@ impl ApprovalTray {
         if self.requests.len() > 1 {
             self.select_all(cx);
         }
+    }
+
+    fn on_toggle_message(&mut self, _: &ToggleMessage, _: &mut Window, cx: &mut Context<Self>) {
+        self.message.flip();
+        cx.notify();
     }
 
     fn on_open(&mut self, _: &OpenDetails, window: &mut Window, cx: &mut Context<Self>) {
@@ -518,8 +664,15 @@ impl ApprovalTray {
                     window.focus(&this.focus, cx);
                 }
             }));
+        let lines = self.lines.clone();
         v_flex()
             .w_full()
+            // Where its line is drawn, which says whether it's in sight.
+            .on_children_prepainted(move |bounds, _, _| {
+                if let Some(line) = bounds.first() {
+                    lines.borrow_mut().push((id.clone(), *line));
+                }
+            })
             .child(h_flex().w_full().gap_1().children(check).child(line))
             .when(open, |this| {
                 this.child(self.render_details(request, several, warning, cx))
@@ -885,8 +1038,16 @@ impl Render for ApprovalTray {
             .collect();
         let count = self.requests.len();
         let heading = approvals_heading(count);
-        let approve = approve_label(self.selected(), count);
-        let reject = reject_label(count);
+        let ready = self.ready(cx);
+        let checked = ready
+            .iter()
+            .filter(|request| !self.unselected.contains(&request.id))
+            .count();
+        let (approve, reject) = answer_labels(checked, ready.len(), count);
+        let none_ready = ready.is_empty();
+        let includes = self.message.includes();
+        let has_text = self.message.has_text();
+        let tray = cx.entity().downgrade();
         let theme = cx.theme();
         // A grey cap would sit like a sticker on Approve's fill, so its cap
         // takes the button's text color.
@@ -908,6 +1069,7 @@ impl Render for ApprovalTray {
             .on_action(cx.listener(Self::on_toggle))
             .on_action(cx.listener(Self::on_select_all))
             .on_action(cx.listener(Self::on_open))
+            .on_action(cx.listener(Self::on_toggle_message))
             .on_action(cx.listener(Self::on_close))
             .on_action(cx.listener(|this, _: &SelectPrevious, window, cx| {
                 this.move_cursor(false, window, cx)
@@ -950,16 +1112,40 @@ impl Render for ApprovalTray {
                     .text_sm()
                     .children(rows),
             )
+            // Once the rows are drawn, which of them are in sight.
+            .child(
+                canvas(
+                    move |_, _, cx| {
+                        tray.update(cx, |tray, cx| tray.rows_drawn(cx)).ok();
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_0(),
+            )
             .child(
                 h_flex()
                     .flex_none()
                     .gap_2()
                     .justify_end()
+                    .when(has_text, |this| {
+                        this.child(
+                            Switch::new("approval-message")
+                                .small()
+                                .label("Include message")
+                                .checked(includes)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.message.flip();
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("approval-reject")
                             .outline()
                             .small()
-                            .accessibility_label(reject)
+                            .disabled(none_ready)
+                            .accessibility_label(reject.clone())
                             .child(h_flex().gap_1p5().child(reject).children(reject_key))
                             .on_click(cx.listener(|_, _, _, cx| {
                                 cx.emit(TrayEvent::Answer { approve: false })
@@ -969,6 +1155,7 @@ impl Render for ApprovalTray {
                         Button::new("approval-approve")
                             .primary()
                             .small()
+                            .disabled(none_ready)
                             .accessibility_label(approve.clone())
                             .child(h_flex().gap_1p5().child(approve).children(approve_key))
                             .on_click(cx.listener(|_, _, _, cx| {

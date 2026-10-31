@@ -332,6 +332,10 @@ pub fn commands() -> Vec<Command> {
             .keys(&["right"])
             .context(approvals::CONTEXT)
             .not_in_palette(),
+        Command::new(Approvals, "Include Message", approvals::ToggleMessage)
+            .keys(&["m"])
+            .context(approvals::CONTEXT)
+            .not_in_palette(),
         Command::new(Approvals, "Close Details", approvals::CloseDetails)
             .keys(&["escape"])
             .context(approvals::CONTEXT)
