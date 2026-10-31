@@ -1589,7 +1589,10 @@ fn started_reading() -> arko::remote::Reading {
 }
 
 /// The command lines the session was sent.
-fn sent(session: &Entity<crate::live::LiveSession>, cx: &mut TestAppContext) -> Vec<String> {
+pub(crate) fn sent(
+    session: &Entity<crate::live::LiveSession>,
+    cx: &mut TestAppContext,
+) -> Vec<String> {
     cx.read(|cx| {
         session
             .read(cx)

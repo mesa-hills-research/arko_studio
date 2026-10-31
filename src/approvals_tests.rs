@@ -48,7 +48,7 @@ fn start(cx: &mut TestAppContext) -> Window {
 }
 
 /// Arko asks to save the worker profile `name`, as request `id`.
-fn profile(id: &str, name: &str) -> ApprovalRequest {
+pub(crate) fn profile(id: &str, name: &str) -> ApprovalRequest {
     request(serde_json::json!({
         "id": id, "batch": 1,
         "approval": {
@@ -150,7 +150,7 @@ fn long_update(id: &str) -> ApprovalRequest {
 
 /// The answer naming each of `choices` (an id and whether it is approved),
 /// with `words`.
-fn answers(choices: &[(&str, bool)], words: Option<&str>) -> arko::Input {
+pub(crate) fn answers(choices: &[(&str, bool)], words: Option<&str>) -> arko::Input {
     arko::Input::AnswerApprovals(ApprovalAnswers {
         choices: choices
             .iter()

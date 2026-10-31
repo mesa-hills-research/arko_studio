@@ -1357,7 +1357,8 @@ impl SessionView {
     /// Answers every request in the approval tray (Mod+Shift+A approves
     /// those checked and rejects the others, Mod+Shift+R rejects them all).
     /// What the message box holds goes with the answer, and the box
-    /// empties. A message being edited or written to a worker stays.
+    /// empties. A message being edited or written to a worker stays, and so
+    /// does the box while a recording is on.
     pub fn answer_approvals(&mut self, approve: bool, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(session), Some(tray)) = (self.session.clone(), self.approval_tray().cloned())
         else {
@@ -1366,7 +1367,11 @@ impl SessionView {
         };
         let takes_words = self.editing.is_none() && self.target.is_none();
         let words = if takes_words {
-            self.composer.read(cx).expanded_text(cx)
+            self.composer
+                .read(cx)
+                .to_send(cx)
+                .map(|draft| draft.text)
+                .unwrap_or_default()
         } else {
             String::new()
         };
@@ -2661,7 +2666,8 @@ impl SessionView {
     /// in the composer meanwhile. Continue sends it while `owner`, the
     /// refused send's, is current and the composer still holds it for the
     /// same worker. Otherwise nothing goes, since the question was about
-    /// another message, or another attempt of the session.
+    /// another message, or another attempt of the session. Nothing goes
+    /// while a recording is on either.
     fn ask_continue(
         &mut self,
         owner: &Owner,
@@ -2679,7 +2685,11 @@ impl SessionView {
                 let holds = owner.current(view, cx)
                     && view.target == target
                     && view.editing.is_none()
-                    && view.composer.read(cx).expanded_text(cx) == outgoing.text;
+                    && view
+                        .composer
+                        .read(cx)
+                        .to_send(cx)
+                        .is_some_and(|draft| draft.text == outgoing.text);
                 if holds {
                     view.send_as(outgoing.clone(), true, window, cx);
                 }
@@ -4324,7 +4334,9 @@ impl SessionView {
                     .child(chip)
                     .children(target)
                     .children(replying)
-                    .child(div().flex_1())
+                    // Dictation's button left of Send, its words and
+                    // waveform taking the room before it.
+                    .child(self.composer.read(cx).dictation().clone())
                     .map(|this| {
                         // The tooltips name the keys: Esc stops, the send key sends.
                         let (label, chord) = if working {
