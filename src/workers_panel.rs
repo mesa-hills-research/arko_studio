@@ -56,8 +56,80 @@ actions!(
         /// From a worker's view back to the list, from the list back to the
         /// composer.
         Back,
+        /// The view the panel showed before this one, a worker's or the
+        /// list.
+        GoBack,
+        /// The view that Back left.
+        GoForward,
     ]
 );
+
+/// Makes Back and Forward, from the keys and from a mouse's side buttons,
+/// step through `panel`'s views wherever in `element` they're pressed. The
+/// panel takes them itself (it may be a sheet, outside the window's
+/// panes), and the window takes them everywhere else.
+pub fn step_through_views<E: InteractiveElement>(element: E, panel: &Entity<WorkersPanel>) -> E {
+    let go = |forward: bool| {
+        let panel = panel.downgrade();
+        move |window: &mut Window, cx: &mut App| {
+            panel
+                .update(cx, |panel, cx| panel.go(forward, window, cx))
+                .ok();
+        }
+    };
+    // A press over the docked panel steps once, not again in the window.
+    let press = |forward: bool| {
+        let go = go(forward);
+        move |_: &MouseDownEvent, window: &mut Window, cx: &mut App| {
+            cx.stop_propagation();
+            go(window, cx);
+        }
+    };
+    let (back, forward) = (go(false), go(true));
+    element
+        .on_action(move |_: &GoBack, window, cx| back(window, cx))
+        .on_action(move |_: &GoForward, window, cx| forward(window, cx))
+        .on_mouse_down(
+            MouseButton::Navigate(NavigationDirection::Back),
+            press(false),
+        )
+        .on_mouse_down(
+            MouseButton::Navigate(NavigationDirection::Forward),
+            press(true),
+        )
+}
+
+/// The panel's views the user left, the list (`None`) or a worker's, for
+/// Back and Forward.
+#[derive(Debug, Default)]
+struct ViewHistory {
+    back: Vec<Option<SharedString>>,
+    forward: Vec<Option<SharedString>>,
+}
+
+impl ViewHistory {
+    /// The user went from `from` to another view, so Forward has nothing.
+    fn leave(&mut self, from: Option<SharedString>) {
+        self.back.push(from);
+        self.forward.clear();
+    }
+
+    /// The view before `current` (after it, `forward`), if there is one.
+    fn step(
+        &mut self,
+        current: Option<SharedString>,
+        forward: bool,
+    ) -> Option<Option<SharedString>> {
+        let (from, to) = if forward {
+            (&mut self.forward, &mut self.back)
+        } else {
+            (&mut self.back, &mut self.forward)
+        };
+        let view = from.pop()?;
+        to.push(current);
+        Some(view)
+    }
+}
 
 /// What the panel asks of the window.
 #[derive(Debug, Clone, PartialEq)]
@@ -141,6 +213,8 @@ pub struct WorkersPanel {
     cursor: Option<PanelRow>,
     /// The worker whose transcript shows, if any.
     open: Option<SharedString>,
+    /// The views before and after the one that shows.
+    history: ViewHistory,
     /// The transcripts made, the latest last.
     transcripts: Vec<Shown>,
     finished_open: bool,
@@ -183,6 +257,7 @@ impl WorkersPanel {
             worker_focus,
             cursor: None,
             open: None,
+            history: ViewHistory::default(),
             transcripts: Vec::new(),
             finished_open: false,
             seen: HashSet::new(),
@@ -243,6 +318,7 @@ impl WorkersPanel {
             // Another session: its workers and transcripts are others.
             self.transcripts.clear();
             self.open = None;
+            self.history = ViewHistory::default();
             self.cursor = None;
             self.finished_open = false;
             self.seen.clear();
@@ -356,8 +432,17 @@ impl WorkersPanel {
         self.source.workers.iter().find(|worker| worker.id == id)
     }
 
-    /// Shows the worker `id`'s own transcript.
+    /// Shows the worker `id`'s own transcript. Back returns to the view
+    /// before.
     pub fn show_worker(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if self.source.feed.is_some() && self.open.as_ref() != Some(&id) {
+            self.history.leave(self.open.clone());
+        }
+        self.open_transcript(id, window, cx);
+    }
+
+    /// Shows the worker `id`'s own transcript, making it unless it's kept.
+    fn open_transcript(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let Some(feed) = self.source.feed.clone() else {
             return;
         };
@@ -434,9 +519,34 @@ impl WorkersPanel {
 
     /// Back to the list.
     pub fn show_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.open.take().is_some() {
+        if let Some(open) = self.open.take() {
+            self.history.leave(Some(open));
             self.focus_handle.focus(window, cx);
             cx.notify();
+        }
+    }
+
+    /// Shows the view the panel showed before this one (after it,
+    /// `forward`), while the panel shows. A worker that is gone shows the
+    /// list. The keyboard stays where it is, unless it was in the panel,
+    /// where it goes to the view shown.
+    pub fn go(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.shown {
+            return;
+        }
+        let Some(view) = self.history.step(self.open.clone(), forward) else {
+            return;
+        };
+        let had_focus = self.contains_focus(window, cx);
+        match view.filter(|id| self.worker(id).is_some()) {
+            Some(id) => self.open_transcript(id, window, cx),
+            None => {
+                self.open = None;
+                cx.notify();
+            }
+        }
+        if had_focus {
+            self.focus(window, cx);
         }
     }
 
@@ -1591,6 +1701,7 @@ impl Render for WorkersPanel {
         v_flex()
             .id("workers-panel")
             .test_support()
+            .map(|this| step_through_views(this, &cx.entity()))
             .size_full()
             .bg(background)
             .text_color(foreground)

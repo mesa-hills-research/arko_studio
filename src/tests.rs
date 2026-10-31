@@ -8,8 +8,8 @@ use gpui_kit::component::{Theme, ThemeRegistry, WindowExt as _};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, ElementId, Entity, InputEvent as _, Modifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Point, TestAppContext, Window,
-    WindowBounds, WindowOptions, px, size,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Point,
+    TestAppContext, Window, WindowBounds, WindowOptions, px, size,
 };
 
 use crate::appearance::PREVIEW_REST;
@@ -682,6 +682,198 @@ fn a_message_to_a_worker_says_it_went_unless_its_transcript_shows(cx: &mut TestA
         ]
     );
     assert_eq!(notifications(cx, window), 2);
+}
+
+/// A workspace `width` wide whose session runs r1, r2 and r3, with the
+/// workers panel open on the list and r1's and r2's transcripts opened
+/// from their cards in the main transcript, then All workers.
+fn workers_seen(
+    cx: &mut TestAppContext,
+    width: f32,
+) -> (
+    AnyWindowHandle,
+    Entity<Workspace>,
+    Entity<crate::workers_panel::WorkersPanel>,
+) {
+    use crate::workers_panel::PanelSource;
+    use arko::remote::{Feed, WorkerChange};
+
+    let (window, workspace, session) = session_in_workspace(cx, width);
+    let feed = Feed::new("main");
+    feed.turn_started();
+    for id in ["r1", "r2", "r3"] {
+        feed.worker(id, "Fix the parser", WorkerChange::Started);
+    }
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(menus::ToggleWorkersPanel), cx)
+    });
+    // The panel shows the feed's workers, for the session's key. (The
+    // session's own source has no feed.)
+    let panel = cx.read(|cx| workspace.read(cx).workers_panel().clone());
+    let key = (
+        session.entity_id(),
+        cx.read(|cx| session.read(cx).opening()),
+    );
+    act(cx, window, |_, cx| {
+        panel.update(cx, |panel, cx| {
+            let source = PanelSource {
+                workers: feed.subscribe().0.workers,
+                feed: Some(feed.clone()),
+                key: Some(key),
+                ..PanelSource::default()
+            };
+            panel.set_source(source, cx)
+        })
+    });
+    for id in ["r1", "r2"] {
+        act(cx, window, |window, cx| {
+            panel.update(cx, |panel, cx| panel.show_worker(id.into(), window, cx))
+        });
+    }
+    act(cx, window, |window, cx| window.click("workers-back", cx));
+    assert_eq!(shown_worker(&panel, cx), None, "All workers shows the list");
+    (window, workspace, panel)
+}
+
+fn shown_worker(
+    panel: &Entity<crate::workers_panel::WorkersPanel>,
+    cx: &mut TestAppContext,
+) -> Option<String> {
+    cx.read(|cx| panel.read(cx).open_worker().map(ToString::to_string))
+}
+
+/// A press of a mouse's back button (forward unless `back`) over the
+/// element `id`.
+fn press_side_button(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    id: &'static str,
+    back: bool,
+) {
+    let button = MouseButton::Navigate(if back {
+        NavigationDirection::Back
+    } else {
+        NavigationDirection::Forward
+    });
+    act(cx, window, |window, cx| {
+        let position = window.find(id).bounds().center();
+        let modifiers = Modifiers::default();
+        let events = [
+            MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers,
+            }
+            .to_platform_input(),
+            MouseDownEvent {
+                button,
+                position,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            MouseUpEvent {
+                button,
+                position,
+                modifiers,
+                click_count: 1,
+            }
+            .to_platform_input(),
+        ];
+        for event in events {
+            window.dispatch_event(event, cx);
+        }
+    });
+}
+
+/// Back (Cmd+[, Ctrl+[ elsewhere, or a mouse's back button) steps through
+/// the workers panel's views in the order they showed, and Forward
+/// (Cmd+], or the forward button) returns. Showing another view drops what
+/// Forward had. The keys work wherever the keyboard is, except in a text
+/// field, which keeps them for its indent, and only while the panel shows.
+#[gpui_kit::test]
+fn back_and_forward_step_through_the_workers_seen(cx: &mut TestAppContext) {
+    let (window, workspace, panel) = workers_seen(cx, 1300.);
+    assert!(cx.read(|cx| workspace.read(cx).width_class().docks_panel()));
+    let press = |cx: &mut TestAppContext, key: &str| {
+        act(cx, window, |window, cx| window.press(key, cx));
+        shown_worker(&panel, cx)
+    };
+    let back: Vec<_> = (0..4).map(|_| press(cx, "secondary-[")).collect();
+    let (r1, r2) = (Some("r1".to_string()), Some("r2".to_string()));
+    assert_eq!(back, [r2.clone(), r1.clone(), None, None]);
+    assert_eq!(press(cx, "secondary-]"), r1);
+    assert_eq!(press(cx, "secondary-]"), r2);
+    // The mouse's buttons, over the panel and over the main transcript.
+    press_side_button(cx, window, "workers-panel", true);
+    assert_eq!(shown_worker(&panel, cx), r1);
+    press_side_button(cx, window, "main", false);
+    assert_eq!(shown_worker(&panel, cx), r2);
+    press_side_button(cx, window, "main", true);
+    assert_eq!(shown_worker(&panel, cx), r1, "one step a press");
+
+    // Another worker after Back: Forward has nothing more.
+    act(cx, window, |window, cx| {
+        panel.update(cx, |panel, cx| panel.show_worker("r3".into(), window, cx))
+    });
+    assert_eq!(press(cx, "secondary-]").as_deref(), Some("r3"));
+
+    // From the main transcript too.
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::transcript::FocusTranscript), cx)
+    });
+    assert_eq!(press(cx, "secondary-["), r1);
+
+    // In the composer, Vim's keymap takes Ctrl+[ for Esc (the key of Back
+    // on Linux and Windows).
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    let keymap = |cx: &mut TestAppContext, keymap| {
+        cx.update(|cx| prefs::update(cx, |prefs| prefs.input.keymap = keymap))
+    };
+    keymap(cx, prefs::Keymap::Vim);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx));
+        window.press("i", cx)
+    });
+    assert_eq!(press(cx, "ctrl-["), r1);
+
+    // The usual keymap gives the composer no indent, so the keys go on to
+    // Back, and its text stays as it was.
+    keymap(cx, prefs::Keymap::Standard);
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.focus_composer(window, cx));
+        window.input("  Use tabs", cx)
+    });
+    assert_eq!(press(cx, "secondary-["), None);
+    assert_eq!(composer_text(&view, cx), "  Use tabs");
+    assert!(composer_focused(&view, window, cx));
+
+    // With the panel closed, they leave it as it was.
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(menus::ToggleWorkersPanel), cx)
+    });
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(crate::transcript::FocusTranscript), cx)
+    });
+    assert_eq!(press(cx, "secondary-]"), None);
+}
+
+/// In a window too narrow to dock it, the panel is a sheet over the
+/// window's panes, and Back and Forward work in it as they do docked.
+#[gpui_kit::test]
+fn back_and_forward_work_in_the_workers_sheet(cx: &mut TestAppContext) {
+    let (window, workspace, panel) = workers_seen(cx, 600.);
+    assert!(!cx.read(|cx| workspace.read(cx).width_class().docks_panel()));
+    act(cx, window, |window, cx| window.press("secondary-[", cx));
+    assert_eq!(shown_worker(&panel, cx).as_deref(), Some("r2"));
+    press_side_button(cx, window, "workers-panel", true);
+    assert_eq!(shown_worker(&panel, cx).as_deref(), Some("r1"));
+    act(cx, window, |window, cx| window.press("secondary-]", cx));
+    assert_eq!(shown_worker(&panel, cx).as_deref(), Some("r2"));
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_sheet(cx), "the sheet stays open")
+    });
 }
 
 /// A line that reads as a command but isn't one stays in the composer, to

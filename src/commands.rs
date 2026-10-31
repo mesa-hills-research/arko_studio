@@ -133,6 +133,10 @@ impl Command {
     }
 }
 
+/// The key context of the whole window (the kit's root). Every other
+/// context is deeper, so its bindings of the same keys come first.
+const WINDOW_CONTEXT: &str = "Root";
+
 /// The keys that carry two symbols on a US keyboard, with the one Shift makes.
 const SHIFTED_SYMBOLS: [(&str, &str); 21] = [
     ("`", "~"),
@@ -472,6 +476,16 @@ pub fn commands() -> Vec<Command> {
         Command::new(Workers, "All Workers", workers_panel::Back)
             .keys(&["escape"])
             .context(workers_panel::WORKER_CONTEXT)
+            .not_in_palette(),
+        // A text field that uses these keys keeps them, for its indent or
+        // (in Vim's keymap) Ctrl+[ for Esc.
+        Command::new(Workers, "Back", workers_panel::GoBack)
+            .keys(&["secondary-["])
+            .context(WINDOW_CONTEXT)
+            .not_in_palette(),
+        Command::new(Workers, "Forward", workers_panel::GoForward)
+            .keys(&["secondary-]"])
+            .context(WINDOW_CONTEXT)
             .not_in_palette(),
         // The notifications panel's list, and what works on all of them.
         Command::new(Notifications, "Toggle Notifications", ToggleNotifications)

@@ -1480,3 +1480,23 @@ fn in_the_window_a_running_workers_time_goes_on(cx: &mut TestAppContext) {
     let drawn = super::PANEL_DRAWN.with(|drawn| drawn.get());
     assert_eq!(drawn, 0, "the panel drew {drawn} times");
 }
+
+/// Back and Forward retrace the views the user left, and leaving a view
+/// for another drops what Forward had.
+#[test]
+fn the_view_history_steps_back_and_forward() {
+    let worker = |id: &str| Some(SharedString::from(id.to_string()));
+    let mut history = super::ViewHistory::default();
+    // The list, then r1, then r2.
+    history.leave(None);
+    history.leave(worker("r1"));
+    assert_eq!(history.step(worker("r2"), false), Some(worker("r1")));
+    assert_eq!(history.step(worker("r1"), false), Some(None));
+    assert_eq!(history.step(None, false), None, "nothing before the first");
+    assert_eq!(history.step(None, true), Some(worker("r1")));
+    // r3 from r1: r2 is no longer ahead.
+    history.leave(worker("r1"));
+    assert_eq!(history.step(worker("r3"), true), None);
+    assert_eq!(history.step(worker("r3"), false), Some(worker("r1")));
+    assert_eq!(history.step(worker("r1"), true), Some(worker("r3")));
+}
