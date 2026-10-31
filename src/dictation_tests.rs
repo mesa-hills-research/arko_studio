@@ -59,6 +59,8 @@ impl Drop for FakeOpened {
 /// A dictation the fake service opened.
 struct Open {
     download: bool,
+    /// It was given a session's words to favour.
+    session: bool,
     sink: Sink,
     taken: Rc<RefCell<Taken>>,
 }
@@ -79,6 +81,7 @@ impl Service for FakeService {
         &self,
         options: DictationOptions,
         sink: Sink,
+        session: Option<&crate::live::Link>,
     ) -> Result<Box<dyn Opened>, DictationError> {
         if !options.download && !self.0.installed.get() {
             return Err(DictationError::NeedsDownload(&GRANITE));
@@ -89,6 +92,7 @@ impl Service for FakeService {
         let taken = Rc::new(RefCell::new(Taken::default()));
         self.0.opened.borrow_mut().push(Open {
             download: options.download,
+            session: session.is_some(),
             sink,
             taken: taken.clone(),
         });
@@ -306,6 +310,8 @@ fn text(settled: &str, tentative: &str) -> DictationEvent {
 fn a_click_records_until_the_next_click(cx: &mut TestAppContext) {
     let test = Test::start(true, cx);
     test.listening(cx);
+    // A new session's box has no session whose words it could favour.
+    assert!(!test.fake.opened.borrow()[0].session);
     act(cx, test.window, |window, _| {
         assert_eq!(window.find("dictation-waveform").label(), Some("Listening"));
     });

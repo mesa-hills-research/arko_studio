@@ -22,7 +22,13 @@
 //! until the next click, and a press held past [`HOLD`] records until it's
 //! released. The first recording without a model asks before downloading
 //! it, and the download runs beside the button without the microphone.
+//!
+//! Each recording favours the words of the session it types into, such as
+//! its identifiers, file names and models, which arko gathers on a thread of
+//! its own while the recording starts ([`favour_session_words`]), unless
+//! Arko's dictation settings turn session words off.
 
+use std::cell::RefCell;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -30,7 +36,7 @@ use std::time::Duration;
 
 use arko::dictation::{
     CANCEL, DOWNLOAD, DOWNLOAD_TITLE, DictationError, DictationEvent, DictationOptions,
-    DictationService, Preparing, Sink, SpeechModel,
+    DictationService, Preparing, Sink, SpeechModel, favour_session_words,
 };
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::TextareaState;
@@ -46,6 +52,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use tokio::sync::mpsc;
 
+use crate::live::{Link, LiveSession};
 use crate::workers::curly;
 
 /// A press on the button held this long records until it's released.
@@ -79,13 +86,15 @@ const MICROPHONE_DENIED: &str = "Arko Studio isn’t allowed to use the micropho
 /// Arko's dictation service as recording uses it, the real one or a fake in
 /// tests.
 pub trait Service: 'static {
-    /// Opens a dictation whose events go to `sink`. A model that isn't
+    /// Opens a dictation whose events go to `sink`, favouring the words of
+    /// the session `session` links to, if any. A model that isn't
     /// downloaded is [`DictationError::NeedsDownload`], unless
     /// `options.download`.
     fn open(
         &self,
         options: DictationOptions,
         sink: Sink,
+        session: Option<&Link>,
     ) -> Result<Box<dyn Opened>, DictationError>;
 
     /// Whether Arko's settings download the model without asking.
@@ -120,6 +129,7 @@ impl Service for Arko {
         &self,
         options: DictationOptions,
         sink: Sink,
+        session: Option<&Link>,
     ) -> Result<Box<dyn Opened>, DictationError> {
         let service = DictationService::shared(&self.root);
         // A missing model downloads on its own, never inside a recording, so
@@ -129,7 +139,11 @@ impl Service for Arko {
         if !options.download && !model.is_installed(&self.root) {
             return Err(DictationError::NeedsDownload(model));
         }
-        Ok(Box::new(service.open(options, sink)?))
+        let dictation = service.open(options, sink)?;
+        if let Some(link) = session {
+            favour_session_words(&dictation, &self.root, &link.feed, &link.details);
+        }
+        Ok(Box::new(dictation))
     }
 
     fn downloads_without_asking(&self) -> bool {
@@ -158,8 +172,6 @@ pub fn init(root: PathBuf, cx: &mut App) {
 /// What every dictation opens with. `download` says the user agreed to
 /// download the model.
 fn options(download: bool) -> DictationOptions {
-    // Arko 0.17.0's `arko::dictation::session_words`, the session's names
-    // for the engine to favour, go in here once Studio builds on it.
     DictationOptions { download }
 }
 
@@ -168,6 +180,9 @@ fn options(download: bool) -> DictationOptions {
 struct ArkoRecognizer {
     owner: WeakEntity<Dictation>,
     window: AnyWindowHandle,
+    /// The [`Dictation`]'s session, which it starts recordings for while it
+    /// updates.
+    session: Rc<RefCell<Option<WeakEntity<LiveSession>>>>,
 }
 
 impl SpeechRecognizer for ArkoRecognizer {
@@ -182,12 +197,14 @@ impl SpeechRecognizer for ArkoRecognizer {
     ) -> Result<Box<dyn RecognitionSession>, SpeechError> {
         let (sender, mut updates) = mpsc::unbounded_channel();
         let service = cx.global::<Speech>().service.clone();
+        let session = self.session.borrow().as_ref().and_then(WeakEntity::upgrade);
         let opened = service
             .open(
                 options(false),
                 Box::new(move |update| {
                     let _ = sender.send(update.event);
                 }),
+                session.as_ref().and_then(|session| session.read(cx).link()),
             )
             .map_err(SpeechError::recognizer)?;
         let (owner, window) = (self.owner.clone(), self.window);
@@ -300,6 +317,8 @@ struct Press {
 pub struct Dictation {
     speech: Entity<SpeechState>,
     textarea: Entity<TextareaState>,
+    /// The session the box writes to, whose words recordings favour.
+    session: Rc<RefCell<Option<WeakEntity<LiveSession>>>>,
     recording: Option<Recording>,
     download: Option<Download>,
     press: Option<Press>,
@@ -312,9 +331,11 @@ impl Dictation {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let session = Rc::default();
         let recognizer = ArkoRecognizer {
             owner: cx.weak_entity(),
             window: window.window_handle(),
+            session: Rc::clone(&session),
         };
         let input = cx
             .try_global::<Speech>()
@@ -354,6 +375,7 @@ impl Dictation {
         Self {
             speech,
             textarea,
+            session,
             recording: None,
             download: None,
             press: None,
@@ -363,6 +385,12 @@ impl Dictation {
 
     pub fn speech(&self) -> &Entity<SpeechState> {
         &self.speech
+    }
+
+    /// The session the box writes to, whose words recordings favour, or
+    /// none (a new session's box).
+    pub fn set_session(&mut self, session: Option<WeakEntity<LiveSession>>) {
+        *self.session.borrow_mut() = session;
     }
 
     /// Whether a recording is on, from its start until its last words are in
@@ -722,7 +750,7 @@ impl Dictation {
         let sink: Sink = Box::new(move |update| {
             let _ = sender.send(update.event);
         });
-        let opened = match service.open(options(true), sink) {
+        let opened = match service.open(options(true), sink, None) {
             Ok(opened) => opened,
             Err(error) => {
                 let error = SpeechError::recognizer(error);

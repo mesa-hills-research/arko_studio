@@ -1520,10 +1520,14 @@ impl SessionView {
         };
         let agent = self.mode(cx) == Mode::Agent;
         let cancellable = self.target.is_some() || self.editing.is_some() || self.panel_open;
+        let session = self.session.as_ref().map(Entity::downgrade);
         self.composer.update(cx, |composer, cx| {
             composer.set_placeholder(&placeholder, window, cx);
             composer.set_session_state(reading, working, agent);
             composer.set_cancellable(cancellable);
+            composer
+                .dictation()
+                .update(cx, |dictation, _| dictation.set_session(session));
         });
         self.sync_image_model(cx);
         self.sync_mentions(cx);

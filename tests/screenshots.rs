@@ -4523,6 +4523,7 @@ impl arko_studio::dictation::Service for HeardService {
         &self,
         _: arko::dictation::DictationOptions,
         sink: arko::dictation::Sink,
+        _: Option<&arko_studio::live::Link>,
     ) -> Result<Box<dyn arko_studio::dictation::Opened>, arko::dictation::DictationError> {
         self.0.borrow_mut().push(sink);
         Ok(Box::new(Heard))

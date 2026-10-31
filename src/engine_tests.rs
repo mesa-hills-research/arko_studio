@@ -253,6 +253,68 @@ fn a_first_message_starts_a_session_and_its_reply_arrives(cx: &mut TestAppContex
     );
 }
 
+/// A recording in a session's box favours that session's words, so the
+/// dictation opens with the session's feed and details.
+#[gpui_kit::test]
+fn a_recording_favours_the_words_of_its_session(cx: &mut TestAppContext) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use arko::dictation::{DictationError, DictationOptions, Sink};
+    use gpui_kit::component::speech::{AudioFormat, AudioInput, AudioSink, SpeechError};
+
+    use crate::dictation::{Opened, Service, Speech};
+    use crate::live::Link;
+
+    /// Says whether each dictation it opens has a session, and refuses it.
+    struct Sessions(Rc<RefCell<Vec<bool>>>);
+
+    impl Service for Sessions {
+        fn open(
+            &self,
+            _: DictationOptions,
+            _: Sink,
+            session: Option<&Link>,
+        ) -> Result<Box<dyn Opened>, DictationError> {
+            self.0.borrow_mut().push(session.is_some());
+            Err(DictationError::Busy)
+        }
+
+        fn downloads_without_asking(&self) -> bool {
+            false
+        }
+    }
+
+    struct Silence;
+
+    impl AudioInput for Silence {
+        fn start(
+            &self,
+            _: AudioFormat,
+            _: AudioSink,
+            _: &mut gpui_kit::App,
+        ) -> Result<gpui_kit::Subscription, SpeechError> {
+            Ok(gpui_kit::Subscription::new(|| {}))
+        }
+    }
+
+    let mock = Mock::start(|_, _| answer("Seven pears.", Duration::ZERO));
+    let app = start(cx, &mock);
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        cx.set_global(Speech {
+            service: Rc::new(Sessions(opened.clone())),
+            input: Some(Rc::new(Silence)),
+        })
+    });
+    app.send(cx, "Count the pears.");
+    app.wait_for_text(cx, "Seven pears.");
+    crate::tests::press_mouse(cx, app.window, "dictate", true);
+    crate::tests::press_mouse(cx, app.window, "dictate", false);
+    assert_eq!(*opened.borrow(), [true]);
+    app.close_all(cx);
+}
+
 /// A name an engine gives a session that the window isn't showing (a
 /// model's, after its first message) reaches the sidebar's row and the
 /// palette's entry without the window coming forward again.
