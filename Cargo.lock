@@ -239,9 +239,9 @@ dependencies = [
 
 [[package]]
 name = "arko-tui"
-version = "0.16.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d02e8bccc8c5254207e11a3557b1c8eef3b8853c7eb86f3b79adfbfced3e248c"
+checksum = "31894bd91f58e7aa20650cc8360599a934904e81908dfeec939aed343423087d"
 dependencies = [
  "arko_agents",
  "arko_ai",
@@ -8666,9 +8666,9 @@ dependencies = [
 
 [[package]]
 name = "telmo"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9486e21ae3ee156016b729506b7d792399e1d4518b0693833aeb6dc4c20e494d"
+checksum = "8fca96d3a6c7dff9193f4903d60b6377c43983447394e88c289e96553d2cfb55"
 
 [[package]]
 name = "tempfile"

@@ -85,6 +85,7 @@ mod tests {
             miss_cost: Some(0.9),
             refresh_cost: Some(0.04),
             on_plan: None,
+            keep_warm: None,
         }
     }
 
