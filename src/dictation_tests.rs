@@ -401,6 +401,36 @@ fn words_go_in_at_the_caret(cx: &mut TestAppContext) {
     assert_eq!(test.text(cx), "Hello big round world");
 }
 
+/// The words that may still change join what's before the caret wherever
+/// it goes, with a space after a word and none after a space, as they will
+/// when they settle.
+#[gpui_kit::test]
+fn the_tentative_words_join_where_the_caret_is(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    test.type_text("Note ", cx);
+    test.select(4..4, cx);
+    test.listening(cx);
+    test.hear(0, text("", "Hello"), cx);
+    assert_eq!(test.tentative(cx), " Hello");
+    test.select(5..5, cx);
+    cx.run_until_parked();
+    assert_eq!(test.tentative(cx), "Hello");
+}
+
+/// A composition that ends while words may still change has them join
+/// what it put in, as they will when they settle.
+#[gpui_kit::test]
+fn the_tentative_words_join_a_finished_composition(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    test.listening(cx);
+    test.hear(0, text("", "Hello"), cx);
+    assert_eq!(test.tentative(cx), "Hello");
+    test.compose("に", cx);
+    test.press("enter", cx);
+    assert_eq!(test.text(cx), "に");
+    assert_eq!(test.tentative(cx), " Hello");
+}
+
 /// Esc cancels. The recording ends at once, and the words it put in leave
 /// the box, wherever the caret took them. Moving the caret and selecting
 /// leave its hold on them.

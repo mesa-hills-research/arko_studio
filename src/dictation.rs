@@ -277,6 +277,9 @@ struct Recording {
     /// The box shows its latest words. They wait while an input method
     /// composes.
     shown: bool,
+    /// The character before the caret that the shown words join, which
+    /// decides whether a space goes before them.
+    after: Option<char>,
     /// Making the model ready, before it listens.
     preparing: Option<Preparing>,
     /// Settled words waiting to go in while an input method composes, in
@@ -554,6 +557,7 @@ impl Dictation {
                     wrote: false,
                     tentative: SharedString::default(),
                     shown: true,
+                    after: None,
                     preparing: None,
                     queue: String::new(),
                     ended: None,
@@ -617,18 +621,28 @@ impl Dictation {
             .update(cx, |textarea, cx| textarea.clear_tentative_text(cx));
     }
 
+    /// The character before the caret.
+    fn before_caret(&self, cx: &App) -> Option<char> {
+        let textarea = self.textarea.read(cx);
+        textarea.text().chars_at(textarea.cursor()).prev()
+    }
+
     /// Shows the recording's latest words at the caret and puts its queue
     /// in, unless an input method composes, and ends a recording the kit
-    /// ended once its queue is in.
+    /// ended once its queue is in. Words shown again join what's before the
+    /// caret now, which a move or a finished composition changed.
     fn drain(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(waits) = self
-            .recording
-            .as_ref()
-            .map(|recording| !recording.queue.is_empty() || !recording.shown)
-        else {
+        let Some((queued, shown, after)) = self.recording.as_ref().map(|recording| {
+            (
+                !recording.queue.is_empty(),
+                recording.shown,
+                recording.after,
+            )
+        }) else {
             return;
         };
-        if waits {
+        let moved = shown && self.before_caret(cx) != after;
+        if queued || !shown || moved {
             if self.is_composing(window, cx) {
                 return;
             }
@@ -679,10 +693,12 @@ impl Dictation {
                     == Some(settled.as_str());
             (at, settled.len(), landed, textarea.revision())
         });
+        let joins = self.before_caret(cx);
         let Some(recording) = &mut self.recording else {
             return;
         };
         recording.shown = true;
+        recording.after = joins;
         if len == 0 {
             return;
         }
