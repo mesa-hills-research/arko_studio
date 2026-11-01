@@ -5,10 +5,12 @@
 //! and [`SpeechWaveform`], and captures from the kit's microphone. Its
 //! recognizer is Arko's service ([`ArkoRecognizer`]), whose settled words
 //! become the kit's committed phrases and whose tentative ones become its
-//! hypothesis. Settled words go into the box at the caret as they come, and
-//! the tentative ones show muted beside the button. A recording never sends.
-//! While an input method composes, settled words wait in the recording's
-//! queue, in order, and the recording isn't over until they're in.
+//! hypothesis. The box shows the words at the caret as they come, the
+//! tentative ones muted and underlined (the kit's tentative text), and the
+//! settled ones go in from there as the recognizer settles them. A recording
+//! never sends. While an input method composes, settled words wait in the
+//! recording's queue, in order, and the recording isn't over until they're
+//! in.
 //!
 //! A recording owns the words it put in for as long as nothing else changes
 //! the box's text, and Esc then takes them out. Once anything else changes
@@ -272,6 +274,9 @@ struct Recording {
     wrote: bool,
     /// The words after them that may still change.
     tentative: SharedString,
+    /// The box shows its latest words. They wait while an input method
+    /// composes.
+    shown: bool,
     /// Making the model ready, before it listens.
     preparing: Option<Preparing>,
     /// Settled words waiting to go in while an input method composes, in
@@ -417,6 +422,7 @@ impl Dictation {
     /// put in stay with the text they were in, and those still to come go
     /// nowhere, queued ones included.
     pub fn end(&mut self, cx: &mut Context<Self>) {
+        self.clear_tentative(cx);
         self.recording = None;
         self.press = None;
         self.speech.update(cx, |speech, cx| speech.cancel(cx));
@@ -427,6 +433,7 @@ impl Dictation {
     /// changed the text they all stay. Its queued words never go in.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.press = None;
+        self.clear_tentative(cx);
         let owned = self.recording.take().and_then(|recording| recording.owned);
         let revision = self.textarea.read(cx).revision();
         if let Some(owned) = owned.filter(|owned| owned.revision == revision) {
@@ -546,6 +553,7 @@ impl Dictation {
                     }),
                     wrote: false,
                     tentative: SharedString::default(),
+                    shown: true,
                     preparing: None,
                     queue: String::new(),
                     ended: None,
@@ -555,22 +563,23 @@ impl Dictation {
             // Its words are the user's once its queue is in.
             SpeechEvent::Final(_) => {
                 self.press = None;
+                self.clear_tentative(cx);
                 if let Some(recording) = &mut self.recording {
                     recording.ended = Some(Ended::Finished);
-                    recording.tentative = SharedString::default();
                 }
                 self.drain(window, cx);
             }
             SpeechEvent::Cancelled => {
+                self.clear_tentative(cx);
                 self.recording = None;
                 self.press = None;
             }
             SpeechEvent::Error(error) => {
                 self.press = None;
+                self.clear_tentative(cx);
                 match &mut self.recording {
                     Some(recording) => {
                         recording.ended = Some(Ended::Failed(error.clone()));
-                        recording.tentative = SharedString::default();
                         self.drain(window, cx);
                     }
                     None => self.failed(error, false, window, cx),
@@ -589,43 +598,41 @@ impl Dictation {
             DictationEvent::Preparing(step) => recording.preparing = Some(*step),
             DictationEvent::Listening => recording.preparing = None,
             DictationEvent::Text { settled, tentative } => {
-                recording.tentative = tentative.trim().to_string().into();
-                self.write(settled, window, cx);
+                recording.queue.push_str(settled);
+                recording.tentative = tentative.clone().into();
+                recording.shown = false;
+                self.drain(window, cx);
             }
             DictationEvent::Done | DictationEvent::Failed(_) => {}
         }
         cx.notify();
     }
 
-    /// Settled words join the back of the recording's queue, which goes in
-    /// at the caret unless an input method composes.
-    fn write(&mut self, settled: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// The tentative words go from the box, and the recording's with them.
+    fn clear_tentative(&mut self, cx: &mut Context<Self>) {
         if let Some(recording) = &mut self.recording {
-            recording.queue.push_str(settled);
-            self.drain(window, cx);
+            recording.tentative = SharedString::default();
         }
+        self.textarea
+            .update(cx, |textarea, cx| textarea.clear_tentative_text(cx));
     }
 
-    /// Puts the recording's queue in at the caret, unless an input method
-    /// composes, and ends a recording the kit ended once its queue is in.
+    /// Shows the recording's latest words at the caret and puts its queue
+    /// in, unless an input method composes, and ends a recording the kit
+    /// ended once its queue is in.
     fn drain(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(queued) = self
+        let Some(waits) = self
             .recording
             .as_ref()
-            .map(|recording| !recording.queue.is_empty())
+            .map(|recording| !recording.queue.is_empty() || !recording.shown)
         else {
             return;
         };
-        if queued {
+        if waits {
             if self.is_composing(window, cx) {
                 return;
             }
-            let words = self
-                .recording
-                .as_mut()
-                .map(|recording| std::mem::take(&mut recording.queue))
-                .unwrap_or_default();
-            self.insert(&words, window, cx);
+            self.put_in(window, cx);
         }
         let ended = self
             .recording
@@ -640,26 +647,46 @@ impl Dictation {
         }
     }
 
-    /// Puts the recording's settled `words` in at the caret, wherever it is,
-    /// and keeps hold of them while nothing else changed the text.
-    fn insert(&mut self, words: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(wrote) = self.recording.as_ref().map(|recording| recording.wrote) else {
+    /// Shows the recording's queued and tentative words at the caret,
+    /// wherever it is, as the box's tentative text, and puts the queued ones
+    /// in from there. It keeps hold of what went in while nothing else
+    /// changed the text.
+    fn put_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((wrote, queue, tentative)) = self.recording.as_ref().map(|recording| {
+            (
+                recording.wrote,
+                recording.queue.clone(),
+                recording.tentative.clone(),
+            )
+        }) else {
             return;
         };
         let before = self.textarea.read(cx).revision();
         let (at, len, landed, after) = self.textarea.update(cx, |textarea, cx| {
             let at = textarea.cursor();
             let text = textarea.text().to_string();
-            let words = spaced(text[..at].chars().next_back(), wrote, words);
-            textarea.insert(words.clone(), window, cx);
+            let previous = text[..at].chars().next_back();
+            let settled = spaced(previous, wrote, &queue);
+            let last = settled.chars().next_back().or(previous);
+            let tentative = spaced(last, wrote || !settled.is_empty(), &tentative);
+            textarea.set_tentative_text(format!("{settled}{tentative}"), cx);
+            if settled.is_empty() || !textarea.commit_tentative_text(settled.len(), window, cx) {
+                return (at, 0, false, textarea.revision());
+            }
             // The words, in one piece where the caret was.
-            let landed = textarea.cursor() == at + words.len()
-                && textarea.text().to_string().get(at..at + words.len()) == Some(words.as_str());
-            (at, words.len(), landed, textarea.revision())
+            let landed = textarea.cursor() == at + settled.len()
+                && textarea.text().to_string().get(at..at + settled.len())
+                    == Some(settled.as_str());
+            (at, settled.len(), landed, textarea.revision())
         });
         let Some(recording) = &mut self.recording else {
             return;
         };
+        recording.shown = true;
+        if len == 0 {
+            return;
+        }
+        recording.queue.clear();
         recording.wrote = true;
         recording.owned = recording
             .owned
@@ -811,23 +838,14 @@ impl Dictation {
         cx.notify();
     }
 
-    /// What shows beside the button. That's the download's or the model's
-    /// step, else the words queued and those that may still change.
+    /// What shows beside the button, the download's or the model's step.
+    /// The words heard show in the box.
     pub fn words(&self) -> Option<SharedString> {
         if let Some(download) = &self.download {
             return Some(download.step.label().into());
         }
-        let recording = self.recording.as_ref()?;
-        if let Some(step) = recording.preparing {
-            return Some(step.label().into());
-        }
-        // The queued words, which go in once the input method is done.
-        let words = [recording.queue.trim(), recording.tentative.as_ref()]
-            .into_iter()
-            .filter(|words| !words.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        (!words.is_empty()).then(|| words.into())
+        let step = self.recording.as_ref()?.preparing?;
+        Some(step.label().into())
     }
 }
 

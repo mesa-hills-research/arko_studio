@@ -183,6 +183,12 @@ impl Test {
         cx.read(|cx| composer.read(cx).text(cx))
     }
 
+    /// The words that may still change, which the box shows after the caret.
+    fn tentative(&self, cx: &mut TestAppContext) -> String {
+        let textarea = self.textarea(cx);
+        cx.read(|cx| textarea.read(cx).tentative_text().to_string())
+    }
+
     fn status(&self, cx: &mut TestAppContext) -> SpeechStatus {
         let dictation = self.dictation(cx);
         cx.read(|cx| dictation.read(cx).speech().read(cx).status())
@@ -320,12 +326,15 @@ fn a_click_records_until_the_next_click(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(test.taken(0).borrow().samples, 960);
 
+    // Words that may still change show in the box after the caret, and
+    // settled ones go in from there.
     test.hear(0, text("", "Hello wor"), cx);
     assert_eq!(test.text(cx), "");
-    assert_eq!(test.words(cx).as_deref(), Some("Hello wor"));
+    assert_eq!(test.tentative(cx), "Hello wor");
+    assert_eq!(test.words(cx), None);
     test.hear(0, text("Hello", " world"), cx);
     assert_eq!(test.text(cx), "Hello");
-    assert_eq!(test.words(cx).as_deref(), Some("world"));
+    assert_eq!(test.tentative(cx), " world");
 
     test.click(cx);
     assert_eq!(test.status(cx), SpeechStatus::Stopping);
@@ -339,7 +348,7 @@ fn a_click_records_until_the_next_click(cx: &mut TestAppContext) {
     assert_eq!(test.status(cx), SpeechStatus::Idle);
     assert!(test.taken(0).borrow().dropped);
     assert_eq!(test.text(cx), "Hello world.");
-    assert_eq!(test.words(cx), None);
+    assert_eq!(test.tentative(cx), "");
     // The words are the user's now, and Esc leaves them.
     act(cx, test.window, |window, cx| window.press("escape", cx));
     assert_eq!(test.text(cx), "Hello world.");
@@ -408,6 +417,7 @@ fn esc_takes_out_the_recordings_words(cx: &mut TestAppContext) {
     assert!(!test.microphone.on.get());
     assert!(test.taken(0).borrow().dropped);
     assert_eq!(test.words(cx), None);
+    assert_eq!(test.tentative(cx), "", "the words to come go too");
 
     // Words put in before the earlier ones, after the caret moved.
     let index = test.record(cx);
@@ -592,11 +602,11 @@ fn words_wait_for_an_input_method(cx: &mut TestAppContext) {
     let index = test.record(cx);
     test.compose("に", cx);
     test.hear(index, text("Hello", ""), cx);
-    test.hear(index, text(" big", ""), cx);
+    test.hear(index, text(" big", " wor"), cx);
     assert_eq!(test.text(cx), "に");
-    assert_eq!(test.words(cx).as_deref(), Some("Hello big"));
     test.press("enter", cx);
     assert_eq!(test.text(cx), "に Hello big");
+    assert_eq!(test.tentative(cx), " wor");
     test.hear(index, text(" world", ""), cx);
     assert_eq!(test.text(cx), "に Hello big world");
     assert_eq!(test.status(cx), SpeechStatus::Recording);

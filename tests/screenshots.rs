@@ -4552,8 +4552,9 @@ impl gpui_kit::component::speech::AudioInput for GivenMicrophone {
     }
 }
 
-/// The composer while it listens: words already in the box, the tentative
-/// ones beside the button, the waveform, and the button that stops.
+/// The composer while it listens: words already in the box, the settled
+/// words of the recording after them, the tentative ones muted and
+/// underlined after the caret, the waveform, and the button that stops.
 fn composer_listening(mode: ThemeMode) -> Screenshot {
     use arko::dictation::{DictationEvent, DictationUpdate};
     use gpui_kit::test::TestWindowExt as _;
