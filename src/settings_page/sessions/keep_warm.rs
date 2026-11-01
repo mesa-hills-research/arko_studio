@@ -3,8 +3,8 @@
 //! refreshes cost. It is arko's setting in Arko's folder, which the terminal and the
 //! web page change too, and it's off unless the user turns it on. A choice
 //! goes to the open sessions as `/keep-warm default …`, so they take it at
-//! once and arko keeps it. With none open it's written here, off the UI
-//! thread.
+//! once and arko keeps it. With none open it's written through the app's
+//! queue of writes, off the UI thread, which goes on after Settings closes.
 
 use arko::keep_warm::{self, Limits, SETTING_DOLLARS, SETTING_HOURS};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem};
@@ -12,7 +12,7 @@ use gpui_kit::component::{ActiveTheme as _, h_flex};
 use gpui_kit::*;
 
 use super::SessionsPage;
-use crate::backend::SharedBackend;
+use crate::backend::{SharedBackend, write_latest};
 use crate::live::LiveSessions;
 
 /// What the group shows and the writes it waits for.
@@ -24,9 +24,6 @@ pub(super) struct KeepWarm {
     error: Option<SharedString>,
     /// The reading of the file as the page opens, until a choice replaces it.
     reading: Option<Task<()>>,
-    /// The last write, which the next one waits for, so the last choice is
-    /// what the file keeps.
-    writing: Option<Task<()>>,
 }
 
 /// The hours as the menu says them: "Off", "1 hour", "15 hours".
@@ -107,21 +104,19 @@ impl SessionsPage {
                 .is_ok();
         }
         if !sent {
-            let backend = cx.global::<SharedBackend>().clone();
-            let before = self.keep_warm.writing.take();
-            self.keep_warm.writing = Some(cx.spawn(async move |this, cx| {
-                if let Some(before) = before {
-                    before.await;
-                }
-                let written = cx
-                    .background_spawn(async move { keep_warm::save(backend.data_root(), setting) })
-                    .await;
-                this.update(cx, |this, cx| {
-                    this.keep_warm.error = written.err().map(SharedString::from);
-                    cx.notify();
-                })
-                .ok();
-            }));
+            let page = cx.weak_entity();
+            write_latest(
+                setting,
+                |backend, setting| keep_warm::save(backend.data_root(), setting),
+                move |written, cx| {
+                    page.update(cx, |page, cx| {
+                        page.keep_warm.error = written.clone().err().map(SharedString::from);
+                        cx.notify();
+                    })
+                    .ok();
+                },
+                cx,
+            );
         }
         cx.notify();
     }
@@ -295,5 +290,43 @@ mod tests {
         // The session keeps it, so the page writes nothing itself.
         assert!(arko::keep_warm::load(temp.path()).is_some());
         assert_eq!(cx.read(|cx| page.read(cx).keep_warm_setting()), None);
+    }
+
+    /// The last choice is written also when Settings closes before the
+    /// write ends.
+    #[gpui_kit::test]
+    fn the_last_choice_is_written_after_settings_closes(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::test::TestWindowExt as _;
+
+        use crate::backend::FakeBackend;
+        use crate::settings_page::SESSIONS_PAGE;
+        use crate::settings_page::interaction::{settings_window, start_on};
+
+        let temp = tempfile::tempdir().unwrap();
+        start_on(
+            cx,
+            FakeBackend::empty(temp.path()),
+            crate::prefs::Prefs::default(),
+        );
+        let (window, workspace, settings) = settings_window(cx, SESSIONS_PAGE, 4000.);
+        let page = cx.read(|cx| settings.read(cx).sessions().clone());
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            page.update(cx, |page, cx| {
+                page.set_keep_warm(with_hours(None, 1), cx);
+                page.set_keep_warm(with_hours(None, 12), cx);
+            });
+            window.press("escape", cx);
+        })
+        .unwrap();
+        assert!(
+            cx.read(|cx| workspace.read(cx).settings().is_none()),
+            "closed"
+        );
+        drop((page, settings));
+        cx.run_until_parked();
+        let saved = arko::keep_warm::load(temp.path()).unwrap();
+        assert_eq!(saved.idle_hours, Some(12));
     }
 }

@@ -19,6 +19,7 @@ mod defaults;
 pub mod extensions;
 mod names;
 pub mod profiles;
+mod writes;
 
 pub use accounts::{Accounts, key_named};
 pub use defaults::{
@@ -26,6 +27,7 @@ pub use defaults::{
     web_page_bind,
 };
 pub use names::{SessionNames, Way, write_names};
+pub use writes::write_latest;
 
 /// Reading accounts in words, for Settings.
 pub mod account_words {
