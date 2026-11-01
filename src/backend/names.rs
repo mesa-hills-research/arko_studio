@@ -48,6 +48,7 @@ pub fn write_names(
     super::write_latest(
         ways,
         |backend, ways| backend.set_session_names(&ways),
+        |_| {},
         then,
         cx,
     );

@@ -158,6 +158,7 @@ impl SessionsPage {
                 this.refresh_names(cx);
                 this.read_billing_env(cx);
             }),
+            Self::observe_keep_warm(cx),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 if !super::shown_changed(&mut this.seen, cx) {
                     return;

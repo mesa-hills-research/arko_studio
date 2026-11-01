@@ -27,7 +27,7 @@ pub use defaults::{
     web_page_bind,
 };
 pub use names::{SessionNames, Way, write_names};
-pub use writes::{write_latest, writing};
+pub use writes::{SaveState, observe_saves, save_state, write_latest};
 
 /// Reading accounts in words, for Settings.
 pub mod account_words {

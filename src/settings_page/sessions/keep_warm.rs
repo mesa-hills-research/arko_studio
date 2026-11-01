@@ -4,7 +4,9 @@
 //! web page change too, and it's off unless the user turns it on. Studio
 //! alone writes it for its sessions. A choice is saved through the app's
 //! queue of writes, off the UI thread, which goes on after Settings closes,
-//! and then each open session reads it again and takes it, saving nothing.
+//! and each save that goes through has every open session read it again and
+//! take it, saving nothing. The page shows the choice being saved, and once
+//! the saves end, what the file holds and why a save failed.
 
 use arko::keep_warm::{self, Limits, SETTING_DOLLARS, SETTING_HOURS};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem};
@@ -12,18 +14,31 @@ use gpui_kit::component::{ActiveTheme as _, h_flex};
 use gpui_kit::*;
 
 use super::SessionsPage;
-use crate::backend::{SharedBackend, write_latest, writing};
+use crate::backend::{SharedBackend, observe_saves, save_state, write_latest};
 use crate::live::LiveSessions;
+use crate::workers::curly;
 
 /// What the group shows and the writes it waits for.
 #[derive(Default)]
 pub(super) struct KeepWarm {
     /// The setting as last read or chosen, `None` while off.
     setting: Option<Limits>,
-    /// Why the last write failed.
+    /// It shows a choice whose save hasn't ended.
+    saving: bool,
+    /// Why the last save failed.
     error: Option<SharedString>,
     /// The reading of the file as the page opens, until a choice replaces it.
     reading: Option<Task<()>>,
+}
+
+/// Each open session reads the setting again and takes it, saving nothing.
+fn reload_sessions(cx: &mut App) {
+    for session in LiveSessions::all(cx) {
+        session
+            .read(cx)
+            .request(|reply| arko::Request::ReloadKeepWarmSetting { reply }, cx)
+            .detach();
+    }
 }
 
 /// The hours as the menu says them: "Off", "1 hour", "15 hours".
@@ -73,13 +88,39 @@ fn steps<T: PartialEq + Copy>(steps: &[T], current: T) -> Vec<T> {
 }
 
 impl SessionsPage {
+    /// Follows the app's saves of the setting.
+    pub(super) fn observe_keep_warm(cx: &mut Context<Self>) -> Subscription {
+        observe_saves::<Option<Limits>, _>(cx, |page, cx| page.follow_keep_warm_saves(cx))
+    }
+
+    /// Shows the choice being saved. Once the saves end, shows what the file
+    /// holds, and why the last save failed if it did.
+    fn follow_keep_warm_saves(&mut self, cx: &mut Context<Self>) {
+        let state = save_state::<Option<Limits>>(cx);
+        match state.pending {
+            Some(setting) => {
+                self.keep_warm.reading = None;
+                self.keep_warm.setting = setting;
+                self.keep_warm.saving = true;
+                self.keep_warm.error = None;
+            }
+            None if self.keep_warm.saving => self.read_keep_warm(cx),
+            None => {}
+        }
+        cx.notify();
+    }
+
     /// Reads the setting from Arko's folder, in the background, or takes
-    /// the choice whose save hasn't ended.
+    /// the choice whose save hasn't ended, with why the last save failed.
     pub(super) fn read_keep_warm(&mut self, cx: &mut Context<Self>) {
-        if let Some(setting) = writing::<Option<Limits>>(cx) {
+        let state = save_state::<Option<Limits>>(cx);
+        self.keep_warm.error = state.error.as_deref().map(|why| curly(why).into());
+        if let Some(setting) = state.pending {
             self.keep_warm.setting = setting;
+            self.keep_warm.saving = true;
             return;
         }
+        self.keep_warm.saving = false;
         let backend = cx.global::<SharedBackend>().clone();
         let read = cx.background_spawn(async move { keep_warm::load(backend.data_root()) });
         self.keep_warm.reading = Some(cx.spawn(async move |this, cx| {
@@ -96,27 +137,13 @@ impl SessionsPage {
     pub fn set_keep_warm(&mut self, setting: Option<Limits>, cx: &mut Context<Self>) {
         self.keep_warm.reading = None;
         self.keep_warm.setting = setting;
+        self.keep_warm.saving = true;
         self.keep_warm.error = None;
-        let page = cx.weak_entity();
         write_latest(
             setting,
             |backend, setting| keep_warm::save(backend.data_root(), setting),
-            move |written, cx| {
-                if written.is_ok() {
-                    // Each open session takes what was saved.
-                    for session in LiveSessions::all(cx) {
-                        session
-                            .read(cx)
-                            .request(|reply| arko::Request::ReloadKeepWarmSetting { reply }, cx)
-                            .detach();
-                    }
-                }
-                page.update(cx, |page, cx| {
-                    page.keep_warm.error = written.clone().err().map(SharedString::from);
-                    cx.notify();
-                })
-                .ok();
-            },
+            reload_sessions,
+            |_, _| {},
             cx,
         );
         cx.notify();
@@ -126,6 +153,12 @@ impl SessionsPage {
     #[cfg(test)]
     pub fn keep_warm_setting(&self) -> Option<Limits> {
         self.keep_warm.setting
+    }
+
+    /// Why the last save failed, as the page says it (tests).
+    #[cfg(test)]
+    pub fn keep_warm_error(&self) -> Option<SharedString> {
+        self.keep_warm.error.clone()
     }
 
     pub(super) fn keep_warm_group(&self, this: &Entity<Self>) -> SettingGroup {
@@ -289,6 +322,104 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(arko::keep_warm::load(temp.path()), None);
         assert_eq!(cx.read(|cx| page.read(cx).keep_warm_setting()), None);
+    }
+
+    /// Settings opened again while a save is on its way hears how it ended.
+    /// A failed save says why, and the page shows what the file holds.
+    #[gpui_kit::test]
+    fn settings_opened_during_a_save_hears_that_it_failed(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::test::TestWindowExt as _;
+
+        use crate::backend::FakeBackend;
+        use crate::settings_page::SESSIONS_PAGE;
+        use crate::settings_page::interaction::{settings_window, start_on};
+
+        let temp = tempfile::tempdir().unwrap();
+        // A folder where the file goes, so the save fails.
+        std::fs::create_dir(temp.path().join("keep-warm.json")).unwrap();
+        start_on(
+            cx,
+            FakeBackend::empty(temp.path()),
+            crate::prefs::Prefs::default(),
+        );
+        let (window, workspace, settings) = settings_window(cx, SESSIONS_PAGE, 4000.);
+        let page = cx.read(|cx| settings.read(cx).sessions().clone());
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            page.update(cx, |page, cx| page.set_keep_warm(with_hours(None, 12), cx));
+            window.press("escape", cx);
+        })
+        .unwrap();
+        drop((page, settings));
+        cx.update_window(window, |_, window, cx| window.press("secondary-,", cx))
+            .unwrap();
+        let reopened = cx.read(|cx| workspace.read(cx).settings().unwrap().clone());
+        let page = cx.read(|cx| reopened.read(cx).sessions().clone());
+        let shown = cx.read(|cx| page.read(cx).keep_warm_setting());
+        assert_eq!(shown.and_then(|setting| setting.idle_hours), Some(12));
+        cx.run_until_parked();
+        assert_eq!(arko::keep_warm::load(temp.path()), None);
+        let error = cx.read(|cx| page.read(cx).keep_warm_error());
+        assert!(
+            error.is_some_and(|why| why.starts_with("Couldn’t save the keep-warm setting")),
+            "the reopened page says the save failed"
+        );
+        assert_eq!(cx.read(|cx| page.read(cx).keep_warm_setting()), None);
+    }
+
+    /// A save that went through reaches the open sessions also when a later
+    /// one fails, and the page shows the saved value with why the later one
+    /// failed.
+    #[gpui_kit::test]
+    fn a_save_that_went_through_reaches_the_sessions_before_a_later_failure(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext as _;
+
+        use crate::backend::FakeBackend;
+        use crate::live::{LiveSession, LiveSessions};
+        use crate::settings_page::SESSIONS_PAGE;
+        use crate::settings_page::interaction::{settings_window, start_on};
+
+        let temp = tempfile::tempdir().unwrap();
+        start_on(
+            cx,
+            FakeBackend::empty(temp.path()),
+            crate::prefs::Prefs::default(),
+        );
+        let (_, _, settings) = settings_window(cx, SESSIONS_PAGE, 4000.);
+        let page = cx.read(|cx| settings.read(cx).sessions().clone());
+        cx.run_until_parked();
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        cx.update(|cx| LiveSessions::add_for_tests(session.clone(), cx));
+        page.update(cx, |page, cx| {
+            page.set_keep_warm(with_hours(None, 1), cx);
+            crate::backend::write_latest::<Option<arko::keep_warm::Limits>>(
+                with_hours(None, 12),
+                |_, _| Err("The disk is full".into()),
+                |_| {},
+                |_, _| {},
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            arko::keep_warm::load(temp.path()).and_then(|setting| setting.idle_hours),
+            Some(1)
+        );
+        let requests = session.update(cx, |session, _| session.take_requests());
+        assert!(
+            matches!(
+                requests.as_slice(),
+                [arko::Request::ReloadKeepWarmSetting { .. }]
+            ),
+            "{requests:?}"
+        );
+        let shown = cx.read(|cx| page.read(cx).keep_warm_setting());
+        assert_eq!(shown.and_then(|setting| setting.idle_hours), Some(1));
+        let error = cx.read(|cx| page.read(cx).keep_warm_error());
+        assert_eq!(error.as_deref(), Some("The disk is full"));
     }
 
     /// The last choice is written also when Settings closes before the
