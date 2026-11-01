@@ -260,13 +260,24 @@ impl Window {
     fn tray_focused(&self, cx: &mut TestAppContext) -> bool {
         let tray = cx.read(|cx| {
             let view = self.workspace.read(cx).session_view().clone();
-            view.read(cx).approval_tray().cloned()
+            view.read(cx).approval_tray(cx).cloned()
         });
         let Some(tray) = tray else {
             return false;
         };
         cx.update_window(self.window, |_, window, cx| {
             tray.read(cx).contains_focus(window, cx)
+        })
+        .unwrap()
+    }
+
+    /// Whether Include message is on, `None` while it doesn't show.
+    fn include_message(&self, cx: &mut TestAppContext) -> Option<bool> {
+        cx.update_window(self.window, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find("approval-message")
+                .and_then(|found| found.checked())
         })
         .unwrap()
     }
@@ -472,29 +483,20 @@ fn answers_take_only_the_requests_shown_long_enough_to_read(cx: &mut TestAppCont
 #[gpui_kit::test]
 fn include_message_starts_off_for_a_draft_older_than_the_request(cx: &mut TestAppContext) {
     let app = start(cx);
-    let switch = |cx: &mut TestAppContext| {
-        cx.update_window(app.window, |_, window, cx| {
-            window.render_frame(cx);
-            window
-                .try_find("approval-message")
-                .and_then(|found| found.checked())
-        })
-        .unwrap()
-    };
     app.type_text(cx, "Earlier draft");
     app.request(cx, vec![profile("a1", "3d-judge")]);
-    assert_eq!(switch(cx), Some(false));
+    assert_eq!(app.include_message(cx), Some(false));
     app.click(cx, "approval-approve");
     assert_eq!(app.sent(cx), [answers(&[("a1", true)], None)]);
     assert_eq!(app.composer_text(cx), "Earlier draft");
 
     app.request(cx, vec![server("a2")]);
-    assert_eq!(switch(cx), Some(false));
+    assert_eq!(app.include_message(cx), Some(false));
     app.press(cx, "alt-a");
     app.press(cx, "m");
-    assert_eq!(switch(cx), Some(true));
+    assert_eq!(app.include_message(cx), Some(true));
     app.click(cx, "approval-message");
-    assert_eq!(switch(cx), Some(false));
+    assert_eq!(app.include_message(cx), Some(false));
     assert_eq!(app.composer_text(cx), "Earlier draft");
     // Emptied, the box starts a message for the answer.
     let view = cx.read(|cx| app.workspace.read(cx).session_view().clone());
@@ -502,18 +504,56 @@ fn include_message_starts_off_for_a_draft_older_than_the_request(cx: &mut TestAp
         let composer = view.read(cx).composer().clone();
         composer.update(cx, |composer, cx| composer.set_text("", window, cx));
     });
-    assert_eq!(switch(cx), None, "no text, no switch");
+    assert_eq!(app.include_message(cx), None, "no text, no switch");
     act(cx, app.window, |window, cx| {
         view.update(cx, |view, cx| view.focus_composer(window, cx))
     });
     app.type_text(cx, "Use opus");
-    assert_eq!(switch(cx), Some(true));
+    assert_eq!(app.include_message(cx), Some(true));
     app.click(cx, "approval-reject");
     assert_eq!(
         app.sent(cx)[1..],
         [answers(&[("a2", false)], Some("Use opus"))]
     );
     assert_eq!(app.composer_text(cx), "");
+}
+
+/// A draft older than the request, sent as an ordinary message and
+/// refused, comes back with Include message still off.
+#[gpui_kit::test]
+fn a_refused_message_keeps_include_message_as_it_was(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.type_text(cx, "Earlier draft");
+    app.request(cx, vec![profile("a1", "3d-judge")]);
+    assert_eq!(app.include_message(cx), Some(false));
+    app.press(cx, "enter");
+    assert_eq!(app.composer_text(cx), "");
+    app.refuse(cx);
+    assert_eq!(app.composer_text(cx), "Earlier draft");
+    assert_eq!(app.include_message(cx), Some(false));
+}
+
+/// An answer to the requests ready takes the words, and a request still
+/// waits. A new draft written meanwhile, with Include message turned off,
+/// keeps that choice when the answer is refused and its words can't come
+/// back over the draft.
+#[gpui_kit::test]
+fn a_refused_answer_leaves_a_newer_drafts_choice(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.request(cx, vec![profile("a1", "3d-judge")]);
+    app.request_unread(cx, vec![profile("a1", "3d-judge"), server("a2")]);
+    app.type_text(cx, "Use opus");
+    assert_eq!(app.include_message(cx), Some(true));
+    app.click(cx, "approval-approve");
+    assert_eq!(app.sent(cx), [answers(&[("a1", true)], Some("Use opus"))]);
+    assert_eq!(app.composer_text(cx), "");
+    app.type_text(cx, "Later draft");
+    assert_eq!(app.include_message(cx), Some(true));
+    app.click(cx, "approval-message");
+    assert_eq!(app.include_message(cx), Some(false));
+    app.refuse(cx);
+    assert_eq!(app.composer_text(cx), "Later draft");
+    assert_eq!(app.include_message(cx), Some(false));
 }
 
 /// A long update's changed lines are read from the keyboard. Tab reaches
@@ -679,8 +719,7 @@ fn refused_answers_come_back_to_the_tray_as_they_were_set(cx: &mut TestAppContex
     assert!(app.shows(cx, "approval-tray"));
     assert_eq!(app.checked(cx, "a1"), Some(true));
     assert_eq!(app.checked(cx, "a2"), Some(false));
-    // Back in sight, they show again for long enough to read.
-    app.read(cx);
+    // Read before, they're ready at once.
     app.click(cx, "approval-approve");
     assert_eq!(app.sent(cx), sent);
 }

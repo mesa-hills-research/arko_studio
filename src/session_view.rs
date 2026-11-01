@@ -185,8 +185,10 @@ pub struct SessionView {
     /// Each session's answer panel, while it has open questions: what is
     /// filled in waits there while the window shows another session.
     panels: Vec<KeptPanel>,
-    /// Each session's approval tray, while requests wait in it: what is
-    /// checked waits there while the window shows another session.
+    /// Each session's approval tray, for as long as the session lives. What
+    /// is checked waits there while the window shows another session, and
+    /// Include message follows the session's message box through times
+    /// when no request waits.
     trays: Vec<KeptTray>,
     /// Whether the answer panel shows.
     panel_open: bool,
@@ -255,6 +257,8 @@ struct Unsent {
     /// What the composer held once the send took its part. The draft comes
     /// back over that only, so it never takes the place of what came since.
     left: Left,
+    /// Include message as the send took the text, which comes back with it.
+    message: Option<crate::approvals::MessageSwitch>,
 }
 
 /// What the composer holds: its text, and its images by identity.
@@ -291,8 +295,6 @@ enum Given {
     /// their option, and the words the composer gave the answer.
     Approvals {
         selection: TraySelection,
-        /// Include message as the answer went.
-        message: crate::approvals::MessageSwitch,
         words: Option<Unsent>,
     },
     Nothing,
@@ -940,7 +942,7 @@ impl SessionView {
         self.end_edit(window, cx);
         self.close_find(window, cx);
         self.keep_draft(cx);
-        if let Some(tray) = self.approval_tray().cloned() {
+        if let Some(tray) = self.kept_tray().cloned() {
             tray.update(cx, |tray, cx| tray.hidden(cx));
         }
         if let Some(old) = self.session.take() {
@@ -1311,7 +1313,13 @@ impl SessionView {
 
     /// The approval tray while requests wait in it (tests and screenshots).
     #[doc(hidden)]
-    pub fn approval_tray(&self) -> Option<&Entity<ApprovalTray>> {
+    pub fn approval_tray(&self, cx: &App) -> Option<&Entity<ApprovalTray>> {
+        self.kept_tray()
+            .filter(|tray| !tray.read(cx).requests().is_empty())
+    }
+
+    /// The shown session's approval tray, whether or not requests wait.
+    fn kept_tray(&self) -> Option<&Entity<ApprovalTray>> {
         let session = self.session.as_ref()?.entity_id();
         self.trays
             .iter()
@@ -1320,7 +1328,7 @@ impl SessionView {
     }
 
     /// Follows the requests waiting in the session's approval tray: the
-    /// tray shows them, and goes when none wait.
+    /// tray shows them, and hides when none wait.
     fn sync_approvals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The trays of sessions that ended go with them.
         self.trays.retain(|kept| {
@@ -1331,20 +1339,19 @@ impl SessionView {
         let Some(session) = self.session.clone() else {
             return;
         };
-        let requests: Vec<arko::approvals::ApprovalRequest> =
-            session.read(cx).approvals().into_iter().cloned().collect();
-        if requests.is_empty() {
-            let had_focus = self
-                .approval_tray()
-                .is_some_and(|tray| tray.read(cx).contains_focus(window, cx));
-            self.trays
-                .retain(|kept| kept.session.entity_id() != session.entity_id());
-            if had_focus {
-                self.focus_composer(window, cx);
-            }
-            return;
-        }
-        let tray = match self.approval_tray() {
+        let (requests, waiting) = {
+            let live = session.read(cx);
+            let requests: Vec<arko::approvals::ApprovalRequest> =
+                live.approvals().into_iter().cloned().collect();
+            let waiting = live
+                .reading()
+                .approvals
+                .iter()
+                .map(|request| request.id.clone())
+                .collect();
+            (requests, waiting)
+        };
+        let tray = match self.kept_tray() {
             Some(tray) => tray.clone(),
             None => {
                 let tray = cx.new(ApprovalTray::new);
@@ -1356,8 +1363,14 @@ impl SessionView {
                 tray
             }
         };
+        let had_focus = requests.is_empty() && tray.read(cx).contains_focus(window, cx);
         let has_text = self.composer_has_text(cx);
-        tray.update(cx, |tray, cx| tray.set_requests(requests, has_text, cx));
+        tray.update(cx, |tray, cx| {
+            tray.set_requests(requests, waiting, has_text, cx)
+        });
+        if had_focus {
+            self.focus_composer(window, cx);
+        }
     }
 
     /// Whether the message box has words, which an approval answer can take.
@@ -1368,9 +1381,16 @@ impl SessionView {
     /// The tray's Include message follows the message box's words.
     fn sync_include_message(&self, cx: &mut App) {
         let has_text = self.composer_has_text(cx);
-        if let Some(tray) = self.approval_tray().cloned() {
+        if let Some(tray) = self.kept_tray().cloned() {
             tray.update(cx, |tray, cx| tray.edited(has_text, cx));
         }
+    }
+
+    /// Include message as the message box's words are taken now, to give
+    /// back with them.
+    fn message_switch(&self, cx: &mut App) -> Option<crate::approvals::MessageSwitch> {
+        self.sync_include_message(cx);
+        self.kept_tray().map(|tray| tray.read(cx).message().clone())
     }
 
     /// Answers every request in the approval tray (Mod+Shift+A approves
@@ -1379,7 +1399,7 @@ impl SessionView {
     /// empties. A message being edited or written to a worker stays, and so
     /// does the box while a recording is on.
     pub fn answer_approvals(&mut self, approve: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(session), Some(tray)) = (self.session.clone(), self.approval_tray().cloned())
+        let (Some(session), Some(tray)) = (self.session.clone(), self.approval_tray(cx).cloned())
         else {
             window.push_notification("No approvals wait.", cx);
             return;
@@ -1405,7 +1425,7 @@ impl SessionView {
             (
                 tray.answers(approve, &words, cx),
                 tray.selection(),
-                tray.message().clone(),
+                Some(tray.message().clone()),
             )
         };
         let sent = session.update(cx, |session, cx| {
@@ -1431,16 +1451,13 @@ impl SessionView {
                 to_worker: false,
                 answers: Vec::new(),
                 left: Left::of(self.composer.read(cx), cx),
+                message,
             }
         });
         self.follow(
             session,
             sent,
-            Given::Approvals {
-                selection,
-                message,
-                words,
-            },
+            Given::Approvals { selection, words },
             window,
             cx,
         );
@@ -1453,7 +1470,7 @@ impl SessionView {
     /// Gives the approval tray the keyboard, or gives it back to the
     /// message box (Alt+A).
     pub fn focus_approvals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tray) = self.approval_tray().cloned() else {
+        let Some(tray) = self.approval_tray(cx).cloned() else {
             window.push_notification("No approvals wait.", cx);
             return;
         };
@@ -2504,6 +2521,7 @@ impl SessionView {
                 text: String::new(),
                 images: Vec::new(),
             },
+            message: self.message_switch(cx),
         };
         let sent = match self.session.clone() {
             Some(session) => session
@@ -2647,24 +2665,14 @@ impl SessionView {
                 }
                 None
             }
-            Given::Approvals {
-                selection,
-                message,
-                words,
-            } => {
+            Given::Approvals { selection, words } => {
                 // The tray is back with the requests open again.
                 self.sync_approvals(window, cx);
-                let tray = self.approval_tray().cloned();
-                if let Some(tray) = &tray {
+                if let Some(tray) = self.approval_tray(cx).cloned() {
                     tray.update(cx, |tray, cx| tray.select(&selection, cx));
                 }
                 if let Some(words) = words {
                     self.restore_unsent(words, window, cx);
-                }
-                // Include message is as it was for the words.
-                let has_text = self.composer_has_text(cx);
-                if let Some(tray) = &tray {
-                    tray.update(cx, |tray, cx| tray.restore_message(&message, has_text, cx));
                 }
                 None
             }
@@ -2772,6 +2780,7 @@ impl SessionView {
             images,
             target,
             answers,
+            message,
             ..
         } = unsent;
         self.set_target(target, window, cx);
@@ -2785,6 +2794,12 @@ impl SessionView {
                 composer.attach_image(image, cx);
             }
         });
+        // Include message is as it was for the words, unless a request came
+        // since they went.
+        if let (Some(previous), Some(tray)) = (message, self.kept_tray().cloned()) {
+            let has_text = self.composer_has_text(cx);
+            tray.update(cx, |tray, cx| tray.words_restored(&previous, has_text, cx));
+        }
         self.keep_draft(cx);
         cx.notify();
         Some(Outgoing { text, images })
@@ -4302,7 +4317,7 @@ impl SessionView {
             .session
             .as_ref()
             .is_some_and(|session| session.read(cx).is_working());
-        let tray = self.approval_tray().cloned();
+        let tray = self.approval_tray(cx).cloned();
         let panel = self.answer_panel().cloned().map(|panel| {
             // Above the composer and the approval tray, over the
             // transcript's end.

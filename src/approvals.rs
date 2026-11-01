@@ -248,24 +248,27 @@ impl ApprovalTray {
     }
 
     /// Shows `requests`, in the order they came, while the message box has
-    /// text or not (`has_text`). What was set for those gone goes, and
+    /// text or not (`has_text`). `waiting` is every request the session's
+    /// status lists, those whose answer is on its way included, which
+    /// Include message and the reading guard follow, so an answer that comes
+    /// back brings no new request. What was set for those gone goes, and
     /// those new join checked.
     pub fn set_requests(
         &mut self,
         requests: Vec<ApprovalRequest>,
+        waiting: HashSet<String>,
         has_text: bool,
         cx: &mut Context<Self>,
     ) {
-        let ids: HashSet<String> = requests.iter().map(|request| request.id.clone()).collect();
         let before = self.message.clone();
-        self.message.requests(ids.clone(), has_text);
+        self.shown.retain(&waiting);
+        self.message.requests(waiting, has_text);
         if requests == self.requests {
             if self.message != before {
                 cx.notify();
             }
             return;
         }
-        self.shown.retain(&ids);
         let waits = |id: &String| requests.iter().any(|request| request.id == *id);
         self.unselected.retain(waits);
         self.options.retain(waits);
@@ -336,19 +339,16 @@ impl ApprovalTray {
         &self.message
     }
 
-    /// An answer came back, with the box holding text or not (`has_text`).
-    /// The switch is as it was when the answer went, `previous`, unless a
-    /// request came since. (The tray hid the answered requests until the
-    /// verdict, so their coming back is no new request.)
-    pub fn restore_message(
+    /// Words a send took came back to the message box, which has text or
+    /// not (`has_text`). Include message is as it was for them, `previous`
+    /// as the send took them, unless a request came since.
+    pub fn words_restored(
         &mut self,
         previous: &MessageSwitch,
         has_text: bool,
         cx: &mut Context<Self>,
     ) {
-        let ids = self.requests.iter().map(|request| request.id.clone());
-        self.message = previous.clone();
-        self.message.requests(ids.collect(), has_text);
+        self.message.restored(previous, has_text);
         cx.notify();
     }
 
