@@ -704,6 +704,7 @@ fn an_approval_answer_leaves_a_recordings_box_alone(cx: &mut TestAppContext) {
         };
         session.set_status(reading, Default::default(), cx)
     });
+    act(cx, test.window, |window, _| window.activate_window());
     test.type_text("Run it on opus", cx);
     // The request shows for long enough to read.
     cx.executor()

@@ -192,6 +192,8 @@ pub struct SessionView {
     trays: Vec<KeptTray>,
     /// Whether the answer panel shows.
     panel_open: bool,
+    /// The view shows in its window, where Settings can take its place.
+    presented: bool,
     /// Where the keyboard was before Alt+Q gave it to the panel: it goes
     /// back there when the panel closes.
     panel_return: Option<FocusHandle>,
@@ -433,6 +435,7 @@ impl SessionView {
                 this.list_models_again(cx)
             }),
             cx.observe_window_activation(window, |this, window, cx| {
+                this.sync_exposure(window, cx);
                 if window.is_window_active() && this.models.is_some() {
                     this.list_models_again(cx);
                 }
@@ -493,6 +496,7 @@ impl SessionView {
             width: WidthClass::Wide,
             panels: Vec::new(),
             trays: Vec::new(),
+            presented: true,
             panel_open: false,
             panel_return: None,
             last_key: None,
@@ -943,7 +947,7 @@ impl SessionView {
         self.close_find(window, cx);
         self.keep_draft(cx);
         if let Some(tray) = self.kept_tray().cloned() {
-            tray.update(cx, |tray, cx| tray.hidden(cx));
+            tray.update(cx, |tray, cx| tray.set_exposed(false, cx));
         }
         if let Some(old) = self.session.take() {
             old.update(cx, |old, cx| old.set_shown(false, cx));
@@ -1368,8 +1372,24 @@ impl SessionView {
         tray.update(cx, |tray, cx| {
             tray.set_requests(requests, waiting, has_text, cx)
         });
+        self.sync_exposure(window, cx);
         if had_focus {
             self.focus_composer(window, cx);
+        }
+    }
+
+    /// Settings shows in the view's place (`false`), or the view is back.
+    pub fn set_presented(&mut self, presented: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.presented = presented;
+        self.sync_exposure(window, cx);
+    }
+
+    /// The shown session's approval tray can be seen while the view shows
+    /// in the active window, which its reading guard counts on.
+    fn sync_exposure(&self, window: &Window, cx: &mut App) {
+        let exposed = self.presented && window.is_window_active();
+        if let Some(tray) = self.kept_tray().cloned() {
+            tray.update(cx, |tray, cx| tray.set_exposed(exposed, cx));
         }
     }
 

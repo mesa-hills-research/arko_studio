@@ -638,6 +638,7 @@ fn a_worker_billed_per_token_starts_once_approved_in_the_tray(cx: &mut TestAppCo
     assert!(request.approval.option().is_some());
     assert!(!app.shows(cx, "answer-panel"));
     assert!(!mock.was_sent(&format!("{RUN} r1")), "it waits for the OK");
+    act(cx, app.window, |window, _| window.activate_window());
     act(cx, app.window, |window, cx| {
         window.input("Keep it short", cx)
     });

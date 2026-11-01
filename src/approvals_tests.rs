@@ -34,6 +34,8 @@ fn start(cx: &mut TestAppContext) -> Window {
     let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
     cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
     let (window, workspace) = open(cx, 1300.);
+    // Requests count as read only in the active window.
+    act(cx, window, |window, _| window.activate_window());
     let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
     act(cx, window, |window, cx| {
         workspace.update(cx, |workspace, cx| {
@@ -1018,6 +1020,35 @@ fn a_request_left_unread_waits_again_when_its_session_shows(cx: &mut TestAppCont
     show(&app.session.clone(), cx);
     app.click(cx, "approval-approve");
     assert!(app.sent(cx).is_empty(), "it wasn't read");
+    app.read(cx);
+    app.click(cx, "approval-approve");
+    assert_eq!(app.sent(cx), [answers(&[("a1", true)], None)]);
+}
+
+/// Time behind Settings, or in a window that isn't active, isn't time to
+/// read. A request in sight for less than half a second, then out of sight
+/// for longer, needs half a second in sight again.
+#[gpui_kit::test]
+fn time_out_of_sight_doesnt_count_as_reading(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.request_unread(cx, vec![profile("a1", "3d-judge")]);
+    app.press(cx, "secondary-,");
+    assert!(!app.shows(cx, "approval-tray"), "Settings shows instead");
+    app.read(cx);
+    app.press(cx, "escape");
+    assert!(app.shows(cx, "approval-tray"));
+    app.click(cx, "approval-approve");
+    assert!(app.sent(cx).is_empty(), "it wasn't read behind Settings");
+
+    gpui_kit::VisualTestContext::from_window(app.window, cx).deactivate_window();
+    app.read(cx);
+    act(cx, app.window, |window, _| window.activate_window());
+    assert!(app.shows(cx, "approval-tray"));
+    app.click(cx, "approval-approve");
+    assert!(
+        app.sent(cx).is_empty(),
+        "it wasn't read in an inactive window"
+    );
     app.read(cx);
     app.click(cx, "approval-approve");
     assert_eq!(app.sent(cx), [answers(&[("a1", true)], None)]);

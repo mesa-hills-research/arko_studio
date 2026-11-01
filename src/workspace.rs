@@ -1111,6 +1111,8 @@ impl Workspace {
             }
         };
         settings.read(cx).focus_handle(cx).focus(window, cx);
+        self.session_view
+            .update(cx, |view, cx| view.set_presented(false, window, cx));
         self.sync_chrome(window, cx);
         cx.notify();
         settings
@@ -1183,6 +1185,8 @@ impl Workspace {
 
     fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.take().is_some() {
+            self.session_view
+                .update(cx, |view, cx| view.set_presented(true, window, cx));
             self.focus_composer(window, cx);
             self.sync_chrome(window, cx);
             cx.notify();

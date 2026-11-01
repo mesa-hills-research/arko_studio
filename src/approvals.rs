@@ -225,6 +225,8 @@ pub struct ApprovalTray {
     lines: DrawnLines,
     /// Draws the tray again when its next request can be answered.
     ready_timer: Option<(u64, Task<()>)>,
+    /// Its session shows in the active window, so it can be seen.
+    exposed: bool,
 }
 
 impl ApprovalTray {
@@ -244,6 +246,7 @@ impl ApprovalTray {
             epoch: cx.background_executor().now(),
             lines: Rc::default(),
             ready_timer: None,
+            exposed: false,
         }
     }
 
@@ -386,23 +389,37 @@ impl ApprovalTray {
         )
     }
 
-    /// The tray goes out of sight (the window shows another session). A
-    /// request not read yet waits again when it comes back.
-    pub fn hidden(&mut self, cx: &mut Context<Self>) {
+    /// Whether the tray can be seen (`exposed`). It can't while the window
+    /// shows Settings or another session in its place, or isn't the active
+    /// window. Out of sight, a request not read yet waits again when it
+    /// comes back, and rows drawn meanwhile don't count as read.
+    pub fn set_exposed(&mut self, exposed: bool, cx: &mut Context<Self>) {
+        if exposed == self.exposed {
+            return;
+        }
+        self.exposed = exposed;
+        if exposed {
+            // Drawn again, its rows in sight start their time.
+            cx.notify();
+            return;
+        }
         let now = self.now_ms(cx);
         self.shown.visible(&HashSet::new(), now);
         self.ready_timer = None;
     }
 
-    /// The rows whose line the last frame drew in sight of the tray's list.
-    /// A request out of sight before it could be read waits again.
-    fn rows_drawn(&mut self, cx: &mut Context<Self>) {
+    /// The rows whose line the last frame drew in sight of the tray's list,
+    /// while the tray can be seen in the active window. A request out of
+    /// sight before it could be read waits again.
+    fn rows_drawn(&mut self, window: &Window, cx: &mut Context<Self>) {
         let lines = std::mem::take(&mut *self.lines.borrow_mut());
+        let exposed = self.exposed && window.is_window_active();
         let list = self.scroll.bounds();
         let in_sight: HashSet<String> = lines
             .into_iter()
             .filter(|(_, line)| {
-                line.size.height > px(0.)
+                exposed
+                    && line.size.height > px(0.)
                     && line.top() >= list.top() - px(1.)
                     && line.bottom() <= list.bottom() + px(1.)
             })
@@ -1115,8 +1132,8 @@ impl Render for ApprovalTray {
             // Once the rows are drawn, which of them are in sight.
             .child(
                 canvas(
-                    move |_, _, cx| {
-                        tray.update(cx, |tray, cx| tray.rows_drawn(cx)).ok();
+                    move |_, window, cx| {
+                        tray.update(cx, |tray, cx| tray.rows_drawn(window, cx)).ok();
                     },
                     |_, _, _, _| {},
                 )
