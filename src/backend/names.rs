@@ -38,18 +38,13 @@ impl SessionNames {
 }
 
 /// Writes `ways` through the backend, off the UI thread, after the write
-/// that is running, if one is, and in place of any that waits. `then` hears
-/// how the last write ended, once none is left to run.
-pub fn write_names(
-    ways: Vec<Way>,
-    then: impl FnOnce(&Result<(), String>, &mut App) + 'static,
-    cx: &mut App,
-) {
+/// that is running, if one is, and in place of any that waits. How the saves
+/// go is [`super::save_state`]`::<Vec<Way>>`.
+pub fn write_names(ways: Vec<Way>, cx: &mut App) {
     super::write_latest(
         ways,
         |backend, ways| backend.set_session_names(&ways),
         |_| {},
-        then,
         cx,
     );
 }

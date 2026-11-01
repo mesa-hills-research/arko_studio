@@ -143,7 +143,6 @@ impl SessionsPage {
             setting,
             |backend, setting| keep_warm::save(backend.data_root(), setting),
             reload_sessions,
-            |_, _| {},
             cx,
         );
         cx.notify();
@@ -399,7 +398,6 @@ mod tests {
                 with_hours(None, 12),
                 |_, _| Err("The disk is full".into()),
                 |_| {},
-                |_, _| {},
                 cx,
             );
         });

@@ -159,6 +159,7 @@ impl SessionsPage {
                 this.read_billing_env(cx);
             }),
             Self::observe_keep_warm(cx),
+            Self::observe_names(cx),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 if !super::shown_changed(&mut this.seen, cx) {
                     return;
@@ -208,7 +209,7 @@ impl SessionsPage {
             billing_env_read: None,
             _subscriptions: subscriptions,
         };
-        this.refresh_names(cx);
+        this.open_names(cx);
         this.read_keep_warm(cx);
         this.read_billing_env(cx);
         this

@@ -13,9 +13,6 @@ use gpui_kit::{App, AppContext as _, BorrowAppContext as _, Context, Subscriptio
 
 use super::SharedBackend;
 
-/// Hears how the last write ended.
-type Heard = Box<dyn FnOnce(&Result<(), String>, &mut App)>;
-
 /// How a setting is written through the backend, off the UI thread.
 pub type Write<T> = fn(&SharedBackend, T) -> Result<(), String>;
 
@@ -34,8 +31,6 @@ struct Writes<T> {
     error: Option<String>,
     /// How many saves went through.
     saved: u64,
-    /// Who wants to hear how the writes ended, when the last one has.
-    then: Vec<Heard>,
 }
 
 impl<T> Default for Writes<T> {
@@ -46,7 +41,6 @@ impl<T> Default for Writes<T> {
             running: false,
             error: None,
             saved: 0,
-            then: Vec::new(),
         }
     }
 }
@@ -90,13 +84,12 @@ pub fn observe_saves<T: 'static, V: 'static>(
 
 /// Writes `value` with `write`, after the write of the same setting that is
 /// running, if one is, and in place of any that waits. `saved` follows if
-/// its save goes through. `then` hears how the last write ended, once none
-/// is left to run.
+/// its save goes through. How the saves go is the setting's
+/// [`save_state`].
 pub fn write_latest<T: Clone + Send + 'static>(
     value: T,
     write: Write<T>,
     saved: Saved,
-    then: impl FnOnce(&Result<(), String>, &mut App) + 'static,
     cx: &mut App,
 ) {
     cx.default_global::<Writes<T>>();
@@ -104,7 +97,6 @@ pub fn write_latest<T: Clone + Send + 'static>(
         writes.latest = Some(value.clone());
         writes.error = None;
         writes.pending = Some((value, write, saved));
-        writes.then.push(Box::new(then));
         !std::mem::replace(&mut writes.running, true)
     });
     if start {
@@ -138,14 +130,10 @@ fn write_next<T: Clone + Send + 'static>(cx: &mut App) {
                 write_next::<T>(cx);
                 return;
             }
-            let then = cx.update_global::<Writes<T>, _>(|writes, _| {
+            cx.update_global::<Writes<T>, _>(|writes, _| {
                 writes.running = false;
                 writes.latest = None;
-                std::mem::take(&mut writes.then)
             });
-            for then in then {
-                then(&result, cx);
-            }
         });
     })
     .detach();

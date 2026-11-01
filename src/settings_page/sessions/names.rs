@@ -2,7 +2,9 @@
 //! first words of its first message or by a model, and for a model, the
 //! ways to ask one, each on or off, in the order they are tried. It is
 //! arko's setting in Arko's folder, which the terminal app reads too, so it
-//! is read and written through the backend, off the UI thread.
+//! is read and written through the backend, off the UI thread. Its saves are
+//! the app's, so the page shows the choice being saved, also when Settings
+//! opens again while it is, and hears how the saves end.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -11,7 +13,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable 
 use gpui_kit::*;
 
 use super::SessionsPage;
-use crate::backend::{SessionNames, SharedBackend, Way, write_names};
+use crate::backend::{SessionNames, SharedBackend, Way, observe_saves, save_state, write_names};
 use crate::workers::curly;
 
 /// The dropdown's two values.
@@ -26,12 +28,11 @@ pub(super) struct Names {
     list: Vec<(Way, bool)>,
     /// Whether a model names sessions.
     by_model: bool,
-    /// Why the last write failed.
+    /// Why the last save failed.
     error: Option<SharedString>,
-    /// How many writes this page asked for that haven't ended. The
-    /// backend's queue (`write_names`) runs them, also after this page is
-    /// gone.
-    writes: usize,
+    /// A save of the setting hasn't ended. The backend's queue
+    /// (`write_names`) runs them, also after this page is gone.
+    saving: bool,
     /// How many times what the file holds changed, by a change here or a
     /// write that ended. A reading that started before a change may have
     /// what it was.
@@ -47,7 +48,7 @@ impl Names {
             list: arko::session_names::arranged(&arko::session_names::default_ways()),
             by_model: false,
             error: None,
-            writes: 0,
+            saving: false,
             revision: 0,
             reads: 0,
         }
@@ -55,6 +56,48 @@ impl Names {
 }
 
 impl SessionsPage {
+    /// Follows the app's saves of the setting.
+    pub(super) fn observe_names(cx: &mut Context<Self>) -> Subscription {
+        observe_saves::<Vec<Way>, _>(cx, |page, cx| page.follow_names_saves(cx))
+    }
+
+    /// Takes the saves as they are when the page opens. A choice being saved
+    /// shows, and so does why the last save failed.
+    pub(super) fn open_names(&mut self, cx: &mut Context<Self>) {
+        let state = save_state::<Vec<Way>>(cx);
+        let names = &mut self.names;
+        names.error = state.error.as_deref().map(|why| curly(why).into());
+        if let Some(ways) = state.pending {
+            names.saving = true;
+            names.by_model = !ways.is_empty();
+            if names.by_model {
+                names.list = arko::session_names::arranged(&ways);
+            }
+        }
+        self.refresh_names(cx);
+    }
+
+    /// The saves ended once none is pending. What the file holds then goes
+    /// with what a reading started before shows, and a failed save says why
+    /// and shows what the file holds.
+    fn follow_names_saves(&mut self, cx: &mut Context<Self>) {
+        let state = save_state::<Vec<Way>>(cx);
+        let names = &mut self.names;
+        if state.pending.is_some() {
+            names.saving = true;
+            return;
+        }
+        if !std::mem::take(&mut names.saving) {
+            return;
+        }
+        names.revision += 1;
+        if let Some(why) = state.error {
+            names.error = Some(curly(&why).into());
+            self.refresh_names(cx);
+        }
+        cx.notify();
+    }
+
     /// Reads the setting and what each way lacks, in the background.
     pub(super) fn refresh_names(&mut self, cx: &mut Context<Self>) {
         self.names.reads += 1;
@@ -81,7 +124,7 @@ impl SessionsPage {
     /// undo the change on screen.
     fn adopt_names(&mut self, read: SessionNames, revision: usize) {
         let names = &mut self.names;
-        if names.writes == 0 && names.revision == revision {
+        if !names.saving && names.revision == revision {
             names.by_model = !read.ways.is_empty();
             if names.by_model {
                 names.list = arko::session_names::arranged(&read.ways);
@@ -157,37 +200,13 @@ impl SessionsPage {
 
     /// Asks the backend's queue to write the setting. It writes the latest
     /// list asked for, also when this page is gone by then (Settings was
-    /// closed), and tells the page how it ended while it is there.
+    /// closed), and every page showing it hears how the saves end.
     fn save_names(&mut self, cx: &mut Context<Self>) {
         let names = &mut self.names;
         names.revision += 1;
-        names.writes += 1;
+        names.saving = true;
         names.error = None;
-        let page = cx.weak_entity();
-        write_names(
-            self.names_ways(),
-            move |result, cx| {
-                page.update(cx, |page, cx| page.names_written(result, cx))
-                    .ok();
-            },
-            cx,
-        );
-        cx.notify();
-    }
-
-    /// A write this page asked for ended with `result`, which is of the last
-    /// one when none is left. A write that failed is said, and what the
-    /// file holds is what shows.
-    fn names_written(&mut self, result: &Result<(), String>, cx: &mut Context<Self>) {
-        let names = &mut self.names;
-        names.writes = names.writes.saturating_sub(1);
-        names.revision += 1;
-        if names.writes == 0
-            && let Err(why) = result
-        {
-            names.error = Some(curly(why).into());
-            self.refresh_names(cx);
-        }
+        write_names(self.names_ways(), cx);
         cx.notify();
     }
 

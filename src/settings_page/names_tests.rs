@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use gpui_kit::component::setting::SettingItem;
 use gpui_kit::component::text::Text;
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AnyWindowHandle, Entity, TestAppContext};
+use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
 
 use super::SESSIONS_PAGE;
 use super::SessionsPage;
@@ -387,6 +387,39 @@ fn a_refused_write_is_said_and_the_list_shows_what_is_saved(cx: &mut TestAppCont
     act(cx, window, |window, _| {
         assert!(window.try_find("names-error").is_some());
     });
+}
+
+/// Settings opened again while a save is on its way shows the choice being
+/// saved, and hears how the save ended. A refused one is said, and the list
+/// goes back to what is saved.
+#[gpui_kit::test]
+fn settings_opened_during_a_refused_save_hears_it(cx: &mut TestAppContext) {
+    let backend = start_on(
+        cx,
+        sample().refusing_session_names("Couldn't save the session names (Permission denied)."),
+        prefs::Prefs::default(),
+    );
+    let (window, workspace, settings) = settings_window(cx, SESSIONS_PAGE, 4000.);
+    let page = cx.read(|cx| settings.read(cx).sessions().clone());
+    cx.update_window(window, |_, window, cx| {
+        page.update(cx, |page, cx| page.set_by_model(true, cx));
+        window.press("escape", cx);
+    })
+    .unwrap();
+    drop((page, settings));
+    cx.update_window(window, |_, window, cx| window.press("secondary-,", cx))
+        .unwrap();
+    let reopened = cx.read(|cx| workspace.read(cx).settings().unwrap().clone());
+    let page = cx.read(|cx| reopened.read(cx).sessions().clone());
+    assert!(naming(cx, &page).0, "the choice being saved shows");
+    cx.run_until_parked();
+    let (by_model, _, error) = naming(cx, &page);
+    assert_eq!(
+        error.as_deref(),
+        Some("Couldn’t save the session names (Permission denied).")
+    );
+    assert!(!by_model, "the file still names by the first words");
+    assert!(backend.saved_session_names().is_empty());
 }
 
 /// The setting is arko's file in Arko's folder, which the terminal app
