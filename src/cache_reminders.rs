@@ -55,18 +55,24 @@ pub enum Due {
     Last,
     /// The cache has lapsed: the last reminder goes.
     Lapsed,
+    /// Keep-warm will refresh the cache before it lapses, so the reminders
+    /// shown go. They count as not sent, and come again if keep-warm stops
+    /// before its refresh.
+    Withdrawn,
 }
 
 /// What is due for `cache` at `now` (Unix milliseconds), and how long until
 /// it is worth looking again. Nothing while requests run (each one
-/// refreshes the cache, see [`requests_run`]), while keep-warm will refresh
-/// it before it lapses, with reminders off, or where the cache's lifetime
-/// isn't known. Nothing new for a session the user had left alone for an
-/// hour when the cache was last refreshed (`touched_at` is when they last
+/// refreshes the cache, see [`requests_run`]), with reminders off, or where
+/// the cache's lifetime isn't known. While keep-warm will refresh it before
+/// it lapses, at `refresh_at` ([`kept_warm`]), the reminders shown are
+/// withdrawn. Nothing new for a session the user had left alone for an hour
+/// when the cache was last refreshed (`touched_at` is when they last
 /// touched it).
 pub fn plan(
     cache: &CacheStatus,
     requests_run: bool,
+    refresh_at: Option<i64>,
     touched_at: i64,
     sent: Sent,
     enabled: bool,
@@ -83,9 +89,12 @@ pub fn plan(
     }
     // Keep-warm refreshes the cache before it lapses, which starts a new
     // idle period. Until its refresh is due, nothing is.
-    if kept_warm(cache, now) {
-        let refresh = cache.keep_warm.and_then(|kept| kept.next_at);
-        return (None, refresh.map(|at| (at - now).max(1_000)));
+    if let Some(refresh) = refresh_at {
+        let shown = sent.early || sent.last;
+        return (
+            shown.then_some(Due::Withdrawn),
+            Some((refresh - now).max(1_000)),
+        );
     }
     let early = cache
         .lifetime
@@ -117,13 +126,13 @@ pub fn plan(
     (due, next)
 }
 
-/// Whether keep-warm's next refresh comes before `cache` lapses, as the
-/// cache timer says ([`CacheTimer::KeptWarm`]).
-fn kept_warm(cache: &CacheStatus, now: i64) -> bool {
-    matches!(
-        CacheTimer::of(cache, false, now),
-        Some(CacheTimer::KeptWarm { .. })
-    )
+/// When keep-warm's next refresh comes, if it comes before `cache` lapses,
+/// as the cache timer says ([`CacheTimer::KeptWarm`]).
+pub fn kept_warm(cache: &CacheStatus, now: i64) -> Option<i64> {
+    match CacheTimer::of(cache, false, now) {
+        Some(CacheTimer::KeptWarm { .. }) => cache.keep_warm.and_then(|kept| kept.next_at),
+        _ => None,
+    }
 }
 
 /// The clock the reminders read, in Unix milliseconds (tests set their
@@ -254,6 +263,7 @@ impl CacheReminders {
             let (due, next) = plan(
                 &live.reading().cache,
                 busy,
+                kept_warm(&live.reading().cache, now),
                 // On screen in front of the user, it counts as touched.
                 if notify::shown_in_front(&session, cx) {
                     now
@@ -266,10 +276,8 @@ impl CacheReminders {
             );
             (due, next, busy, live.question().is_some())
         };
-        let kept = kept_warm(&session.read(cx).reading().cache, now);
-        if busy || !enabled || kept {
-            // A request refreshes the cache, or keep-warm will, so the
-            // reminder is out of date.
+        if busy || !enabled {
+            // A request refreshes the cache, so the reminder is out of date.
             self.dismiss(cx);
             if busy {
                 self.sent = Sent::default();
@@ -307,6 +315,10 @@ impl CacheReminders {
                 self.remind(&session, true, asking, cx);
             }
             Some(Due::Lapsed) => self.dismiss(cx),
+            Some(Due::Withdrawn) => {
+                self.dismiss(cx);
+                self.sent = Sent::default();
+            }
             None => {}
         }
         self._timer = next.map(|wait| {
@@ -706,12 +718,12 @@ mod tests {
         let lapses = HOUR - MARGIN;
         // At first: nothing, look again 5 minutes before it lapses.
         assert_eq!(
-            plan(&cache, false, 0, none, true, 0),
+            plan(&cache, false, None, 0, none, true, 0),
             (None, Some(lapses - EARLY_MS))
         );
         // Then the first, and the last a minute before it lapses.
         assert_eq!(
-            plan(&cache, false, 0, none, true, lapses - EARLY_MS),
+            plan(&cache, false, None, 0, none, true, lapses - EARLY_MS),
             (Some(Due::Early), Some(EARLY_MS - FINAL_MS))
         );
         let early = Sent {
@@ -719,7 +731,7 @@ mod tests {
             last: false,
         };
         assert_eq!(
-            plan(&cache, false, 0, early, true, lapses - FINAL_MS),
+            plan(&cache, false, None, 0, early, true, lapses - FINAL_MS),
             (Some(Due::Last), Some(FINAL_MS))
         );
         // It lapses: the last one goes.
@@ -728,10 +740,13 @@ mod tests {
             last: true,
         };
         assert_eq!(
-            plan(&cache, false, 0, both, true, lapses),
+            plan(&cache, false, None, 0, both, true, lapses),
             (Some(Due::Lapsed), None)
         );
-        assert_eq!(plan(&cache, false, 0, both, true, lapses - 30_000).0, None);
+        assert_eq!(
+            plan(&cache, false, None, 0, both, true, lapses - 30_000).0,
+            None
+        );
     }
 
     #[test]
@@ -739,8 +754,42 @@ mod tests {
         let cache = cache(5);
         let none = Sent::default();
         let last = 4 * 60_000 - MARGIN;
-        assert_eq!(plan(&cache, false, 0, none, true, 0), (None, Some(last)));
-        assert_eq!(plan(&cache, false, 0, none, true, last).0, Some(Due::Last));
+        assert_eq!(
+            plan(&cache, false, None, 0, none, true, 0),
+            (None, Some(last))
+        );
+        assert_eq!(
+            plan(&cache, false, None, 0, none, true, last).0,
+            Some(Due::Last)
+        );
+    }
+
+    /// A reminder shown before keep-warm turned on is withdrawn while its
+    /// refresh will come in time, and counts as not sent. Keep-warm stopped
+    /// before refreshing, the reminder comes again.
+    #[test]
+    fn a_reminder_withdrawn_for_keep_warm_comes_back_without_a_refresh() {
+        let cache = cache(5);
+        let none = Sent::default();
+        let shown = Sent {
+            early: true,
+            last: true,
+        };
+        // Refreshed at 0:00, it lapses at 4:30 and was reminded at 3:30.
+        // Keep-warm turns on at 3:40, to refresh at 4:00.
+        assert_eq!(
+            plan(&cache, false, Some(240_000), 0, shown, true, 220_000),
+            (Some(Due::Withdrawn), Some(20_000))
+        );
+        assert_eq!(
+            plan(&cache, false, Some(240_000), 0, none, true, 225_000),
+            (None, Some(15_000))
+        );
+        // It stops at 3:50 without a refresh.
+        assert_eq!(
+            plan(&cache, false, None, 0, none, true, 230_000).0,
+            Some(Due::Last)
+        );
     }
 
     #[test]
@@ -748,17 +797,20 @@ mod tests {
         let cache = cache(5);
         let none = Sent::default();
         let at = 4 * 60_000 + 1;
-        assert_eq!(plan(&cache, true, 0, none, true, at), (None, None));
-        assert_eq!(plan(&cache, false, 0, none, false, at), (None, None));
+        assert_eq!(plan(&cache, true, None, 0, none, true, at), (None, None));
+        assert_eq!(plan(&cache, false, None, 0, none, false, at), (None, None));
         let unknown = CacheStatus {
             lifetime: None,
             ..cache.clone()
         };
-        assert_eq!(plan(&unknown, false, 0, none, true, at), (None, None));
+        assert_eq!(plan(&unknown, false, None, 0, none, true, at), (None, None));
         // Last touched an hour before the cache was refreshed: nothing.
-        assert_eq!(plan(&cache, false, -UNTOUCHED_MS, none, true, at).0, None);
         assert_eq!(
-            plan(&cache, false, -UNTOUCHED_MS + 1, none, true, at).0,
+            plan(&cache, false, None, -UNTOUCHED_MS, none, true, at).0,
+            None
+        );
+        assert_eq!(
+            plan(&cache, false, None, -UNTOUCHED_MS + 1, none, true, at).0,
             Some(Due::Last)
         );
     }
@@ -779,7 +831,7 @@ mod tests {
             last: false,
         };
         assert_eq!(
-            plan(&hour(2 * minute), false, 0, early, true, 61 * minute).0,
+            plan(&hour(2 * minute), false, None, 0, early, true, 61 * minute).0,
             Some(Due::Last)
         );
         // A 6-minute turn: the first reminder at 61:00.
@@ -787,6 +839,7 @@ mod tests {
             plan(
                 &hour(6 * minute),
                 false,
+                None,
                 0,
                 Sent::default(),
                 true,
@@ -1398,7 +1451,7 @@ mod tests {
     #[test]
     fn a_lapse_without_a_reminder_shown_does_nothing() {
         assert_eq!(
-            plan(&cache(5), false, 0, Sent::default(), true, 300_000),
+            plan(&cache(5), false, None, 0, Sent::default(), true, 300_000),
             (None, None)
         );
     }
