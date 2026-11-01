@@ -19,6 +19,8 @@ struct Writes<T> {
     /// The latest value asked for that no write has taken yet, and how it's
     /// written.
     pending: Option<(T, Write<T>)>,
+    /// The latest value asked for, until the writes end.
+    latest: Option<T>,
     running: bool,
     /// Who wants to hear how the writes ended, when the last one has.
     then: Vec<Heard>,
@@ -28,6 +30,7 @@ impl<T> Default for Writes<T> {
     fn default() -> Self {
         Self {
             pending: None,
+            latest: None,
             running: false,
             then: Vec::new(),
         }
@@ -39,13 +42,14 @@ impl<T: 'static> gpui_kit::Global for Writes<T> {}
 /// Writes `value` with `write`, after the write of the same setting that is
 /// running, if one is, and in place of any that waits. `then` hears how the
 /// last write ended, once none is left to run.
-pub fn write_latest<T: Send + 'static>(
+pub fn write_latest<T: Clone + Send + 'static>(
     value: T,
     write: Write<T>,
     then: impl FnOnce(&Result<(), String>, &mut App) + 'static,
     cx: &mut App,
 ) {
     let writes = cx.default_global::<Writes<T>>();
+    writes.latest = Some(value.clone());
     writes.pending = Some((value, write));
     writes.then.push(Box::new(then));
     if !writes.running {
@@ -54,7 +58,13 @@ pub fn write_latest<T: Send + 'static>(
     }
 }
 
-fn write_next<T: Send + 'static>(cx: &mut App) {
+/// The latest value of the setting `T` asked for, while its writes haven't
+/// ended, which is what the setting is about to hold.
+pub fn writing<T: Clone + 'static>(cx: &App) -> Option<T> {
+    cx.try_global::<Writes<T>>()?.latest.clone()
+}
+
+fn write_next<T: Clone + Send + 'static>(cx: &mut App) {
     let Some((value, write)) = cx.global_mut::<Writes<T>>().pending.take() else {
         return;
     };
@@ -69,6 +79,7 @@ fn write_next<T: Send + 'static>(cx: &mut App) {
             }
             let writes = cx.global_mut::<Writes<T>>();
             writes.running = false;
+            writes.latest = None;
             for then in std::mem::take(&mut writes.then) {
                 then(&result, cx);
             }

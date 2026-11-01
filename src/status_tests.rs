@@ -575,6 +575,37 @@ fn the_cache_timers_menu_keeps_the_cache_warm(cx: &mut TestAppContext) {
     assert_eq!(sent(&bar.session, cx), ["/keep-warm 8h"]);
 }
 
+/// While keep-warm will refresh the cache before it lapses, the timer says
+/// until when it's kept warm, without the warning, and its menu stops it.
+#[gpui_kit::test]
+fn a_kept_warm_cache_says_so_and_its_menu_stops_keep_warm(cx: &mut TestAppContext) {
+    let bar = bar(cx, 1300.);
+    let mut reading = Reading::default();
+    reading.cache.lifetime = Some(Duration::from_secs(300));
+    reading.cache.refreshed_at = Some(NOW - 250_000);
+    reading.cache.tokens = Some(180_000);
+    let mut kept = arko::keep_warm::Status::default();
+    kept.ends_at = Some(NOW + 8 * 3_600_000);
+    kept.next_at = Some(NOW + 10_000);
+    reading.cache.keep_warm = Some(kept);
+    bar.show(cx, reading, Activity::default());
+    let (label, warns) = bar.shown(cx).cache.unwrap();
+    assert!(label.starts_with("cache warm until "), "{label}");
+    assert!(
+        !warns,
+        "20 seconds before the lapse, kept warm, it doesn't warn"
+    );
+    act(cx, bar.window, |window, cx| {
+        window.click("status-cache", cx)
+    });
+    cx.update_window(bar.window, |_, window, cx| {
+        window.within("popup-menu").click(0usize, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(sent(&bar.session, cx), ["/keep-warm off"]);
+}
+
 /// A question waiting for the user stops the turn's requests: the cache
 /// timer shows beside "Waiting for your answer".
 #[gpui_kit::test]

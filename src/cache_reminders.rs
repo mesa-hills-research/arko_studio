@@ -929,6 +929,25 @@ mod tests {
             cx.run_until_parked();
         }
 
+        /// Keep-warm's next refresh comes at `next_at`, before the cache
+        /// lapses, or keep-warm is off (`None`). The cache stays as it was.
+        fn keep_warm(&self, cx: &mut TestAppContext, next_at: Option<i64>) {
+            let mut reading = Reading::clone(
+                cx.read(|cx| self.session.read(cx).reading().clone())
+                    .as_ref(),
+            );
+            reading.cache.keep_warm = next_at.map(|at| {
+                let mut kept = arko::keep_warm::Status::default();
+                kept.ends_at = Some(at + HOUR);
+                kept.next_at = Some(at);
+                kept
+            });
+            self.session.update(cx, |session, cx| {
+                session.set_status(reading, Activity::default(), cx)
+            });
+            cx.run_until_parked();
+        }
+
         fn click(&self, cx: &mut TestAppContext, id: impl Into<ElementId>) {
             cx.update_window(self.window, |_, window, cx| {
                 window.render_frame(cx);
@@ -1007,6 +1026,27 @@ mod tests {
         reminded.advance(cx, 61_000);
         reminded.advance(cx, 1_000);
         assert!(!reminded.shows(cx, "cache-countdown"));
+    }
+
+    /// The last reminder goes once keep-warm turns on to refresh the cache
+    /// before it lapses, and comes back when keep-warm stops before its
+    /// refresh, since the cache lapses on time then.
+    #[gpui_kit::test]
+    fn a_reminder_goes_while_kept_warm_and_comes_back_when_that_stops(cx: &mut TestAppContext) {
+        let reminded = Reminded::new(cx, 5, 230_000);
+        reminded.advance(cx, 10_000);
+        assert!(reminded.shows(cx, "cache-countdown"));
+        let now = reminded.now.get();
+        reminded.keep_warm(cx, Some(now + 10_000));
+        assert_eq!(reminded.sent(cx), Sent::default());
+        // (The notification fades out.)
+        reminded.advance(cx, 1_000);
+        assert!(!reminded.shows(cx, "cache-countdown"));
+        reminded.advance(cx, 4_000);
+        assert!(!reminded.shows(cx, "cache-countdown"));
+        reminded.keep_warm(cx, None);
+        assert!(reminded.shows(cx, "cache-countdown"));
+        assert!(reminded.sent(cx).last);
     }
 
     /// The headline says the minutes left, and the OS shows it under the

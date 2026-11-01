@@ -94,6 +94,15 @@ pub fn keep_warm_state(cache: &CacheStatus, now: i64, times: &Times) -> String {
     }
 }
 
+/// Whose choice the session's keep-warm is, for its Session info.
+pub fn keep_warm_origin(kept: &arko::keep_warm::Status) -> &'static str {
+    if kept.follows_setting {
+        "Set in Settings for every session."
+    } else {
+        "Set for this session."
+    }
+}
+
 /// A choice of the timer's menu, with its name there, its name beside
 /// "Keep warm" in Session info, and the command it sends.
 pub type KeepWarmChoice = (&'static str, &'static str, &'static str);
@@ -164,7 +173,7 @@ pub fn cache_timer(
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
-    use super::{cache_label, cache_tooltip, keep_warm_choices};
+    use super::{cache_label, cache_tooltip, keep_warm_choices, keep_warm_origin, keep_warm_state};
     use crate::figures::{Times, Zone};
     use crate::prefs::HourCycle;
     use arko::cache_timer::CacheTimer;
@@ -289,6 +298,50 @@ mod tests {
             left: Some(1),
         };
         assert_eq!(cache_label(last, now, &times), "cache warm, 1 refresh left");
+    }
+
+    /// Session info says until when keep-warm keeps the cache warm, or how
+    /// many refreshes it has left, and whose choice it is. While it waits for
+    /// the next message, the countdown's tooltip says so.
+    #[test]
+    fn keep_warm_says_its_state_and_whose_choice_it_is() {
+        let times = Times {
+            hour_cycle: HourCycle::Twelve,
+            zone: Zone::Named(jiff::tz::TimeZone::get("America/Denver").unwrap()),
+        };
+        let now = 1_792_180_800_000;
+        let mut kept = arko::keep_warm::Status::default();
+        kept.ends_at = Some(now + 8 * 3_600_000);
+        kept.next_at = Some(now + 240_000);
+        let mut cache = cache(5, now);
+        cache.keep_warm = Some(kept);
+        assert_eq!(keep_warm_state(&cache, now, &times), "On until 10:00PM MDT");
+        assert_eq!(keep_warm_origin(&kept), "Set for this session.");
+        kept.follows_setting = true;
+        assert_eq!(
+            keep_warm_origin(&kept),
+            "Set in Settings for every session."
+        );
+        kept.ends_at = None;
+        kept.left = Some(9);
+        cache.keep_warm = Some(kept);
+        assert_eq!(
+            keep_warm_state(&cache, now, &times),
+            "On for 9 more refreshes"
+        );
+        cache.keep_warm = None;
+        assert_eq!(keep_warm_state(&cache, now, &times), "Off");
+
+        kept.next_at = None;
+        kept.waits = true;
+        cache.keep_warm = Some(kept);
+        let counting = cache_tooltip(CacheTimer::Counting { left: 60_000 }, &cache, now, &times);
+        assert!(
+            counting.ends_with(
+                " Keep-warm waits for your next message, as Arko can’t tell how long ago the cache was used."
+            ),
+            "{counting}"
+        );
     }
 
     /// The timer's menu stops keep-warm while it's on, and otherwise starts

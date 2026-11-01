@@ -1,10 +1,10 @@
 //! Keep-warm for every session in Settings › Sessions › Prompt cache, for
 //! up to some hours after the last message, and a limit on what its
 //! refreshes cost. It is arko's setting in Arko's folder, which the terminal and the
-//! web page change too, and it's off unless the user turns it on. A choice
-//! goes to the open sessions as `/keep-warm default …`, so they take it at
-//! once and arko keeps it. With none open it's written through the app's
-//! queue of writes, off the UI thread, which goes on after Settings closes.
+//! web page change too, and it's off unless the user turns it on. Studio
+//! alone writes it for its sessions. A choice is saved through the app's
+//! queue of writes, off the UI thread, which goes on after Settings closes,
+//! and then each open session reads it again and takes it, saving nothing.
 
 use arko::keep_warm::{self, Limits, SETTING_DOLLARS, SETTING_HOURS};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem};
@@ -12,7 +12,7 @@ use gpui_kit::component::{ActiveTheme as _, h_flex};
 use gpui_kit::*;
 
 use super::SessionsPage;
-use crate::backend::{SharedBackend, write_latest};
+use crate::backend::{SharedBackend, write_latest, writing};
 use crate::live::LiveSessions;
 
 /// What the group shows and the writes it waits for.
@@ -73,8 +73,13 @@ fn steps<T: PartialEq + Copy>(steps: &[T], current: T) -> Vec<T> {
 }
 
 impl SessionsPage {
-    /// Reads the setting from Arko's folder, in the background.
+    /// Reads the setting from Arko's folder, in the background, or takes
+    /// the choice whose save hasn't ended.
     pub(super) fn read_keep_warm(&mut self, cx: &mut Context<Self>) {
+        if let Some(setting) = writing::<Option<Limits>>(cx) {
+            self.keep_warm.setting = setting;
+            return;
+        }
         let backend = cx.global::<SharedBackend>().clone();
         let read = cx.background_spawn(async move { keep_warm::load(backend.data_root()) });
         self.keep_warm.reading = Some(cx.spawn(async move |this, cx| {
@@ -92,32 +97,28 @@ impl SessionsPage {
         self.keep_warm.reading = None;
         self.keep_warm.setting = setting;
         self.keep_warm.error = None;
-        let command = keep_warm::setting_command(setting);
-        let mut sent = false;
-        for session in LiveSessions::all(cx) {
-            let input = arko::Input::Message(arko::Message {
-                text: command.clone(),
-                ..Default::default()
-            });
-            sent |= session
-                .update(cx, |session, cx| session.send(input, cx))
-                .is_ok();
-        }
-        if !sent {
-            let page = cx.weak_entity();
-            write_latest(
-                setting,
-                |backend, setting| keep_warm::save(backend.data_root(), setting),
-                move |written, cx| {
-                    page.update(cx, |page, cx| {
-                        page.keep_warm.error = written.clone().err().map(SharedString::from);
-                        cx.notify();
-                    })
-                    .ok();
-                },
-                cx,
-            );
-        }
+        let page = cx.weak_entity();
+        write_latest(
+            setting,
+            |backend, setting| keep_warm::save(backend.data_root(), setting),
+            move |written, cx| {
+                if written.is_ok() {
+                    // Each open session takes what was saved.
+                    for session in LiveSessions::all(cx) {
+                        session
+                            .read(cx)
+                            .request(|reply| arko::Request::ReloadKeepWarmSetting { reply }, cx)
+                            .detach();
+                    }
+                }
+                page.update(cx, |page, cx| {
+                    page.keep_warm.error = written.clone().err().map(SharedString::from);
+                    cx.notify();
+                })
+                .ok();
+            },
+            cx,
+        );
         cx.notify();
     }
 
@@ -238,11 +239,11 @@ mod tests {
         assert_eq!(steps(&[0, 1, 8], 8), vec![0, 1, 8]);
     }
 
-    /// The page shows the setting in Arko's folder. With no session open, a
-    /// choice is written there. With one open, it goes to the session as
-    /// the terminal's command, which keeps it.
+    /// The page shows the setting in Arko's folder. A choice is saved there,
+    /// by the app alone, and each open session then takes it again from the
+    /// file, saving nothing.
     #[gpui_kit::test]
-    fn a_choice_is_written_or_sent_to_the_open_sessions(cx: &mut gpui_kit::TestAppContext) {
+    fn a_choice_is_saved_once_and_open_sessions_reload_it(cx: &mut gpui_kit::TestAppContext) {
         use gpui_kit::AppContext as _;
 
         use crate::backend::FakeBackend;
@@ -262,33 +263,31 @@ mod tests {
         cx.run_until_parked();
         let shown = cx.read(|cx| page.read(cx).keep_warm_setting()).unwrap();
         assert_eq!((shown.idle_hours, shown.dollars), (Some(15), Some(5.0)));
-        assert!(cx.read(|cx| LiveSessions::all(cx).is_empty()));
 
+        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
+        cx.update(|cx| LiveSessions::add_for_tests(session.clone(), cx));
         page.update(cx, |page, cx| {
             page.set_keep_warm(with_hours(page.keep_warm_setting(), 8), cx)
         });
         cx.run_until_parked();
         let saved = arko::keep_warm::load(temp.path()).unwrap();
         assert_eq!((saved.idle_hours, saved.dollars), (Some(8), Some(5.0)));
+        let requests = session.update(cx, |session, _| session.take_requests());
+        assert!(
+            matches!(
+                requests.as_slice(),
+                [arko::Request::ReloadKeepWarmSetting { .. }]
+            ),
+            "{requests:?}"
+        );
+        assert!(
+            cx.read(|cx| session.read(cx).queued().is_empty()),
+            "no command"
+        );
 
-        let session = cx.new(|cx| LiveSession::for_tests("s1", cx));
-        cx.update(|cx| LiveSessions::add_for_tests(session.clone(), cx));
         page.update(cx, |page, cx| page.set_keep_warm(None, cx));
         cx.run_until_parked();
-        let sent: Vec<String> = cx.read(|cx| {
-            session
-                .read(cx)
-                .queued()
-                .iter()
-                .filter_map(|input| match input {
-                    arko::Input::Message(message) => Some(message.text.clone()),
-                    _ => None,
-                })
-                .collect()
-        });
-        assert_eq!(sent, ["/keep-warm default off"]);
-        // The session keeps it, so the page writes nothing itself.
-        assert!(arko::keep_warm::load(temp.path()).is_some());
+        assert_eq!(arko::keep_warm::load(temp.path()), None);
         assert_eq!(cx.read(|cx| page.read(cx).keep_warm_setting()), None);
     }
 
@@ -325,6 +324,13 @@ mod tests {
             "closed"
         );
         drop((page, settings));
+        // Opened again before the save ends, Settings shows what's saving.
+        cx.update_window(window, |_, window, cx| window.press("secondary-,", cx))
+            .unwrap();
+        let reopened = cx.read(|cx| workspace.read(cx).settings().unwrap().clone());
+        let page = cx.read(|cx| reopened.read(cx).sessions().clone());
+        let shown = cx.read(|cx| page.read(cx).keep_warm_setting());
+        assert_eq!(shown.and_then(|setting| setting.idle_hours), Some(12));
         cx.run_until_parked();
         let saved = arko::keep_warm::load(temp.path()).unwrap();
         assert_eq!(saved.idle_hours, Some(12));

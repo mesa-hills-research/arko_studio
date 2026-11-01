@@ -624,11 +624,24 @@ impl SessionInfo {
                     }))
             });
         let muted = cx.theme().muted_foreground;
+        let origin = cache
+            .keep_warm
+            .map(|kept| crate::cache_timer::keep_warm_origin(&kept));
         v_flex()
             .id("keep-warm")
             .test_support()
             .gap_1()
             .child(state)
+            .when_some(origin, |this, origin| {
+                this.child(
+                    div()
+                        .id("keep-warm-origin")
+                        .test_support()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(origin),
+                )
+            })
             .when(waits, |this| {
                 let words = arko::cache_timer::KEEP_WARM_WAITS.replace('\'', "’");
                 this.child(div().text_xs().text_color(muted).child(words))
