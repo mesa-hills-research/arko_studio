@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use arko::approvals::ApprovalRequest;
+use arko::approvals::{ApprovalRequest, MessageSwitch};
 use arko::questions::AgentQuestion;
 use arko::remote::{Activity, Feed, Question, Reading, Update, WorkerState, WorkerSummary};
 use async_trait::async_trait;
@@ -438,6 +438,11 @@ struct Approvals {
     answered: std::collections::HashSet<String>,
     /// The requests the status listed since the session opened.
     known: std::collections::HashSet<String>,
+    /// Whether an approval answer takes the message box's text (arko's
+    /// rules). It follows the session's own requests, whichever window
+    /// shows the session or none, and the box's draft as the window showing
+    /// it says.
+    message: MessageSwitch,
 }
 
 impl Approvals {
@@ -450,6 +455,9 @@ impl Approvals {
         for request in waiting {
             new |= self.known.insert(request.id.clone());
         }
+        let ids = waiting.iter().map(|request| request.id.clone()).collect();
+        let has_text = self.message.has_text();
+        self.message.requests(ids, has_text);
         new
     }
 
@@ -1319,6 +1327,40 @@ impl LiveSession {
                 .pending
                 .iter()
                 .any(|pending| pending.questions.iter().any(|settled| settled == id))
+    }
+
+    /// Include message for the session's approval tray.
+    pub fn message_switch(&self) -> &MessageSwitch {
+        &self.approvals.message
+    }
+
+    /// The session's message box has text, or not, as the window showing
+    /// it says.
+    pub fn message_edited(&mut self, has_text: bool, cx: &mut Context<Self>) {
+        let before = self.approvals.message.clone();
+        self.approvals.message.edited(has_text);
+        if self.approvals.message != before {
+            cx.notify();
+        }
+    }
+
+    /// Turns Include message over.
+    pub fn flip_message(&mut self, cx: &mut Context<Self>) {
+        self.approvals.message.flip();
+        cx.notify();
+    }
+
+    /// Words a send took came back to the message box, which has text or
+    /// not (`has_text`). Include message is as it was for them, `previous`
+    /// as the send took them, unless a request came since.
+    pub fn message_restored(
+        &mut self,
+        previous: &MessageSwitch,
+        has_text: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.approvals.message.restored(previous, has_text);
+        cx.notify();
     }
 
     /// The requests waiting in the approval tray, in the order they came,

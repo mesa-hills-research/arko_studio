@@ -667,18 +667,6 @@ fn spinner(id: impl Into<ElementId>, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// How long a thinking took, as arko's terminal and web page say it: "45s",
-/// "2m", "1h 5m". The same as arko's `protocol::duration`, which arko
-/// exports only with its terminal.
-pub(crate) fn thought_time(ms: i64) -> String {
-    let seconds = (ms / 1000).max(0);
-    match seconds {
-        0..=59 => format!("{seconds}s"),
-        60..=3599 => format!("{}m", seconds / 60),
-        _ => format!("{}h {}m", seconds / 3600, seconds % 3600 / 60),
-    }
-}
-
 /// "12 s", "1 m 5 s", "2 h 3 m".
 pub(crate) fn duration(ms: i64) -> String {
     let seconds = (ms.max(0) + 500) / 1000;
@@ -1451,7 +1439,7 @@ impl TranscriptView {
             "Thinking…".into()
         } else {
             match self.model.thought_for(ix) {
-                Some(ms) => format!("Thought for {}", thought_time(ms)).into(),
+                Some(ms) => format!("Thought for {}", arko::remote::duration(ms)).into(),
                 None => "Thought".into(),
             }
         };
@@ -2894,7 +2882,7 @@ mod tests {
     use super::{
         AgentFilter, CACHE_REFRESHED, Lucide, OutputViewer, REGENERATE_HINT, apply_diff_patch,
         code_lines, duration, edit_diff, longest_code, message_label, notice_icon, preview,
-        thought_time, user_tags,
+        user_tags,
     };
     use arko::remote::{Delivery, Item, Kind, Level, Source};
     use gpui_kit::AppContext as _;
@@ -2960,15 +2948,6 @@ mod tests {
         assert_eq!(duration(12_400), "12 s");
         assert_eq!(duration(65_000), "1 m 5 s");
         assert_eq!(duration(7_380_000), "2 h 3 m");
-    }
-
-    /// A thinking's time reads as in arko's terminal and on its web page.
-    #[test]
-    fn thinking_times_read_as_arko_says_them() {
-        assert_eq!(thought_time(12_900), "12s");
-        assert_eq!(thought_time(59_999), "59s");
-        assert_eq!(thought_time(125_000), "2m");
-        assert_eq!(thought_time(3_900_000), "1h 5m");
     }
 
     #[test]

@@ -708,7 +708,9 @@ fn an_approval_answer_leaves_a_recordings_box_alone(cx: &mut TestAppContext) {
     test.type_text("Run it on opus", cx);
     // The request shows for long enough to read.
     cx.executor()
-        .advance_clock(std::time::Duration::from_millis(crate::approvals::READ_MS));
+        .advance_clock(std::time::Duration::from_millis(
+            arko::approvals::ShownApprovals::READ_MS,
+        ));
     let index = test.record(cx);
     test.hear(index, text(" instead", ""), cx);
     act(cx, test.window, |window, cx| {

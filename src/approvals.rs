@@ -28,7 +28,8 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use arko::approvals::{
-    Approval, ApprovalAnswers, ApprovalRequest, Look, answer_labels, approvals_heading,
+    Approval, ApprovalAnswers, ApprovalRequest, Look, MessageSwitch, ShownApprovals, answer_labels,
+    approvals_heading,
 };
 use gpui_kit::base::SelectableText;
 use gpui_kit::component::kbd::Kbd;
@@ -44,14 +45,6 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-
-mod message_switch;
-mod shown_approvals;
-
-pub use message_switch::MessageSwitch;
-#[cfg(test)]
-pub(crate) use shown_approvals::READ_MS;
-use shown_approvals::ShownApprovals;
 
 /// The key context of the tray.
 pub const CONTEXT: &str = "ApprovalTray";
@@ -117,6 +110,8 @@ pub enum TrayEvent {
     Answer { approve: bool },
     /// Give the keyboard back to the message box.
     Leave,
+    /// Turn Include message over.
+    FlipMessage,
 }
 
 impl EventEmitter<TrayEvent> for ApprovalTray {}
@@ -214,7 +209,7 @@ pub struct ApprovalTray {
     focus: FocusHandle,
     /// The rows, which scroll to the one the keyboard is on.
     scroll: ScrollHandle,
-    /// Whether the message box's text goes with the answer.
+    /// Include message as the session has it, which the tray shows.
     message: MessageSwitch,
     /// When each request came into sight, which answers take only once it
     /// could be read.
@@ -250,26 +245,25 @@ impl ApprovalTray {
         }
     }
 
-    /// Shows `requests`, in the order they came, while the message box has
-    /// text or not (`has_text`). `waiting` is every request the session's
-    /// status lists, those whose answer is on its way included, which
-    /// Include message and the reading guard follow, so an answer that comes
-    /// back brings no new request. What was set for those gone goes, and
-    /// those new join checked.
+    /// Shows `requests`, in the order they came, with Include message as
+    /// the session has it (`message`). `waiting` is every request the
+    /// session's status lists, those whose answer is on its way included,
+    /// which the reading guard follows, so an answer that comes back is
+    /// ready at once. What was set for those gone goes, and those new join
+    /// checked.
     pub fn set_requests(
         &mut self,
         requests: Vec<ApprovalRequest>,
-        waiting: HashSet<String>,
-        has_text: bool,
+        waiting: &HashSet<String>,
+        message: &MessageSwitch,
         cx: &mut Context<Self>,
     ) {
-        let before = self.message.clone();
-        self.shown.retain(&waiting);
-        self.message.requests(waiting, has_text);
+        self.shown.retain(waiting);
+        if *message != self.message {
+            self.message = message.clone();
+            cx.notify();
+        }
         if requests == self.requests {
-            if self.message != before {
-                cx.notify();
-            }
             return;
         }
         let waits = |id: &String| requests.iter().any(|request| request.id == *id);
@@ -327,34 +321,6 @@ impl ApprovalTray {
         cx.notify();
     }
 
-    /// The message box's text changed, and has text or not.
-    pub fn edited(&mut self, has_text: bool, cx: &mut Context<Self>) {
-        let before = self.message.clone();
-        self.message.edited(has_text);
-        if self.message != before {
-            cx.notify();
-        }
-    }
-
-    /// Whether the message box's text goes with the answer, and what the
-    /// switch was as an answer went, to give back should it come back.
-    pub fn message(&self) -> &MessageSwitch {
-        &self.message
-    }
-
-    /// Words a send took came back to the message box, which has text or
-    /// not (`has_text`). Include message is as it was for them, `previous`
-    /// as the send took them, unless a request came since.
-    pub fn words_restored(
-        &mut self,
-        previous: &MessageSwitch,
-        has_text: bool,
-        cx: &mut Context<Self>,
-    ) {
-        self.message.restored(previous, has_text);
-        cx.notify();
-    }
-
     /// The time on the tray's clock, in milliseconds.
     fn now_ms(&self, cx: &App) -> u64 {
         let now = cx.background_executor().now();
@@ -370,17 +336,13 @@ impl ApprovalTray {
             .collect()
     }
 
-    /// The answer to the requests shown long enough to read, with `words`
-    /// from the message box if Include message is on. When `approve`, those
-    /// checked are approved (with their options) and the others rejected,
-    /// else all are rejected. The others keep waiting.
+    /// The answer to the requests shown long enough to read, with `words`,
+    /// the message box's text when Include message is on. When `approve`,
+    /// those checked are approved (with their options) and the others
+    /// rejected, else all are rejected. The others keep waiting.
     pub fn answers(&self, approve: bool, words: &str, cx: &App) -> ApprovalAnswers {
         let ready: Vec<ApprovalRequest> = self.ready(cx).into_iter().cloned().collect();
-        let words = if !ready.is_empty() && self.message.includes() {
-            words
-        } else {
-            ""
-        };
+        let words = if ready.is_empty() { "" } else { words };
         ApprovalAnswers::of(
             &ready,
             |id| approve && !self.unselected.contains(id),
@@ -547,8 +509,7 @@ impl ApprovalTray {
     }
 
     fn on_toggle_message(&mut self, _: &ToggleMessage, _: &mut Window, cx: &mut Context<Self>) {
-        self.message.flip();
-        cx.notify();
+        cx.emit(TrayEvent::FlipMessage);
     }
 
     fn on_open(&mut self, _: &OpenDetails, window: &mut Window, cx: &mut Context<Self>) {
@@ -1151,10 +1112,9 @@ impl Render for ApprovalTray {
                                 .small()
                                 .label("Include message")
                                 .checked(includes)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.message.flip();
-                                    cx.notify();
-                                })),
+                                .on_click(
+                                    cx.listener(|_, _, _, cx| cx.emit(TrayEvent::FlipMessage)),
+                                ),
                         )
                     })
                     .child(

@@ -191,7 +191,9 @@ impl Window {
     /// The tray's rows stay in sight for as long as reading takes.
     fn read(&self, cx: &mut TestAppContext) {
         cx.executor()
-            .advance_clock(std::time::Duration::from_millis(crate::approvals::READ_MS));
+            .advance_clock(std::time::Duration::from_millis(
+                arko::approvals::ShownApprovals::READ_MS,
+            ));
         cx.run_until_parked();
     }
 
@@ -555,6 +557,33 @@ fn a_refused_answer_leaves_a_newer_drafts_choice(cx: &mut TestAppContext) {
     assert_eq!(app.include_message(cx), Some(false));
     app.refuse(cx);
     assert_eq!(app.composer_text(cx), "Later draft");
+    assert_eq!(app.include_message(cx), Some(false));
+}
+
+/// Include message follows its session's own requests, also while the
+/// window shows another session. A request that comes and goes meanwhile
+/// starts the draft's choice over, as one that came in sight would.
+#[gpui_kit::test]
+fn include_message_follows_requests_while_another_session_shows(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.type_text(cx, "Earlier draft");
+    app.request(cx, vec![profile("a1", "3d-judge")]);
+    assert_eq!(app.include_message(cx), Some(false));
+    app.click(cx, "approval-message");
+    assert_eq!(app.include_message(cx), Some(true));
+    let other = cx.new(|cx| LiveSession::for_tests("s2", cx));
+    let show = |session: &Entity<LiveSession>, cx: &mut TestAppContext| {
+        act(cx, app.window, |window, cx| {
+            app.workspace.update(cx, |workspace, cx| {
+                workspace.show_session(session.clone(), window, cx)
+            })
+        });
+    };
+    show(&other, cx);
+    app.request_unread(cx, vec![profile("a1", "3d-judge"), server("a2")]);
+    app.request_unread(cx, vec![profile("a1", "3d-judge")]);
+    show(&app.session.clone(), cx);
+    assert_eq!(app.composer_text(cx), "Earlier draft");
     assert_eq!(app.include_message(cx), Some(false));
 }
 
