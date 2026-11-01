@@ -65,37 +65,51 @@ impl SessionsPage {
     /// shows, and so does why the last save failed.
     pub(super) fn open_names(&mut self, cx: &mut Context<Self>) {
         let state = save_state::<Vec<Way>>(cx);
-        let names = &mut self.names;
-        names.error = state.error.as_deref().map(|why| curly(why).into());
+        self.names.error = state.error.as_deref().map(|why| curly(why).into());
         if let Some(ways) = state.pending {
-            names.saving = true;
-            names.by_model = !ways.is_empty();
-            if names.by_model {
-                names.list = arko::session_names::arranged(&ways);
-            }
+            self.names.saving = true;
+            self.show_ways(&ways);
         }
         self.refresh_names(cx);
     }
 
-    /// The saves ended once none is pending. What the file holds then goes
-    /// with what a reading started before shows, and a failed save says why
-    /// and shows what the file holds.
+    /// Follows the app's saves of the setting, whichever page asked. A
+    /// choice being saved shows. Once the saves end, what the file holds
+    /// shows, with why the last save failed if it did.
     fn follow_names_saves(&mut self, cx: &mut Context<Self>) {
         let state = save_state::<Vec<Way>>(cx);
-        let names = &mut self.names;
-        if state.pending.is_some() {
-            names.saving = true;
+        if let Some(ways) = state.pending {
+            self.names.saving = true;
+            self.names.error = None;
+            if self.names_ways() != ways {
+                // Another page's choice. A reading started before it is out
+                // of date.
+                self.names.revision += 1;
+                self.show_ways(&ways);
+            }
+            cx.notify();
             return;
         }
-        if !std::mem::take(&mut names.saving) {
+        if !std::mem::take(&mut self.names.saving) {
             return;
         }
-        names.revision += 1;
-        if let Some(why) = state.error {
-            names.error = Some(curly(&why).into());
-            self.refresh_names(cx);
-        }
+        self.names.revision += 1;
+        self.names.error = state.error.as_deref().map(|why| curly(why).into());
+        self.refresh_names(cx);
         cx.notify();
+    }
+
+    /// Shows `ways` turned on, in their order. A list that turns on the same
+    /// ways keeps its order.
+    fn show_ways(&mut self, ways: &[Way]) {
+        if self.names_ways() == ways {
+            return;
+        }
+        let names = &mut self.names;
+        names.by_model = !ways.is_empty();
+        if names.by_model {
+            names.list = arko::session_names::arranged(ways);
+        }
     }
 
     /// Reads the setting and what each way lacks, in the background.
@@ -123,14 +137,10 @@ impl SessionsPage {
     /// reading may be of the list before the change, and showing it would
     /// undo the change on screen.
     fn adopt_names(&mut self, read: SessionNames, revision: usize) {
-        let names = &mut self.names;
-        if !names.saving && names.revision == revision {
-            names.by_model = !read.ways.is_empty();
-            if names.by_model {
-                names.list = arko::session_names::arranged(&read.ways);
-            }
+        if !self.names.saving && self.names.revision == revision {
+            self.show_ways(&read.ways);
         }
-        names.read = Some(read);
+        self.names.read = Some(read);
     }
 
     /// A reading of the setting that was started when the file held what

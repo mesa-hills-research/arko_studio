@@ -389,6 +389,69 @@ fn a_refused_write_is_said_and_the_list_shows_what_is_saved(cx: &mut TestAppCont
     });
 }
 
+/// Settings open in two windows shows the same setting. A choice made in
+/// one shows in the other while it's saved, and after.
+#[gpui_kit::test]
+fn a_choice_made_in_one_window_shows_in_the_other(cx: &mut TestAppContext) {
+    let backend = start_on(cx, sample(), prefs::Prefs::default());
+    let (_, _, first_settings) = settings_window(cx, SESSIONS_PAGE, 4000.);
+    let first = cx.read(|cx| first_settings.read(cx).sessions().clone());
+    let (_, _, second_settings) = settings_window(cx, SESSIONS_PAGE, 4000.);
+    let second = cx.read(|cx| second_settings.read(cx).sessions().clone());
+    cx.run_until_parked();
+    assert!(!naming(cx, &first).0);
+    assert!(!naming(cx, &second).0);
+    first.update(cx, |page, cx| page.set_by_model(true, cx));
+    assert!(naming(cx, &second).0, "the choice being saved shows");
+    cx.run_until_parked();
+    assert_eq!(
+        backend.saved_session_names().last(),
+        Some(&vec![Way::ClaudePlan, Way::ChatGptPlan])
+    );
+    assert!(naming(cx, &first).0);
+    let (by_model, list, error) = naming(cx, &second);
+    assert!(by_model);
+    assert_eq!(list[0], (Way::ClaudePlan, true));
+    assert_eq!(error, None);
+}
+
+/// A save that failed is said in every window, and a later choice made in
+/// another window that saves takes its place, error and all.
+#[gpui_kit::test]
+fn a_later_save_from_another_window_clears_an_earlier_failure(cx: &mut TestAppContext) {
+    let backend = start_on(cx, sample(), prefs::Prefs::default());
+    let (_, _, first_settings) = settings_window(cx, SESSIONS_PAGE, 4000.);
+    let first = cx.read(|cx| first_settings.read(cx).sessions().clone());
+    let (_, _, second_settings) = settings_window(cx, SESSIONS_PAGE, 4000.);
+    let second = cx.read(|cx| second_settings.read(cx).sessions().clone());
+    cx.run_until_parked();
+    cx.update(|cx| {
+        crate::backend::write_latest::<Vec<Way>>(
+            vec![Way::ClaudeKey],
+            |_, _| Err("The disk is full".into()),
+            |_| {},
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    for page in [&first, &second] {
+        let (by_model, _, error) = naming(cx, page);
+        assert!(!by_model, "the file still names by the first words");
+        assert_eq!(error.as_deref(), Some("The disk is full"));
+    }
+    // A model again, with the way the failed save turned on.
+    second.update(cx, |page, cx| page.set_by_model(true, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        backend.saved_session_names().last(),
+        Some(&vec![Way::ClaudeKey])
+    );
+    let (by_model, list, error) = naming(cx, &first);
+    assert!(by_model);
+    assert_eq!(list[0], (Way::ClaudeKey, true));
+    assert_eq!(error, None);
+}
+
 /// Settings opened again while a save is on its way shows the choice being
 /// saved, and hears how the save ended. A refused one is said, and the list
 /// goes back to what is saved.
