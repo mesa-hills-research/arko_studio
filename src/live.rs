@@ -438,11 +438,6 @@ struct Approvals {
     answered: std::collections::HashSet<String>,
     /// The requests the status listed since the session opened.
     known: std::collections::HashSet<String>,
-    /// Whether an approval answer takes the message box's text (arko's
-    /// rules). It follows the session's own requests, whichever window
-    /// shows the session or none, and the box's draft as the window showing
-    /// it says.
-    message: MessageSwitch,
 }
 
 impl Approvals {
@@ -455,9 +450,6 @@ impl Approvals {
         for request in waiting {
             new |= self.known.insert(request.id.clone());
         }
-        let ids = waiting.iter().map(|request| request.id.clone()).collect();
-        let has_text = self.message.has_text();
-        self.message.requests(ids, has_text);
         new
     }
 
@@ -508,8 +500,14 @@ pub struct LiveSession {
     quit_agreed: Option<arko::QuitAsk>,
     /// What the user did with the agent's questions in this app.
     questions: Questions,
-    /// What the user did with the approval tray's requests in this app.
+    /// What the user did with the approval tray's requests in this app,
+    /// for as long as one engine runs the session.
     approvals: Approvals,
+    /// Whether an approval answer takes the message box's text (arko's
+    /// rules). It describes the session's draft, which outlives an engine
+    /// (a switch between Chat and Agent keeps it), and follows the
+    /// session's own requests, whichever window shows the session or none.
+    message: MessageSwitch,
     /// When the user last sent it something or looked at it, in Unix
     /// milliseconds: cache reminders leave sessions alone after an hour.
     touched_at: i64,
@@ -575,6 +573,7 @@ impl LiveSession {
             quit_agreed: None,
             questions: Questions::default(),
             approvals: Approvals::default(),
+            message: MessageSwitch::default(),
             touched_at: crate::figures::now_ms(),
             input_epoch: std::cell::Cell::new(0),
             opened: 0,
@@ -750,6 +749,7 @@ impl LiveSession {
             .collect();
         self.questions.read(&self.reading.questions);
         self.approvals.read(&self.reading.approvals);
+        self.follow_requests();
         // Closed before it opened, only the quit is queued.
         for request in self.queued_requests.get_mut().drain(..) {
             let _ = requests.send(request);
@@ -870,7 +870,9 @@ impl LiveSession {
             if self.questions.read(&self.reading.questions) {
                 cx.emit(LiveEvent::QuestionAsked);
             }
-            if self.approvals.read(&self.reading.approvals) {
+            let new = self.approvals.read(&self.reading.approvals);
+            self.follow_requests();
+            if new {
                 cx.emit(LiveEvent::ApprovalRequested);
             }
         }
@@ -948,7 +950,8 @@ impl LiveSession {
     }
 
     /// Its seam goes, with the feed, the tasks that drained it and what it
-    /// settled here, so the attempt that opened it retires.
+    /// settled here, so the attempt that opened it retires. Include message
+    /// stays with the draft, which stays.
     fn depart(&mut self) {
         self.link = None;
         self._feed.clear();
@@ -1331,22 +1334,36 @@ impl LiveSession {
 
     /// Include message for the session's approval tray.
     pub fn message_switch(&self) -> &MessageSwitch {
-        &self.approvals.message
+        &self.message
+    }
+
+    /// Include message follows the requests the status lists now. One it
+    /// hasn't seen is new, so the draft that was there doesn't go with its
+    /// answer unless the user says so.
+    fn follow_requests(&mut self) {
+        let ids = self
+            .reading
+            .approvals
+            .iter()
+            .map(|request| request.id.clone())
+            .collect();
+        let has_text = self.message.has_text();
+        self.message.requests(ids, has_text);
     }
 
     /// The session's message box has text, or not, as the window showing
     /// it says.
     pub fn message_edited(&mut self, has_text: bool, cx: &mut Context<Self>) {
-        let before = self.approvals.message.clone();
-        self.approvals.message.edited(has_text);
-        if self.approvals.message != before {
+        let before = self.message.clone();
+        self.message.edited(has_text);
+        if self.message != before {
             cx.notify();
         }
     }
 
     /// Turns Include message over.
     pub fn flip_message(&mut self, cx: &mut Context<Self>) {
-        self.approvals.message.flip();
+        self.message.flip();
         cx.notify();
     }
 
@@ -1359,7 +1376,7 @@ impl LiveSession {
         has_text: bool,
         cx: &mut Context<Self>,
     ) {
-        self.approvals.message.restored(previous, has_text);
+        self.message.restored(previous, has_text);
         cx.notify();
     }
 
@@ -1385,6 +1402,7 @@ impl LiveSession {
     pub fn show_approvals(&mut self, requests: Vec<ApprovalRequest>, cx: &mut Context<Self>) {
         Arc::make_mut(&mut self.reading).approvals = requests;
         self.approvals.read(&self.reading.approvals);
+        self.follow_requests();
         self.update_indicator(cx);
         cx.notify();
     }
@@ -2093,6 +2111,33 @@ mod tests {
         assert!(cx.read(|cx| session.read(cx).open_questions().is_empty()));
         apply(cx, false, &[]);
         assert!(!indicator(cx).question);
+    }
+
+    /// Include message describes the draft, which a reopen (a switch
+    /// between Chat and Agent) keeps. A request from the new engine is new
+    /// to it, so the switch shows, off, and the draft stays out of the
+    /// answer.
+    #[gpui_kit::test]
+    fn a_reopen_keeps_the_drafts_include_message(cx: &mut TestAppContext) {
+        cx.update(super::init);
+        let session = cx.new(|cx| LiveSession::blank(cx));
+        session.update(cx, |session, cx| {
+            session.message_edited(true, cx);
+            session.depart();
+            let request = crate::approvals::request(serde_json::json!({
+                "id": "after-reopen", "batch": 1,
+                "approval": {"kind": "worker_billing", "model": "Opus 5.5", "task": "Review"}
+            }));
+            let reading = Reading {
+                approvals: vec![request],
+                ..Reading::default()
+            };
+            session.set_status(reading, Activity::default(), cx);
+            let shown = session.message_switch().has_text();
+            // Answering reads the box again.
+            session.message_edited(true, cx);
+            assert_eq!((shown, session.message_switch().includes()), (true, false));
+        });
     }
 
     /// The session tells of each request that comes to the approval tray

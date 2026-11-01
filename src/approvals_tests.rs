@@ -587,6 +587,51 @@ fn include_message_follows_requests_while_another_session_shows(cx: &mut TestApp
     assert_eq!(app.include_message(cx), Some(false));
 }
 
+/// A draft kept through a switch between Chat and Agent predates the
+/// requests of the session's new engine. Include message shows, off, and an
+/// answer leaves the draft in the box. `hidden` has the window show another
+/// session meanwhile.
+fn a_draft_kept_through_a_reopen_stays_out_of_the_next_answer(
+    cx: &mut TestAppContext,
+    hidden: bool,
+) {
+    let app = start(cx);
+    app.type_text(cx, "Earlier draft");
+    let other = cx.new(|cx| LiveSession::for_tests("s2", cx));
+    let show = |session: &Entity<LiveSession>, cx: &mut TestAppContext| {
+        act(cx, app.window, |window, cx| {
+            app.workspace.update(cx, |workspace, cx| {
+                workspace.show_session(session.clone(), window, cx)
+            })
+        });
+    };
+    if hidden {
+        show(&other, cx);
+    }
+    app.session
+        .update(cx, |session, _| session.reopen_for_tests());
+    app.request(cx, vec![profile("a1", "3d-judge")]);
+    if hidden {
+        show(&app.session.clone(), cx);
+        app.read(cx);
+    }
+    assert_eq!(app.composer_text(cx), "Earlier draft");
+    assert_eq!(app.include_message(cx), Some(false));
+    app.click(cx, "approval-approve");
+    assert_eq!(app.sent(cx), [answers(&[("a1", true)], None)]);
+    assert_eq!(app.composer_text(cx), "Earlier draft");
+}
+
+#[gpui_kit::test]
+fn a_draft_kept_through_a_reopen_stays_out_of_its_answer(cx: &mut TestAppContext) {
+    a_draft_kept_through_a_reopen_stays_out_of_the_next_answer(cx, false);
+}
+
+#[gpui_kit::test]
+fn a_draft_kept_through_a_hidden_reopen_stays_out_of_its_answer(cx: &mut TestAppContext) {
+    a_draft_kept_through_a_reopen_stays_out_of_the_next_answer(cx, true);
+}
+
 /// A long update's changed lines are read from the keyboard. Tab reaches
 /// their box, ↓ and Page Down scroll it, End shows its last line and Home
 /// its first, and Esc closes the details with the tray keeping the keyboard.
