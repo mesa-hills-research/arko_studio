@@ -222,6 +222,9 @@ pub struct ApprovalTray {
     ready_timer: Option<(u64, Task<()>)>,
     /// Its session shows in the active window, so it can be seen.
     exposed: bool,
+    /// The attempt whose engine its requests are of. Each engine numbers its
+    /// requests from a1, so what the tray kept by ID goes with the engine.
+    engine: u64,
 }
 
 impl ApprovalTray {
@@ -242,22 +245,37 @@ impl ApprovalTray {
             lines: Rc::default(),
             ready_timer: None,
             exposed: false,
+            engine: 0,
         }
     }
 
-    /// Shows `requests`, in the order they came, with Include message as
-    /// the session has it (`message`). `waiting` is every request the
-    /// session's status lists, those whose answer is on its way included,
-    /// which the reading guard follows, so an answer that comes back is
-    /// ready at once. What was set for those gone goes, and those new join
-    /// checked.
+    /// Shows `requests` of the engine of attempt `engine`, in the order they
+    /// came, with Include message as the session has it (`message`).
+    /// `waiting` is every request the session's status lists, those whose
+    /// answer is on its way included, which the reading guard follows, so an
+    /// answer that comes back is ready at once. What was set for those gone
+    /// goes, and those new join checked. Another engine's requests are all
+    /// new, whatever their IDs.
     pub fn set_requests(
         &mut self,
         requests: Vec<ApprovalRequest>,
         waiting: &HashSet<String>,
         message: &MessageSwitch,
+        engine: u64,
         cx: &mut Context<Self>,
     ) {
+        if engine != self.engine {
+            self.engine = engine;
+            self.requests.clear();
+            self.shown = ShownApprovals::default();
+            self.ready_timer = None;
+            self.unselected.clear();
+            self.options.clear();
+            self.files.clear();
+            self.open = None;
+            self.cursor = None;
+            cx.notify();
+        }
         self.shown.retain(waiting);
         if *message != self.message {
             self.message = message.clone();

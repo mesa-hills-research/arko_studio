@@ -632,6 +632,30 @@ fn a_draft_kept_through_a_hidden_reopen_stays_out_of_its_answer(cx: &mut TestApp
     a_draft_kept_through_a_reopen_stays_out_of_the_next_answer(cx, true);
 }
 
+/// Arko numbers each engine's requests from a1, so after a switch between
+/// Chat and Agent the new engine's a1 is another request. It needs its own
+/// half second in sight, and starts checked, whatever the old a1 had.
+#[gpui_kit::test]
+fn a_new_engines_request_starts_over_whatever_its_id(cx: &mut TestAppContext) {
+    let app = start(cx);
+    app.request(cx, vec![profile("a1", "old-profile"), server("a2")]);
+    app.click(cx, part("approval-check", "a1"));
+    assert_eq!(app.checked(cx, "a1"), Some(false));
+    app.session
+        .update(cx, |session, _| session.reopen_for_tests());
+    app.request_unread(cx, vec![profile("a1", "new-profile"), server("a2")]);
+    let ready = cx.read(|cx| {
+        let view = app.workspace.read(cx).session_view().clone();
+        let tray = view.read(cx).approval_tray(cx).unwrap().clone();
+        tray.read(cx).ready(cx).len()
+    });
+    assert_eq!(
+        ready, 0,
+        "another engine's request needs its own time to read"
+    );
+    assert_eq!(app.checked(cx, "a1"), Some(true));
+}
+
 /// A long update's changed lines are read from the keyboard. Tab reaches
 /// their box, ↓ and Page Down scroll it, End shows its last line and Home
 /// its first, and Esc closes the details with the tray keeping the keyboard.

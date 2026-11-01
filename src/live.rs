@@ -949,15 +949,19 @@ impl LiveSession {
         cx.notify();
     }
 
-    /// Its seam goes, with the feed, the tasks that drained it and what it
-    /// settled here, so the attempt that opened it retires. Include message
-    /// stays with the draft, which stays.
+    /// Its seam goes, with the feed, the tasks that drained it, its
+    /// requests and what it settled here, so the attempt that opened it
+    /// retires. Include message stays with the draft, which stays, and
+    /// forgets the requests, since arko numbers each engine's from a1 and
+    /// the next engine's are other requests.
     fn depart(&mut self) {
         self.link = None;
         self._feed.clear();
         self.activity = Activity::default();
         self.questions.reopened();
         self.approvals = Approvals::default();
+        Arc::make_mut(&mut self.reading).approvals.clear();
+        self.follow_requests();
         self.pending.clear();
     }
 
@@ -1330,6 +1334,12 @@ impl LiveSession {
                 .pending
                 .iter()
                 .any(|pending| pending.questions.iter().any(|settled| settled == id))
+    }
+
+    /// The attempt whose engine the requests belong to. Each engine numbers
+    /// its own from a1, so a request is known by its ID within one.
+    pub fn engine_attempt(&self) -> u64 {
+        self.attempt
     }
 
     /// Include message for the session's approval tray.
@@ -2137,6 +2147,57 @@ mod tests {
             // Answering reads the box again.
             session.message_edited(true, cx);
             assert_eq!((shown, session.message_switch().includes()), (true, false));
+        });
+    }
+
+    /// Arko numbers each engine's requests from a1, so the next engine's a1
+    /// is another request. It starts a manual choice over, as a new request
+    /// does.
+    #[gpui_kit::test]
+    fn a_new_engines_request_is_new_whatever_its_id(cx: &mut TestAppContext) {
+        cx.update(super::init);
+        let session = cx.new(|cx| LiveSession::blank(cx));
+        session.update(cx, |session, cx| {
+            let request = crate::approvals::request(serde_json::json!({
+                "id": "a1", "batch": 1,
+                "approval": {"kind": "worker_billing", "model": "Opus 5.5", "task": "Review"}
+            }));
+            session.message_edited(true, cx);
+            session.show_approvals(vec![request.clone()], cx);
+            session.flip_message(cx);
+            assert!(session.message_switch().includes());
+            session.depart();
+            assert!(session.approvals().is_empty(), "its requests went with it");
+            let reading = Reading {
+                approvals: vec![request],
+                ..Reading::default()
+            };
+            session.set_status(reading, Activity::default(), cx);
+            assert!(!session.message_switch().includes());
+        });
+    }
+
+    /// A message the user starts after the new engine's request goes with
+    /// its answer, as it would with the same engine.
+    #[gpui_kit::test]
+    fn a_message_started_after_a_reopens_request_goes_with_it(cx: &mut TestAppContext) {
+        cx.update(super::init);
+        let session = cx.new(|cx| LiveSession::blank(cx));
+        session.update(cx, |session, cx| {
+            session.message_edited(true, cx);
+            session.depart();
+            session.message_edited(false, cx);
+            let request = crate::approvals::request(serde_json::json!({
+                "id": "a1", "batch": 1,
+                "approval": {"kind": "worker_billing", "model": "Opus 5.5", "task": "Review"}
+            }));
+            let reading = Reading {
+                approvals: vec![request],
+                ..Reading::default()
+            };
+            session.set_status(reading, Activity::default(), cx);
+            session.message_edited(true, cx);
+            assert!(session.message_switch().includes());
         });
     }
 

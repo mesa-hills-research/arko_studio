@@ -1368,9 +1368,12 @@ impl SessionView {
             }
         };
         let had_focus = requests.is_empty() && tray.read(cx).contains_focus(window, cx);
-        let message = session.read(cx).message_switch().clone();
+        let (message, engine) = {
+            let live = session.read(cx);
+            (live.message_switch().clone(), live.engine_attempt())
+        };
         tray.update(cx, |tray, cx| {
-            tray.set_requests(requests, &waiting, &message, cx)
+            tray.set_requests(requests, &waiting, &message, engine, cx)
         });
         self.sync_exposure(window, cx);
         if had_focus {
