@@ -1769,8 +1769,7 @@ fn a_long_draft_folder_stays_inside_its_pane(cx: &mut TestAppContext) {
         let view = cx.read(|cx| workspace.read(cx).session_view().clone());
         view.update(cx, |view, cx| {
             view.set_draft_folder(
-                "/home/ada/Desktop/arko-studio-work/scratch/studio-ui-1027/send-lag/probe/work"
-                    .into(),
+                "/home/ada/Desktop/design-systems/prototypes/studio-app/send-lag/probe/work".into(),
                 cx,
             );
         });
