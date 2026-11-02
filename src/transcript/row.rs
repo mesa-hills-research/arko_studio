@@ -34,8 +34,8 @@ use super::model::{Gap, RowKey};
 use super::tool::{self, Tool};
 use super::{AgentFilter, CODE_LINES, TranscriptEvent, TranscriptView};
 
-/// How often "Thinking…" shimmers, in frames a second.
-const SHIMMER_FPS: f32 = 12.;
+/// How often a label shimmers, in frames a second.
+pub(crate) const SHIMMER_FPS: f32 = 12.;
 
 /// The reading column's widest.
 const COLUMN: f32 = 46.;

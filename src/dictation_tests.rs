@@ -241,6 +241,15 @@ impl Test {
         assert_eq!(self.words(cx), None);
     }
 
+    /// Accepts the download dialog, which starts dictation 0 downloading.
+    fn start_download(&self, cx: &mut TestAppContext) {
+        self.click(cx);
+        act(cx, self.window, |window, cx| {
+            window.within("dialog").click("ok", cx)
+        });
+        assert!(self.fake.opened.borrow()[0].download);
+    }
+
     fn notifications(&self, cx: &mut TestAppContext) -> usize {
         cx.update_window(self.window, |_, window, cx| window.notifications(cx).len())
             .unwrap()
@@ -876,6 +885,7 @@ fn the_first_recording_asks_before_downloading_the_model(cx: &mut TestAppContext
     test.hear(0, DictationEvent::Preparing(Preparing::Packing), cx);
     assert_eq!(test.words(cx).as_deref(), Some("Preparing speech model"));
     test.hear(0, DictationEvent::Preparing(Preparing::Loading), cx);
+    assert_eq!(test.words(cx).as_deref(), Some("Loading speech model"));
     let notes = test.notifications(cx);
     test.hear(0, DictationEvent::Listening, cx);
     assert!(test.taken(0).borrow().dropped);
@@ -897,6 +907,65 @@ fn the_first_recording_asks_before_downloading_the_model(cx: &mut TestAppContext
     act(cx, test.window, |window, _| {
         assert!(window.try_find("dictate").is_some());
     });
+}
+
+/// The steps after the download shimmer their label, without motion they
+/// show it plain, and the download's count never shimmers.
+#[gpui_kit::test]
+fn the_steps_after_the_download_shimmer_unless_motion_is_reduced(cx: &mut TestAppContext) {
+    let test = Test::start(false, cx);
+    test.start_download(cx);
+    for (motion, step, label) in [
+        (true, Preparing::Packing, "Preparing speech model"),
+        (true, Preparing::Loading, "Loading speech model"),
+        (false, Preparing::Packing, "Preparing speech model"),
+        (false, Preparing::Loading, "Loading speech model"),
+    ] {
+        cx.update(|cx| cx.set_reduce_motion(!motion));
+        test.hear(
+            0,
+            DictationEvent::Preparing(Preparing::Downloading {
+                done: 1_000_000,
+                total: GRANITE.download_bytes(),
+            }),
+            cx,
+        );
+        act(cx, test.window, |window, _| {
+            assert!(window.try_find("dictation-shimmer").is_none());
+        });
+        test.hear(0, DictationEvent::Preparing(step), cx);
+        assert_eq!(test.words(cx).as_deref(), Some(label));
+        act(cx, test.window, |window, _| {
+            assert_eq!(
+                window.try_find("dictation-shimmer").is_some(),
+                motion,
+                "{label}, motion {motion}"
+            );
+        });
+    }
+}
+
+/// Only the download's bytes can be cancelled. In the steps after them the
+/// button is gone, and a click that was already on its way leaves the model
+/// preparing.
+#[gpui_kit::test]
+fn the_download_cancels_only_while_bytes_come(cx: &mut TestAppContext) {
+    let test = Test::start(false, cx);
+    test.start_download(cx);
+    let dictation = test.dictation(cx);
+    for step in [Preparing::Packing, Preparing::Loading] {
+        test.hear(0, DictationEvent::Preparing(step), cx);
+        act(cx, test.window, |window, _| {
+            assert!(window.try_find("cancel-download").is_none());
+            assert!(window.try_find("dictate").is_none());
+        });
+        dictation.update(cx, |dictation, cx| dictation.cancel_download(cx));
+        assert!(!test.taken(0).borrow().dropped);
+        assert_eq!(test.words(cx).as_deref(), Some(step.label().as_str()));
+    }
+    test.hear(0, DictationEvent::Listening, cx);
+    assert!(test.taken(0).borrow().dropped);
+    assert_eq!(test.words(cx), None);
 }
 
 /// Busy and a recording that fails say so in a notification. The words

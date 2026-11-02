@@ -4637,6 +4637,144 @@ fn composer_listening_dark() {
     );
 }
 
+/// A dictation service whose model isn't downloaded, which downloads without
+/// asking and keeps the download's sink for the test to speak through.
+struct DownloadingService(std::rc::Rc<std::cell::RefCell<Vec<arko::dictation::Sink>>>);
+
+impl arko_studio::dictation::Service for DownloadingService {
+    fn open(
+        &self,
+        options: arko::dictation::DictationOptions,
+        sink: arko::dictation::Sink,
+        _: Option<&arko_studio::live::Link>,
+    ) -> Result<Box<dyn arko_studio::dictation::Opened>, arko::dictation::DictationError> {
+        if !options.download {
+            return Err(arko::dictation::DictationError::NeedsDownload(
+                &arko::dictation::models::GRANITE,
+            ));
+        }
+        self.0.borrow_mut().push(sink);
+        Ok(Box::new(Heard))
+    }
+
+    fn downloads_without_asking(&self) -> bool {
+        true
+    }
+}
+
+/// The composer while the speech model downloads and then prepares, at
+/// `step`, with the shimmer a little way into its sweep or without motion.
+fn composer_preparing(
+    mode: ThemeMode,
+    step: arko::dictation::Preparing,
+    motion: bool,
+) -> Screenshot {
+    use arko::dictation::{DictationEvent, DictationUpdate};
+    use gpui_kit::test::TestWindowExt as _;
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    let sinks = std::rc::Rc::default();
+    app.update(|cx| {
+        arko_studio::init(startup, cx);
+        cx.set_global(arko_studio::dictation::Speech {
+            service: std::rc::Rc::new(DownloadingService(std::rc::Rc::clone(&sinks))),
+            input: Some(std::rc::Rc::new(GivenMicrophone::default())),
+        });
+    });
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(900.), px(300.)), 1., |options, cx| {
+            workspace::open_window(options, cx).map(|(window, workspace)| {
+                opened = Some(workspace);
+                window
+            })
+        })
+        .unwrap();
+    let workspace = opened.unwrap();
+    app.update_window(window, |_, window, cx| {
+        let view = workspace.read(cx).session_view().clone();
+        view.update(cx, |view, cx| view.focus_composer(window, cx));
+        window.input("Fix the flaky test.", cx);
+        let composer = view.read(cx).composer().clone();
+        let dictation = composer.read(cx).dictation().clone();
+        dictation.update(cx, |dictation, cx| dictation.start(cx));
+    })
+    .unwrap();
+    app.run_until_parked();
+    // Motion comes on after the draft was typed, so the text is whole.
+    app.update(|cx| cx.set_reduce_motion(!motion));
+    (sinks.borrow_mut()[0])(DictationUpdate {
+        id: 1,
+        event: DictationEvent::Preparing(step),
+    });
+    app.run_until_parked();
+    app.capture(window).unwrap();
+    app.background_executor()
+        .advance_clock(std::time::Duration::from_millis(700));
+    app.capture(window).unwrap()
+}
+
+fn downloading() -> arko::dictation::Preparing {
+    arko::dictation::Preparing::Downloading {
+        done: 412_000_000,
+        total: arko::dictation::models::GRANITE.download_bytes(),
+    }
+}
+
+#[test]
+fn composer_downloading_light() {
+    goldens().assert(
+        "composer-downloading-light",
+        &composer_preparing(ThemeMode::Light, downloading(), false),
+    );
+}
+
+#[test]
+fn composer_downloading_dark() {
+    goldens().assert(
+        "composer-downloading-dark",
+        &composer_preparing(ThemeMode::Dark, downloading(), false),
+    );
+}
+
+#[test]
+fn composer_preparing_light() {
+    goldens().assert(
+        "composer-preparing-light",
+        &composer_preparing(ThemeMode::Light, arko::dictation::Preparing::Packing, true),
+    );
+}
+
+#[test]
+fn composer_preparing_dark() {
+    goldens().assert(
+        "composer-preparing-dark",
+        &composer_preparing(ThemeMode::Dark, arko::dictation::Preparing::Packing, true),
+    );
+}
+
+#[test]
+fn composer_preparing_reduced_motion_light() {
+    goldens().assert(
+        "composer-preparing-reduced-motion-light",
+        &composer_preparing(ThemeMode::Light, arko::dictation::Preparing::Packing, false),
+    );
+}
+
+#[test]
+fn composer_preparing_reduced_motion_dark() {
+    goldens().assert(
+        "composer-preparing-reduced-motion-dark",
+        &composer_preparing(ThemeMode::Dark, arko::dictation::Preparing::Packing, false),
+    );
+}
+
 #[test]
 fn model_switch_light() {
     goldens().assert(

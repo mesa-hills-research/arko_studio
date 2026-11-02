@@ -49,12 +49,14 @@ use gpui_kit::component::speech::{
 };
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex,
+    shimmer::ShimmerText,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use tokio::sync::mpsc;
 
 use crate::live::{Link, LiveSession};
+use crate::transcript::SHIMMER_FPS;
 use crate::workers::curly;
 
 /// A press on the button held this long records until it's released.
@@ -311,6 +313,13 @@ struct Download {
     _opened: Box<dyn Opened>,
     step: Preparing,
     _events: Task<()>,
+}
+
+impl Download {
+    /// Bytes are still coming, which is when it can be cancelled.
+    fn is_downloading(&self) -> bool {
+        matches!(self.step, Preparing::Downloading { .. })
+    }
 }
 
 /// A press on the button that started a recording.
@@ -848,20 +857,28 @@ impl Dictation {
         cx.notify();
     }
 
-    /// Stops the download. The next one resumes it.
-    fn cancel_download(&mut self, cx: &mut Context<Self>) {
-        self.download = None;
-        cx.notify();
+    /// Stops the download, while bytes are coming. The next one resumes it.
+    /// Once they are in, the model is prepared and a click that was already
+    /// on its way does nothing.
+    pub(crate) fn cancel_download(&mut self, cx: &mut Context<Self>) {
+        if self.download.as_ref().is_some_and(Download::is_downloading) {
+            self.download = None;
+            cx.notify();
+        }
+    }
+
+    /// The download's step or the model's, beside the button.
+    fn step(&self) -> Option<Preparing> {
+        if let Some(download) = &self.download {
+            return Some(download.step);
+        }
+        self.recording.as_ref()?.preparing
     }
 
     /// What shows beside the button, the download's or the model's step.
     /// The words heard show in the box.
     pub fn words(&self) -> Option<SharedString> {
-        if let Some(download) = &self.download {
-            return Some(download.step.label().into());
-        }
-        let step = self.recording.as_ref()?.preparing?;
-        Some(step.label().into())
+        self.step().map(|step| step.label().into())
     }
 }
 
@@ -877,7 +894,7 @@ impl Render for Dictation {
                 .recording
                 .as_ref()
                 .is_some_and(|recording| recording.preparing.is_none());
-        let words = self.words();
+        let step = self.step();
         let muted = cx.theme().muted_foreground;
         h_flex()
             .id("dictation")
@@ -886,7 +903,23 @@ impl Render for Dictation {
             .min_w_0()
             .justify_end()
             .gap_2()
-            .children(words.map(|words| {
+            .children(step.map(|step| {
+                // Downloading shows its count. The steps after it have none,
+                // so the label shimmers (still, with reduced motion).
+                let words: AnyElement =
+                    if !matches!(step, Preparing::Downloading { .. }) && !cx.reduce_motion() {
+                        div()
+                            .id("dictation-shimmer")
+                            .test_support()
+                            .child(
+                                ShimmerText::new(step.label())
+                                    .id("dictation-shimmer-text")
+                                    .max_fps(SHIMMER_FPS),
+                            )
+                            .into_any_element()
+                    } else {
+                        SharedString::from(step.label()).into_any_element()
+                    };
                 div()
                     .id("dictation-words")
                     .test_support()
@@ -911,7 +944,7 @@ impl Render for Dictation {
                 )
             })
             .map(|this| match &self.download {
-                Some(_) => this.child(
+                Some(download) if download.is_downloading() => this.child(
                     Button::new("cancel-download")
                         .ghost()
                         .small()
@@ -921,6 +954,7 @@ impl Render for Dictation {
                         .accessibility_label("Cancel download")
                         .on_click(cx.listener(|this, _, _, cx| this.cancel_download(cx))),
                 ),
+                Some(_) => this,
                 None if shown => this.child(
                     // The kit's button, whose presses are handled here. A
                     // press starts, a click toggles and a long press holds,

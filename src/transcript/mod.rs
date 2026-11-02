@@ -26,6 +26,7 @@ mod menu;
 mod model;
 mod nav;
 mod row;
+pub(crate) use row::SHIMMER_FPS;
 #[cfg(test)]
 mod scrollbar_tests;
 #[cfg(all(test, target_os = "linux"))]
