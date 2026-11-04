@@ -410,6 +410,25 @@ fn words_go_in_at_the_caret(cx: &mut TestAppContext) {
     assert_eq!(test.text(cx), "Hello big round world");
 }
 
+/// With medium or full cleanup, a whole utterance stays tentative until it
+/// ends, then settles shorter, its repeats gone. The box ends with the
+/// settled words alone.
+#[gpui_kit::test]
+fn an_utterance_can_settle_shorter_than_it_showed(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    test.type_text("Fix the form.", cx);
+    test.listening(cx);
+    test.hear(0, text("", " So we need to, we need to fix the"), cx);
+    assert_eq!(test.text(cx), "Fix the form.");
+    assert_eq!(test.tentative(cx), " So we need to, we need to fix the");
+    test.hear(0, text(" We need to fix the login page.", ""), cx);
+    assert_eq!(
+        test.text(cx),
+        "Fix the form. We need to fix the login page."
+    );
+    assert_eq!(test.tentative(cx), "");
+}
+
 /// The words that may still change join what's before the caret wherever
 /// it goes, with a space after a word and none after a space, as they will
 /// when they settle.
