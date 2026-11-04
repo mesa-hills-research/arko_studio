@@ -24,6 +24,7 @@ use crate::theme_picker::ThemePicker;
 use crate::{fonts, menus, paths};
 
 mod accounts;
+mod dictation;
 mod extensions;
 mod fields;
 mod openrouter;
@@ -90,6 +91,8 @@ pub struct SettingsPage {
     /// their groups, which draw again only then.
     accounts_revision: u64,
     extensions_revision: u64,
+    /// Dictation's cleanup, on Input.
+    cleanup: dictation::CleanupSetting,
     /// The page to show, set from outside (the command palette), and how
     /// many times it was: the page list starts afresh on it each time.
     page: usize,
@@ -184,6 +187,7 @@ impl SettingsPage {
                     cx.notify();
                 }
             }),
+            Self::observe_cleanup(cx),
         ];
         let mut this = Self {
             focus_handle: cx.focus_handle(),
@@ -200,6 +204,7 @@ impl SettingsPage {
             extensions,
             accounts_revision: 0,
             extensions_revision: 0,
+            cleanup: dictation::CleanupSetting::default(),
             page: 0,
             shown: 0,
             shown_prefs: shown_prefs(prefs::get(cx)),
@@ -208,6 +213,9 @@ impl SettingsPage {
             _subscriptions: subscriptions,
         };
         this.make_font_pickers(window, cx);
+        if cfg!(feature = "dictation") {
+            this.read_cleanup(cx);
+        }
         this
     }
 
@@ -483,9 +491,13 @@ impl SettingsPage {
 
     fn pages(&self, cx: &mut Context<Self>) -> Vec<SettingPage> {
         let this = cx.entity();
+        let mut input = input_page(cx);
+        if cfg!(feature = "dictation") {
+            input = input.group(self.cleanup_group(&this));
+        }
         vec![
             self.appearance_page(cx),
-            input_page(cx),
+            input,
             self.accounts
                 .read(cx)
                 .page(&self.accounts, self.accounts_revision, cx),
