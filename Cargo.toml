@@ -106,4 +106,4 @@ ttf-parser = { opt-level = 3 }
 # Arko and Telmo from their dictation cleanup branches, until both are published.
 [patch.crates-io]
 arko-tui = { git = "https://github.com/mesa-hills-research/arko", rev = "ca8a629121bd1d8a2c6923fae777fb3111a92c0f" }
-telmo = { git = "https://github.com/mesa-hills-research/telmo", rev = "38e6c006a1382f8e90e535e60926564115ef7a59" }
+telmo = { git = "https://github.com/mesa-hills-research/telmo", rev = "d4f2b6a52a8eab7b5c94ce6ec8c9052dbcb6dd57" }

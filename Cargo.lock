@@ -8666,7 +8666,7 @@ dependencies = [
 [[package]]
 name = "telmo"
 version = "0.3.2"
-source = "git+https://github.com/mesa-hills-research/telmo?rev=38e6c006a1382f8e90e535e60926564115ef7a59#38e6c006a1382f8e90e535e60926564115ef7a59"
+source = "git+https://github.com/mesa-hills-research/telmo?rev=d4f2b6a52a8eab7b5c94ce6ec8c9052dbcb6dd57#d4f2b6a52a8eab7b5c94ce6ec8c9052dbcb6dd57"
 
 [[package]]
 name = "tempfile"
