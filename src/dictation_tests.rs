@@ -65,11 +65,12 @@ struct Open {
     taken: Rc<RefCell<Taken>>,
 }
 
-/// The fake service, with whether its model is downloaded and each
-/// dictation it opened.
+/// The fake service, with whether its model is downloaded, whether full
+/// cleanup's is missing, and each dictation it opened.
 #[derive(Default)]
 struct Fake {
     installed: Cell<bool>,
+    cleanup_missing: Cell<bool>,
     busy: Cell<bool>,
     opened: RefCell<Vec<Open>>,
 }
@@ -83,11 +84,12 @@ impl Service for FakeService {
         sink: Sink,
         session: Option<&crate::live::Link>,
     ) -> Result<Box<dyn Opened>, DictationError> {
-        if !options.download && !self.0.installed.get() {
-            return Err(DictationError::NeedsDownload(arko::dictation::Download {
-                speech: Some(&GRANITE),
-                cleanup: None,
-            }));
+        let missing = arko::dictation::Download {
+            speech: (!self.0.installed.get()).then_some(&GRANITE),
+            cleanup: self.0.cleanup_missing.get().then_some(157_673_903),
+        };
+        if !options.download && (missing.speech.is_some() || missing.cleanup.is_some()) {
+            return Err(DictationError::NeedsDownload(missing));
         }
         if self.0.busy.get() {
             return Err(DictationError::Busy);
@@ -930,6 +932,53 @@ fn the_first_recording_asks_before_downloading_the_model(cx: &mut TestAppContext
     act(cx, test.window, |window, _| {
         assert!(window.try_find("dictate").is_some());
     });
+}
+
+/// Full cleanup's model alone is asked about and downloads beside the box
+/// as the speech model does, its steps naming it, and a notification
+/// follows. A download that brought nothing, because another window
+/// finished it first, says nothing.
+#[gpui_kit::test]
+fn full_cleanups_model_downloads_as_the_speech_model_does(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    test.fake.cleanup_missing.set(true);
+    test.click(cx);
+    act(cx, test.window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        window.within("dialog").click("ok", cx)
+    });
+    assert!(test.fake.opened.borrow()[0].download, "it downloads");
+    assert!(!test.microphone.on.get());
+    assert_eq!(
+        test.words(cx).as_deref(),
+        Some("Downloading cleanup model (0 of 158 MB)")
+    );
+    test.hear(
+        0,
+        DictationEvent::Preparing(Preparing::Downloading {
+            model: arko::dictation::ModelKind::Cleanup,
+            done: 12_000_000,
+            total: 157_673_903,
+        }),
+        cx,
+    );
+    assert_eq!(
+        test.words(cx).as_deref(),
+        Some("Downloading cleanup model (12 of 158 MB)")
+    );
+    let notes = test.notifications(cx);
+    test.hear(0, DictationEvent::Listening, cx);
+    assert_eq!(test.notifications(cx), notes + 1);
+    assert_eq!(test.words(cx), None);
+
+    test.click(cx);
+    act(cx, test.window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    let notes = test.notifications(cx);
+    test.hear(1, DictationEvent::Listening, cx);
+    assert_eq!(test.notifications(cx), notes);
+    assert_eq!(test.words(cx), None);
 }
 
 /// The steps after the download shimmer their label, without motion they
