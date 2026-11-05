@@ -240,8 +240,7 @@ dependencies = [
 [[package]]
 name = "arko-tui"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b27d58e339c00cee128ad0271c8568cdc68f5a085ca79fcd35154421a0c7e60d"
+source = "git+https://github.com/mesa-hills-research/arko?rev=2d853d16bd30fb78cefa32cd31d8831c4eee299d#2d853d16bd30fb78cefa32cd31d8831c4eee299d"
 dependencies = [
  "arko_agents",
  "arko_ai",
@@ -919,7 +918,7 @@ dependencies = [
  "bitflags 2.13.2",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.11.0",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -2916,7 +2915,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.62.2",
+ "windows 0.57.0",
 ]
 
 [[package]]
@@ -3296,7 +3295,7 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
- "windows-registry 0.6.1",
+ "windows-registry 0.4.0",
 ]
 
 [[package]]
@@ -3311,7 +3310,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -8127,7 +8126,7 @@ version = "3.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32824fab5e16e6c4d86dc1ba84489390419a39f97699852b66480bb87d297ed8"
 dependencies = [
- "dirs 6.0.0",
+ "dirs 5.0.1",
 ]
 
 [[package]]
@@ -8666,9 +8665,8 @@ dependencies = [
 
 [[package]]
 name = "telmo"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fca96d3a6c7dff9193f4903d60b6377c43983447394e88c289e96553d2cfb55"
+version = "0.3.2"
+source = "git+https://github.com/mesa-hills-research/telmo?rev=bcf16d87c8611b907bb3ca7b04f0e166754e9f56#bcf16d87c8611b907bb3ca7b04f0e166754e9f56"
 
 [[package]]
 name = "tempfile"
@@ -10020,7 +10018,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

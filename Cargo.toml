@@ -102,3 +102,8 @@ taffy = { opt-level = 3 }
 # The speech engine is far too slow to dictate with unoptimized.
 telmo = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
+
+# Arko and Telmo from their dictation cleanup branches, until both are published.
+[patch.crates-io]
+arko-tui = { git = "https://github.com/mesa-hills-research/arko", rev = "2d853d16bd30fb78cefa32cd31d8831c4eee299d" }
+telmo = { git = "https://github.com/mesa-hills-research/telmo", rev = "bcf16d87c8611b907bb3ca7b04f0e166754e9f56" }
