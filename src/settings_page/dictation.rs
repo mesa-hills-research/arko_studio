@@ -15,7 +15,7 @@ use crate::backend::{SharedBackend, observe_saves, save_state, write_latest};
 use crate::workers::curly;
 
 /// What the setting says under its name.
-const DESCRIPTION: &str = "Light takes um, uh and stutters out of English dictation. Medium and Full also take out repeats and false starts, and Full catches the most. With Medium or Full, words settle when you pause.";
+const DESCRIPTION: &str = "Light takes um, uh and stutters out of English dictation. Medium and Full also take out repeats and false starts, and Full catches the most. With Medium or Full, words go in when you pause.";
 
 /// What the group shows and the writes it waits for.
 pub(super) struct CleanupSetting {
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"model\": ");
         assert_eq!(
             cx.read(|cx| settings.read(cx).cleanup_error()).as_deref(),
-            Some("Couldn’t save the dictation settings (dictation.json isn’t valid JSON).")
+            Some("Couldn’t save the dictation settings (dictation.json isn’t a JSON object).")
         );
         assert_eq!(cx.read(|cx| settings.read(cx).cleanup()), Cleanup::Off);
     }
