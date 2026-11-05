@@ -853,14 +853,13 @@ impl Dictation {
                 }
             }
             // The models are ready. They stay loaded a while, and the
-            // microphone waits for the button.
+            // microphone waits for the button. Nothing came when another
+            // window finished the download first, so nothing is said.
             DictationEvent::Listening | DictationEvent::Done => {
-                let (speech, cleanup) = self
-                    .download
-                    .take()
-                    .map(|download| download.came)
-                    .unwrap_or_default();
-                window.push_notification(downloaded(speech, cleanup), cx);
+                let came = self.download.take().map(|download| download.came);
+                if let Some((speech, cleanup)) = came.filter(|came| *came != (false, false)) {
+                    window.push_notification(downloaded(speech, cleanup), cx);
+                }
             }
             DictationEvent::Failed(why) => {
                 self.download = None;
