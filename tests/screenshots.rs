@@ -4649,7 +4649,10 @@ impl arko_studio::dictation::Service for DownloadingService {
     ) -> Result<Box<dyn arko_studio::dictation::Opened>, arko::dictation::DictationError> {
         if !options.download {
             return Err(arko::dictation::DictationError::NeedsDownload(
-                &arko::dictation::models::GRANITE,
+                arko::dictation::Download {
+                    speech: Some(&arko::dictation::models::GRANITE),
+                    cleanup: None,
+                },
             ));
         }
         self.0.borrow_mut().push(sink);
@@ -4721,6 +4724,7 @@ fn composer_preparing(
 
 fn downloading() -> arko::dictation::Preparing {
     arko::dictation::Preparing::Downloading {
+        model: arko::dictation::ModelKind::Speech,
         done: 412_000_000,
         total: arko::dictation::models::GRANITE.download_bytes(),
     }
