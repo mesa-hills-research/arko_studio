@@ -84,7 +84,10 @@ impl Service for FakeService {
         session: Option<&crate::live::Link>,
     ) -> Result<Box<dyn Opened>, DictationError> {
         if !options.download && !self.0.installed.get() {
-            return Err(DictationError::NeedsDownload(&GRANITE));
+            return Err(DictationError::NeedsDownload(arko::dictation::Download {
+                speech: Some(&GRANITE),
+                cleanup: None,
+            }));
         }
         if self.0.busy.get() {
             return Err(DictationError::Busy);
@@ -892,6 +895,7 @@ fn the_first_recording_asks_before_downloading_the_model(cx: &mut TestAppContext
     test.hear(
         0,
         DictationEvent::Preparing(Preparing::Downloading {
+            model: arko::dictation::ModelKind::Speech,
             done: 412_000_000,
             total: GRANITE.download_bytes(),
         }),
@@ -944,6 +948,7 @@ fn the_steps_after_the_download_shimmer_unless_motion_is_reduced(cx: &mut TestAp
         test.hear(
             0,
             DictationEvent::Preparing(Preparing::Downloading {
+                model: arko::dictation::ModelKind::Speech,
                 done: 1_000_000,
                 total: GRANITE.download_bytes(),
             }),
@@ -1049,50 +1054,20 @@ impl AudioInput for WavMicrophone {
     }
 }
 
-/// A WAV file dictated through the recognizer, Arko's service and Granite
-/// Speech's real pack, without a microphone. The model loads, the words go
-/// into the box as they settle, and a click lets the last ones come. It runs
-/// only with `ARKO_TEST_SPEECH_PACK` naming Granite's int8 pack and
-/// `ARKO_TEST_SPEECH_WAV` LibriSpeech's clip 260-123286-0018, as Arko's own
-/// test does.
-#[gpui_kit::test]
-fn a_wav_file_is_dictated_through_arkos_service(cx: &mut TestAppContext) {
-    let (Some(pack), Some(wav)) = (
-        std::env::var_os("ARKO_TEST_SPEECH_PACK"),
-        std::env::var_os("ARKO_TEST_SPEECH_WAV"),
-    ) else {
-        eprintln!("skipped: ARKO_TEST_SPEECH_PACK and ARKO_TEST_SPEECH_WAV aren't set");
-        return;
-    };
-    let root = tempfile::tempdir().unwrap();
-    std::fs::write(
-        root.path().join(arko::dictation::settings::FILE),
-        r#"{"model": "granite"}"#,
-    )
-    .unwrap();
-    std::fs::create_dir_all(GRANITE.dir(root.path())).unwrap();
+/// Puts the file at `from` at `to`, a link where the system has them.
+fn link(from: &std::ffi::OsStr, to: &std::path::Path) {
+    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&pack, GRANITE.pack(root.path())).unwrap();
+    std::os::unix::fs::symlink(from, to).unwrap();
     #[cfg(not(unix))]
-    std::fs::copy(&pack, GRANITE.pack(root.path())).unwrap();
-    // The service's thread wakes the app's tasks, which the test scheduler
-    // allows as for real I/O.
-    cx.executor().allow_parking();
-    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
-    cx.update(|cx| {
-        crate::init(Startup::for_tests(backend), cx);
-        crate::dictation::init(root.path().to_path_buf(), cx);
-        let mut speech = cx.global::<Speech>().clone();
-        speech.input = Some(Rc::new(WavMicrophone(wav_at_48_khz(wav.as_ref()))));
-        cx.set_global(speech);
-    });
-    let (window, workspace) = open(cx, 1300.);
-    let test = Test {
-        window,
-        workspace,
-        fake: Rc::default(),
-        microphone: FakeMicrophone::default(),
-    };
+    std::fs::copy(from, to).unwrap();
+}
+
+/// Dictates the clip after "Notes:" in an empty box. The model loads, the
+/// words go into the box as they settle, and a click lets the last ones
+/// come. The box then holds the clip's words.
+fn dictate_the_clip(test: &Test, cx: &mut TestAppContext) {
+    test.set_text("", cx);
     test.type_text("Notes:", cx);
     let started = std::time::Instant::now();
     test.click(cx);
@@ -1113,6 +1088,60 @@ fn a_wav_file_is_dictated_through_arkos_service(cx: &mut TestAppContext) {
     for word in ["i saw", "hamburg", "skeleton", "thirty feet in length"] {
         assert!(lower.contains(word), "{text:?}");
     }
+}
+
+/// A WAV file dictated through the recognizer, Arko's service and Granite
+/// Speech's real pack, without a microphone ([`dictate_the_clip`]), then
+/// again with full cleanup and the tagger's real pack. It runs only with `ARKO_TEST_SPEECH_PACK` naming Granite's
+/// int8 pack and `ARKO_TEST_SPEECH_WAV` LibriSpeech's clip 260-123286-0018,
+/// as Arko's own test does, and full cleanup only with
+/// `ARKO_TEST_CLEANUP_PACK` naming the tagger's pack. One test does both,
+/// since the process has one service, for the first folder it's given.
+#[gpui_kit::test]
+fn a_wav_file_is_dictated_through_arkos_service(cx: &mut TestAppContext) {
+    let (Some(pack), Some(wav)) = (
+        std::env::var_os("ARKO_TEST_SPEECH_PACK"),
+        std::env::var_os("ARKO_TEST_SPEECH_WAV"),
+    ) else {
+        eprintln!("skipped: ARKO_TEST_SPEECH_PACK and ARKO_TEST_SPEECH_WAV aren't set");
+        return;
+    };
+    let root = tempfile::tempdir().unwrap();
+    let settings = root.path().join(arko::dictation::settings::FILE);
+    std::fs::write(&settings, r#"{"model": "granite"}"#).unwrap();
+    link(&pack, &GRANITE.pack(root.path()));
+    // The service's thread wakes the app's tasks, which the test scheduler
+    // allows as for real I/O.
+    cx.executor().allow_parking();
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    cx.update(|cx| {
+        crate::init(Startup::for_tests(backend), cx);
+        crate::dictation::init(root.path().to_path_buf(), cx);
+        let mut speech = cx.global::<Speech>().clone();
+        speech.input = Some(Rc::new(WavMicrophone(wav_at_48_khz(wav.as_ref()))));
+        cx.set_global(speech);
+    });
+    let (window, workspace) = open(cx, 1300.);
+    let test = Test {
+        window,
+        workspace,
+        fake: Rc::default(),
+        microphone: FakeMicrophone::default(),
+    };
+    dictate_the_clip(&test, cx);
+
+    let Some(tagger) = std::env::var_os("ARKO_TEST_CLEANUP_PACK") else {
+        eprintln!("skipped full cleanup: ARKO_TEST_CLEANUP_PACK isn't set");
+        return;
+    };
+    let dir = arko::dictation::models::tagger_dir(root.path());
+    link(&tagger, &dir.join(arko::dictation::models::PACK_FILE));
+    std::fs::write(
+        &settings,
+        r#"{"model": "granite", "cleanup": "full", "language": "en"}"#,
+    )
+    .unwrap();
+    dictate_the_clip(&test, cx);
 }
 
 /// Listening draws the session view once per level (80 ms of audio), with
