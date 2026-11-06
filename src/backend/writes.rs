@@ -113,28 +113,73 @@ fn write_next<T: Clone + Send + 'static>(cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = writing.await;
         cx.update(|cx| {
-            let more = cx.update_global::<Writes<T>, _>(|writes, _| {
-                match &result {
-                    Ok(()) => {
-                        writes.saved += 1;
-                        writes.error = None;
-                    }
-                    Err(why) => writes.error = Some(why.clone()),
+            cx.update_global::<Writes<T>, _>(|writes, _| match &result {
+                Ok(()) => {
+                    writes.saved += 1;
+                    writes.error = None;
                 }
-                writes.pending.is_some()
+                Err(why) => writes.error = Some(why.clone()),
             });
             if result.is_ok() {
                 saved(cx);
             }
+            // Asked after the follow-up, which may ask for another save.
+            let more = cx.update_global::<Writes<T>, _>(|writes, _| {
+                let more = writes.pending.is_some();
+                if !more {
+                    writes.running = false;
+                    writes.latest = None;
+                }
+                more
+            });
             if more {
                 write_next::<T>(cx);
-                return;
             }
-            cx.update_global::<Writes<T>, _>(|writes, _| {
-                writes.running = false;
-                writes.latest = None;
-            });
         });
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+    use std::time::SystemTime;
+
+    use gpui_kit::TestAppContext;
+
+    use super::*;
+    use crate::backend::FakeBackend;
+
+    fn backend(cx: &mut App) {
+        let backend = FakeBackend::sample("/arko", SystemTime::now());
+        cx.set_global(SharedBackend(Arc::new(backend)));
+    }
+
+    /// A setting whose first save's follow-up asks for another save.
+    #[derive(Clone)]
+    struct FollowedUp(u32);
+
+    static FOLLOWED_UP: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+    fn write_followed_up(_: &SharedBackend, value: FollowedUp) -> Result<(), String> {
+        FOLLOWED_UP.lock().unwrap().push(value.0);
+        Ok(())
+    }
+
+    fn ask_once_more(cx: &mut App) {
+        if FOLLOWED_UP.lock().unwrap().len() == 1 {
+            write_latest(FollowedUp(2), write_followed_up, ask_once_more, cx);
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_save_a_follow_up_asks_for_is_written(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            backend(cx);
+            write_latest(FollowedUp(1), write_followed_up, ask_once_more, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(*FOLLOWED_UP.lock().unwrap(), [1, 2]);
+        assert!(cx.read(save_state::<FollowedUp>).pending.is_none());
+    }
 }
