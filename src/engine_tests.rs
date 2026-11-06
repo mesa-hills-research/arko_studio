@@ -1507,6 +1507,51 @@ fn an_agent_session_switches_to_chat_after_saying_what_it_costs(cx: &mut TestApp
     app.close_all(cx);
 }
 
+/// Closing a session as it switches between Chat and Agent closes it. The
+/// engine shuts down to reopen, and the session ends instead, so a delete
+/// waiting on the close goes ahead.
+#[gpui_kit::test]
+fn a_close_during_a_switch_ends_the_session(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, _| answer("Working.", Duration::ZERO));
+    let app = start(cx, &mock);
+    app.send(cx, "Start working.");
+    app.wait_for_text(cx, "Working.");
+    let session = app.shown(cx).unwrap();
+    wait_until(cx, "the turn to end", |cx| {
+        cx.read(|cx| !session.read(cx).is_working())
+    });
+    let closed = std::rc::Rc::new(std::cell::Cell::new(false));
+    act(cx, app.window, |window, cx| {
+        session
+            .update(cx, |session, cx| {
+                session.switch_mode(crate::backend::Mode::Chat, None, cx)
+            })
+            .detach();
+        let closed = closed.clone();
+        crate::quit::close_then(
+            vec![session.clone()],
+            "It wasn’t deleted.",
+            window,
+            cx,
+            move |_, _| closed.set(true),
+        );
+    });
+    wait_until(cx, "the session to end, or to open again", |cx| {
+        cx.read(|cx| {
+            let session = session.read(cx);
+            *session.phase() == Phase::Ended
+                || (*session.phase() == Phase::Open && session.opening() == 2)
+        })
+    });
+    assert_eq!(cx.read(|cx| session.read(cx).phase().clone()), Phase::Ended);
+    wait_until(cx, "the close to finish", |_| closed.get());
+    // The engine saved the switch before it closed.
+    assert_eq!(
+        arko::sessions::list(&app.root)[0].mode,
+        arko::sessions::Mode::Chat
+    );
+}
+
 #[gpui_kit::test]
 fn an_image_goes_with_the_message(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, _| answer("A single pixel.", Duration::ZERO));

@@ -941,6 +941,11 @@ impl LiveSession {
     /// Opens the session again after its engine closed it to switch modes:
     /// a new seam, the same entity, so every window keeps showing it.
     fn reopen(&mut self, cx: &mut Context<Self>) {
+        // The user asked to close it as its engine shut down to reopen, so
+        // it has closed. (The Quit queued behind the switch is never read.)
+        if self.phase == Phase::Closing {
+            return self.ended(cx);
+        }
         let Some(id) = self.id.clone() else {
             return self.ended(cx);
         };
@@ -963,6 +968,10 @@ impl LiveSession {
         Arc::make_mut(&mut self.reading).approvals.clear();
         self.follow_requests();
         self.pending.clear();
+        // What that engine asked about quitting, and what the user agreed
+        // to stop, name its jobs and workers.
+        self.quit_ask = None;
+        self.quit_agreed = None;
     }
 
     /// Switches the session between Chat and Agent (between turns): the
@@ -1222,6 +1231,7 @@ impl LiveSession {
         self._feed.clear();
         self.activity = Activity::default();
         self.quit_ask = None;
+        self.quit_agreed = None;
         LiveSessions::remove(cx.entity_id(), self.id.as_ref(), cx);
         cx.emit(LiveEvent::Ended);
         cx.notify();
