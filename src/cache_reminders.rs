@@ -157,6 +157,29 @@ impl Global for Reminders {}
 /// Identifies a session's reminder among the window's notifications.
 struct CacheReminder;
 
+/// What one idle period has had of its reminders.
+#[derive(Default)]
+enum Step {
+    /// None yet.
+    #[default]
+    None,
+    /// The first came. It shows in `shown_in` until it goes.
+    Early { shown_in: Option<AnyWindowHandle> },
+    /// The last came (a short cache gets only this one). It shows in
+    /// `shown_in` until the lapse, a Refresh or a turn takes it away.
+    Last { shown_in: Option<AnyWindowHandle> },
+}
+
+impl Step {
+    /// The window the reminder shows in, while one was sent.
+    fn shown_in(&mut self) -> Option<&mut Option<AnyWindowHandle>> {
+        match self {
+            Step::None => None,
+            Step::Early { shown_in } | Step::Last { shown_in } => Some(shown_in),
+        }
+    }
+}
+
 /// One session's reminders.
 pub struct CacheReminders {
     session: WeakEntity<LiveSession>,
@@ -165,10 +188,10 @@ pub struct CacheReminders {
     /// The idle period the reminders sent belong to: when the cache was
     /// last refreshed.
     period: Option<i64>,
-    sent: Sent,
-    /// The window showing the reminder (the last one stays there, and an
-    /// OS copy of either waits in the notification center).
-    shown_in: Option<AnyWindowHandle>,
+    /// What the period had. Its window shows the reminder (the last one
+    /// stays there, and an OS copy of either waits in the notification
+    /// center).
+    step: Step,
     _timer: Option<Task<()>>,
     _refresh: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -183,7 +206,7 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) -> Entity<CacheReminde
             cx.subscribe(session, |this, _, event: &LiveEvent, cx| match event {
                 // A turn starts a new idle period when it ends.
                 LiveEvent::TurnEnded => {
-                    this.sent = Sent::default();
+                    this.reset(cx);
                     this.check(cx);
                 }
                 // A session that ended, or never opened, has no cache left.
@@ -202,8 +225,7 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) -> Entity<CacheReminde
             session: session.downgrade(),
             key: session.read(cx).key(),
             period: None,
-            sent: Sent::default(),
-            shown_in: None,
+            step: Step::None,
             _timer: None,
             _refresh: None,
             _subscriptions: subscriptions,
@@ -220,7 +242,10 @@ pub fn watch(session: &Entity<LiveSession>, cx: &mut App) -> Entity<CacheReminde
 impl CacheReminders {
     /// The reminders the idle period has had.
     pub fn sent(&self) -> Sent {
-        self.sent
+        Sent {
+            early: !matches!(self.step, Step::None),
+            last: matches!(self.step, Step::Last { .. }),
+        }
     }
 
     /// Looks at the session's cache: shows what is due, and looks again
@@ -257,8 +282,7 @@ impl CacheReminders {
                 "cache refreshed, a new idle period"
             );
             self.period = period;
-            self.sent = Sent::default();
-            self.dismiss(cx);
+            self.reset(cx);
         }
         let (due, next, busy, asking) = {
             let live = session.read(cx);
@@ -273,18 +297,17 @@ impl CacheReminders {
                 } else {
                     live.touched_at()
                 },
-                self.sent,
+                self.sent(),
                 enabled,
                 now,
             );
             (due, next, busy, live.question().is_some())
         };
-        if busy || !enabled {
-            // A request refreshes the cache, so the reminder is out of date.
+        // A request refreshes the cache, so the reminder is out of date.
+        if busy {
+            self.reset(cx);
+        } else if !enabled {
             self.dismiss(cx);
-            if busy {
-                self.sent = Sent::default();
-            }
         }
         if due.is_some() {
             // What a reminder was worked out from, for finding out why one
@@ -301,27 +324,23 @@ impl CacheReminders {
                 expires_at = cache.expires_at(),
                 left_ms = cache.expires_at().map(|at| at - now),
                 touched_at = live.touched_at(),
-                sent = ?self.sent,
+                sent = ?self.sent(),
                 "cache reminder due"
             );
         }
         match due {
             Some(Due::Early) => {
-                self.sent.early = true;
+                self.step = Step::Early { shown_in: None };
                 self.remind(&session, false, asking, quiet, cx);
             }
             Some(Due::Last) => {
-                self.sent = Sent {
-                    early: true,
-                    last: true,
-                };
+                // It takes the first one's place, in the window that shows it.
+                let shown_in = self.step.shown_in().and_then(Option::take);
+                self.step = Step::Last { shown_in };
                 self.remind(&session, true, asking, quiet, cx);
             }
             Some(Due::Lapsed) => self.dismiss(cx),
-            Some(Due::Withdrawn) => {
-                self.dismiss(cx);
-                self.sent = Sent::default();
-            }
+            Some(Due::Withdrawn) => self.reset(cx),
             None => {}
         }
         self._timer = next.map(|wait| {
@@ -334,10 +353,17 @@ impl CacheReminders {
         });
     }
 
+    /// Takes the reminder away and starts the idle period's reminders
+    /// again.
+    fn reset(&mut self, cx: &mut App) {
+        self.dismiss(cx);
+        self.step = Step::None;
+    }
+
     /// Takes the reminder away, from the app and from the OS's
     /// notifications.
     fn dismiss(&mut self, cx: &mut App) {
-        if let Some(window) = self.shown_in.take() {
+        if let Some(window) = self.step.shown_in().and_then(Option::take) {
             let key = self.key;
             window
                 .update(cx, |_, window, cx| {
@@ -429,7 +455,9 @@ impl CacheReminders {
                 window.push_notification(note, cx);
             })
             .ok();
-        self.shown_in = Some(window);
+        if let Some(shown_in) = self.step.shown_in() {
+            *shown_in = Some(window);
+        }
         if !quiet {
             notify::play_sound(cx);
         }
@@ -445,7 +473,10 @@ impl CacheReminders {
         let refreshing = session.update(cx, |session, cx| session.refresh_cache(cx));
         // The reminder goes (the window busy with the click took it away
         // already).
-        let reminded = self.shown_in.is_some();
+        let reminded = self
+            .step
+            .shown_in()
+            .is_some_and(|shown_in| shown_in.is_some());
         let period = self.period;
         self.dismiss(cx);
         let window = notify::window_for(&session, cx);
@@ -464,7 +495,7 @@ impl CacheReminders {
                         // countdown, for Refresh to be tried again, while
                         // the idle period it was for goes on.
                         if reminded && this.period == period {
-                            this.sent.last = false;
+                            this.step = Step::Early { shown_in: None };
                             this.check_with(true, cx);
                         }
                         Some((NotificationType::Error, refresh_failed(&why)))
