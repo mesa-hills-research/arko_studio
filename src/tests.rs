@@ -1248,6 +1248,27 @@ fn a_verdict_after_the_session_opened_again_changes_nothing(cx: &mut TestAppCont
     assert_eq!(notifications(cx, window), 0);
 }
 
+/// A question the engine asks after the user closed the session as it
+/// opened is answered for them, without a dialog, so it doesn't open.
+#[gpui_kit::test]
+fn a_question_after_a_close_is_answered_cancel(cx: &mut TestAppContext) {
+    use crate::live::{PromptAnswer, PromptKind};
+
+    let (window, _, session) = session_in_workspace(cx, 1300.);
+    session.update(cx, |session, cx| {
+        let agreed = session.running_work();
+        session.close(agreed, cx)
+    });
+    let need = PromptKind::Credentials(arko::Need::AnthropicKey {
+        model: "claude-opus-5-5".into(),
+    });
+    let mut answer = session.update(cx, |session, cx| session.ask(need, cx));
+    act(cx, window, |window, cx| {
+        assert!(!window.has_active_dialog(cx))
+    });
+    assert_eq!(answer.try_recv(), Ok(PromptAnswer::Cancel));
+}
+
 /// A delete waiting on a session that doesn't close in time gives up and
 /// says so, rather than wait forever or delete it later.
 #[gpui_kit::test]

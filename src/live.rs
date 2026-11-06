@@ -692,11 +692,7 @@ impl LiveSession {
                 self._tasks.push(cx.spawn(async move |this, cx| {
                     while let Some(asked) = asks.recv().await {
                         let kept = this.update(cx, |this, cx| match asked {
-                            Asked::Prompt(prompt) => {
-                                this.prompt = Some(prompt);
-                                cx.emit(LiveEvent::Prompt);
-                                cx.notify();
-                            }
+                            Asked::Prompt(prompt) => this.prompted(prompt, cx),
                             Asked::Note(level, text) => cx.emit(LiveEvent::Note(level, text)),
                         });
                         if kept.is_err() {
@@ -1866,10 +1862,20 @@ impl LiveSession {
         cx: &mut Context<Self>,
     ) -> oneshot::Receiver<PromptAnswer> {
         let (reply, answer) = oneshot::channel();
-        self.prompt = Some(Prompt { kind, reply });
+        self.prompted(Prompt { kind, reply }, cx);
+        answer
+    }
+
+    /// The engine asks the user `prompt` as it opens. One the user is
+    /// closing doesn't open, so the answer is Cancel, with no dialog.
+    fn prompted(&mut self, prompt: Prompt, cx: &mut Context<Self>) {
+        if self.phase == Phase::Closing {
+            let _ = prompt.reply.send(PromptAnswer::Cancel);
+            return;
+        }
+        self.prompt = Some(prompt);
         cx.emit(LiveEvent::Prompt);
         cx.notify();
-        answer
     }
 
     /// The prompt waiting for the user, if any.
