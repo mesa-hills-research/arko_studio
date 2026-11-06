@@ -1753,3 +1753,23 @@ fn typed_providers_are_saved_when_settings_closes_before_the_typing_rests(cx: &m
     rest(cx);
     assert_eq!(backend.openrouter().only(), ["anthropic"]);
 }
+
+/// A size typed into Settings › Sessions and left with Escape, before the
+/// typing rested, is saved as Settings closes.
+#[gpui_kit::test]
+fn a_typed_size_is_saved_when_settings_closes_before_the_typing_rests(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, workspace, settings) = settings_window(cx, SESSIONS_PAGE, 2400.);
+    act(cx, window, |window, cx| window.click("handover-at", cx));
+    act(cx, window, |window, cx| window.input("500k", cx));
+    assert_eq!(cx.read(|cx| prefs::get(cx).new_sessions.handover_at), None);
+    drop(settings);
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert!(cx.read(|cx| workspace.read(cx).settings().is_none()));
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.handover_at),
+        Some(500_000)
+    );
+    rest(cx);
+    assert_eq!(backend.defaults().handover_at, Some(500_000));
+}
