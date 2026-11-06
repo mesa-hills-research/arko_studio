@@ -83,7 +83,7 @@ impl OpenRouterPart {
                 cx.notify();
             }),
         ];
-        // Settings closed while typing: what's typed is saved.
+        // Closing Settings saves what's typed.
         cx.on_release(|this, cx| {
             if let Some((which, _)) = this.typing.take() {
                 this.save_providers(which, cx);
