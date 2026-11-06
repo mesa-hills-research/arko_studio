@@ -676,15 +676,18 @@ impl LiveSession {
                     .ok();
                 }));
                 self._tasks.push(cx.spawn(async move |this, cx| {
-                    // It fails when the session didn't open: then `failed` said why.
-                    if let Ok(end) = ended.await {
-                        this.update(cx, |this, cx| match end {
-                            // It switched between Chat and Agent: it opens again.
-                            arko::RunEnd::Reopen => this.reopen(cx),
-                            _ => this.ended(cx),
-                        })
-                        .ok();
-                    }
+                    let end = ended.await;
+                    this.update(cx, |this, cx| match end {
+                        // It switched between Chat and Agent: it opens again.
+                        Ok(arko::RunEnd::Reopen) => this.reopen(cx),
+                        Ok(_) => this.ended(cx),
+                        // It stopped without saying how (it panicked). One
+                        // that opened has ended all the same. One that
+                        // didn't open was told why by `failed`.
+                        Err(_) if this.link.is_some() => this.stopped(cx),
+                        Err(_) => {}
+                    })
+                    .ok();
                 }));
                 self._tasks.push(cx.spawn(async move |this, cx| {
                     while let Some(asked) = asks.recv().await {
@@ -1235,6 +1238,13 @@ impl LiveSession {
         LiveSessions::remove(cx.entity_id(), self.id.as_ref(), cx);
         cx.emit(LiveEvent::Ended);
         cx.notify();
+    }
+
+    /// Its engine stopped without saying how, so it has ended, and the
+    /// window says so.
+    fn stopped(&mut self, cx: &mut Context<Self>) {
+        cx.emit(LiveEvent::Refused(STOPPED.to_string()));
+        self.ended(cx);
     }
 
     pub fn key(&self) -> u64 {
@@ -1970,6 +1980,10 @@ impl LiveSession {
 /// send, which may have gone.
 pub const NO_VERDICT: &str =
     "Arko stopped before saying whether it went. Check the transcript before you send it again.";
+
+/// What the window says when Arko stopped without saying how, which ended
+/// the session.
+const STOPPED: &str = "Arko stopped unexpectedly. Open the session to go on.";
 
 /// Sends `input`, a quit, in order with what was sent before it. Nothing
 /// waits for its verdict.

@@ -641,6 +641,10 @@ pub struct ArkoBackend {
     root: PathBuf,
     configure: Option<Configure>,
     defaults: Mutex<SessionDefaults>,
+    /// The sessions' ends don't reach the app, as when an engine stops
+    /// without saying how (tests).
+    #[cfg(test)]
+    ends_unsaid: bool,
 }
 
 impl ArkoBackend {
@@ -649,7 +653,17 @@ impl ArkoBackend {
             root: root.into(),
             configure: None,
             defaults: Mutex::new(SessionDefaults::default()),
+            #[cfg(test)]
+            ends_unsaid: false,
         }
+    }
+
+    /// Keeps the sessions' ends from the app, as when an engine stops
+    /// without saying how (tests).
+    #[cfg(test)]
+    pub fn with_ends_unsaid(mut self) -> Self {
+        self.ends_unsaid = true;
+        self
     }
 
     fn defaults(&self) -> SessionDefaults {
@@ -799,6 +813,10 @@ impl Backend for ArkoBackend {
         let root = self.root.clone();
         let configure = self.configure.clone();
         let defaults = self.defaults();
+        #[cfg(test)]
+        let unsaid = self.ends_unsaid;
+        #[cfg(not(test))]
+        let unsaid = false;
         let starting = std::thread::Builder::new()
             .name("arko-studio-start".into())
             .spawn(move || {
@@ -813,7 +831,9 @@ impl Backend for ArkoBackend {
                 if opened_sender.send(open).is_err() || !opened {
                     return;
                 }
-                if let Ok(end) = running.ended.blocking_recv() {
+                if let Ok(end) = running.ended.blocking_recv()
+                    && !unsaid
+                {
                     let _ = ended_sender.send(end);
                 }
             });

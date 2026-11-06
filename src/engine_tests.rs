@@ -30,11 +30,20 @@ struct App {
 }
 
 fn start(cx: &mut TestAppContext, mock: &Mock) -> App {
+    start_with(cx, mock, |backend| backend)
+}
+
+/// As [`start`], on the backend `backend` makes of the usual one.
+fn start_with(
+    cx: &mut TestAppContext,
+    mock: &Mock,
+    backend: impl FnOnce(ArkoBackend) -> ArkoBackend,
+) -> App {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("arko");
     let work = temp.path().join("work");
     std::fs::create_dir_all(&work).unwrap();
-    start_in(cx, mock, temp, root, work)
+    start_in_with(cx, mock, temp, root, work, backend)
 }
 
 fn start_in(
@@ -44,10 +53,23 @@ fn start_in(
     root: PathBuf,
     work: PathBuf,
 ) -> App {
+    start_in_with(cx, mock, temp, root, work, |backend| backend)
+}
+
+fn start_in_with(
+    cx: &mut TestAppContext,
+    mock: &Mock,
+    temp: tempfile::TempDir,
+    root: PathBuf,
+    work: PathBuf,
+    backend: impl FnOnce(ArkoBackend) -> ArkoBackend,
+) -> App {
     // The engine's threads wake the app's tasks: the test scheduler lets
     // them, as for real I/O.
     cx.executor().allow_parking();
-    let backend = Arc::new(ArkoBackend::new(&root).with_configure(mock.configure()));
+    let backend = Arc::new(backend(
+        ArkoBackend::new(&root).with_configure(mock.configure()),
+    ));
     cx.update(|cx| crate::init(Startup::for_tests(backend), cx));
     let (window, workspace) = open(cx, 1300.);
     let view = cx.read(|cx| workspace.read(cx).session_view().clone());
@@ -1550,6 +1572,30 @@ fn a_close_during_a_switch_ends_the_session(cx: &mut TestAppContext) {
         arko::sessions::list(&app.root)[0].mode,
         arko::sessions::Mode::Chat
     );
+}
+
+/// An engine that stops without saying how (it panicked) ends its session
+/// all the same, and the window says so.
+#[gpui_kit::test]
+fn a_session_whose_engine_stops_unsaid_ends(cx: &mut TestAppContext) {
+    let mock = Mock::start(|_, _| answer("Working.", Duration::ZERO));
+    let app = start_with(cx, &mock, ArkoBackend::with_ends_unsaid);
+    app.send(cx, "Start working.");
+    app.wait_for_text(cx, "Working.");
+    let session = app.shown(cx).unwrap();
+    wait_until(cx, "the turn to end", |cx| {
+        cx.read(|cx| !session.read(cx).is_working())
+    });
+    act(cx, app.window, |window, cx| {
+        crate::quit::close(vec![session.clone()], false, window, cx);
+    });
+    wait_until(cx, "the session to end", |cx| {
+        cx.read(|cx| *session.read(cx).phase() == Phase::Ended)
+    });
+    assert!(cx.read(|cx| LiveSessions::all(cx).is_empty()));
+    act(cx, app.window, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1, "Arko stopped")
+    });
 }
 
 #[gpui_kit::test]
