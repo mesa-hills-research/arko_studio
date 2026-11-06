@@ -224,7 +224,8 @@ pub struct SessionView {
     closed: bool,
     /// What the model list knows of OpenRouter.
     openrouter: OpenRouterSeen,
-    _openrouter: Option<Task<()>>,
+    /// The read of what the model list knows of OpenRouter, while it runs.
+    reading_openrouter: Option<Task<()>>,
     /// The effort each model last ran at, as arko keeps it, by model. A
     /// model's is read again once the model list opens after a session ran.
     last_efforts: std::collections::HashMap<String, Loaded<(), Option<String>>>,
@@ -397,8 +398,6 @@ struct OpenRouterSeen {
     recent: Vec<crate::backend::Listed>,
     catalog: crate::backend::Catalog,
     summary: Option<String>,
-    /// The catalog is being fetched.
-    loading: bool,
     /// When it was last read, to read it again only after a while.
     read_at: Option<std::time::Instant>,
 }
@@ -507,7 +506,7 @@ impl SessionView {
             transcripts: Vec::new(),
             closed: false,
             openrouter: OpenRouterSeen::default(),
-            _openrouter: None,
+            reading_openrouter: None,
             last_efforts: std::collections::HashMap::new(),
             session_models: Loaded::default(),
             lists_worker_models: false,
@@ -645,17 +644,16 @@ impl SessionView {
             .openrouter
             .read_at
             .is_none_or(|at| at.elapsed() >= OPENROUTER_REREAD);
-        if !due || self._openrouter.is_some() {
+        if !due || self.reading_openrouter.is_some() {
             return;
         }
         self.openrouter.read_at = Some(std::time::Instant::now());
-        self.openrouter.loading = true;
         let backend = cx.global::<SharedBackend>().clone();
         let kept = cx.background_spawn({
             let backend = backend.clone();
             async move { (backend.openrouter(), backend.openrouter_models_kept()) }
         });
-        self._openrouter = Some(cx.spawn(async move |this, cx| {
+        self.reading_openrouter = Some(cx.spawn(async move |this, cx| {
             let (settings, catalog) = kept.await;
             this.update(cx, |this, cx| {
                 this.openrouter.recent = settings.recent();
@@ -669,8 +667,7 @@ impl SessionView {
                 .await;
             this.update(cx, |this, cx| {
                 this.openrouter.catalog = catalog;
-                this.openrouter.loading = false;
-                this._openrouter = None;
+                this.reading_openrouter = None;
                 cx.notify();
             })
             .ok();
@@ -3170,7 +3167,7 @@ impl SessionView {
                 };
                 let loading = openrouter
                     && !filter.trim().is_empty()
-                    && self.openrouter.loading
+                    && self.reading_openrouter.is_some()
                     && self.openrouter.catalog.models.is_empty();
                 if models.is_empty() && found.is_empty() && !loading {
                     return None;
