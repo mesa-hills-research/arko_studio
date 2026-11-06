@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
 use crate::live::{LiveEvent, LiveSession, LiveSessions};
@@ -35,8 +36,16 @@ pub fn quit(window: &mut Window, cx: &mut App) {
     close(LiveSessions::all(cx), true, window, cx);
 }
 
+/// What runs in a window.
+type InWindow = Box<dyn FnOnce(&mut Window, &mut App)>;
+
 /// What runs once a close finished, in the window that started it.
-type Then = Box<dyn FnOnce(&mut Window, &mut App)>;
+struct Then {
+    run: InWindow,
+    /// What the window says didn't happen when the sessions don't close in
+    /// time ("It wasn’t deleted.").
+    not_done: &'static str,
+}
 
 /// Closes `sessions`, and with `quitting` quits the app once they all ended.
 pub fn close(
@@ -49,14 +58,21 @@ pub fn close(
 }
 
 /// Closes `sessions` and runs `then` once they all ended. A close the user
-/// cancels drops `then`, so nothing is left waiting for a later close.
+/// cancels drops `then`, so nothing is left waiting for a later close. So
+/// does one that doesn't finish within [`QUIT_WAIT`], and the window then
+/// says which session didn't close, and `not_done`.
 pub fn close_then(
     sessions: Vec<Entity<LiveSession>>,
+    not_done: &'static str,
     window: &mut Window,
     cx: &mut App,
     then: impl FnOnce(&mut Window, &mut App) + 'static,
 ) {
-    close_and(sessions, false, Some(Box::new(then)), window, cx);
+    let then = Then {
+        run: Box::new(then),
+        not_done,
+    };
+    close_and(sessions, false, Some(then), window, cx);
 }
 
 fn close_and(
@@ -75,7 +91,7 @@ fn close_and(
         .collect();
     if running.is_empty() {
         if let Some(then) = then {
-            then(window, cx);
+            (then.run)(window, cx);
         }
         if quitting {
             cx.quit();
@@ -150,17 +166,12 @@ impl Closing {
             .iter()
             .map(|session| cx.subscribe(session, Self::on_event))
             .collect();
-        // Quitting doesn't wait forever for a session that doesn't end.
-        let cap = quitting.then(|| {
+        // Neither quitting nor what waits for the close waits forever for a
+        // session that doesn't end.
+        let cap = (quitting || then.is_some()).then(|| {
             cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(QUIT_WAIT).await;
-                this.update(cx, |this, cx| {
-                    if this.quitting {
-                        tracing::warn!("quitting with sessions that didn't shut down in time");
-                        cx.quit();
-                    }
-                })
-                .ok();
+                this.update(cx, |this, cx| this.gave_up(cx)).ok();
             })
         });
         Self {
@@ -228,11 +239,43 @@ impl Closing {
         if let Some(then) = self.then.take() {
             let window = self.window;
             cx.defer(move |cx| {
-                window.update(cx, |_, window, cx| then(window, cx)).ok();
+                window
+                    .update(cx, |_, window, cx| (then.run)(window, cx))
+                    .ok();
             });
         }
         if self.quitting {
             cx.quit();
         }
+    }
+
+    /// [`QUIT_WAIT`] passed with sessions still running. Quitting quits
+    /// anyway. What waited for the close doesn't run, and the window says
+    /// which session didn't close.
+    fn gave_up(&mut self, cx: &mut Context<Self>) {
+        self.sessions
+            .retain(|session| session.read(cx).is_running());
+        let Some(title) = self
+            .sessions
+            .first()
+            .map(|session| session.read(cx).title().clone())
+        else {
+            return;
+        };
+        if self.quitting {
+            tracing::warn!("quitting with sessions that didn't shut down in time");
+            cx.quit();
+            return;
+        }
+        if let Some(then) = self.then.take() {
+            let words = format!("“{title}” didn’t close in time. {}", then.not_done);
+            self.window
+                .update(cx, |_, window, cx| {
+                    window.push_notification(Notification::error(words), cx)
+                })
+                .ok();
+        }
+        let me = cx.entity();
+        cx.update_global::<Closings, _>(|closings, _| closings.0.retain(|closing| closing != &me));
     }
 }

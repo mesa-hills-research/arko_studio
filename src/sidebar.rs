@@ -799,7 +799,8 @@ impl Sidebar {
             LiveSessions::find(&id, cx).filter(|session| session.read(cx).is_running())
         {
             let sidebar = cx.entity().downgrade();
-            crate::quit::close_then(vec![session], window, cx, move |window, cx| {
+            let not_done = "It wasn’t deleted.";
+            crate::quit::close_then(vec![session], not_done, window, cx, move |window, cx| {
                 sidebar
                     .update(cx, |sidebar, cx| sidebar.delete(id, window, cx))
                     .ok();

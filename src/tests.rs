@@ -1248,6 +1248,28 @@ fn a_verdict_after_the_session_opened_again_changes_nothing(cx: &mut TestAppCont
     assert_eq!(notifications(cx, window), 0);
 }
 
+/// A delete waiting on a session that doesn't close in time gives up and
+/// says so, rather than wait forever or delete it later.
+#[gpui_kit::test]
+fn a_delete_waiting_on_a_close_that_never_ends_gives_up(cx: &mut TestAppContext) {
+    let (window, _, session) = session_in_workspace(cx, 1300.);
+    let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+    act(cx, window, |window, cx| {
+        let ran = ran.clone();
+        crate::quit::close_then(
+            vec![session.clone()],
+            "It wasn’t deleted.",
+            window,
+            cx,
+            move |_, _| ran.set(true),
+        );
+    });
+    cx.executor().advance_clock(crate::quit::QUIT_WAIT);
+    cx.run_until_parked();
+    assert!(!ran.get());
+    assert_eq!(notifications(cx, window), 1);
+}
+
 /// The question about continuing a worker is about the attempt to open the
 /// session that refused the message. Once the session opened again,
 /// Continue sends nothing, and the message stays in the composer.
