@@ -3,7 +3,9 @@
 //! another window or the terminal app may have changed other settings. They
 //! are written one at a time and in order, whether or not Settings is still
 //! open, and each write that goes through tells every window
-//! ([`OpenRouterSaved`]).
+//! ([`OpenRouterSaved`]). A read of the settings that began before a change
+//! was asked for or written may hold them as they were, so it shows only if
+//! [`OpenRouterRead::is_current`] says so.
 
 use std::collections::VecDeque;
 
@@ -20,6 +22,9 @@ struct OpenRouterChanges {
     running: bool,
     /// Why the last write failed, until a write goes through.
     error: Option<String>,
+    /// Counts the changes asked for and the writes that ended, which an
+    /// [`OpenRouterRead`] compares.
+    changes: u64,
 }
 
 impl gpui_kit::Global for OpenRouterChanges {}
@@ -30,6 +35,7 @@ pub fn change_openrouter(change: OpenRouterChange, cx: &mut App) {
     cx.default_global::<OpenRouterChanges>();
     let start = cx.update_global::<OpenRouterChanges, _>(|changes, _| {
         changes.waiting.push_back(change);
+        changes.changes += 1;
         !std::mem::replace(&mut changes.running, true)
     });
     if start {
@@ -46,6 +52,32 @@ pub fn openrouter_changing(cx: &App) -> bool {
 /// Why the last write of a change failed, until a write goes through.
 pub fn openrouter_change_error(cx: &App) -> Option<String> {
     cx.try_global::<OpenRouterChanges>()?.error.clone()
+}
+
+/// A read of OpenRouter's settings begun at one moment, which tells whether
+/// what it finds may show.
+#[must_use]
+pub struct OpenRouterRead {
+    changes: u64,
+}
+
+/// Begins a read of OpenRouter's settings, as the read off the UI thread
+/// starts.
+pub fn begin_openrouter_read(cx: &App) -> OpenRouterRead {
+    OpenRouterRead {
+        changes: cx
+            .try_global::<OpenRouterChanges>()
+            .map_or(0, |changes| changes.changes),
+    }
+}
+
+impl OpenRouterRead {
+    /// Whether what the read found may show. It may if no change was asked
+    /// for or written since the read began, and none waits.
+    pub fn is_current(self, cx: &App) -> bool {
+        cx.try_global::<OpenRouterChanges>()
+            .is_none_or(|changes| changes.changes == self.changes && !changes.running)
+    }
 }
 
 /// Calls `changed` whenever a write of the changes starts or ends.
@@ -67,6 +99,7 @@ fn write_next(cx: &mut App) {
         cx.update(|cx| {
             let more = cx.update_global::<OpenRouterChanges, _>(|changes, _| {
                 changes.error = saved.as_ref().err().cloned();
+                changes.changes += 1;
                 changes.running = !changes.waiting.is_empty();
                 changes.running
             });

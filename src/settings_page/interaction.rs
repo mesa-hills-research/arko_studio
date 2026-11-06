@@ -1660,6 +1660,42 @@ fn a_failed_openrouter_save_shows_what_is_saved(cx: &mut TestAppContext) {
     assert_eq!(shown(cx), saved);
 }
 
+/// A reading begun while changes wait, and landing after the last of them
+/// was saved, doesn't put an earlier save's settings back on screen.
+#[gpui_kit::test(iterations = 50)]
+fn a_read_of_an_earlier_save_does_not_replace_the_last_one(cx: &mut TestAppContext) {
+    let backend = start_on(
+        cx,
+        FakeBackend::sample("/arko", SystemTime::now()),
+        prefs::Prefs::default(),
+    );
+    let (window, _) = open(cx, 1300.);
+    let (first, second) = (openrouter_part(cx, window), openrouter_part(cx, window));
+    // The first window reads the settings again as the earlier save lands.
+    let _reread = cx.update(|cx| {
+        let first = first.clone();
+        cx.observe_global::<crate::backend::OpenRouterSaved>(move |cx| {
+            let saved = cx.global::<crate::backend::OpenRouterSaved>().settings();
+            if saved.is_some_and(|saved| saved.zdr()) {
+                first.update(cx, |part, cx| part.read(cx));
+            }
+        })
+    });
+    // The second turns zero data retention on and off again.
+    cx.update(|cx| {
+        second.update(cx, |part, cx| {
+            part.change(|settings| settings.set_zdr(true), cx);
+            part.change(|settings| settings.set_zdr(false), cx);
+        })
+    });
+    cx.run_until_parked();
+    assert!(!backend.openrouter().zdr());
+    for part in [&first, &second] {
+        let shown = cx.read(|cx| part.read(cx).settings().unwrap().zdr());
+        assert!(!shown, "the last save's settings show");
+    }
+}
+
 /// The model lists' rows and OpenRouter's controls have names a screen
 /// reader says: each row its model, way and state, each control its field
 /// and value.

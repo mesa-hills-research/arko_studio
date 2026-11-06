@@ -29,7 +29,8 @@ pub use defaults::{
 };
 pub use names::{SessionNames, Way, write_names};
 pub use openrouter_changes::{
-    change_openrouter, observe_openrouter_changes, openrouter_change_error, openrouter_changing,
+    OpenRouterRead, begin_openrouter_read, change_openrouter, observe_openrouter_changes,
+    openrouter_change_error, openrouter_changing,
 };
 pub use writes::{Read, SaveState, begin_read, observe_saves, save_state, write_latest};
 

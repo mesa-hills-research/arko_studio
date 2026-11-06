@@ -23,8 +23,9 @@ use arko::openrouter::{Control, Precision, Region, Sort, slugs};
 
 use super::fields::TYPING_REST;
 use crate::backend::{
-    Catalog, OpenRouterSaved, OpenRouterSettings, SharedBackend, change_openrouter,
-    observe_openrouter_changes, openrouter_change_error, openrouter_changing, sentence,
+    Catalog, OpenRouterSaved, OpenRouterSettings, SharedBackend, begin_openrouter_read,
+    change_openrouter, observe_openrouter_changes, openrouter_change_error, openrouter_changing,
+    sentence,
 };
 use crate::workers::curly;
 
@@ -39,9 +40,6 @@ pub struct OpenRouterPart {
     fetching: bool,
     only: Entity<InputState>,
     ignore: Entity<InputState>,
-    /// Counts up with each edit made here and each change saved elsewhere.
-    /// A reading begun before a newer one doesn't replace what's shown.
-    version: u64,
     /// A change made here rules other models out, so they're fetched again
     /// once the changes are saved.
     refilter: bool,
@@ -87,7 +85,6 @@ impl OpenRouterPart {
                     && this.settings.as_ref() != Some(&saved)
                 {
                     this.settings = Some(saved);
-                    this.version += 1;
                     cx.notify();
                 }
                 if std::mem::take(&mut this.refilter) {
@@ -116,7 +113,6 @@ impl OpenRouterPart {
             fetching: false,
             only,
             ignore,
-            version: 0,
             refilter: false,
             typing: None,
             _read: None,
@@ -129,11 +125,11 @@ impl OpenRouterPart {
     }
 
     /// Reads the settings again, in the background (the terminal app may
-    /// have changed them). What's read shows unless an edit was made or a
-    /// change saved elsewhere meanwhile.
+    /// have changed them). What's read shows unless a change was asked for
+    /// or saved meanwhile, here or in another window.
     pub fn read(&mut self, cx: &mut Context<Self>) {
         let backend = cx.global::<SharedBackend>().clone();
-        let version = self.version;
+        let began = begin_openrouter_read(cx);
         let reading =
             cx.background_spawn(
                 async move { (backend.openrouter(), backend.openrouter_models_kept()) },
@@ -141,7 +137,7 @@ impl OpenRouterPart {
         self._read = Some(cx.spawn(async move |this, cx| {
             let (settings, catalog) = reading.await;
             this.update(cx, |this, cx| {
-                if this.version == version && !openrouter_changing(cx) {
+                if began.is_current(cx) {
                     this.settings = Some(settings);
                 }
                 if this.catalog.is_none() || catalog.fetched.is_some() {
@@ -211,7 +207,6 @@ impl OpenRouterPart {
         }
         self.refilter |= settings.zdr() != before.zdr() || settings.region() != before.region();
         self.settings = Some(settings);
-        self.version += 1;
         change_openrouter(Arc::new(change), cx);
         true
     }
