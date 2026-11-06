@@ -240,7 +240,7 @@ dependencies = [
 [[package]]
 name = "arko-tui"
 version = "0.19.1"
-source = "git+https://github.com/mesa-hills-research/arko?rev=ca8a629121bd1d8a2c6923fae777fb3111a92c0f#ca8a629121bd1d8a2c6923fae777fb3111a92c0f"
+source = "git+https://github.com/mesa-hills-research/arko?rev=be0f6e4f723edf17efb6ae055d97b8307b416906#be0f6e4f723edf17efb6ae055d97b8307b416906"
 dependencies = [
  "arko_agents",
  "arko_ai",
