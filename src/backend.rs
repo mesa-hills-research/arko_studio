@@ -18,6 +18,7 @@ mod accounts;
 mod defaults;
 pub mod extensions;
 mod names;
+mod openrouter_changes;
 pub mod profiles;
 mod writes;
 
@@ -27,6 +28,9 @@ pub use defaults::{
     web_page_bind,
 };
 pub use names::{SessionNames, Way, write_names};
+pub use openrouter_changes::{
+    change_openrouter, observe_openrouter_changes, openrouter_change_error, openrouter_changing,
+};
 pub use writes::{Read, SaveState, begin_read, observe_saves, save_state, write_latest};
 
 /// Reading accounts in words, for Settings.

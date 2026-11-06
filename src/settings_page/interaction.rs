@@ -1638,7 +1638,7 @@ fn a_failed_openrouter_save_shows_what_is_saved(cx: &mut TestAppContext) {
     let (window, _) = open(cx, 1300.);
     let part = openrouter_part(cx, window);
     let shown = |cx: &mut TestAppContext| cx.read(|cx| part.read(cx).settings().cloned().unwrap());
-    let problem = |cx: &mut TestAppContext| cx.read(|cx| part.read(cx).problem().is_some());
+    let problem = |cx: &mut TestAppContext| cx.read(|cx| part.read(cx).problem(cx).is_some());
     // Alone, it goes back to the settings saved.
     backend.fail_openrouter_saves(1);
     cx.update(|cx| part.update(cx, |part, cx| part.change(|s| s.set_zdr(true), cx)));
@@ -1724,4 +1724,32 @@ fn the_model_rows_and_openrouter_controls_have_names(cx: &mut TestAppContext) {
             Some("All OpenRouter models")
         );
     });
+}
+
+/// Providers typed into OpenRouter's list and left with Escape, before the
+/// typing rested, are saved as Settings closes, as Enter would save them.
+#[gpui_kit::test]
+fn typed_providers_are_saved_when_settings_closes_before_the_typing_rests(cx: &mut TestAppContext) {
+    let backend = start_on(
+        cx,
+        FakeBackend::sample("/arko", SystemTime::now()),
+        prefs::Prefs::default(),
+    );
+    let (window, workspace, settings) = settings_window(cx, ACCOUNTS_PAGE, 2400.);
+    let part = cx.read(|cx| settings.read(cx).accounts().read(cx).openrouter().clone());
+    let (only, _) = cx.read(|cx| part.read(cx).inputs());
+    act(cx, window, |window, cx| {
+        only.update(cx, |only, cx| only.focus(window, cx))
+    });
+    act(cx, window, |window, cx| window.input("anthropic", cx));
+    assert!(
+        backend.openrouter().only().is_empty(),
+        "the typing hasn't rested"
+    );
+    drop((part, only, settings));
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert!(cx.read(|cx| workspace.read(cx).settings().is_none()));
+    assert_eq!(backend.openrouter().only(), ["anthropic"]);
+    rest(cx);
+    assert_eq!(backend.openrouter().only(), ["anthropic"]);
 }

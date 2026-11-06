@@ -3,7 +3,8 @@
 //! order, precision, and which providers), kept in `openrouter.json` in
 //! Arko's folder for the terminal app too, and OpenRouter's list of
 //! models. Everything is read and saved through the backend, on a
-//! background thread.
+//! background thread. The saves are the app's, so a change made here is
+//! saved also when Settings closes before the save has run.
 
 use std::sync::Arc;
 
@@ -22,7 +23,8 @@ use arko::openrouter::{Control, Precision, Region, Sort, slugs};
 
 use super::fields::TYPING_REST;
 use crate::backend::{
-    Catalog, OpenRouterChange, OpenRouterSaved, OpenRouterSettings, SharedBackend, sentence,
+    Catalog, OpenRouterSaved, OpenRouterSettings, SharedBackend, change_openrouter,
+    observe_openrouter_changes, openrouter_change_error, openrouter_changing, sentence,
 };
 use crate::workers::curly;
 
@@ -35,20 +37,18 @@ pub struct OpenRouterPart {
     catalog: Option<Catalog>,
     /// The models are being fetched.
     fetching: bool,
-    /// Why the settings couldn't be saved, when they couldn't.
-    problem: Option<String>,
     only: Entity<InputState>,
     ignore: Entity<InputState>,
-    /// Counts up with each edit made here and each change saved elsewhere:
-    /// a reading begun before a newer one doesn't replace what's shown.
+    /// Counts up with each edit made here and each change saved elsewhere.
+    /// A reading begun before a newer one doesn't replace what's shown.
     version: u64,
-    /// Saves not answered yet. Changes saved elsewhere show once these
-    /// are in.
-    saving: usize,
+    /// A change made here rules other models out, so they're fetched again
+    /// once the changes are saved.
+    refilter: bool,
+    /// The provider list typed in, saved once the typing rests.
+    typing: Option<(Providers, Task<()>)>,
     _read: Option<Task<()>>,
-    _save: Option<Task<()>>,
     _fetch: Option<Task<()>>,
-    _typing: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -76,32 +76,51 @@ impl OpenRouterPart {
             cx.subscribe(&ignore, |this, _, event: &InputEvent, cx| {
                 this.typed(Providers::Ignore, event, cx)
             }),
-            // Saved in another window: shown here too.
+            // Saved, here or in another window: shown once no change waits,
+            // since the changes waiting are shown already.
             cx.observe_global::<OpenRouterSaved>(|this, cx| {
+                if openrouter_changing(cx) {
+                    return;
+                }
                 let saved = cx.global::<OpenRouterSaved>().settings().cloned();
-                if this.saving == 0
-                    && let Some(saved) = saved
+                if let Some(saved) = saved
                     && this.settings.as_ref() != Some(&saved)
                 {
                     this.settings = Some(saved);
                     this.version += 1;
                     cx.notify();
                 }
+                if std::mem::take(&mut this.refilter) {
+                    this.fetch(false, cx);
+                }
+            }),
+            // A change that couldn't be saved says why, and once none waits,
+            // what's shown is what the file holds.
+            observe_openrouter_changes(cx, |this, cx| {
+                if !openrouter_changing(cx) && openrouter_change_error(cx).is_some() {
+                    this.read(cx);
+                }
+                cx.notify();
             }),
         ];
+        // Settings closed while typing: what's typed is saved.
+        cx.on_release(|this, cx| {
+            if let Some((which, _)) = this.typing.take() {
+                this.save_providers(which, cx);
+            }
+        })
+        .detach();
         let mut this = Self {
             settings: None,
             catalog: None,
             fetching: false,
-            problem: None,
             only,
             ignore,
             version: 0,
-            saving: 0,
+            refilter: false,
+            typing: None,
             _read: None,
-            _save: None,
             _fetch: None,
-            _typing: None,
             _subscriptions: subscriptions,
         };
         this.read(cx);
@@ -122,7 +141,7 @@ impl OpenRouterPart {
         self._read = Some(cx.spawn(async move |this, cx| {
             let (settings, catalog) = reading.await;
             this.update(cx, |this, cx| {
-                if this.version == version && this.saving == 0 {
+                if this.version == version && !openrouter_changing(cx) {
                     this.settings = Some(settings);
                 }
                 if this.catalog.is_none() || catalog.fetched.is_some() {
@@ -156,102 +175,87 @@ impl OpenRouterPart {
         self.settings.as_ref()
     }
 
-    /// Why the settings couldn't be saved, when they couldn't.
-    pub fn problem(&self) -> Option<&str> {
-        self.problem.as_deref()
+    /// Why the settings couldn't be saved, until a save goes through.
+    pub fn problem(&self, cx: &App) -> Option<String> {
+        openrouter_change_error(cx).map(|why| curly(&why))
     }
 
-    /// Makes `change` to the settings: shown at once, then saved after the
-    /// saves before it, made to the settings as they are then (another
-    /// window or the terminal app may have changed others). The settings
-    /// saved show once no later edit waits, and in the other windows too.
-    /// A change to what rules models out fetches the models again.
+    /// Makes `change` to the settings, shown at once. The app saves it
+    /// after the changes before it, made to the settings as they are then
+    /// (another window or the terminal app may have changed others). The
+    /// settings saved show once no change waits, in every window.
     pub(super) fn change(
         &mut self,
         change: impl Fn(&mut OpenRouterSettings) + Send + Sync + 'static,
         cx: &mut Context<Self>,
     ) {
+        if self.make(change, cx) {
+            cx.notify();
+        }
+    }
+
+    /// Shows `change` made to the settings, and asks the app to save it.
+    /// Whether it changed them.
+    fn make(
+        &mut self,
+        change: impl Fn(&mut OpenRouterSettings) + Send + Sync + 'static,
+        cx: &mut App,
+    ) -> bool {
         let Some(before) = self.settings.clone() else {
-            return;
+            return false;
         };
         let mut settings = before.clone();
         change(&mut settings);
         if settings == before {
-            return;
+            return false;
         }
-        let refilter = settings.zdr() != before.zdr() || settings.region() != before.region();
+        self.refilter |= settings.zdr() != before.zdr() || settings.region() != before.region();
         self.settings = Some(settings);
         self.version += 1;
-        self.saving += 1;
-        let edit = self.version;
-        cx.notify();
-        let backend = cx.global::<SharedBackend>().clone();
-        let change: OpenRouterChange = Arc::new(change);
-        let previous = self._save.take();
-        self._save = Some(cx.spawn(async move |this, cx| {
-            if let Some(previous) = previous {
-                previous.await;
-            }
-            let saved = cx
-                .background_spawn(async move { backend.change_openrouter(change) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.saving -= 1;
-                let latest = this.version == edit;
-                match saved {
-                    Ok(saved) => {
-                        this.problem = None;
-                        if latest {
-                            this.settings = Some(saved.clone());
-                        }
-                        OpenRouterSaved::publish(saved, cx);
-                        if refilter {
-                            this.fetch(false, cx);
-                        }
-                    }
-                    Err(why) => {
-                        this.problem = Some(curly(&why));
-                        // A later edit's save shows what's saved then.
-                        if latest {
-                            this.read(cx);
-                        }
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
+        change_openrouter(Arc::new(change), cx);
+        true
     }
 
     /// What's typed in a provider list changed or was left: saved once the
-    /// typing rests, at once on Enter or when the field loses focus.
+    /// typing rests, at once on Enter, when the field loses focus or when
+    /// Settings closes.
     fn typed(&mut self, which: Providers, event: &InputEvent, cx: &mut Context<Self>) {
         match event {
             InputEvent::Change => {
-                self._typing = Some(cx.spawn(async move |this, cx| {
+                let resting = cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(TYPING_REST).await;
-                    this.update(cx, |this, cx| this.save_providers(which, cx))
-                        .ok();
-                }));
+                    this.update(cx, |this, cx| {
+                        this.typing = None;
+                        if this.save_providers(which, cx) {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                });
+                self.typing = Some((which, resting));
             }
             InputEvent::PressEnter { .. } | InputEvent::Blur => {
-                self._typing = None;
-                self.save_providers(which, cx);
+                self.typing = None;
+                if self.save_providers(which, cx) {
+                    cx.notify();
+                }
             }
             InputEvent::Focus => {}
         }
     }
 
-    fn save_providers(&mut self, which: Providers, cx: &mut Context<Self>) {
+    /// Saves the provider list typed in `which`. Whether it changed the
+    /// settings.
+    fn save_providers(&mut self, which: Providers, cx: &mut App) -> bool {
         let typed = self.input(which).read(cx).value();
         let providers = slugs(&typed);
-        self.change(
+        self.make(
             move |settings| match which {
                 Providers::Only => settings.set_only(providers.clone()),
                 Providers::Ignore => settings.set_ignore(providers.clone()),
             },
             cx,
-        );
+        )
     }
 
     fn input(&self, which: Providers) -> &Entity<InputState> {
@@ -312,8 +316,8 @@ impl OpenRouterPart {
                 );
         };
         let implied = settings.data_collection_implied();
-        let description = match &self.problem {
-            Some(problem) => format!("{} {ABOUT}", sentence(problem)),
+        let description = match self.problem(cx) {
+            Some(problem) => format!("{} {ABOUT}", sentence(&problem)),
             None => ABOUT.to_string(),
         };
         let theme = cx.theme();
