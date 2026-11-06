@@ -1291,6 +1291,42 @@ fn a_delete_waiting_on_a_close_that_never_ends_gives_up(cx: &mut TestAppContext)
     assert_eq!(notifications(cx, window), 1);
 }
 
+/// A cache refresh's message answered before the session opened again, or
+/// after, makes no turn of the next engine count as the refresh's.
+#[gpui_kit::test]
+fn a_refresh_answered_around_a_reopen_leaves_the_next_turns_as_news(cx: &mut TestAppContext) {
+    start(cx);
+    let session = cx.new(|cx| crate::live::LiveSession::for_tests("s1", cx));
+    let turn = |cx: &mut TestAppContext| {
+        for working in [true, false] {
+            session.update(cx, |session, cx| {
+                let reading = (**session.reading()).clone();
+                let activity = arko::remote::Activity {
+                    working,
+                    ..Default::default()
+                };
+                session.set_status(reading, activity, cx)
+            });
+        }
+        cx.read(|cx| session.read(cx).turn_was_refresh())
+    };
+    session.update(cx, |session, _| {
+        session.answer_refresh_with(Ok(arko::Refreshed::Message))
+    });
+    // Answered, then the session opens again.
+    session.update(cx, |session, cx| session.refresh_cache(cx).detach());
+    cx.run_until_parked();
+    session.update(cx, |session, _| session.reopen_for_tests());
+    assert!(!turn(cx), "answered before");
+    // Asked, then the session opens again before the answer comes.
+    session.update(cx, |session, cx| {
+        session.refresh_cache(cx).detach();
+        session.reopen_for_tests();
+    });
+    cx.run_until_parked();
+    assert!(!turn(cx), "answered after");
+}
+
 /// The question about continuing a worker is about the attempt to open the
 /// session that refused the message. Once the session opened again,
 /// Continue sends nothing, and the message stays in the composer.

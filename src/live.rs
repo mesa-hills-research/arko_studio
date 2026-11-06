@@ -971,6 +971,10 @@ impl LiveSession {
         // to stop, name its jobs and workers.
         self.quit_ask = None;
         self.quit_agreed = None;
+        // A refresh's turn is that engine's.
+        self.refresh_coming = false;
+        self.refresh_running = false;
+        self.refreshed_last = false;
     }
 
     /// Switches the session between Chat and Agent (between turns): the
@@ -1031,10 +1035,17 @@ impl LiveSession {
         cx: &mut Context<Self>,
     ) -> Task<Result<arko::Refreshed, String>> {
         let answer = self.ask_refresh(cx);
+        let attempt = self.attempt;
         cx.spawn(async move |this, cx| {
             let answer = answer.await;
             if answer == Ok(arko::Refreshed::Message) {
-                this.update(cx, |this, _| this.refresh_coming = true).ok();
+                // The engine that took it runs its turn, not a later one.
+                this.update(cx, |this, _| {
+                    if this.attempt == attempt {
+                        this.refresh_coming = true;
+                    }
+                })
+                .ok();
             }
             answer
         })
