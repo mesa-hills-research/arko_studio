@@ -1401,6 +1401,81 @@ fn a_send_refused_after_its_window_moved_on_comes_back_where_its_session_shows(
     assert_eq!(composer_text(&view, cx), "Go on.");
 }
 
+/// A send refused after the window that sent it closed gives its words back
+/// to the session's kept draft, though no window of it is left to take them.
+#[gpui_kit::test]
+fn a_send_refused_after_its_window_closed_goes_back_to_its_draft(cx: &mut TestAppContext) {
+    let (one, workspace, session) = session_in_workspace(cx, 1300.);
+    let (_two, _other) = open(cx, 1300.);
+    send_text(cx, one, "Go on.");
+    cx.update_window(one, |_, window, _| window.remove_window())
+        .unwrap();
+    drop(workspace);
+    cx.run_until_parked();
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| crate::drafts::get("s1", cx))
+            .map(|draft| draft.text)
+            .as_deref(),
+        Some("Go on.")
+    );
+}
+
+/// Words given back to a session outlive the other windows that show it. A
+/// window that hasn't seen them, with nothing new of its own, keeps no
+/// older draft over them.
+#[gpui_kit::test]
+fn words_given_back_outlive_the_other_windows_showing_their_session(cx: &mut TestAppContext) {
+    let (one, origin, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    let (three, third) = open(cx, 1300.);
+    for (window, workspace) in [(two, &second), (three, &third)] {
+        act(cx, window, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_session(session.clone(), window, cx)
+            })
+        });
+    }
+    send_text(cx, one, "Go on.");
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    act(cx, one, |window, cx| {
+        origin.update(cx, |workspace, cx| {
+            workspace.show_session(elsewhere.clone(), window, cx)
+        })
+    });
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    cx.run_until_parked();
+    // Each of the two leaves the session, the one that has the words first.
+    let view = cx.read(|cx| second.read(cx).session_view().clone());
+    let windows = if composer_text(&view, cx) == "Go on." {
+        [(two, &second), (three, &third)]
+    } else {
+        [(three, &third), (two, &second)]
+    };
+    for (window, workspace) in windows {
+        act(cx, window, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_session(elsewhere.clone(), window, cx)
+            })
+        });
+    }
+    assert_eq!(
+        cx.read(|cx| crate::drafts::get("s1", cx))
+            .map(|draft| draft.text)
+            .as_deref(),
+        Some("Go on.")
+    );
+}
+
 /// A question the engine asks after the user closed the session as it
 /// opened is answered for them, without a dialog, so it doesn't open.
 #[gpui_kit::test]
