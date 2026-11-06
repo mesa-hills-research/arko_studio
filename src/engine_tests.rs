@@ -1598,6 +1598,44 @@ fn a_session_whose_engine_stops_unsaid_ends(cx: &mut TestAppContext) {
     });
 }
 
+/// An engine that stops without saying how right after it opened ends its
+/// session, though the end reaches the app before the app has taken the
+/// opening.
+#[gpui_kit::test]
+fn a_session_whose_engine_stops_as_it_opens_ends(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let mock = Mock::start(|_, _| answer("Working.", Duration::ZERO));
+    let held = Arc::new(crate::backend::HeldStart::default());
+    let app = start_with(cx, &mock, |backend| backend.with_held_start(held.clone()));
+    act(cx, app.window, |window, cx| {
+        window.input("Start working.", cx)
+    });
+    let waiting = testing::attempts_waiting();
+    cx.update_window(app.window, |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    // The attempt starts waiting for the opening, and nothing else runs yet.
+    while testing::attempts_waiting() == waiting {
+        assert!(
+            cx.dispatcher.tick(false),
+            "the attempt should be able to run"
+        );
+    }
+    let session = app.shown(cx).unwrap();
+    assert_eq!(
+        cx.read(|cx| session.read(cx).phase().clone()),
+        Phase::Opening
+    );
+    held.release.store(true, SeqCst);
+    let until = std::time::Instant::now() + testing::WAIT;
+    while !held.forwarded.load(SeqCst) {
+        assert!(std::time::Instant::now() < until, "the opening and the end");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| session.read(cx).phase().clone()), Phase::Ended);
+}
+
 #[gpui_kit::test]
 fn an_image_goes_with_the_message(cx: &mut TestAppContext) {
     let mock = Mock::start(|_, _| answer("A single pixel.", Duration::ZERO));

@@ -196,6 +196,23 @@ pub fn count_renders() {
     RENDERS.with(|renders| renders.borrow_mut().clear());
 }
 
+thread_local! {
+    /// How many times a session's attempt to open began waiting for the
+    /// engine's news.
+    static ATTEMPT_WAITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts an attempt beginning to wait for its engine's news (called from
+/// the attempt's task).
+pub fn attempt_waits() {
+    ATTEMPT_WAITS.with(|waits| waits.set(waits.get() + 1));
+}
+
+/// How many attempts began waiting for their engine's news on this thread.
+pub fn attempts_waiting() -> usize {
+    ATTEMPT_WAITS.with(std::cell::Cell::get)
+}
+
 /// A one-pixel PNG.
 pub const PNG: &[u8] = &[
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,

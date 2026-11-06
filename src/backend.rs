@@ -645,6 +645,20 @@ pub struct ArkoBackend {
     /// without saying how (tests).
     #[cfg(test)]
     ends_unsaid: bool,
+    /// Holds each session's opening back, as [`HeldStart`] says (tests).
+    #[cfg(test)]
+    held: Option<Arc<HeldStart>>,
+}
+
+/// A session's opening held back until `release`, by when its engine has
+/// already quit. Then it reaches the app together with an end that says
+/// nothing, as when an engine stops at once after it opened (tests).
+#[cfg(test)]
+#[derive(Default)]
+pub struct HeldStart {
+    pub release: std::sync::atomic::AtomicBool,
+    /// The opening and the end were handed to the app.
+    pub forwarded: std::sync::atomic::AtomicBool,
 }
 
 impl ArkoBackend {
@@ -655,6 +669,8 @@ impl ArkoBackend {
             defaults: Mutex::new(SessionDefaults::default()),
             #[cfg(test)]
             ends_unsaid: false,
+            #[cfg(test)]
+            held: None,
         }
     }
 
@@ -663,6 +679,13 @@ impl ArkoBackend {
     #[cfg(test)]
     pub fn with_ends_unsaid(mut self) -> Self {
         self.ends_unsaid = true;
+        self
+    }
+
+    /// Holds each session's opening back as `held` says (tests).
+    #[cfg(test)]
+    pub fn with_held_start(mut self, held: Arc<HeldStart>) -> Self {
+        self.held = Some(held);
         self
     }
 
@@ -817,6 +840,8 @@ impl Backend for ArkoBackend {
         let unsaid = self.ends_unsaid;
         #[cfg(not(test))]
         let unsaid = false;
+        #[cfg(test)]
+        let held = self.held.clone();
         let starting = std::thread::Builder::new()
             .name("arko-studio-start".into())
             .spawn(move || {
@@ -827,6 +852,21 @@ impl Backend for ArkoBackend {
                 let Ok(open) = running.opened.blocking_recv() else {
                     return;
                 };
+                #[cfg(test)]
+                if let Some(held) = held {
+                    use std::sync::atomic::Ordering::SeqCst;
+                    if let Ok(seam) = &open {
+                        let _ = seam.input.send(arko::Input::Quit(None));
+                    }
+                    let _ = running.ended.blocking_recv();
+                    while !held.release.load(SeqCst) {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    let _ = opened_sender.send(open);
+                    drop(ended_sender);
+                    held.forwarded.store(true, SeqCst);
+                    return;
+                }
                 let opened = open.is_ok();
                 if opened_sender.send(open).is_err() || !opened {
                     return;

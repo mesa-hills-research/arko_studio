@@ -666,26 +666,49 @@ impl LiveSession {
             Launch::Engine(running) => {
                 self.phase = Phase::Opening;
                 let arko::Running { opened, ended } = running;
+                let attempt = self.attempt;
+                // The attempt's opening, then its end, in that order, each
+                // taken once and only while the attempt is the session's.
                 self._tasks.push(cx.spawn(async move |this, cx| {
+                    #[cfg(test)]
+                    crate::testing::attempt_waits();
                     let opened = opened.await;
-                    this.update(cx, |this, cx| match opened {
-                        Ok(Ok(seam)) => this.opened(seam, cx),
-                        Ok(Err(error)) => this.failed(open_error(&error), cx),
-                        Err(_) => this.failed("The session stopped as it opened.".into(), cx),
-                    })
-                    .ok();
-                }));
-                self._tasks.push(cx.spawn(async move |this, cx| {
+                    let open = this.update(cx, |this, cx| {
+                        if this.attempt != attempt {
+                            return false;
+                        }
+                        match opened {
+                            Ok(Ok(seam)) => {
+                                this.opened(seam, cx);
+                                true
+                            }
+                            Ok(Err(error)) => {
+                                this.failed(open_error(&error), cx);
+                                false
+                            }
+                            Err(_) => {
+                                this.failed("The session stopped as it opened.".into(), cx);
+                                false
+                            }
+                        }
+                    });
+                    // One that didn't open has no end to wait for, and
+                    // `failed` said why.
+                    if !matches!(open, Ok(true)) {
+                        return;
+                    }
                     let end = ended.await;
-                    this.update(cx, |this, cx| match end {
-                        // It switched between Chat and Agent: it opens again.
-                        Ok(arko::RunEnd::Reopen) => this.reopen(cx),
-                        Ok(_) => this.ended(cx),
-                        // It stopped without saying how (it panicked). One
-                        // that opened has ended all the same. One that
-                        // didn't open was told why by `failed`.
-                        Err(_) if this.link.is_some() => this.stopped(cx),
-                        Err(_) => {}
+                    this.update(cx, |this, cx| {
+                        if this.attempt != attempt {
+                            return;
+                        }
+                        match end {
+                            // It switched between Chat and Agent: it opens again.
+                            Ok(arko::RunEnd::Reopen) => this.reopen(cx),
+                            Ok(_) => this.ended(cx),
+                            // It stopped without saying how (it panicked).
+                            Err(_) => this.stopped(cx),
+                        }
                     })
                     .ok();
                 }));
