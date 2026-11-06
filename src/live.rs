@@ -288,6 +288,11 @@ pub enum PromptAnswer {
     Mcp(Option<bool>),
 }
 
+/// Tells a prompt from those asked before and after it, so that an answer
+/// goes only to the prompt it was made for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromptId(u64);
+
 /// A question the engine waits on.
 pub struct Prompt {
     pub kind: PromptKind,
@@ -494,7 +499,9 @@ pub struct LiveSession {
     queued_requests: std::cell::RefCell<Vec<arko::Request>>,
     /// A Stop or Close invalidates earlier Share completions in every window.
     sharing_epoch: std::cell::Cell<u64>,
-    prompt: Option<Prompt>,
+    prompt: Option<(PromptId, Prompt)>,
+    /// Counts the prompts asked, which [`PromptId`] tells apart.
+    prompts: u64,
     quit_ask: Option<arko::QuitAsk>,
     /// What the user agreed to stop to close it.
     quit_agreed: Option<arko::QuitAsk>,
@@ -569,6 +576,7 @@ impl LiveSession {
             queued_requests: Default::default(),
             sharing_epoch: Default::default(),
             prompt: None,
+            prompts: 0,
             quit_ask: None,
             quit_agreed: None,
             questions: Questions::default(),
@@ -1010,6 +1018,7 @@ impl LiveSession {
             queued_requests: _,
             // Asked only while an engine opens, and cleared once it has.
             prompt: _,
+            prompts: _,
             quit_ask,
             quit_agreed,
             questions,
@@ -1956,22 +1965,37 @@ impl LiveSession {
             let _ = prompt.reply.send(PromptAnswer::Cancel);
             return;
         }
-        self.prompt = Some(prompt);
+        self.prompts += 1;
+        self.prompt = Some((PromptId(self.prompts), prompt));
         cx.emit(LiveEvent::Prompt);
         cx.notify();
     }
 
     /// The prompt waiting for the user, if any.
     pub fn prompt(&self) -> Option<&PromptKind> {
-        self.prompt.as_ref().map(|prompt| &prompt.kind)
+        self.prompt.as_ref().map(|(_, prompt)| &prompt.kind)
     }
 
-    /// Answers the waiting prompt.
-    pub fn answer_prompt(&mut self, answer: PromptAnswer, cx: &mut Context<Self>) {
-        if let Some(prompt) = self.prompt.take() {
+    /// Which prompt waits for the user, if any.
+    pub fn prompt_id(&self) -> Option<PromptId> {
+        self.prompt.as_ref().map(|(id, _)| *id)
+    }
+
+    /// Answers the prompt `id`, if it still waits. Returns whether it did.
+    pub fn answer_prompt(
+        &mut self,
+        id: PromptId,
+        answer: PromptAnswer,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.prompt_id() != Some(id) {
+            return false;
+        }
+        if let Some((_, prompt)) = self.prompt.take() {
             let _ = prompt.reply.send(answer);
             cx.notify();
         }
+        true
     }
 
     /// What closing it would stop, as its status says now.
@@ -2005,7 +2029,7 @@ impl LiveSession {
                     .push(quit(arko::Input::Quit(Some(Vec::new()))));
                 self.quit_agreed = Some(agreed);
                 self.phase = Phase::Closing;
-                if let Some(prompt) = self.prompt.take() {
+                if let Some((_, prompt)) = self.prompt.take() {
                     let _ = prompt.reply.send(PromptAnswer::Cancel);
                 }
             }

@@ -1476,6 +1476,46 @@ fn words_given_back_outlive_the_other_windows_showing_their_session(cx: &mut Tes
     );
 }
 
+/// A login file chosen for a question another window answered meanwhile
+/// answers nothing, and the engine's next question waits for its own answer.
+#[gpui_kit::test]
+fn a_login_chosen_for_an_answered_question_leaves_the_next_one_waiting(cx: &mut TestAppContext) {
+    use crate::live::{McpRequest, PromptAnswer, PromptKind};
+
+    let (one, _, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    act(cx, two, |window, cx| {
+        second.update(cx, |workspace, cx| {
+            workspace.show_session(session.clone(), window, cx)
+        })
+    });
+    let login = PromptKind::Credentials(arko::Need::ChatGptLogin {
+        model: "gpt-5.5".into(),
+        problem: "No login".into(),
+    });
+    let mut first = session.update(cx, |session, cx| session.ask(login, cx));
+    act(cx, one, |window, cx| window.click("credentials-login", cx));
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|_| Some(vec!["/home/ada/.codex/auth.json".into()]));
+    // The file is chosen, and before the first window uses it, the second
+    // answers the question.
+    cx.update_window(two, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("credentials-again", cx);
+    })
+    .unwrap();
+    assert_eq!(first.try_recv(), Ok(PromptAnswer::Again));
+    let mcp = PromptKind::Mcp(McpRequest {
+        file: "/home/ada/proj/.mcp.json".into(),
+        servers: vec![("tools".into(), "tools serve".into())],
+        skipped: Vec::new(),
+    });
+    let mut next = session.update(cx, |session, cx| session.ask(mcp, cx));
+    cx.run_until_parked();
+    assert!(next.try_recv().is_err(), "the earlier login answered it");
+    act(cx, two, |window, cx| assert!(window.has_active_dialog(cx)));
+}
+
 /// A question the engine asks after the user closed the session as it
 /// opened is answered for them, without a dialog, so it doesn't open.
 #[gpui_kit::test]
