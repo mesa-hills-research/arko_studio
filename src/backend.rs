@@ -986,6 +986,8 @@ struct FakeState {
     /// OpenRouter's models, and how many times they were fetched again.
     catalog: Catalog,
     catalog_fetches: usize,
+    /// How many times OpenRouter's models were asked for, fetched or not.
+    catalog_asks: usize,
     openrouter: OpenRouterSettings,
     /// The effort each model last ran at.
     last_efforts: Vec<(String, String)>,
@@ -1030,6 +1032,7 @@ impl FakeBackend {
                 accounts_read: 0,
                 catalog: Catalog::default(),
                 catalog_fetches: 0,
+                catalog_asks: 0,
                 openrouter: OpenRouterSettings::default(),
                 last_efforts: Vec::new(),
                 started: Vec::new(),
@@ -1284,6 +1287,13 @@ impl FakeBackend {
         self.with_state(|state| state.catalog_fetches)
     }
 
+    /// How many times OpenRouter's models were asked for, from memory or
+    /// fetched. Arko keeps them by the settings that filter them, so each
+    /// change to those settings asks again.
+    pub fn catalog_asks(&self) -> usize {
+        self.with_state(|state| state.catalog_asks)
+    }
+
     /// Lets a group of models need nothing once the key of the provider
     /// it's named after is set ("OpenRouter, billed per token" and the
     /// OpenRouter key), as arko's list does.
@@ -1412,6 +1422,7 @@ impl Backend for FakeBackend {
 
     fn openrouter_models(&self, refresh: bool) -> Catalog {
         self.with_state(|state| {
+            state.catalog_asks += 1;
             let fresh = state
                 .catalog
                 .fetched

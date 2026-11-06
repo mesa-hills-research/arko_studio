@@ -74,28 +74,11 @@ impl OpenRouterPart {
             cx.subscribe(&ignore, |this, _, event: &InputEvent, cx| {
                 this.typed(Providers::Ignore, event, cx)
             }),
-            // Saved, here or in another window: shown once no change waits,
-            // since the changes waiting are shown already.
-            cx.observe_global::<OpenRouterSaved>(|this, cx| {
-                if openrouter_changing(cx) {
-                    return;
-                }
-                let saved = cx.global::<OpenRouterSaved>().settings().cloned();
-                if let Some(saved) = saved
-                    && this.settings.as_ref() != Some(&saved)
-                {
-                    this.settings = Some(saved);
-                    cx.notify();
-                }
-                if std::mem::take(&mut this.refilter) {
-                    this.fetch(false, cx);
-                }
-            }),
-            // A change that couldn't be saved says why, and once none waits,
-            // what's shown is what the file holds.
+            // Changes asked for here or in another window. The ones waiting
+            // show already, and once none waits, what's saved shows.
             observe_openrouter_changes(cx, |this, cx| {
-                if !openrouter_changing(cx) && openrouter_change_error(cx).is_some() {
-                    this.read(cx);
+                if !openrouter_changing(cx) {
+                    this.settle(cx);
                 }
                 cx.notify();
             }),
@@ -147,6 +130,23 @@ impl OpenRouterPart {
             })
             .ok();
         }));
+    }
+
+    /// No change waits now. What's shown is what was saved, or what the file
+    /// holds after a save that failed, and the models are fetched again
+    /// under the settings saved if a change here ruled others out.
+    fn settle(&mut self, cx: &mut Context<Self>) {
+        if openrouter_change_error(cx).is_some() {
+            self.read(cx);
+        } else if let Some(saved) = cx
+            .try_global::<OpenRouterSaved>()
+            .and_then(OpenRouterSaved::settings)
+        {
+            self.settings = Some(saved.clone());
+        }
+        if std::mem::take(&mut self.refilter) {
+            self.fetch(false, cx);
+        }
     }
 
     /// Fetches OpenRouter's models in the background: when they're stale,

@@ -1696,6 +1696,47 @@ fn a_read_of_an_earlier_save_does_not_replace_the_last_one(cx: &mut TestAppConte
     }
 }
 
+/// A saved change to what rules OpenRouter's models out fetches them again,
+/// also when the save of a later change fails.
+#[gpui_kit::test]
+fn a_saved_filter_fetches_the_models_again_when_a_later_save_fails(cx: &mut TestAppContext) {
+    use arko::openrouter::Sort;
+    let backend = start_on(
+        cx,
+        FakeBackend::sample("/arko", SystemTime::now()),
+        prefs::Prefs::default(),
+    );
+    let (window, _) = open(cx, 1300.);
+    let part = openrouter_part(cx, window);
+    let asked = backend.catalog_asks();
+    // The save after zero data retention's fails.
+    let _fail_next = cx.update(|cx| {
+        let backend = backend.clone();
+        cx.observe_global::<crate::backend::OpenRouterSaved>(move |cx| {
+            let saved = cx.global::<crate::backend::OpenRouterSaved>().settings();
+            if saved.is_some_and(|saved| saved.zdr()) {
+                backend.fail_openrouter_saves(1);
+            }
+        })
+    });
+    cx.update(|cx| {
+        part.update(cx, |part, cx| {
+            part.change(|settings| settings.set_zdr(true), cx);
+            part.change(|settings| settings.set_sort(Sort::Price), cx);
+        })
+    });
+    cx.run_until_parked();
+    let saved = backend.openrouter();
+    assert!(saved.zdr());
+    assert_eq!(saved.sort(), Sort::Default);
+    assert_eq!(cx.read(|cx| part.read(cx).settings().cloned()), Some(saved));
+    assert_eq!(
+        backend.catalog_asks(),
+        asked + 1,
+        "the models are asked for under the saved filter"
+    );
+}
+
 /// The model lists' rows and OpenRouter's controls have names a screen
 /// reader says: each row its model, way and state, each control its field
 /// and value.
