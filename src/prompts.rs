@@ -90,7 +90,10 @@ pub struct CredentialsForm {
     provider: &'static str,
     key: Entity<InputState>,
     error: Option<SharedString>,
+    /// A key is being saved, or a login file chosen.
     busy: bool,
+    /// It answered the session and closed its dialog, which happens once.
+    done: bool,
 }
 
 impl CredentialsForm {
@@ -113,17 +116,27 @@ impl CredentialsForm {
             key,
             error: None,
             busy: false,
+            done: false,
         }
     }
 
+    /// Answers the session and closes the dialog. Once it has, a later
+    /// answer (a save that ends after Cancel) closes nothing else.
     fn answer(&mut self, answer: PromptAnswer, window: &mut Window, cx: &mut Context<Self>) {
+        if std::mem::replace(&mut self.done, true) {
+            return;
+        }
         self.session
             .update(cx, |session, cx| session.answer_prompt(answer, cx));
         window.close_dialog(cx);
     }
 
     /// Saves the key in Arko's folder, then lets the session check again.
+    /// It saves once while a save runs (Enter pressed twice).
     fn save_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         let value = self.key.read(cx).value().trim().to_string();
         if value.is_empty() {
             self.error = Some("Paste the key first.".into());
@@ -155,8 +168,14 @@ impl CredentialsForm {
         .detach();
     }
 
-    /// Asks for Codex's `auth.json`, then lets the session check again.
+    /// Asks for Codex's `auth.json`, then lets the session check again. It
+    /// asks once while it waits for the choice or uses it.
     fn choose_login(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        cx.notify();
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -165,21 +184,25 @@ impl CredentialsForm {
         });
         let backend = cx.global::<SharedBackend>().clone();
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = paths.await else {
-                return;
+            let path = match paths.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                _ => None,
             };
-            let Some(path) = paths.into_iter().next() else {
-                return;
+            let chosen = match path {
+                Some(path) => Some(
+                    cx.background_spawn(async move { backend.set_chatgpt_login(&path) })
+                        .await,
+                ),
+                None => None,
             };
-            let chosen = cx
-                .background_spawn(async move { backend.set_chatgpt_login(&path) })
-                .await;
-            this.update_in(cx, |this, window, cx| match chosen {
-                Ok(_) => this.answer(PromptAnswer::Again, window, cx),
-                Err(why) => {
-                    this.error = Some(why.into());
-                    cx.notify();
+            this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                match chosen {
+                    Some(Ok(_)) => this.answer(PromptAnswer::Again, window, cx),
+                    Some(Err(why)) => this.error = Some(why.into()),
+                    None => {}
                 }
+                cx.notify();
             })
             .ok();
         })
@@ -300,6 +323,7 @@ impl Render for CredentialsForm {
                                 .outline()
                                 .small()
                                 .label("Choose auth.json…")
+                                .loading(self.busy)
                                 .on_click(
                                     cx.listener(|this, _, window, cx| {
                                         this.choose_login(window, cx)
