@@ -8,6 +8,10 @@
 //! observes them ([`observe_saves`], [`save_state`]): the choice being saved,
 //! why the last save failed, and how many went through. Each save that goes
 //! through runs its setting's follow-up, also when a later one waits.
+//!
+//! What shows a setting also reads its file, off the UI thread. A read that
+//! began before a save was asked for or ended may hold what the file held
+//! before, so it shows only if [`Read::is_current`] says so.
 
 use gpui_kit::{App, AppContext as _, BorrowAppContext as _, Context, Subscription};
 
@@ -31,6 +35,9 @@ struct Writes<T> {
     error: Option<String>,
     /// How many saves went through.
     saved: u64,
+    /// Counts the saves asked for and the writes that ended, which a
+    /// [`Read`] compares.
+    changes: u64,
 }
 
 impl<T> Default for Writes<T> {
@@ -41,6 +48,7 @@ impl<T> Default for Writes<T> {
             running: false,
             error: None,
             saved: 0,
+            changes: 0,
         }
     }
 }
@@ -74,6 +82,33 @@ pub fn save_state<T: Clone + 'static>(cx: &App) -> SaveState<T> {
     }
 }
 
+/// A read of the setting `T`'s file, begun at one moment, which tells
+/// whether what it finds may show.
+#[must_use]
+pub struct Read<T> {
+    changes: u64,
+    setting: std::marker::PhantomData<fn() -> T>,
+}
+
+/// Begins a read of the setting `T`, as its read off the UI thread starts.
+pub fn begin_read<T: 'static>(cx: &App) -> Read<T> {
+    Read {
+        changes: cx
+            .try_global::<Writes<T>>()
+            .map_or(0, |writes| writes.changes),
+        setting: std::marker::PhantomData,
+    }
+}
+
+impl<T: 'static> Read<T> {
+    /// Whether what the read found may show. It may if no save of `T` was
+    /// asked for or ended since the read began, and none waits.
+    pub fn is_current(self, cx: &App) -> bool {
+        cx.try_global::<Writes<T>>()
+            .is_none_or(|writes| writes.changes == self.changes && writes.latest.is_none())
+    }
+}
+
 /// Calls `changed` whenever the saves of the setting `T` change.
 pub fn observe_saves<T: 'static, V: 'static>(
     cx: &mut Context<V>,
@@ -96,6 +131,7 @@ pub fn write_latest<T: Clone + Send + 'static>(
     let start = cx.update_global::<Writes<T>, _>(|writes, _| {
         writes.latest = Some(value.clone());
         writes.error = None;
+        writes.changes += 1;
         writes.pending = Some((value, write, saved));
         !std::mem::replace(&mut writes.running, true)
     });
@@ -113,12 +149,15 @@ fn write_next<T: Clone + Send + 'static>(cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = writing.await;
         cx.update(|cx| {
-            cx.update_global::<Writes<T>, _>(|writes, _| match &result {
-                Ok(()) => {
-                    writes.saved += 1;
-                    writes.error = None;
+            cx.update_global::<Writes<T>, _>(|writes, _| {
+                writes.changes += 1;
+                match &result {
+                    Ok(()) => {
+                        writes.saved += 1;
+                        writes.error = None;
+                    }
+                    Err(why) => writes.error = Some(why.clone()),
                 }
-                Err(why) => writes.error = Some(why.clone()),
             });
             if result.is_ok() {
                 saved(cx);
@@ -181,5 +220,48 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(*FOLLOWED_UP.lock().unwrap(), [1, 2]);
         assert!(cx.read(save_state::<FollowedUp>).pending.is_none());
+    }
+
+    /// Settings saved to nowhere, one for each test so that tests running at
+    /// once don't share their saves.
+    #[derive(Clone)]
+    struct NeverSaved;
+    #[derive(Clone)]
+    struct ChosenDuringRead;
+    #[derive(Clone)]
+    struct SavingAsReadBegins;
+
+    fn ask<T: Clone + Send + 'static>(value: T, cx: &mut App) {
+        write_latest(value, |_, _| Ok(()), |_| {}, cx);
+    }
+
+    #[gpui_kit::test]
+    fn a_read_of_a_setting_never_saved_is_current(cx: &mut TestAppContext) {
+        let read = cx.read(begin_read::<NeverSaved>);
+        assert!(cx.read(|cx| read.is_current(cx)));
+    }
+
+    #[gpui_kit::test]
+    fn a_read_begun_before_a_choice_is_out_of_date(cx: &mut TestAppContext) {
+        cx.update(backend);
+        let read = cx.read(begin_read::<ChosenDuringRead>);
+        cx.update(|cx| ask(ChosenDuringRead, cx));
+        cx.run_until_parked();
+        assert!(!cx.read(|cx| read.is_current(cx)));
+        let read = cx.read(begin_read::<ChosenDuringRead>);
+        assert!(cx.read(|cx| read.is_current(cx)), "one begun after it is");
+    }
+
+    #[gpui_kit::test]
+    fn a_read_begun_while_a_save_waits_is_out_of_date(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            backend(cx);
+            ask(SavingAsReadBegins, cx);
+        });
+        let read = cx.read(begin_read::<SavingAsReadBegins>);
+        let another = cx.read(begin_read::<SavingAsReadBegins>);
+        assert!(!cx.read(|cx| another.is_current(cx)), "a save waits");
+        cx.run_until_parked();
+        assert!(!cx.read(|cx| read.is_current(cx)), "the save ended since");
     }
 }

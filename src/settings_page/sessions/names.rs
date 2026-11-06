@@ -13,7 +13,9 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable 
 use gpui_kit::*;
 
 use super::SessionsPage;
-use crate::backend::{SessionNames, SharedBackend, Way, observe_saves, save_state, write_names};
+use crate::backend::{
+    Read, SessionNames, SharedBackend, Way, begin_read, observe_saves, save_state, write_names,
+};
 use crate::workers::curly;
 
 /// The dropdown's two values.
@@ -33,12 +35,8 @@ pub(super) struct Names {
     /// A save of the setting hasn't ended. The backend's queue
     /// (`write_names`) runs them, also after this page is gone.
     saving: bool,
-    /// How many times what the file holds changed, by a change here or a
-    /// write that ended. A reading that started before a change may have
-    /// what it was.
-    revision: usize,
-    /// How many times the setting was read: only the last reading counts.
-    reads: usize,
+    /// The reading of the setting under way. A newer one replaces it.
+    reading: Option<Task<()>>,
 }
 
 impl Names {
@@ -49,8 +47,7 @@ impl Names {
             by_model: false,
             error: None,
             saving: false,
-            revision: 0,
-            reads: 0,
+            reading: None,
         }
     }
 }
@@ -81,19 +78,14 @@ impl SessionsPage {
         if let Some(ways) = state.pending {
             self.names.saving = true;
             self.names.error = None;
-            if self.names_ways() != ways {
-                // Another page's choice. A reading started before it is out
-                // of date.
-                self.names.revision += 1;
-                self.show_ways(&ways);
-            }
+            // This page's choice, or another page's.
+            self.show_ways(&ways);
             cx.notify();
             return;
         }
         if !std::mem::take(&mut self.names.saving) {
             return;
         }
-        self.names.revision += 1;
         self.names.error = state.error.as_deref().map(|why| curly(why).into());
         self.refresh_names(cx);
         cx.notify();
@@ -114,52 +106,41 @@ impl SessionsPage {
 
     /// Reads the setting and what each way lacks, in the background.
     pub(super) fn refresh_names(&mut self, cx: &mut Context<Self>) {
-        self.names.reads += 1;
-        let (reading, revision) = (self.names.reads, self.names.revision);
+        let began = begin_read::<Vec<Way>>(cx);
         let backend = cx.global::<SharedBackend>().clone();
         let read = cx.background_spawn(async move { backend.session_names() });
-        cx.spawn(async move |this, cx| {
+        self.names.reading = Some(cx.spawn(async move |this, cx| {
             let read = read.await;
             this.update(cx, |this, cx| {
-                if this.names.reads == reading {
-                    this.adopt_names(read, revision);
-                    cx.notify();
-                }
+                this.adopt_names(read, began, cx);
+                cx.notify();
             })
             .ok();
-        })
-        .detach();
+        }));
     }
 
-    /// Shows what the backend read when the file held what `revision` says.
-    /// What each way lacks always shows. The ways are taken only if nothing
-    /// changed them since, here or by a write, and none waits, since the
-    /// reading may be of the list before the change, and showing it would
-    /// undo the change on screen.
-    fn adopt_names(&mut self, read: SessionNames, revision: usize) {
-        if !self.names.saving && self.names.revision == revision {
+    /// Shows what the backend read in the reading `began`. What each way
+    /// lacks always shows. The ways are taken only if no save of them was
+    /// asked for or ended since, here or in another window, and none waits,
+    /// since the reading may be of the list before the change, and showing
+    /// it would undo the change on screen.
+    fn adopt_names(&mut self, read: SessionNames, began: Read<Vec<Way>>, cx: &App) {
+        if began.is_current(cx) {
             self.show_ways(&read.ways);
         }
         self.names.read = Some(read);
     }
 
-    /// A reading of the setting that was started when the file held what
-    /// `revision` says, arriving now (tests).
+    /// What the reading `began` read, arriving now (tests).
     #[cfg(test)]
     pub fn adopt_names_read(
         &mut self,
         read: SessionNames,
-        revision: usize,
+        began: Read<Vec<Way>>,
         cx: &mut Context<Self>,
     ) {
-        self.adopt_names(read, revision);
+        self.adopt_names(read, began, cx);
         cx.notify();
-    }
-
-    /// How many times what the file holds changed (tests).
-    #[cfg(test)]
-    pub fn names_revision(&self) -> usize {
-        self.names.revision
     }
 
     /// The ways turned on, in order, as the setting holds them.
@@ -213,7 +194,6 @@ impl SessionsPage {
     /// closed), and every page showing it hears how the saves end.
     fn save_names(&mut self, cx: &mut Context<Self>) {
         let names = &mut self.names;
-        names.revision += 1;
         names.saving = true;
         names.error = None;
         write_names(self.names_ways(), cx);

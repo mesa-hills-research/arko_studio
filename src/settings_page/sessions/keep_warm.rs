@@ -14,7 +14,7 @@ use gpui_kit::component::{ActiveTheme as _, h_flex};
 use gpui_kit::*;
 
 use super::SessionsPage;
-use crate::backend::{SharedBackend, observe_saves, save_state, write_latest};
+use crate::backend::{SharedBackend, begin_read, observe_saves, save_state, write_latest};
 use crate::live::LiveSessions;
 use crate::workers::curly;
 
@@ -121,13 +121,16 @@ impl SessionsPage {
             return;
         }
         self.keep_warm.saving = false;
+        let began = begin_read::<Option<Limits>>(cx);
         let backend = cx.global::<SharedBackend>().clone();
         let read = cx.background_spawn(async move { keep_warm::load(backend.data_root()) });
         self.keep_warm.reading = Some(cx.spawn(async move |this, cx| {
             let setting = read.await;
             this.update(cx, |this, cx| {
-                this.keep_warm.setting = setting;
-                cx.notify();
+                if began.is_current(cx) {
+                    this.keep_warm.setting = setting;
+                    cx.notify();
+                }
             })
             .ok();
         }));
