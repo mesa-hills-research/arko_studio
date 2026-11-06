@@ -503,6 +503,30 @@ fn a_narrow_window_shows_the_sidebar_as_a_sheet_that_closes_on_a_choice(cx: &mut
     });
 }
 
+/// The pane read as a sheet in a narrow window docks as the window grows.
+#[gpui_kit::test]
+fn the_sheet_read_in_a_narrow_window_docks_as_it_grows(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 600.);
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(menus::ToggleNotifications), cx)
+    });
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_sheet(cx))
+    });
+    cx.simulate_window_resize(window, size(px(1300.), px(720.)));
+    act(cx, window, |_, _| {});
+    assert_eq!(
+        cx.read(|cx| workspace.read(cx).width_class()),
+        crate::layout::WidthClass::Wide
+    );
+    act(cx, window, |window, cx| {
+        assert!(!window.has_active_sheet(cx))
+    });
+    assert!(cx.read(|cx| workspace.read(cx).is_notifications_open()));
+    assert!(!cx.read(|cx| workspace.read(cx).is_workers_open()));
+}
+
 /// A session of the workspace in a window `width` wide, and the number of
 /// notifications the window shows.
 fn session_in_workspace(
