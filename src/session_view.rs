@@ -33,6 +33,7 @@ use crate::composer::{Attached, Composer, ComposerEvent, Outgoing};
 use crate::editing::{self, Change, Choice};
 use crate::layout::WidthClass;
 use crate::live::{LiveSession, LiveSessions, Phase, PromptKind, Sent};
+use crate::loaded::Loaded;
 use crate::questions::{AnswerPanel, AnswerPanelEvent};
 use crate::transcript::{AgentFilter, FindStatus, TranscriptEvent, TranscriptView};
 use crate::workers::Usual;
@@ -174,9 +175,9 @@ pub struct SessionView {
     recent_folders: Vec<PathBuf>,
     /// The user's home folder, the last place a new session falls back on.
     home: Option<PathBuf>,
-    /// The models a new session can start on, for the folder they were
-    /// listed for.
-    models: Option<(Option<PathBuf>, ModelChoices)>,
+    /// The models a new session can start on, by the folder they were
+    /// listed for (none for a chat).
+    models: Loaded<Option<PathBuf>, ModelChoices>,
     /// The model and effort Settings set for new sessions, as last drawn.
     defaults_shown: (Option<String>, Option<String>),
     composer: Entity<Composer>,
@@ -216,7 +217,6 @@ pub struct SessionView {
     model_for_focus: FocusHandle,
     _session: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
-    _models: Option<Task<()>>,
     _draft: Option<Task<()>>,
     /// The transcripts of the sessions shown last, the latest last.
     transcripts: Vec<KeptTranscript>,
@@ -225,19 +225,12 @@ pub struct SessionView {
     /// What the model list knows of OpenRouter.
     openrouter: OpenRouterSeen,
     _openrouter: Option<Task<()>>,
-    /// The effort each model last ran at, as arko keeps it, by model.
-    last_efforts: std::collections::HashMap<String, Option<String>>,
-    /// The latest read of each model's last effort since the model list
-    /// last opened, so an older read that ends later is dropped. A model
-    /// without one is read again.
-    last_effort_reads: std::collections::HashMap<String, u64>,
-    reads: u64,
+    /// The effort each model last ran at, as arko keeps it, by model. A
+    /// model's is read again once the model list opens after a session ran.
+    last_efforts: std::collections::HashMap<String, Loaded<(), Option<String>>>,
     /// The models the open session can switch to, listed off the UI thread
     /// (it may run `claude`) for its status's models as they were then.
-    session_models: Option<(arko::remote::Models, ModelChoices)>,
-    /// What reaches the models changed since they were listed.
-    session_models_stale: bool,
-    _session_models: Option<(arko::remote::Models, Task<()>)>,
+    session_models: Loaded<arko::remote::Models, ModelChoices>,
     /// Once the conversation has started, the model list is the new
     /// workers' (`true`) or the main agent's.
     lists_worker_models: bool,
@@ -431,17 +424,17 @@ impl SessionView {
             // Settings. Coming back to the window, the terminal app may
             // have changed them.
             cx.observe_global::<crate::backend::AccountsSeen>(|this, cx| {
-                this.session_models_stale = true;
+                this.session_models.mark_stale();
                 this.list_models_again(cx)
             }),
             cx.observe_window_activation(window, |this, window, cx| {
                 this.sync_exposure(window, cx);
-                if window.is_window_active() && this.models.is_some() {
+                if window.is_window_active() && this.models.shown().is_some() {
                     this.list_models_again(cx);
                 }
                 if window.is_window_active() {
                     this.forget_last_efforts(cx);
-                    this.session_models_stale = true;
+                    this.session_models.mark_stale();
                 }
             }),
             cx.observe(&model_filter, |_, _, cx| cx.notify()),
@@ -489,7 +482,7 @@ impl SessionView {
             },
             recent_folders: Vec::new(),
             home: cx.global::<HomeFolder>().0.clone(),
-            models: None,
+            models: Loaded::default(),
             defaults_shown: (settings_model(cx), settings_effort(cx)),
             composer,
             composer_empty: true,
@@ -510,18 +503,13 @@ impl SessionView {
             model_for_focus: cx.focus_handle().tab_stop(true),
             _session: Vec::new(),
             _subscriptions: subscriptions,
-            _models: None,
             _draft: None,
             transcripts: Vec::new(),
             closed: false,
             openrouter: OpenRouterSeen::default(),
             _openrouter: None,
             last_efforts: std::collections::HashMap::new(),
-            last_effort_reads: std::collections::HashMap::new(),
-            reads: 0,
-            session_models: None,
-            session_models_stale: false,
-            _session_models: None,
+            session_models: Loaded::default(),
             lists_worker_models: false,
         };
         this.restore_draft(window, cx);
@@ -620,14 +608,9 @@ impl SessionView {
     /// unless they're listed for its folder already.
     fn list_models(&mut self, cx: &mut Context<Self>) {
         let folder = self.models_folder();
-        if self
-            .models
-            .as_ref()
-            .is_some_and(|(listed, _)| *listed == folder)
-        {
-            return;
+        if self.models.want(&folder) {
+            self.list_models_again(cx);
         }
-        self.list_models_again(cx);
     }
 
     /// Lists the models a new session can start on again, in the
@@ -640,15 +623,18 @@ impl SessionView {
             let folder = folder.clone();
             async move { backend.models(folder.as_deref()) }
         });
-        self._models = Some(cx.spawn(async move |this, cx| {
-            let models = listing.await;
-            this.update(cx, |this, cx| {
-                this.models = Some((folder, models));
-                this.sync_image_model(cx);
-                cx.notify();
+        self.models.start(folder, |load| {
+            cx.spawn(async move |this, cx| {
+                let models = listing.await;
+                this.update(cx, |this, cx| {
+                    if this.models.finish(load, models) {
+                        this.sync_image_model(cx);
+                        cx.notify();
+                    }
+                })
+                .ok();
             })
-            .ok();
-        }));
+        });
     }
 
     /// Reads what the model list shows of OpenRouter, in the background:
@@ -712,8 +698,8 @@ impl SessionView {
             .or_else(|| settings_model(cx))
             .or_else(|| {
                 self.models
-                    .as_ref()
-                    .and_then(|(_, models)| models.default.clone())
+                    .shown()
+                    .and_then(|models| models.default.clone())
             })
     }
 
@@ -736,7 +722,12 @@ impl SessionView {
         if efforts.is_empty() {
             return None;
         }
-        let last = self.last_efforts.get(model).cloned().flatten();
+        let last = self
+            .last_efforts
+            .get(model)
+            .and_then(Loaded::shown)
+            .cloned()
+            .flatten();
         let (wanted, from) = match (&self.draft.effort, last, settings_effort(cx)) {
             (Some(chosen), _, _) => (chosen.clone(), EffortFrom::Chosen),
             (None, Some(last), _) => (last, EffortFrom::LastUsed),
@@ -756,72 +747,59 @@ impl SessionView {
         let Some(model) = self.draft_model(cx) else {
             return;
         };
-        if self.last_effort_reads.contains_key(&model) {
+        let slot = self.last_efforts.entry(model.clone()).or_default();
+        if !slot.want(&()) {
             return;
         }
-        self.reads += 1;
-        let read = self.reads;
-        self.last_effort_reads.insert(model.clone(), read);
         let backend = cx.global::<SharedBackend>().clone();
         let reading = cx.background_spawn({
             let model = model.clone();
             async move { backend.last_effort(&model) }
         });
-        cx.spawn(async move |this, cx| {
-            let effort = reading.await;
-            this.update(cx, |this, cx| {
-                let latest = this.last_effort_reads.get(&model) == Some(&read);
-                if latest && this.last_efforts.get(&model) != Some(&effort) {
-                    this.last_efforts.insert(model, effort);
-                    cx.notify();
-                }
+        slot.start((), |load| {
+            cx.spawn(async move |this, cx| {
+                let effort = reading.await;
+                this.update(cx, |this, cx| {
+                    let slot = this.last_efforts.entry(model).or_default();
+                    let changed = slot.shown() != Some(&effort);
+                    if slot.finish(load, effort) && changed {
+                        cx.notify();
+                    }
+                })
+                .ok();
             })
-            .ok();
-        })
-        .detach();
+        });
     }
 
     /// Lists the models the open session can switch to, in the background,
     /// unless they're listed for `models` already. Those listed before
     /// show meanwhile.
     fn see_session_models(&mut self, models: &arko::remote::Models, cx: &mut Context<Self>) {
-        let listed = self
-            .session_models
-            .as_ref()
-            .is_some_and(|(listed, _)| listed == models);
-        if listed && !self.session_models_stale {
+        if !self.session_models.want(models) {
             return;
         }
-        let listing = self
-            ._session_models
-            .as_ref()
-            .is_some_and(|(listing, _)| listing == models);
-        if listing {
-            return;
-        }
-        self.session_models_stale = false;
         let backend = cx.global::<SharedBackend>().clone();
         let reading = cx.background_spawn({
             let models = models.clone();
             async move { backend.session_models(&models) }
         });
-        let key = models.clone();
-        let task = cx.spawn(async move |this, cx| {
-            let choices = reading.await;
-            this.update(cx, |this, cx| {
-                this.session_models = Some((key, choices));
-                this._session_models = None;
-                cx.notify();
+        self.session_models.start(models.clone(), |load| {
+            cx.spawn(async move |this, cx| {
+                let choices = reading.await;
+                this.update(cx, |this, cx| {
+                    if this.session_models.finish(load, choices) {
+                        cx.notify();
+                    }
+                })
+                .ok();
             })
-            .ok();
         });
-        self._session_models = Some((models.clone(), task));
     }
 
     /// Reads the models' last efforts again from now on: a session ran
     /// since, here or elsewhere.
     fn forget_last_efforts(&mut self, cx: &mut Context<Self>) {
-        self.last_effort_reads.clear();
+        self.last_efforts.values_mut().for_each(Loaded::mark_stale);
         self.see_last_effort(cx);
     }
 
@@ -2894,7 +2872,7 @@ impl SessionView {
             (Some("/model"), Some(model), effort)
                 if self.session.is_none() && model != "worker" =>
             {
-                let listed = self.models.as_ref().map(|(_, choices)| {
+                let listed = self.models.shown().map(|choices| {
                     choices
                         .groups
                         .iter()
@@ -2950,7 +2928,7 @@ impl SessionView {
         // The next new session starts as Settings say.
         self.set_draft_mode(default_mode(cx), cx);
         // The session just started may change its model's last effort.
-        self.last_effort_reads.clear();
+        self.last_efforts.values_mut().for_each(Loaded::mark_stale);
         cx.emit(SessionViewEvent::Created(session.clone()));
         Ok(sent.ok().map(|sent| (session, sent)))
     }
@@ -3117,19 +3095,12 @@ impl SessionView {
         let workers_only = lists_both && self.lists_worker_models;
         let (choices, current, current_effort) = match &session_models {
             None => (
-                self.models
-                    .as_ref()
-                    .map(|(_, models)| models.clone())
-                    .unwrap_or_default(),
+                self.models.shown().cloned().unwrap_or_default(),
                 self.draft_model(cx),
                 None,
             ),
             Some(models) => {
-                let choices = self
-                    .session_models
-                    .as_ref()
-                    .map(|(_, choices)| choices.clone())
-                    .unwrap_or_default();
+                let choices = self.session_models.shown().cloned().unwrap_or_default();
                 let (current, effort) = if workers_only {
                     (models.workers.as_str(), None)
                 } else if started {

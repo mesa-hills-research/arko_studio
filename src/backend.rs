@@ -956,6 +956,9 @@ fn delete_error(error: arko::sessions::DeleteError) -> BackendError {
 pub struct FakeBackend {
     root: PathBuf,
     models: ModelChoices,
+    /// What a new session in one of these folders can start on, in place
+    /// of `models`.
+    models_for: Vec<(PathBuf, ModelChoices)>,
     /// What an open session can switch to, else arko's list for its status.
     session_models: Option<ModelChoices>,
     /// A group of models needs nothing once the key of the provider it's
@@ -983,8 +986,9 @@ struct FakeState {
     last_efforts: Vec<(String, String)>,
     /// The new sessions started, as the app asked for them.
     started: Vec<NewSession>,
-    /// How many times an open session's models were listed.
-    session_menus: usize,
+    /// The main model of each open session's status its models were
+    /// listed for, in order.
+    session_menus: Vec<String>,
     /// How many of the next OpenRouter saves fail.
     openrouter_failures: usize,
     extensions: extensions::Extensions,
@@ -1009,6 +1013,7 @@ impl FakeBackend {
         Self {
             root: root.clone(),
             models: ModelChoices::default(),
+            models_for: Vec::new(),
             session_models: None,
             groups_follow_keys: false,
             state: Mutex::new(FakeState {
@@ -1023,7 +1028,7 @@ impl FakeBackend {
                 openrouter: OpenRouterSettings::default(),
                 last_efforts: Vec::new(),
                 started: Vec::new(),
-                session_menus: 0,
+                session_menus: Vec::new(),
                 openrouter_failures: 0,
                 extensions: extensions::Extensions::sample(Path::new("/home/ada"), &root),
                 removed: Vec::new(),
@@ -1203,6 +1208,12 @@ impl FakeBackend {
         self
     }
 
+    /// Offers `models` to new sessions in `folder`.
+    pub fn with_models_for(mut self, folder: impl Into<PathBuf>, models: ModelChoices) -> Self {
+        self.models_for.push((folder.into(), models));
+        self
+    }
+
     /// Offers `models` to open sessions, whatever their status says.
     pub fn with_session_models(mut self, models: ModelChoices) -> Self {
         self.session_models = Some(models);
@@ -1242,7 +1253,13 @@ impl FakeBackend {
 
     /// How many times an open session's models were listed.
     pub fn session_menus(&self) -> usize {
-        self.with_state(|state| state.session_menus)
+        self.with_state(|state| state.session_menus.len())
+    }
+
+    /// How many times the models of an open session whose main model is
+    /// `main` were listed.
+    pub fn session_menus_for(&self, main: &str) -> usize {
+        self.with_state(|state| state.session_menus.iter().filter(|m| *m == main).count())
     }
 
     /// The new sessions started, as the app asked for them.
@@ -1367,8 +1384,12 @@ impl Backend for FakeBackend {
         })
     }
 
-    fn models(&self, _: Option<&Path>) -> ModelChoices {
-        let mut models = self.models.clone();
+    fn models(&self, folder: Option<&Path>) -> ModelChoices {
+        let mut models = self
+            .models_for
+            .iter()
+            .find(|(listed, _)| Some(listed.as_path()) == folder)
+            .map_or_else(|| self.models.clone(), |(_, models)| models.clone());
         if self.groups_follow_keys {
             self.with_state(|state| {
                 for group in &mut models.groups {
@@ -1404,7 +1425,7 @@ impl Backend for FakeBackend {
     }
 
     fn session_models(&self, models: &arko::remote::Models) -> ModelChoices {
-        self.with_state(|state| state.session_menus += 1);
+        self.with_state(|state| state.session_menus.push(models.main.clone()));
         if let Some(models) = &self.session_models {
             return models.clone();
         }
