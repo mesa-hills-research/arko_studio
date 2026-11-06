@@ -959,22 +959,71 @@ impl LiveSession {
     /// forgets the requests, since arko numbers each engine's from a1 and
     /// the next engine's are other requests.
     fn depart(&mut self) {
-        self.link = None;
-        self._feed.clear();
-        self.activity = Activity::default();
-        self.questions.reopened();
-        self.approvals = Approvals::default();
-        Arc::make_mut(&mut self.reading).approvals.clear();
-        self.follow_requests();
-        self.pending.clear();
+        // Every field is named, so that a new one has to say whether it
+        // outlives the engine.
+        let Self {
+            // The session itself, which the next engine opens.
+            key: _,
+            id: _,
+            title: _,
+            mode: _,
+            workspace: _,
+            model: _,
+            shown: _,
+            touched_at: _,
+            input_epoch: _,
+            sharing_epoch: _,
+            opened: _,
+            attempt: _,
+            sends: _,
+            // `launch` sets it next.
+            phase: _,
+            link,
+            reading,
+            activity,
+            // Each engine's feed sends them again.
+            workers: _,
+            // They went as the engine opened.
+            queued_requests: _,
+            // Asked only while an engine opens, and cleared once it has.
+            prompt: _,
+            quit_ask,
+            quit_agreed,
+            questions,
+            approvals,
+            // It describes the draft, which outlives the engine.
+            message: _,
+            pending,
+            refresh_coming,
+            refresh_running,
+            refreshed_last,
+            #[cfg(test)]
+                applied: _,
+            #[cfg(test)]
+                refresh_answer: _,
+            #[cfg(test)]
+                followed: _,
+            // The tasks of earlier engines, which end with them.
+            _tasks: _,
+            _feed,
+            _rename: _,
+        } = self;
+        *link = None;
+        _feed.clear();
+        *activity = Activity::default();
+        questions.reopened();
+        *approvals = Approvals::default();
+        Arc::make_mut(reading).approvals.clear();
+        pending.clear();
         // What that engine asked about quitting, and what the user agreed
         // to stop, name its jobs and workers.
-        self.quit_ask = None;
-        self.quit_agreed = None;
+        *quit_ask = None;
+        *quit_agreed = None;
         // A refresh's turn is that engine's.
-        self.refresh_coming = false;
-        self.refresh_running = false;
-        self.refreshed_last = false;
+        *refresh_coming = false;
+        *refresh_running = false;
+        *refreshed_last = false;
+        self.follow_requests();
     }
 
     /// Switches the session between Chat and Agent (between turns): the
