@@ -2101,9 +2101,9 @@ fn a_message_arko_refused_comes_back_to_arko(cx: &mut TestAppContext) {
     assert_eq!(sent(&session, cx), ["Carry on."]);
 }
 
-/// A message Arko refused comes back to the composer whole, unless
-/// something else was typed since, and one Arko accepted doesn't. A message
-/// of an image alone comes back with its image.
+/// A message Arko refused comes back to the composer whole, or after what
+/// was typed since, and one Arko accepted doesn't. A message of an image
+/// alone comes back with its image.
 #[gpui_kit::test]
 fn a_message_arko_refused_comes_back_whole(cx: &mut TestAppContext) {
     let (window, workspace, session) = started_session(cx);
@@ -2135,12 +2135,12 @@ fn a_message_arko_refused_comes_back_whole(cx: &mut TestAppContext) {
     });
     act(cx, window, |_, _| {});
     assert_eq!(composer_text(&workspace, cx), "");
-    // Not over what was typed since.
+    // After what was typed since.
     act(cx, window, |window, cx| window.input("Carry on.", cx));
     act(cx, window, |window, cx| window.press("enter", cx));
     act(cx, window, |window, cx| window.input("Wait.", cx));
     refused(cx);
-    assert_eq!(composer_text(&workspace, cx), "Wait.");
+    assert_eq!(composer_text(&workspace, cx), "Wait.\n\nCarry on.");
     // A message of an image alone comes back with its image.
     let composer = cx.read(|cx| view.read(cx).composer().clone());
     act(cx, window, |window, cx| {

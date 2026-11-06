@@ -1074,12 +1074,12 @@ fn continuing_a_worker_arko_refuses_asks_first(cx: &mut TestAppContext) {
         assert_eq!(composer_text(&view, cx), "", "{target:?}");
         assert_eq!(accept_sends(&session, window, cx), went(true));
     }
-    // Not over what was typed since.
+    // Not asked over what was typed since, which the words come after.
     send_text(cx, window, "Go on.");
     act(cx, window, |window, cx| window.input("Wait.", cx));
     refuse_uncached(&session, window, cx);
     assert!(!shows_dialog(cx, window));
-    assert_eq!(composer_text(&view, cx), "Wait.");
+    assert_eq!(composer_text(&view, cx), "Wait.\n\nGo on.");
 }
 
 /// The question is about the message the composer held when it was asked.
@@ -1230,11 +1230,11 @@ fn only_the_window_whose_send_arko_refused_gets_it_back(cx: &mut TestAppContext)
     assert_eq!(notifications(cx, two), 1);
 }
 
-/// A verdict of an attempt to open the session that gave way to another
-/// (it opened again, switched between Chat and Agent) changes nothing,
-/// though it comes before the new attempt opens.
+/// A send the engine closed on as the session opened again (it switched
+/// between Chat and Agent) never went. It comes back to the composer, and
+/// nothing more is said.
 #[gpui_kit::test]
-fn a_verdict_after_the_session_opened_again_changes_nothing(cx: &mut TestAppContext) {
+fn a_send_closed_on_as_the_session_opened_again_comes_back(cx: &mut TestAppContext) {
     let (window, workspace, session) = session_in_workspace(cx, 1300.);
     let view = cx.read(|cx| workspace.read(cx).session_view().clone());
     send_text(cx, window, "Go on.");
@@ -1244,8 +1244,137 @@ fn a_verdict_after_the_session_opened_again_changes_nothing(cx: &mut TestAppCont
         let _ = reply.send(arko::Verdict::closed());
     }
     act(cx, window, |_, _| {});
-    assert_eq!(composer_text(&view, cx), "");
+    assert_eq!(composer_text(&view, cx), "Go on.");
     assert_eq!(notifications(cx, window), 0);
+}
+
+/// A send Arko refuses after the window moved to another session goes back
+/// to its session's kept draft, and the window names the session it was for.
+#[gpui_kit::test]
+fn a_send_refused_after_the_window_moved_on_goes_back_to_its_draft(cx: &mut TestAppContext) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    send_text(cx, window, "Go on.");
+    let other = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    act(cx, window, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(other.clone(), window, cx)
+        })
+    });
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    act(cx, window, |_, _| {});
+    assert_eq!(
+        cx.read(|cx| crate::drafts::get("s1", cx))
+            .map(|draft| draft.text)
+            .as_deref(),
+        Some("Go on.")
+    );
+    assert_eq!(composer_text(&view, cx), "", "the other session's own");
+    assert_eq!(notifications(cx, window), 1);
+}
+
+/// A send whose verdict never came, after the window moved to another
+/// session, may not have gone. It goes back to its session's kept draft.
+#[gpui_kit::test]
+fn a_send_without_a_verdict_after_the_window_moved_on_goes_back(cx: &mut TestAppContext) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    send_text(cx, window, "Go on.");
+    let other = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    act(cx, window, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(other.clone(), window, cx)
+        })
+    });
+    drop(session.update(cx, |session, _| session.read_sends()));
+    act(cx, window, |_, _| {});
+    assert_eq!(
+        cx.read(|cx| crate::drafts::get("s1", cx))
+            .map(|draft| draft.text)
+            .as_deref(),
+        Some("Go on.")
+    );
+    assert_eq!(notifications(cx, window), 1);
+}
+
+/// A refused send whose composer took more words meanwhile comes back
+/// after them, rather than not at all.
+#[gpui_kit::test]
+fn a_refused_send_joins_what_was_typed_since(cx: &mut TestAppContext) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    send_text(cx, window, "Go on.");
+    act(cx, window, |window, cx| window.input("And more.", cx));
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    act(cx, window, |_, _| {});
+    assert_eq!(composer_text(&view, cx), "And more.\n\nGo on.");
+    assert_eq!(notifications(cx, window), 1, "why it didn't go");
+}
+
+/// Words that come back while a message of their session is being edited
+/// join the draft the edit put aside, so ending the edit brings them back.
+#[gpui_kit::test]
+fn words_back_during_an_edit_come_back_after_it(cx: &mut TestAppContext) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    send_text(cx, window, "Go on.");
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.edit_for_tests("An earlier message.", window, cx)
+        })
+    });
+    let replies = session.update(cx, |session, _| session.read_sends());
+    session.update(cx, |session, _| session.reopen_for_tests());
+    for (_, reply) in replies {
+        let _ = reply.send(arko::Verdict::closed());
+    }
+    act(cx, window, |_, _| {});
+    assert_eq!(
+        composer_text(&view, cx),
+        "An earlier message.",
+        "still editing"
+    );
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.end_edit(window, cx))
+    });
+    assert_eq!(composer_text(&view, cx), "Go on.");
+}
+
+/// A send refused after its window moved on comes back in another window
+/// that shows its session, whose own draft would otherwise be kept over it.
+#[gpui_kit::test]
+fn a_send_refused_after_its_window_moved_on_comes_back_where_its_session_shows(
+    cx: &mut TestAppContext,
+) {
+    let (one, workspace, session) = session_in_workspace(cx, 1300.);
+    let (two, other) = open(cx, 1300.);
+    act(cx, two, |window, cx| {
+        other.update(cx, |other, cx| {
+            other.show_session(session.clone(), window, cx)
+        })
+    });
+    send_text(cx, one, "Go on.");
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    act(cx, one, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(elsewhere.clone(), window, cx)
+        })
+    });
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    act(cx, two, |_, _| {});
+    let view = cx.read(|cx| other.read(cx).session_view().clone());
+    assert_eq!(composer_text(&view, cx), "Go on.");
 }
 
 /// A question the engine asks after the user closed the session as it

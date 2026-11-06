@@ -356,6 +356,14 @@ fn joined(text: &str, more: &str) -> String {
     }
 }
 
+/// Puts `back` after the kept draft of the session `home`.
+fn keep_back(home: &str, back: Outgoing, cx: &mut App) {
+    let mut draft = drafts::get(home, cx).unwrap_or_default();
+    draft.text = joined(&draft.text, &back.text);
+    draft.images.extend(back.images);
+    drafts::set(home, &draft, cx);
+}
+
 /// Whether `text`, as typed, reads as a command, one of Arko's or a
 /// mistyped one, which Arko then refuses.
 fn reads_as_command(text: &str) -> bool {
@@ -2211,6 +2219,23 @@ impl SessionView {
         cx.notify();
     }
 
+    /// Edits a message whose text is `text`, as [`Self::edit_message`] does
+    /// one the transcript shows (tests).
+    #[cfg(test)]
+    pub fn edit_for_tests(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let composer = self.composer.read(cx);
+        self.editing = Some(Editing {
+            item: 0,
+            draft: composer.expanded_text(cx),
+            images: composer.images().to_vec(),
+            lost_images: 0,
+        });
+        self.composer
+            .update(cx, |composer, cx| composer.set_text(text, window, cx));
+        self.sync_composer(window, cx);
+        cx.notify();
+    }
+
     /// Ends the edit: the composer gets back what it held.
     pub fn end_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editing) = self.editing.take() else {
@@ -2611,12 +2636,13 @@ impl SessionView {
     }
 
     /// Takes what became of a send that took `given` (`None` when Arko
-    /// stopped before it said, so it may have gone), while its owner is
-    /// current. A refused send, or one whose outcome isn't known, gives
-    /// back what it took, and the window says why, or asks with Arko's
-    /// words when sending it again needs the user's agreement. What an
-    /// attempt that failed to open took goes back where it came from,
-    /// wherever the window is now.
+    /// stopped before it said, so it may have gone). A refused send, or one
+    /// whose outcome isn't known, gives back what it took. While its owner
+    /// is current, the window says why, or asks with Arko's words when
+    /// sending it again needs the user's agreement. Otherwise the words go
+    /// back to their session wherever the window is now, and a window that
+    /// shows another session names the one they were for, unless that
+    /// session's opening failed, which the window said already.
     fn take_verdict(
         &mut self,
         owner: Owner,
@@ -2626,8 +2652,29 @@ impl SessionView {
         cx: &mut Context<Self>,
     ) {
         if !owner.current(self, cx) {
-            if owner.session.read(cx).never_opened(owner.attempt) {
-                self.send_home(&owner.session, given, window, cx);
+            // What went stays gone, and nothing is asked of another attempt.
+            let words: fn(&str) -> String = match verdict {
+                Some(arko::Verdict::Refused(_)) => |title| {
+                    format!("A message to “{title}” wasn’t sent. It’s back in its message box.")
+                },
+                None => |title| {
+                    format!(
+                        "A message to “{title}” may not have gone. It’s back in its message box, so check the transcript before you send it again."
+                    )
+                },
+                Some(_) => return,
+            };
+            let session = owner.session;
+            let elsewhere = self.send_home(&session, given, window, cx);
+            if elsewhere && !session.read(cx).never_opened(owner.attempt) {
+                let title = session.read(cx).title().clone();
+                let note = crate::notify::session_note(
+                    &session,
+                    gpui_kit::component::notification::NotificationType::Warning,
+                    words(&title),
+                    cx,
+                );
+                window.push_notification(note, cx);
             }
             return;
         }
@@ -2709,42 +2756,84 @@ impl SessionView {
         }
     }
 
-    /// Puts back the message an attempt to open `session` took, which
-    /// failed, so it never went, text and images: in the composer of the
-    /// session it was written for, after what that holds now. That's the
-    /// new session's composer for a session that never had an id. Where
-    /// the window shows another, it goes into that composer's kept draft.
+    /// Puts back the message a send to `session` took that didn't go, or
+    /// may not have, text and images, after what is there now. That's this
+    /// window's composer while it shows the session (or the draft an edit
+    /// put aside, which comes back when the edit ends), else the composer
+    /// of another window that shows it, else the session's kept draft. A
+    /// session that never had an id keeps it in the new session's composer.
+    /// Returns whether it went where this window doesn't show it.
     fn send_home(
         &mut self,
         session: &Entity<LiveSession>,
         given: Given,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(Unsent { text, images, .. }) = given.into_message() else {
-            return;
+            return false;
         };
+        let back = Outgoing { text, images };
         let home = match session.read(cx).id() {
             Some(id) => id.0.clone(),
             None => drafts::NEW_SESSION.to_string(),
         };
-        let shown = self.editing.is_none() && self.draft_key(cx).as_deref() == Some(home.as_str());
-        let mut draft = if shown {
-            self.composer.read(cx).draft(cx)
-        } else {
-            drafts::get(&home, cx).unwrap_or_default()
-        };
-        draft.text = joined(&draft.text, &text);
-        draft.images.extend(images);
-        if shown {
-            self.composer_empty = false;
-            self.composer
-                .update(cx, |composer, cx| composer.restore(draft, window, cx));
-            self.keep_draft(cx);
-            cx.notify();
-        } else {
-            drafts::set(&home, &draft, cx);
+        if self.draft_key(cx).as_deref() == Some(home.as_str()) {
+            self.take_back(back, window, cx);
+            return false;
         }
+        // Another window showing the session takes it, since its own draft
+        // would be kept over the session's.
+        let me = cx.entity();
+        let other = crate::notify::workspaces(cx)
+            .into_iter()
+            .find_map(|(window, workspace)| {
+                let view = workspace.read(cx).session_view().clone();
+                (view != me && view.read(cx).draft_key(cx).as_deref() == Some(home.as_str()))
+                    .then_some((window, view))
+            });
+        match other {
+            Some((other, view)) => cx.defer(move |cx| {
+                let mut back = Some(back);
+                other
+                    .update(cx, |_, window, cx| {
+                        view.update(cx, |view, cx| {
+                            if view.draft_key(cx).as_deref() == Some(home.as_str())
+                                && let Some(back) = back.take()
+                            {
+                                view.take_back(back, window, cx);
+                            }
+                        })
+                    })
+                    .ok();
+                if let Some(back) = back {
+                    keep_back(&home, back, cx);
+                }
+            }),
+            None => keep_back(&home, back, cx),
+        }
+        true
+    }
+
+    /// Puts `back` after what the composer holds, or after the draft an
+    /// edit put aside, which the composer gets back when the edit ends.
+    fn take_back(&mut self, back: Outgoing, window: &mut Window, cx: &mut Context<Self>) {
+        match &mut self.editing {
+            Some(editing) => {
+                editing.draft = joined(&editing.draft, &back.text);
+                editing.images.extend(back.images);
+            }
+            None => {
+                let mut draft = self.composer.read(cx).draft(cx);
+                draft.text = joined(&draft.text, &back.text);
+                draft.images.extend(back.images);
+                self.composer_empty = false;
+                self.composer
+                    .update(cx, |composer, cx| composer.restore(draft, window, cx));
+            }
+        }
+        self.keep_draft(cx);
+        cx.notify();
     }
 
     /// Asks, with Arko's `warning`, before `outgoing` continues `worker`, a
@@ -2794,7 +2883,8 @@ impl SessionView {
     /// Puts `unsent` back in the composer, to whom it went and with the
     /// questions it answered, while the composer holds just what the send
     /// left in it and no message is being edited. Gives back what
-    /// returned.
+    /// returned. Otherwise its words join what came since, and nothing
+    /// returns whole.
     fn restore_unsent(
         &mut self,
         unsent: Unsent,
@@ -2802,6 +2892,9 @@ impl SessionView {
         cx: &mut Context<Self>,
     ) -> Option<Outgoing> {
         if self.editing.is_some() || !unsent.left.holds(self.composer.read(cx), cx) {
+            if let Some(session) = self.session.clone() {
+                self.send_home(&session, Given::Message(unsent), window, cx);
+            }
             return None;
         }
         let Unsent {
