@@ -206,9 +206,10 @@ pub struct SessionView {
     target: Option<SharedString>,
     /// The message the composer edits.
     editing: Option<Editing>,
-    /// What the user's draft held when the window last took, kept or was
-    /// given back its session's draft, and which draft that was. Set only
-    /// from the user's draft, so it never claims words the composer lacks.
+    /// What the user's draft held when the window last took or kept its
+    /// session's draft, with the words given back since, and which draft
+    /// that was. It never holds another window's words this one wasn't
+    /// given.
     synced: Option<(String, Outgoing)>,
     find: Option<FindBar>,
     model_filter: Entity<InputState>,
@@ -988,16 +989,18 @@ impl SessionView {
     /// Puts `back`, words given back to the session it shows, after what the
     /// user's draft holds unless it holds them already ([`drafts::with_back`]).
     /// That's the composer, or the draft an edit put aside, which the
-    /// composer gets back when the edit ends. A window with nothing new of
-    /// its own still has nothing new.
+    /// composer gets back when the edit ends.
     fn take_back(&mut self, back: &Outgoing, window: &mut Window, cx: &mut Context<Self>) {
+        let draft = drafts::with_back(self.users_draft(cx), back);
+        // What the window last kept takes them as the stored draft did, so
+        // one with nothing new of its own still has nothing new, and a send
+        // of them empties the stored draft.
         let key = self.draft_key(cx);
-        let own = self.users_draft(cx);
-        let unchanged = self
-            .synced
-            .as_ref()
-            .is_some_and(|(synced, kept)| Some(synced) == key.as_ref() && drafts::same(kept, &own));
-        let draft = drafts::with_back(own, back);
+        if let Some((synced, kept)) = &mut self.synced
+            && Some(&*synced) == key.as_ref()
+        {
+            *kept = drafts::with_back(std::mem::take(kept), back);
+        }
         match &mut self.editing {
             Some(editing) => {
                 editing.draft = draft.text;
@@ -1008,9 +1011,6 @@ impl SessionView {
                 self.composer
                     .update(cx, |composer, cx| composer.restore(draft, window, cx));
             }
-        }
-        if unchanged && let Some(key) = key {
-            self.synced = Some((key, self.users_draft(cx)));
         }
         cx.notify();
     }

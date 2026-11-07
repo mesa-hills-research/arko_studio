@@ -1677,6 +1677,84 @@ fn words_given_back_come_once_to_a_window_that_holds_them(cx: &mut TestAppContex
     assert_eq!(kept_draft(cx, "s1").as_deref(), Some("Go on."));
 }
 
+fn accept_all(session: &Entity<crate::live::LiveSession>, cx: &mut TestAppContext) {
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| arko::Verdict::accepted(arko::remote::Delivery::Turn, None))
+    });
+    cx.run_until_parked();
+}
+
+/// Words given back while the next message was being typed, sent with it,
+/// don't come back as a draft.
+#[gpui_kit::test]
+fn words_sent_with_the_next_message_dont_stay_as_a_draft(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| first.read(cx).session_view().clone());
+    send_text(cx, one, "Go on.");
+    act(cx, one, |window, cx| window.input("Next message", cx));
+    refuse_sends(&session, cx);
+    act(cx, one, |window, cx| window.press("enter", cx));
+    accept_all(&session, cx);
+    rest(cx);
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    show_in(cx, one, &first, &session);
+    assert_eq!(composer_text(&view, cx), "");
+}
+
+/// The same, where some of what was typed had been kept before the words
+/// came back.
+#[gpui_kit::test]
+fn words_resent_with_more_typed_dont_stay_as_a_draft(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| first.read(cx).session_view().clone());
+    send_text(cx, one, "Go on.");
+    act(cx, one, |window, cx| window.input("abc", cx));
+    rest(cx);
+    act(cx, one, |window, cx| window.input("d", cx));
+    refuse_sends(&session, cx);
+    act(cx, one, |window, cx| window.press("enter", cx));
+    accept_all(&session, cx);
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    show_in(cx, one, &first, &session);
+    assert_eq!(composer_text(&view, cx), "");
+}
+
+/// Words deleted in one window don't come back from another window that
+/// still shows them.
+#[gpui_kit::test]
+fn words_deleted_in_one_window_dont_come_back_from_another(cx: &mut TestAppContext) {
+    let (one, _, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    act(cx, one, |window, cx| window.input("hello", cx));
+    rest(cx);
+    show_in(cx, two, &second, &session);
+    act(cx, one, |window, cx| window.press("secondary-a", cx));
+    act(cx, one, |window, cx| window.press("backspace", cx));
+    rest(cx);
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, two, &second, &elsewhere);
+    assert_eq!(kept_draft(cx, "s1"), None);
+}
+
+/// A window that changed nothing, moving on, leaves the words another window
+/// changed since in place of its older ones.
+#[gpui_kit::test]
+fn a_window_with_nothing_new_leaves_another_windows_edit(cx: &mut TestAppContext) {
+    let (one, _, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    act(cx, one, |window, cx| window.input("Go on.", cx));
+    rest(cx);
+    show_in(cx, two, &second, &session);
+    act(cx, one, |window, cx| window.press("secondary-a", cx));
+    act(cx, one, |window, cx| window.input("Stop.", cx));
+    rest(cx);
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, two, &second, &elsewhere);
+    assert_eq!(kept_draft(cx, "s1").as_deref(), Some("Stop."));
+}
+
 /// A login file chosen for a question another window answered meanwhile
 /// answers nothing, and the engine's next question waits for its own answer.
 #[gpui_kit::test]

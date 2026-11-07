@@ -46,8 +46,8 @@ pub struct Drafts {
     drafts: BTreeMap<String, String>,
     /// The images of each, kept in memory only.
     images: BTreeMap<String, Vec<Attached>>,
-    /// What a send last took from each, which a window still showing it
-    /// doesn't put back (in memory only).
+    /// What a send or a delete last took from each, which a window still
+    /// showing it doesn't put back (in memory only).
     taken: BTreeMap<String, Outgoing>,
     path: Option<PathBuf>,
     changed: bool,
@@ -152,27 +152,30 @@ pub fn set(key: &str, draft: &Outgoing, cx: &mut App) {
 
 /// Keeps `draft`, what a window holds now, as the draft of `key`. `kept` is
 /// what the window held when it last took, kept or was given back the
-/// draft, and `sent` is what a send just took from it. Of two windows'
-/// different words, the last kept wins.
-/// - Words a window shows are kept, unless it changed nothing since and
-///   the stored draft has them already, or a send took them from it.
+/// draft, and `sent` is what a send just took from it.
+/// - A window that changed its words keeps them. One that changed nothing
+///   keeps them only where the stored draft is empty, unless a send or a
+///   delete took those very words from it.
 /// - An empty draft takes the stored one's place only when the stored one
-///   is what the window held, or what its send just took. So a window that
-///   never had another window's words can't erase them.
+///   is what the window held, or what its own send just took. So a window
+///   that never had another window's words can't erase them.
+///
+/// Between two windows with different typed words, the last to type wins.
+/// After a resend, another window may still show the words.
 pub fn save(key: &str, draft: &Outgoing, kept: &Outgoing, sent: Option<&Outgoing>, cx: &mut App) {
     let stored = get(key, cx).unwrap_or_default();
     let keeps = if is_empty(draft) {
         same(&stored, kept) || sent.is_some_and(|sent| same(&stored, sent))
     } else if same(draft, kept) {
         let taken = cx.global::<Drafts>().taken.get(key);
-        !has(&stored, draft) && !taken.is_some_and(|taken| same(taken, draft))
+        is_empty(&stored) && !taken.is_some_and(|taken| same(taken, draft))
     } else {
         true
     };
     if !keeps {
         return;
     }
-    if sent.is_some() && is_empty(draft) && !is_empty(&stored) {
+    if is_empty(draft) && !is_empty(&stored) {
         cx.global_mut::<Drafts>()
             .taken
             .insert(key.to_string(), stored);
@@ -209,15 +212,6 @@ pub fn same(a: &Outgoing, b: &Outgoing) -> bool {
     a.text == b.text
         && a.images.len() == b.images.len()
         && a.images.iter().zip(&b.images).all(|(a, b)| a.is(b))
-}
-
-/// Whether `stored` has the words and the images of `draft` already.
-fn has(stored: &Outgoing, draft: &Outgoing) -> bool {
-    stored.text.contains(draft.text.trim())
-        && draft
-            .images
-            .iter()
-            .all(|image| stored.images.iter().any(|kept| kept.is(image)))
 }
 
 /// Whether `draft` has neither words nor images.
@@ -321,9 +315,10 @@ mod tests {
         }
     }
 
-    /// A window keeps the words it shows, the last kept winning, but none
-    /// the draft has already or a send took, unless it changed them. It
-    /// empties the draft only where it held it or its send took it.
+    /// A window keeps the words it changed, the last kept winning. One that
+    /// changed nothing keeps its words only in an empty draft that no send
+    /// or delete emptied of them. A window empties the draft only where it
+    /// held it or its send took it.
     #[gpui_kit::test]
     fn a_window_keeps_its_words_and_empties_only_its_own(cx: &mut gpui_kit::TestAppContext) {
         cx.update(|cx| init(BTreeMap::new(), None, cx));
@@ -365,9 +360,14 @@ mod tests {
         );
         // A window that holds only some of them, unchanged, keeps the rest.
         assert_eq!(keep(cx, "Go on.", "Go on.", None).as_deref(), both);
-        // A changed one keeps its own, and an emptied one empties it.
+        // A changed one keeps its own, and an emptied one empties it, which
+        // another window still showing them doesn't undo.
         assert_eq!(keep(cx, "Go on", "Go on.", None).as_deref(), Some("Go on"));
         assert_eq!(keep(cx, "", "Go on", None), None);
+        assert_eq!(keep(cx, "Go on", "Go on", None), None);
+        // Nor does one with older words over newer ones.
+        assert_eq!(keep(cx, "Stop.", "", None).as_deref(), Some("Stop."));
+        assert_eq!(keep(cx, "Go on", "Go on", None).as_deref(), Some("Stop."));
     }
 
     /// Words given back come after a draft's own, once, as a part of it.
