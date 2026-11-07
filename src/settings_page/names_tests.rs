@@ -12,7 +12,7 @@ use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
 use super::SESSIONS_PAGE;
 use super::SessionsPage;
 use super::interaction::{settings_window, start_on};
-use crate::backend::{Backend as _, FakeBackend, Way};
+use crate::backend::{Backend as _, FakeBackend, Way, begin_read};
 use crate::prefs;
 use crate::tests::act;
 
@@ -296,10 +296,7 @@ fn a_late_reading_does_not_undo_a_change(cx: &mut TestAppContext) {
     let (backend, window, page) = sessions_page(cx, sample());
     // A reading starts (the first one, say, of a slow Claude Code check) and
     // is of the first words.
-    let (stale, started) = cx.read(|cx| {
-        let page = page.read(cx);
-        (page.naming(), page.names_revision())
-    });
+    let (stale, started) = cx.read(|cx| (page.read(cx).naming(), begin_read::<Vec<Way>>(cx)));
     assert!(!stale.0);
     let before = backend.session_names();
     // The user chooses a model, and the write ends.
@@ -323,10 +320,10 @@ fn a_late_reading_does_not_undo_a_change(cx: &mut TestAppContext) {
         "and what is saved is as chosen"
     );
     // A reading that started after the change shows what it read.
-    let revision = cx.read(|cx| page.read(cx).names_revision());
+    let began = cx.read(begin_read::<Vec<Way>>);
     let after = backend.session_names();
     act(cx, window, |_, cx| {
-        page.update(cx, |page, cx| page.adopt_names_read(after, revision, cx))
+        page.update(cx, |page, cx| page.adopt_names_read(after, began, cx))
     });
     assert!(naming(cx, &page).0);
 }

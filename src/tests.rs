@@ -2263,3 +2263,93 @@ fn the_session_view_comes_back_from_the_worker_profiles_page(cx: &mut TestAppCon
     let text = cx.read(|cx| view.read(cx).composer().read(cx).text(cx));
     assert_eq!(text, "Half a thought");
 }
+
+/// A new session offers the models of the folder chosen now, also when the
+/// user went to another folder and back before that folder's models came.
+#[gpui_kit::test]
+fn a_folder_left_before_its_models_came_leaves_the_chosen_folders_models(cx: &mut TestAppContext) {
+    use crate::backend::{Mode, ModelChoices};
+    let defaulting_to = |model: &str| ModelChoices {
+        groups: Vec::new(),
+        default: Some(model.into()),
+        note: None,
+    };
+    let backend = FakeBackend::sample("/arko", SystemTime::now())
+        .with_models_for("/home/ada/a", defaulting_to("a-model"))
+        .with_models_for("/home/ada/b", defaulting_to("b-model"));
+    cx.update(|cx| crate::init(Startup::for_tests(Arc::new(backend)), cx));
+    let (_window, workspace) = open(cx, 1300.);
+    let view = session_view_of(cx, &workspace);
+    view.update(cx, |view, cx| {
+        view.set_draft_mode(Mode::Agent, cx);
+        view.set_draft_folder("/home/ada/a".into(), cx);
+    });
+    cx.run_until_parked();
+    let model = cx.read(|cx| view.read(cx).draft_model(cx));
+    assert_eq!(model.as_deref(), Some("a-model"));
+    // Another folder, then the first again, before the other's models came.
+    view.update(cx, |view, cx| {
+        view.set_draft_folder("/home/ada/b".into(), cx);
+        view.set_draft_folder("/home/ada/a".into(), cx);
+    });
+    cx.run_until_parked();
+    let model = cx.read(|cx| view.read(cx).draft_model(cx));
+    assert_eq!(model.as_deref(), Some("a-model"));
+}
+
+/// An open session's model list follows its status. When the status
+/// changes and comes back before the other status's models came, those
+/// never replace the list it had, so that list isn't made again.
+#[gpui_kit::test]
+fn a_status_left_before_its_models_came_keeps_the_list_it_had(cx: &mut TestAppContext) {
+    let backend = start(cx);
+    let (window, workspace) = open(cx, 1300.);
+    let row = row_of(&workspace, "Split the engine out of main.rs", cx);
+    act(cx, window, |window, cx| window.click(("row", row), cx));
+    let session = cx.read(|cx| {
+        workspace
+            .read(cx)
+            .session_view()
+            .read(cx)
+            .live_session()
+            .unwrap()
+            .clone()
+    });
+    let status = |main: &str| arko::remote::Reading {
+        models: arko::remote::Models {
+            main: main.into(),
+            workers: main.into(),
+            reachable: vec!["anthropic".into()],
+            has_workers: true,
+            ..arko::remote::Models::default()
+        },
+        ..arko::remote::Reading::default()
+    };
+    session.update(cx, |session, cx| {
+        session.set_status(status("claude-opus-5-5"), Default::default(), cx)
+    });
+    act(cx, window, |window, cx| window.click("mode-model", cx));
+    assert_eq!(backend.session_menus(), 1);
+    // The status changes and comes back, each drawn, before the list for
+    // the other status is made.
+    cx.update_window(window, |_, window, cx| {
+        session.update(cx, |session, cx| {
+            session.set_status(status("claude-sonnet-5-5"), Default::default(), cx)
+        });
+        window.refresh();
+        window.render_frame(cx);
+        session.update(cx, |session, cx| {
+            session.set_status(status("claude-opus-5-5"), Default::default(), cx)
+        });
+        window.refresh();
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    act(cx, window, |window, _| window.refresh());
+    assert_eq!(
+        backend.session_menus_for("claude-opus-5-5"),
+        1,
+        "the list it had stays"
+    );
+}

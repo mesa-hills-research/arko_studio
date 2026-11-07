@@ -18,6 +18,7 @@ mod accounts;
 mod defaults;
 pub mod extensions;
 mod names;
+mod openrouter_changes;
 pub mod profiles;
 mod writes;
 
@@ -27,7 +28,11 @@ pub use defaults::{
     web_page_bind,
 };
 pub use names::{SessionNames, Way, write_names};
-pub use writes::{SaveState, observe_saves, save_state, write_latest};
+pub use openrouter_changes::{
+    OpenRouterRead, begin_openrouter_read, change_openrouter, observe_openrouter_changes,
+    openrouter_change_error, openrouter_changing,
+};
+pub use writes::{Read, SaveState, begin_read, observe_saves, save_state, write_latest};
 
 /// Reading accounts in words, for Settings.
 pub mod account_words {
@@ -956,6 +961,9 @@ fn delete_error(error: arko::sessions::DeleteError) -> BackendError {
 pub struct FakeBackend {
     root: PathBuf,
     models: ModelChoices,
+    /// What a new session in one of these folders can start on, in place
+    /// of `models`.
+    models_for: Vec<(PathBuf, ModelChoices)>,
     /// What an open session can switch to, else arko's list for its status.
     session_models: Option<ModelChoices>,
     /// A group of models needs nothing once the key of the provider it's
@@ -978,13 +986,16 @@ struct FakeState {
     /// OpenRouter's models, and how many times they were fetched again.
     catalog: Catalog,
     catalog_fetches: usize,
+    /// How many times OpenRouter's models were asked for, fetched or not.
+    catalog_asks: usize,
     openrouter: OpenRouterSettings,
     /// The effort each model last ran at.
     last_efforts: Vec<(String, String)>,
     /// The new sessions started, as the app asked for them.
     started: Vec<NewSession>,
-    /// How many times an open session's models were listed.
-    session_menus: usize,
+    /// The main model of each open session's status its models were
+    /// listed for, in order.
+    session_menus: Vec<String>,
     /// How many of the next OpenRouter saves fail.
     openrouter_failures: usize,
     extensions: extensions::Extensions,
@@ -1009,6 +1020,7 @@ impl FakeBackend {
         Self {
             root: root.clone(),
             models: ModelChoices::default(),
+            models_for: Vec::new(),
             session_models: None,
             groups_follow_keys: false,
             state: Mutex::new(FakeState {
@@ -1020,10 +1032,11 @@ impl FakeBackend {
                 accounts_read: 0,
                 catalog: Catalog::default(),
                 catalog_fetches: 0,
+                catalog_asks: 0,
                 openrouter: OpenRouterSettings::default(),
                 last_efforts: Vec::new(),
                 started: Vec::new(),
-                session_menus: 0,
+                session_menus: Vec::new(),
                 openrouter_failures: 0,
                 extensions: extensions::Extensions::sample(Path::new("/home/ada"), &root),
                 removed: Vec::new(),
@@ -1203,6 +1216,12 @@ impl FakeBackend {
         self
     }
 
+    /// Offers `models` to new sessions in `folder`.
+    pub fn with_models_for(mut self, folder: impl Into<PathBuf>, models: ModelChoices) -> Self {
+        self.models_for.push((folder.into(), models));
+        self
+    }
+
     /// Offers `models` to open sessions, whatever their status says.
     pub fn with_session_models(mut self, models: ModelChoices) -> Self {
         self.session_models = Some(models);
@@ -1242,7 +1261,13 @@ impl FakeBackend {
 
     /// How many times an open session's models were listed.
     pub fn session_menus(&self) -> usize {
-        self.with_state(|state| state.session_menus)
+        self.with_state(|state| state.session_menus.len())
+    }
+
+    /// How many times the models of an open session whose main model is
+    /// `main` were listed.
+    pub fn session_menus_for(&self, main: &str) -> usize {
+        self.with_state(|state| state.session_menus.iter().filter(|m| *m == main).count())
     }
 
     /// The new sessions started, as the app asked for them.
@@ -1260,6 +1285,13 @@ impl FakeBackend {
     /// answered from memory).
     pub fn catalog_fetches(&self) -> usize {
         self.with_state(|state| state.catalog_fetches)
+    }
+
+    /// How many times OpenRouter's models were asked for, from memory or
+    /// fetched. Arko keeps them by the settings that filter them, so each
+    /// change to those settings asks again.
+    pub fn catalog_asks(&self) -> usize {
+        self.with_state(|state| state.catalog_asks)
     }
 
     /// Lets a group of models need nothing once the key of the provider
@@ -1367,8 +1399,12 @@ impl Backend for FakeBackend {
         })
     }
 
-    fn models(&self, _: Option<&Path>) -> ModelChoices {
-        let mut models = self.models.clone();
+    fn models(&self, folder: Option<&Path>) -> ModelChoices {
+        let mut models = self
+            .models_for
+            .iter()
+            .find(|(listed, _)| Some(listed.as_path()) == folder)
+            .map_or_else(|| self.models.clone(), |(_, models)| models.clone());
         if self.groups_follow_keys {
             self.with_state(|state| {
                 for group in &mut models.groups {
@@ -1386,6 +1422,7 @@ impl Backend for FakeBackend {
 
     fn openrouter_models(&self, refresh: bool) -> Catalog {
         self.with_state(|state| {
+            state.catalog_asks += 1;
             let fresh = state
                 .catalog
                 .fetched
@@ -1404,7 +1441,7 @@ impl Backend for FakeBackend {
     }
 
     fn session_models(&self, models: &arko::remote::Models) -> ModelChoices {
-        self.with_state(|state| state.session_menus += 1);
+        self.with_state(|state| state.session_menus.push(models.main.clone()));
         if let Some(models) = &self.session_models {
             return models.clone();
         }

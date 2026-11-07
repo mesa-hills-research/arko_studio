@@ -1638,7 +1638,7 @@ fn a_failed_openrouter_save_shows_what_is_saved(cx: &mut TestAppContext) {
     let (window, _) = open(cx, 1300.);
     let part = openrouter_part(cx, window);
     let shown = |cx: &mut TestAppContext| cx.read(|cx| part.read(cx).settings().cloned().unwrap());
-    let problem = |cx: &mut TestAppContext| cx.read(|cx| part.read(cx).problem().is_some());
+    let problem = |cx: &mut TestAppContext| cx.read(|cx| part.read(cx).problem(cx).is_some());
     // Alone, it goes back to the settings saved.
     backend.fail_openrouter_saves(1);
     cx.update(|cx| part.update(cx, |part, cx| part.change(|s| s.set_zdr(true), cx)));
@@ -1658,6 +1658,83 @@ fn a_failed_openrouter_save_shows_what_is_saved(cx: &mut TestAppContext) {
     let saved = backend.openrouter();
     assert_eq!((saved.region(), saved.sort()), (Region::Any, Sort::Price));
     assert_eq!(shown(cx), saved);
+}
+
+/// A reading begun while changes wait, and landing after the last of them
+/// was saved, doesn't put an earlier save's settings back on screen.
+#[gpui_kit::test(iterations = 50)]
+fn a_read_of_an_earlier_save_does_not_replace_the_last_one(cx: &mut TestAppContext) {
+    let backend = start_on(
+        cx,
+        FakeBackend::sample("/arko", SystemTime::now()),
+        prefs::Prefs::default(),
+    );
+    let (window, _) = open(cx, 1300.);
+    let (first, second) = (openrouter_part(cx, window), openrouter_part(cx, window));
+    // The first window reads the settings again as the earlier save lands.
+    let _reread = cx.update(|cx| {
+        let first = first.clone();
+        cx.observe_global::<crate::backend::OpenRouterSaved>(move |cx| {
+            let saved = cx.global::<crate::backend::OpenRouterSaved>().settings();
+            if saved.is_some_and(|saved| saved.zdr()) {
+                first.update(cx, |part, cx| part.read(cx));
+            }
+        })
+    });
+    // The second turns zero data retention on and off again.
+    cx.update(|cx| {
+        second.update(cx, |part, cx| {
+            part.change(|settings| settings.set_zdr(true), cx);
+            part.change(|settings| settings.set_zdr(false), cx);
+        })
+    });
+    cx.run_until_parked();
+    assert!(!backend.openrouter().zdr());
+    for part in [&first, &second] {
+        let shown = cx.read(|cx| part.read(cx).settings().unwrap().zdr());
+        assert!(!shown, "the last save's settings show");
+    }
+}
+
+/// A saved change to what rules OpenRouter's models out fetches them again,
+/// also when the save of a later change fails.
+#[gpui_kit::test]
+fn a_saved_filter_fetches_the_models_again_when_a_later_save_fails(cx: &mut TestAppContext) {
+    use arko::openrouter::Sort;
+    let backend = start_on(
+        cx,
+        FakeBackend::sample("/arko", SystemTime::now()),
+        prefs::Prefs::default(),
+    );
+    let (window, _) = open(cx, 1300.);
+    let part = openrouter_part(cx, window);
+    let asked = backend.catalog_asks();
+    // The save after zero data retention's fails.
+    let _fail_next = cx.update(|cx| {
+        let backend = backend.clone();
+        cx.observe_global::<crate::backend::OpenRouterSaved>(move |cx| {
+            let saved = cx.global::<crate::backend::OpenRouterSaved>().settings();
+            if saved.is_some_and(|saved| saved.zdr()) {
+                backend.fail_openrouter_saves(1);
+            }
+        })
+    });
+    cx.update(|cx| {
+        part.update(cx, |part, cx| {
+            part.change(|settings| settings.set_zdr(true), cx);
+            part.change(|settings| settings.set_sort(Sort::Price), cx);
+        })
+    });
+    cx.run_until_parked();
+    let saved = backend.openrouter();
+    assert!(saved.zdr());
+    assert_eq!(saved.sort(), Sort::Default);
+    assert_eq!(cx.read(|cx| part.read(cx).settings().cloned()), Some(saved));
+    assert_eq!(
+        backend.catalog_asks(),
+        asked + 1,
+        "the models are asked for under the saved filter"
+    );
 }
 
 /// The model lists' rows and OpenRouter's controls have names a screen
@@ -1724,4 +1801,52 @@ fn the_model_rows_and_openrouter_controls_have_names(cx: &mut TestAppContext) {
             Some("All OpenRouter models")
         );
     });
+}
+
+/// Providers typed into OpenRouter's list and left with Escape, before the
+/// typing rested, are saved as Settings closes, as Enter would save them.
+#[gpui_kit::test]
+fn typed_providers_are_saved_when_settings_closes_before_the_typing_rests(cx: &mut TestAppContext) {
+    let backend = start_on(
+        cx,
+        FakeBackend::sample("/arko", SystemTime::now()),
+        prefs::Prefs::default(),
+    );
+    let (window, workspace, settings) = settings_window(cx, ACCOUNTS_PAGE, 2400.);
+    let part = cx.read(|cx| settings.read(cx).accounts().read(cx).openrouter().clone());
+    let (only, _) = cx.read(|cx| part.read(cx).inputs());
+    act(cx, window, |window, cx| {
+        only.update(cx, |only, cx| only.focus(window, cx))
+    });
+    act(cx, window, |window, cx| window.input("anthropic", cx));
+    assert!(
+        backend.openrouter().only().is_empty(),
+        "the typing hasn't rested"
+    );
+    drop((part, only, settings));
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert!(cx.read(|cx| workspace.read(cx).settings().is_none()));
+    assert_eq!(backend.openrouter().only(), ["anthropic"]);
+    rest(cx);
+    assert_eq!(backend.openrouter().only(), ["anthropic"]);
+}
+
+/// A size typed into Settings › Sessions and left with Escape, before the
+/// typing rested, is saved as Settings closes.
+#[gpui_kit::test]
+fn a_typed_size_is_saved_when_settings_closes_before_the_typing_rests(cx: &mut TestAppContext) {
+    let backend = start_with(cx, prefs::Prefs::default());
+    let (window, workspace, settings) = settings_window(cx, SESSIONS_PAGE, 2400.);
+    act(cx, window, |window, cx| window.click("handover-at", cx));
+    act(cx, window, |window, cx| window.input("500k", cx));
+    assert_eq!(cx.read(|cx| prefs::get(cx).new_sessions.handover_at), None);
+    drop(settings);
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert!(cx.read(|cx| workspace.read(cx).settings().is_none()));
+    assert_eq!(
+        cx.read(|cx| prefs::get(cx).new_sessions.handover_at),
+        Some(500_000)
+    );
+    rest(cx);
+    assert_eq!(backend.defaults().handover_at, Some(500_000));
 }
