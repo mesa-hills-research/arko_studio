@@ -211,6 +211,9 @@ pub struct SessionView {
     /// that was. It never holds another window's words this one wasn't
     /// given.
     synced: Option<(String, Outgoing)>,
+    /// Words given back while the composer recorded, which it takes once the
+    /// recording ends. They're the user's draft meanwhile.
+    held: Option<Outgoing>,
     find: Option<FindBar>,
     model_filter: Entity<InputState>,
     /// The Chat | Agent switch in a new session's empty transcript, and the
@@ -472,9 +475,13 @@ pub const OPENROUTER_FOUND: usize = 5;
 impl SessionView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| Composer::new(window, cx));
+        let dictation = composer.read(cx).dictation().clone();
         let model_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find a model"));
         let mut subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::on_composer_event),
+            cx.observe_in(&dictation, window, |this, _, window, cx| {
+                this.take_held(window, cx)
+            }),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 this.sync_expanded(window, cx);
                 this.sync_defaults(cx);
@@ -547,6 +554,7 @@ impl SessionView {
             composer,
             composer_empty: true,
             synced: None,
+            held: None,
             width: WidthClass::Wide,
             panels: Vec::new(),
             trays: Vec::new(),
@@ -956,14 +964,18 @@ impl SessionView {
     }
 
     /// The user's draft, which is the composer's, or the one put aside while
-    /// a message is edited.
+    /// a message is edited, with the words held for a recording.
     fn users_draft(&self, cx: &App) -> Outgoing {
-        match &self.editing {
+        let draft = match &self.editing {
             Some(editing) => Outgoing {
                 text: editing.draft.clone(),
                 images: editing.images.clone(),
             },
             None => self.composer.read(cx).draft(cx),
+        };
+        match &self.held {
+            Some(held) => drafts::with_back(draft, held),
+            None => draft,
         }
     }
 
@@ -989,9 +1001,14 @@ impl SessionView {
     /// Puts `back`, words given back to the session it shows, after what the
     /// user's draft holds unless it holds them already ([`drafts::with_back`]).
     /// That's the composer, or the draft an edit put aside, which the
-    /// composer gets back when the edit ends.
+    /// composer gets back when the edit ends. A composer that records takes
+    /// them once the recording ends, and holds what it had meanwhile.
     fn take_back(&mut self, back: &Outgoing, window: &mut Window, cx: &mut Context<Self>) {
-        let draft = drafts::with_back(self.users_draft(cx), back);
+        let own = self.users_draft(cx);
+        let draft = drafts::with_back(own.clone(), back);
+        if drafts::same(&draft, &own) {
+            return;
+        }
         // What the window last kept takes them as the stored draft did, so
         // one with nothing new of its own still has nothing new, and a send
         // of them empties the stored draft.
@@ -1001,6 +1018,32 @@ impl SessionView {
         {
             *kept = drafts::with_back(std::mem::take(kept), back);
         }
+        let recording = self.composer.read(cx).dictation().read(cx).is_recording(cx);
+        if self.editing.is_none() && recording {
+            self.held = Some(drafts::with_back(
+                self.held.take().unwrap_or_default(),
+                back,
+            ));
+        } else {
+            self.put_draft(draft, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Gives the composer the words held for a recording, once it ended.
+    fn take_held(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let recording = self.composer.read(cx).dictation().read(cx).is_recording(cx);
+        if self.held.is_some() && !recording {
+            let draft = self.users_draft(cx);
+            self.put_draft(draft, window, cx);
+            cx.notify();
+        }
+    }
+
+    /// Puts `draft`, the user's with the words held for a recording, in the
+    /// composer, or in the draft an edit put aside.
+    fn put_draft(&mut self, draft: Outgoing, window: &mut Window, cx: &mut Context<Self>) {
+        self.held = None;
         match &mut self.editing {
             Some(editing) => {
                 editing.draft = draft.text;
@@ -1012,10 +1055,11 @@ impl SessionView {
                     .update(cx, |composer, cx| composer.restore(draft, window, cx));
             }
         }
-        cx.notify();
     }
 
     fn restore_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The draft it shows has the words held for a recording.
+        self.held = None;
         let key = self.draft_key(cx);
         let draft = key
             .as_deref()

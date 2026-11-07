@@ -1127,3 +1127,64 @@ fn listening_draws_no_other_pane(cx: &mut TestAppContext) {
         assert!(drawn <= 13, "motion {motion}: {drawn}");
     }
 }
+
+fn refuse_sends(session: &Entity<LiveSession>, cx: &mut TestAppContext) {
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    cx.run_until_parked();
+}
+
+/// Words given back from another window's refused send wait while this
+/// window records, and the draft keeps them meanwhile. They join the box
+/// once the recording ends.
+#[gpui_kit::test]
+fn words_given_back_wait_for_a_recording_to_end(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    let session = test.show_session(cx);
+    test.listening(cx);
+    test.hear(0, text("Half a thought", ""), cx);
+    let (two, second) = open(cx, 1300.);
+    act(cx, two, |window, cx| {
+        second.update(cx, |workspace, cx| {
+            workspace.show_session(session.clone(), window, cx)
+        })
+    });
+    act(cx, two, |window, cx| window.input("Go on.", cx));
+    act(cx, two, |window, cx| window.press("enter", cx));
+    refuse_sends(&session, cx);
+    assert_eq!(test.status(cx), SpeechStatus::Recording);
+    assert_eq!(test.text(cx), "Half a thought");
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    let kept = cx
+        .read(|cx| crate::drafts::get("s1", cx))
+        .map(|draft| draft.text);
+    assert_eq!(kept.as_deref(), Some("Half a thought\n\nGo on."));
+    test.click(cx);
+    test.hear(0, DictationEvent::Done, cx);
+    assert_eq!(test.status(cx), SpeechStatus::Idle);
+    assert_eq!(test.text(cx), "Half a thought\n\nGo on.");
+}
+
+/// Words given back that the box holds already leave its recording on.
+#[gpui_kit::test]
+fn words_a_recording_box_holds_already_leave_it_recording(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    let session = test.show_session(cx);
+    test.type_text("Go on.", cx);
+    test.listening(cx);
+    let (two, second) = open(cx, 1300.);
+    act(cx, two, |window, cx| {
+        second.update(cx, |workspace, cx| {
+            workspace.show_session(session.clone(), window, cx)
+        })
+    });
+    act(cx, two, |window, cx| window.input("Go on.", cx));
+    act(cx, two, |window, cx| window.press("enter", cx));
+    refuse_sends(&session, cx);
+    assert_eq!(test.status(cx), SpeechStatus::Recording);
+    assert_eq!(test.text(cx), "Go on.");
+}
