@@ -503,6 +503,30 @@ fn a_narrow_window_shows_the_sidebar_as_a_sheet_that_closes_on_a_choice(cx: &mut
     });
 }
 
+/// The pane read as a sheet in a narrow window docks as the window grows.
+#[gpui_kit::test]
+fn the_sheet_read_in_a_narrow_window_docks_as_it_grows(cx: &mut TestAppContext) {
+    start(cx);
+    let (window, workspace) = open(cx, 600.);
+    act(cx, window, |window, cx| {
+        window.dispatch_action(Box::new(menus::ToggleNotifications), cx)
+    });
+    act(cx, window, |window, cx| {
+        assert!(window.has_active_sheet(cx))
+    });
+    cx.simulate_window_resize(window, size(px(1300.), px(720.)));
+    act(cx, window, |_, _| {});
+    assert_eq!(
+        cx.read(|cx| workspace.read(cx).width_class()),
+        crate::layout::WidthClass::Wide
+    );
+    act(cx, window, |window, cx| {
+        assert!(!window.has_active_sheet(cx))
+    });
+    assert!(cx.read(|cx| workspace.read(cx).is_notifications_open()));
+    assert!(!cx.read(|cx| workspace.read(cx).is_workers_open()));
+}
+
 /// A session of the workspace in a window `width` wide, and the number of
 /// notifications the window shows.
 fn session_in_workspace(
@@ -1074,12 +1098,12 @@ fn continuing_a_worker_arko_refuses_asks_first(cx: &mut TestAppContext) {
         assert_eq!(composer_text(&view, cx), "", "{target:?}");
         assert_eq!(accept_sends(&session, window, cx), went(true));
     }
-    // Not over what was typed since.
+    // Not asked over what was typed since, which the words come after.
     send_text(cx, window, "Go on.");
     act(cx, window, |window, cx| window.input("Wait.", cx));
     refuse_uncached(&session, window, cx);
     assert!(!shows_dialog(cx, window));
-    assert_eq!(composer_text(&view, cx), "Wait.");
+    assert_eq!(composer_text(&view, cx), "Wait.\n\nGo on.");
 }
 
 /// The question is about the message the composer held when it was asked.
@@ -1199,9 +1223,10 @@ fn the_question_about_continuing_a_worker_works_from_the_keyboard(cx: &mut TestA
 }
 
 /// Two windows show one session and send the same words. Arko refuses the
-/// second window's, and only that window gets its text back.
+/// second window's, so the words come back once, to the session and to both
+/// its windows, and only the second window says why.
 #[gpui_kit::test]
-fn only_the_window_whose_send_arko_refused_gets_it_back(cx: &mut TestAppContext) {
+fn a_refused_send_comes_back_once_to_each_window_of_its_session(cx: &mut TestAppContext) {
     let (one, workspace, session) = session_in_workspace(cx, 1300.);
     let (two, other) = open(cx, 1300.);
     act(cx, two, |window, cx| {
@@ -1224,17 +1249,18 @@ fn only_the_window_whose_send_arko_refused_gets_it_back(cx: &mut TestAppContext)
         })
     });
     cx.run_until_parked();
-    assert_eq!(composer_text(&views[0], cx), "");
+    assert_eq!(composer_text(&views[0], cx), "Go on.");
     assert_eq!(composer_text(&views[1], cx), "Go on.");
+    assert_eq!(kept_draft(cx, "s1").as_deref(), Some("Go on."));
     assert_eq!(notifications(cx, one), 0);
     assert_eq!(notifications(cx, two), 1);
 }
 
-/// A verdict of an attempt to open the session that gave way to another
-/// (it opened again, switched between Chat and Agent) changes nothing,
-/// though it comes before the new attempt opens.
+/// A send the engine closed on as the session opened again (it switched
+/// between Chat and Agent) never went. It comes back to the composer, and
+/// nothing more is said.
 #[gpui_kit::test]
-fn a_verdict_after_the_session_opened_again_changes_nothing(cx: &mut TestAppContext) {
+fn a_send_closed_on_as_the_session_opened_again_comes_back(cx: &mut TestAppContext) {
     let (window, workspace, session) = session_in_workspace(cx, 1300.);
     let view = cx.read(|cx| workspace.read(cx).session_view().clone());
     send_text(cx, window, "Go on.");
@@ -1244,8 +1270,635 @@ fn a_verdict_after_the_session_opened_again_changes_nothing(cx: &mut TestAppCont
         let _ = reply.send(arko::Verdict::closed());
     }
     act(cx, window, |_, _| {});
-    assert_eq!(composer_text(&view, cx), "");
+    assert_eq!(composer_text(&view, cx), "Go on.");
     assert_eq!(notifications(cx, window), 0);
+}
+
+/// A send Arko refuses after the window moved to another session goes back
+/// to its session's kept draft, and the window names the session it was for.
+#[gpui_kit::test]
+fn a_send_refused_after_the_window_moved_on_goes_back_to_its_draft(cx: &mut TestAppContext) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    send_text(cx, window, "Go on.");
+    let other = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    act(cx, window, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(other.clone(), window, cx)
+        })
+    });
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    act(cx, window, |_, _| {});
+    assert_eq!(
+        cx.read(|cx| crate::drafts::get("s1", cx))
+            .map(|draft| draft.text)
+            .as_deref(),
+        Some("Go on.")
+    );
+    assert_eq!(composer_text(&view, cx), "", "the other session's own");
+    assert_eq!(notifications(cx, window), 1);
+}
+
+/// A send whose verdict never came, after the window moved to another
+/// session, may not have gone. It goes back to its session's kept draft.
+#[gpui_kit::test]
+fn a_send_without_a_verdict_after_the_window_moved_on_goes_back(cx: &mut TestAppContext) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    send_text(cx, window, "Go on.");
+    let other = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    act(cx, window, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(other.clone(), window, cx)
+        })
+    });
+    drop(session.update(cx, |session, _| session.read_sends()));
+    act(cx, window, |_, _| {});
+    assert_eq!(
+        cx.read(|cx| crate::drafts::get("s1", cx))
+            .map(|draft| draft.text)
+            .as_deref(),
+        Some("Go on.")
+    );
+    assert_eq!(notifications(cx, window), 1);
+}
+
+/// A refused send whose composer took more words meanwhile comes back
+/// after them, rather than not at all.
+#[gpui_kit::test]
+fn a_refused_send_joins_what_was_typed_since(cx: &mut TestAppContext) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    send_text(cx, window, "Go on.");
+    act(cx, window, |window, cx| window.input("And more.", cx));
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    act(cx, window, |_, _| {});
+    assert_eq!(composer_text(&view, cx), "And more.\n\nGo on.");
+    assert_eq!(notifications(cx, window), 1, "why it didn't go");
+}
+
+/// Words that come back while a message of their session is being edited
+/// join the draft the edit put aside, so ending the edit brings them back.
+#[gpui_kit::test]
+fn words_back_during_an_edit_come_back_after_it(cx: &mut TestAppContext) {
+    let (window, workspace, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| workspace.read(cx).session_view().clone());
+    send_text(cx, window, "Go on.");
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.edit_for_tests("An earlier message.", window, cx)
+        })
+    });
+    let replies = session.update(cx, |session, _| session.read_sends());
+    session.update(cx, |session, _| session.reopen_for_tests());
+    for (_, reply) in replies {
+        let _ = reply.send(arko::Verdict::closed());
+    }
+    act(cx, window, |_, _| {});
+    assert_eq!(
+        composer_text(&view, cx),
+        "An earlier message.",
+        "still editing"
+    );
+    act(cx, window, |window, cx| {
+        view.update(cx, |view, cx| view.end_edit(window, cx))
+    });
+    assert_eq!(composer_text(&view, cx), "Go on.");
+}
+
+/// A send refused after its window moved on comes back in another window
+/// that shows its session, whose own draft would otherwise be kept over it.
+#[gpui_kit::test]
+fn a_send_refused_after_its_window_moved_on_comes_back_where_its_session_shows(
+    cx: &mut TestAppContext,
+) {
+    let (one, workspace, session) = session_in_workspace(cx, 1300.);
+    let (two, other) = open(cx, 1300.);
+    act(cx, two, |window, cx| {
+        other.update(cx, |other, cx| {
+            other.show_session(session.clone(), window, cx)
+        })
+    });
+    send_text(cx, one, "Go on.");
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    act(cx, one, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(elsewhere.clone(), window, cx)
+        })
+    });
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    act(cx, two, |_, _| {});
+    let view = cx.read(|cx| other.read(cx).session_view().clone());
+    assert_eq!(composer_text(&view, cx), "Go on.");
+}
+
+/// A send refused after the window that sent it closed gives its words back
+/// to the session's kept draft, though no window of it is left to take them.
+#[gpui_kit::test]
+fn a_send_refused_after_its_window_closed_goes_back_to_its_draft(cx: &mut TestAppContext) {
+    let (one, workspace, session) = session_in_workspace(cx, 1300.);
+    let (_two, _other) = open(cx, 1300.);
+    send_text(cx, one, "Go on.");
+    cx.update_window(one, |_, window, _| window.remove_window())
+        .unwrap();
+    drop(workspace);
+    cx.run_until_parked();
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| crate::drafts::get("s1", cx))
+            .map(|draft| draft.text)
+            .as_deref(),
+        Some("Go on.")
+    );
+}
+
+/// Words given back to a session outlive the other windows that show it. A
+/// window that hasn't seen them, with nothing new of its own, keeps no
+/// older draft over them.
+#[gpui_kit::test]
+fn words_given_back_outlive_the_other_windows_showing_their_session(cx: &mut TestAppContext) {
+    let (one, origin, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    let (three, third) = open(cx, 1300.);
+    for (window, workspace) in [(two, &second), (three, &third)] {
+        act(cx, window, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_session(session.clone(), window, cx)
+            })
+        });
+    }
+    send_text(cx, one, "Go on.");
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    act(cx, one, |window, cx| {
+        origin.update(cx, |workspace, cx| {
+            workspace.show_session(elsewhere.clone(), window, cx)
+        })
+    });
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    cx.run_until_parked();
+    // Each of the two leaves the session, the one that has the words first.
+    let view = cx.read(|cx| second.read(cx).session_view().clone());
+    let windows = if composer_text(&view, cx) == "Go on." {
+        [(two, &second), (three, &third)]
+    } else {
+        [(three, &third), (two, &second)]
+    };
+    for (window, workspace) in windows {
+        act(cx, window, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.show_session(elsewhere.clone(), window, cx)
+            })
+        });
+    }
+    assert_eq!(
+        cx.read(|cx| crate::drafts::get("s1", cx))
+            .map(|draft| draft.text)
+            .as_deref(),
+        Some("Go on.")
+    );
+}
+
+/// The text of the session `key`'s kept draft.
+fn kept_draft(cx: &mut TestAppContext, key: &str) -> Option<String> {
+    cx.read(|cx| crate::drafts::get(key, cx))
+        .map(|draft| draft.text)
+}
+
+/// Long enough for typing to rest and the draft to be kept.
+fn rest(cx: &mut TestAppContext) {
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+}
+
+fn refuse_sends(session: &Entity<crate::live::LiveSession>, cx: &mut TestAppContext) {
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    cx.run_until_parked();
+}
+
+fn show_in(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    workspace: &Entity<Workspace>,
+    session: &Entity<crate::live::LiveSession>,
+) {
+    act(cx, window, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(session.clone(), window, cx)
+        })
+    });
+}
+
+/// A send from a window that never had the other window's draft leaves it
+/// kept, when the window moves on and when the other one does.
+#[gpui_kit::test]
+fn a_send_from_another_window_keeps_the_draft_it_never_had(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    show_in(cx, two, &second, &session);
+    act(cx, two, |window, cx| window.input("Count the pears", cx));
+    rest(cx);
+    send_text(cx, one, "Go on.");
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    show_in(cx, two, &second, &elsewhere);
+    assert_eq!(kept_draft(cx, "s1").as_deref(), Some("Count the pears"));
+}
+
+/// A refusal that comes back to the window that sent it goes to its other
+/// window too, after what that one holds, and both are kept as the windows
+/// move on.
+#[gpui_kit::test]
+fn a_refusal_where_it_was_sent_keeps_the_other_windows_words(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    show_in(cx, two, &second, &session);
+    let views =
+        [&first, &second].map(|workspace| cx.read(|cx| workspace.read(cx).session_view().clone()));
+    send_text(cx, one, "Go on.");
+    act(cx, two, |window, cx| window.input("Count the pears", cx));
+    rest(cx);
+    refuse_sends(&session, cx);
+    assert_eq!(composer_text(&views[0], cx), "Go on.");
+    assert_eq!(composer_text(&views[1], cx), "Count the pears\n\nGo on.");
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    show_in(cx, two, &second, &elsewhere);
+    assert_eq!(
+        kept_draft(cx, "s1").as_deref(),
+        Some("Count the pears\n\nGo on.")
+    );
+}
+
+/// The window that sent holds only the words that came back, and the other
+/// window holds them after its own. Whichever moves on last, both are kept.
+#[gpui_kit::test]
+fn the_window_that_sent_moving_on_last_keeps_the_other_windows_words(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    show_in(cx, two, &second, &session);
+    send_text(cx, one, "Go on.");
+    act(cx, two, |window, cx| window.input("Count the pears", cx));
+    rest(cx);
+    refuse_sends(&session, cx);
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, two, &second, &elsewhere);
+    show_in(cx, one, &first, &elsewhere);
+    assert_eq!(
+        kept_draft(cx, "s1").as_deref(),
+        Some("Count the pears\n\nGo on.")
+    );
+}
+
+/// Three windows show one session, two of them with words of their own. The
+/// third sends, moves on, and is refused. Each of the other two keeps its own
+/// words, with the ones that came back after them, once.
+#[gpui_kit::test]
+fn words_given_back_join_each_windows_own_words_once(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    let (three, third) = open(cx, 1300.);
+    show_in(cx, two, &second, &session);
+    show_in(cx, three, &third, &session);
+    let views =
+        [&second, &third].map(|workspace| cx.read(|cx| workspace.read(cx).session_view().clone()));
+    act(cx, two, |window, cx| window.input("apples", cx));
+    rest(cx);
+    act(cx, three, |window, cx| window.input("pears", cx));
+    rest(cx);
+    act(cx, two, |window, cx| window.input(" and plums", cx));
+    send_text(cx, one, "Go on.");
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    refuse_sends(&session, cx);
+    assert_eq!(composer_text(&views[0], cx), "apples and plums\n\nGo on.");
+    assert_eq!(composer_text(&views[1], cx), "pears\n\nGo on.");
+    show_in(cx, two, &second, &elsewhere);
+    show_in(cx, three, &third, &elsewhere);
+    assert!(kept_draft(cx, "s1").is_some_and(|kept| kept.ends_with("\n\nGo on.")));
+}
+
+/// Typing in one window leaves another window's unsent words out of its
+/// composer, so Enter sends only what it shows. The other window's words are
+/// still kept when it moves on.
+#[gpui_kit::test]
+fn typing_in_one_window_leaves_the_other_windows_words_out(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    show_in(cx, two, &second, &session);
+    let views =
+        [&first, &second].map(|workspace| cx.read(|cx| workspace.read(cx).session_view().clone()));
+    act(cx, two, |window, cx| window.input("Count the pears", cx));
+    rest(cx);
+    act(cx, one, |window, cx| window.input("Hello", cx));
+    rest(cx);
+    assert_eq!(composer_text(&views[0], cx), "Hello");
+    act(cx, one, |window, cx| window.press("enter", cx));
+    assert_eq!(queued_messages(&session, cx), ["Hello"]);
+    assert_eq!(composer_text(&views[1], cx), "Count the pears");
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, two, &second, &elsewhere);
+    assert_eq!(kept_draft(cx, "s1").as_deref(), Some("Count the pears"));
+}
+
+/// A composer the user empties stays empty, and the newer words another
+/// window kept meanwhile stay kept.
+#[gpui_kit::test]
+fn an_emptied_composer_stays_empty_beside_another_windows_words(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    show_in(cx, two, &second, &session);
+    let view = cx.read(|cx| first.read(cx).session_view().clone());
+    act(cx, one, |window, cx| window.input("hello", cx));
+    rest(cx);
+    act(cx, two, |window, cx| window.input("world", cx));
+    rest(cx);
+    act(cx, one, |window, cx| window.press("secondary-a", cx));
+    act(cx, one, |window, cx| window.press("backspace", cx));
+    rest(cx);
+    assert_eq!(composer_text(&view, cx), "");
+    assert_eq!(kept_draft(cx, "s1").as_deref(), Some("world"));
+}
+
+/// A window that still shows words another window has sent doesn't keep
+/// them again when it moves on.
+#[gpui_kit::test]
+fn a_window_showing_words_sent_elsewhere_doesnt_keep_them(cx: &mut TestAppContext) {
+    let (one, _, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    act(cx, one, |window, cx| window.input("Go on.", cx));
+    rest(cx);
+    show_in(cx, two, &second, &session);
+    act(cx, one, |window, cx| window.press("enter", cx));
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, two, &second, &elsewhere);
+    assert_eq!(kept_draft(cx, "s1"), None);
+}
+
+/// Words that come back to a window that already holds them aren't added
+/// again.
+#[gpui_kit::test]
+fn words_given_back_come_once_to_a_window_that_holds_them(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    act(cx, one, |window, cx| window.input("Go on.", cx));
+    rest(cx);
+    show_in(cx, two, &second, &session);
+    act(cx, one, |window, cx| window.press("enter", cx));
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    refuse_sends(&session, cx);
+    let view = cx.read(|cx| second.read(cx).session_view().clone());
+    assert_eq!(composer_text(&view, cx), "Go on.");
+    assert_eq!(kept_draft(cx, "s1").as_deref(), Some("Go on."));
+}
+
+fn accept_all(session: &Entity<crate::live::LiveSession>, cx: &mut TestAppContext) {
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| arko::Verdict::accepted(arko::remote::Delivery::Turn, None))
+    });
+    cx.run_until_parked();
+}
+
+/// Words given back while the next message was being typed, sent with it,
+/// don't come back as a draft.
+#[gpui_kit::test]
+fn words_sent_with_the_next_message_dont_stay_as_a_draft(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| first.read(cx).session_view().clone());
+    send_text(cx, one, "Go on.");
+    act(cx, one, |window, cx| window.input("Next message", cx));
+    refuse_sends(&session, cx);
+    act(cx, one, |window, cx| window.press("enter", cx));
+    accept_all(&session, cx);
+    rest(cx);
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    show_in(cx, one, &first, &session);
+    assert_eq!(composer_text(&view, cx), "");
+}
+
+/// Words given back to a box that already holds them, because the user typed
+/// them again over a kept draft, are sent once and leave no draft behind.
+#[gpui_kit::test]
+fn words_given_back_to_a_box_that_holds_them_leave_no_draft_once_sent(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| first.read(cx).session_view().clone());
+    send_text(cx, one, "Go on.");
+    act(cx, one, |window, cx| window.input("Old draft", cx));
+    rest(cx);
+    act(cx, one, |window, cx| {
+        window.press("secondary-a", cx);
+        window.input("Go on.", cx);
+    });
+    refuse_sends(&session, cx);
+    assert_eq!(composer_text(&view, cx), "Go on.");
+    act(cx, one, |window, cx| window.press("enter", cx));
+    accept_all(&session, cx);
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    show_in(cx, one, &first, &session);
+    assert_eq!(
+        composer_text(&view, cx),
+        "",
+        "the replaced and the sent words stayed as a draft"
+    );
+}
+
+/// The same, where some of what was typed had been kept before the words
+/// came back.
+#[gpui_kit::test]
+fn words_resent_with_more_typed_dont_stay_as_a_draft(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| first.read(cx).session_view().clone());
+    send_text(cx, one, "Go on.");
+    act(cx, one, |window, cx| window.input("abc", cx));
+    rest(cx);
+    act(cx, one, |window, cx| window.input("d", cx));
+    refuse_sends(&session, cx);
+    act(cx, one, |window, cx| window.press("enter", cx));
+    accept_all(&session, cx);
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    show_in(cx, one, &first, &session);
+    assert_eq!(composer_text(&view, cx), "");
+}
+
+/// Words deleted in one window don't come back from another window that
+/// still shows them.
+#[gpui_kit::test]
+fn words_deleted_in_one_window_dont_come_back_from_another(cx: &mut TestAppContext) {
+    let (one, _, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    act(cx, one, |window, cx| window.input("hello", cx));
+    rest(cx);
+    show_in(cx, two, &second, &session);
+    act(cx, one, |window, cx| window.press("secondary-a", cx));
+    act(cx, one, |window, cx| window.press("backspace", cx));
+    rest(cx);
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, two, &second, &elsewhere);
+    assert_eq!(kept_draft(cx, "s1"), None);
+}
+
+/// A window that changed nothing, moving on, leaves the words another window
+/// changed since in place of its older ones.
+#[gpui_kit::test]
+fn a_window_with_nothing_new_leaves_another_windows_edit(cx: &mut TestAppContext) {
+    let (one, _, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    act(cx, one, |window, cx| window.input("Go on.", cx));
+    rest(cx);
+    show_in(cx, two, &second, &session);
+    act(cx, one, |window, cx| window.press("secondary-a", cx));
+    act(cx, one, |window, cx| window.input("Stop.", cx));
+    rest(cx);
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, two, &second, &elsewhere);
+    assert_eq!(kept_draft(cx, "s1").as_deref(), Some("Stop."));
+}
+
+/// A login file chosen for a question another window answered meanwhile
+/// answers nothing, and the engine's next question waits for its own answer.
+#[gpui_kit::test]
+fn a_login_chosen_for_an_answered_question_leaves_the_next_one_waiting(cx: &mut TestAppContext) {
+    use crate::live::{McpRequest, PromptAnswer, PromptKind};
+
+    let (one, _, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    act(cx, two, |window, cx| {
+        second.update(cx, |workspace, cx| {
+            workspace.show_session(session.clone(), window, cx)
+        })
+    });
+    let login = PromptKind::Credentials(arko::Need::ChatGptLogin {
+        model: "gpt-5.5".into(),
+        problem: "No login".into(),
+    });
+    let mut first = session.update(cx, |session, cx| session.ask(login, cx));
+    act(cx, one, |window, cx| window.click("credentials-login", cx));
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|_| Some(vec!["/home/ada/.codex/auth.json".into()]));
+    // The file is chosen, and before the first window uses it, the second
+    // answers the question.
+    cx.update_window(two, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("credentials-again", cx);
+    })
+    .unwrap();
+    assert_eq!(first.try_recv(), Ok(PromptAnswer::Again));
+    let mcp = PromptKind::Mcp(McpRequest {
+        file: "/home/ada/proj/.mcp.json".into(),
+        servers: vec![("tools".into(), "tools serve".into())],
+        skipped: Vec::new(),
+    });
+    let mut next = session.update(cx, |session, cx| session.ask(mcp, cx));
+    cx.run_until_parked();
+    assert!(next.try_recv().is_err(), "the earlier login answered it");
+    act(cx, two, |window, cx| assert!(window.has_active_dialog(cx)));
+}
+
+/// A question the engine asks after the user closed the session as it
+/// opened is answered for them, without a dialog, so it doesn't open.
+#[gpui_kit::test]
+fn a_question_after_a_close_is_answered_cancel(cx: &mut TestAppContext) {
+    use crate::live::{PromptAnswer, PromptKind};
+
+    let (window, _, session) = session_in_workspace(cx, 1300.);
+    session.update(cx, |session, cx| {
+        let agreed = session.running_work();
+        session.close(agreed, cx)
+    });
+    let need = PromptKind::Credentials(arko::Need::AnthropicKey {
+        model: "claude-opus-5-5".into(),
+    });
+    let mut answer = session.update(cx, |session, cx| session.ask(need, cx));
+    act(cx, window, |window, cx| {
+        assert!(!window.has_active_dialog(cx))
+    });
+    assert_eq!(answer.try_recv(), Ok(PromptAnswer::Cancel));
+}
+
+/// A delete waiting on a session that doesn't close in time gives up and
+/// says so, rather than wait forever or delete it later.
+#[gpui_kit::test]
+fn a_delete_waiting_on_a_close_that_never_ends_gives_up(cx: &mut TestAppContext) {
+    let (window, _, session) = session_in_workspace(cx, 1300.);
+    let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+    act(cx, window, |window, cx| {
+        let ran = ran.clone();
+        crate::quit::close_then(
+            vec![session.clone()],
+            "It wasn’t deleted.",
+            window,
+            cx,
+            move |_, _| ran.set(true),
+        );
+    });
+    cx.executor().advance_clock(crate::quit::QUIT_WAIT);
+    cx.run_until_parked();
+    assert!(!ran.get());
+    assert_eq!(notifications(cx, window), 1);
+}
+
+/// A cache refresh's message answered before the session opened again, or
+/// after, makes no turn of the next engine count as the refresh's.
+#[gpui_kit::test]
+fn a_refresh_answered_around_a_reopen_leaves_the_next_turns_as_news(cx: &mut TestAppContext) {
+    start(cx);
+    let session = cx.new(|cx| crate::live::LiveSession::for_tests("s1", cx));
+    let turn = |cx: &mut TestAppContext| {
+        for working in [true, false] {
+            session.update(cx, |session, cx| {
+                let reading = (**session.reading()).clone();
+                let activity = arko::remote::Activity {
+                    working,
+                    ..Default::default()
+                };
+                session.set_status(reading, activity, cx)
+            });
+        }
+        cx.read(|cx| session.read(cx).turn_was_refresh())
+    };
+    session.update(cx, |session, _| {
+        session.answer_refresh_with(Ok(arko::Refreshed::Message))
+    });
+    // Answered, then the session opens again.
+    session.update(cx, |session, cx| session.refresh_cache(cx).detach());
+    cx.run_until_parked();
+    session.update(cx, |session, _| session.reopen_for_tests());
+    assert!(!turn(cx), "answered before");
+    // Asked, then the session opens again before the answer comes.
+    session.update(cx, |session, cx| {
+        session.refresh_cache(cx).detach();
+        session.reopen_for_tests();
+    });
+    cx.run_until_parked();
+    assert!(!turn(cx), "answered after");
 }
 
 /// The question about continuing a worker is about the attempt to open the

@@ -207,6 +207,14 @@ pub struct SessionView {
     target: Option<SharedString>,
     /// The message the composer edits.
     editing: Option<Editing>,
+    /// What the user's draft held when the window last took or kept its
+    /// session's draft, with the words given back since, and which draft
+    /// that was. It never holds another window's words this one wasn't
+    /// given.
+    synced: Option<(String, Outgoing)>,
+    /// Words given back while the composer recorded, which it takes once the
+    /// recording ends. They're the user's draft meanwhile.
+    held: Option<Outgoing>,
     find: Option<FindBar>,
     model_filter: Entity<InputState>,
     /// The Chat | Agent switch in a new session's empty transcript, and the
@@ -341,13 +349,61 @@ fn new_session_refusal(text: &str, composer: &Entity<Composer>, cx: &App) -> Opt
     ))
 }
 
-/// `more` after `text`, a blank line between them when both have words.
-fn joined(text: &str, more: &str) -> String {
-    match (text.trim().is_empty(), more.trim().is_empty()) {
-        (true, _) => more.to_string(),
-        (false, true) => text.to_string(),
-        (false, false) => format!("{}\n\n{more}", text.trim_end()),
+/// The draft a session's unsent words belong to, its id's, or the new
+/// session's before it has one.
+fn draft_of(session: &Entity<LiveSession>, cx: &App) -> String {
+    match session.read(cx).id() {
+        Some(id) => id.0.clone(),
+        None => drafts::NEW_SESSION.to_string(),
     }
+}
+
+/// Gives `back`, the words of a send to a session that didn't go, back to
+/// the session's draft `key`, after what it holds, whichever window sent
+/// them. Each window that shows the session takes them in, after what its
+/// composer holds, except `skip`, the view that gives them back.
+fn give_back(key: &str, back: &Outgoing, skip: Option<EntityId>, cx: &mut App) {
+    drafts::give_back(key, back, cx);
+    let views: Vec<_> = crate::notify::workspaces(cx)
+        .into_iter()
+        .map(|(window, workspace)| (window, workspace.read(cx).session_view().clone()))
+        .filter(|(_, view)| {
+            Some(view.entity_id()) != skip && view.read(cx).draft_key(cx).as_deref() == Some(key)
+        })
+        .collect();
+    for (window, view) in views {
+        let (key, back) = (key.to_string(), back.clone());
+        cx.defer(move |cx| {
+            window
+                .update(cx, |_, window, cx| {
+                    view.update(cx, |view, cx| {
+                        // One that moved on meanwhile finds them in the draft.
+                        if view.draft_key(cx) == Some(key) {
+                            view.take_back(&back, window, cx);
+                        }
+                    })
+                })
+                .ok();
+        });
+    }
+}
+
+/// What `given` took from a window that's gone goes back to `session`, when
+/// it didn't go (`verdict` refused or unknown).
+fn give_back_unsent(
+    session: &Entity<LiveSession>,
+    given: Given,
+    verdict: Option<&arko::Verdict>,
+    cx: &mut App,
+) {
+    if !matches!(verdict, Some(arko::Verdict::Refused(_)) | None) {
+        return;
+    }
+    let Some(Unsent { text, images, .. }) = given.into_message() else {
+        return;
+    };
+    let key = draft_of(session, cx);
+    give_back(&key, &Outgoing { text, images }, None, cx);
 }
 
 /// Whether `text`, as typed, reads as a command, one of Arko's or a
@@ -411,9 +467,13 @@ pub const OPENROUTER_FOUND: usize = 5;
 impl SessionView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| Composer::new(window, cx));
+        let dictation = composer.read(cx).dictation().clone();
         let model_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find a model"));
         let mut subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::on_composer_event),
+            cx.observe_in(&dictation, window, |this, _, window, cx| {
+                this.take_held(window, cx)
+            }),
             cx.observe_global_in::<prefs::PrefsStore>(window, |this, window, cx| {
                 this.sync_expanded(window, cx);
                 this.sync_defaults(cx);
@@ -468,7 +528,7 @@ impl SessionView {
         }));
         drafts::keep_at_quit(
             move |cx| {
-                view.update(cx, |this, cx| this.keep_draft(cx)).ok();
+                view.update(cx, |this, cx| this.keep_draft(None, cx)).ok();
             },
             cx,
         );
@@ -485,6 +545,8 @@ impl SessionView {
             defaults_shown: (settings_model(cx), settings_effort(cx)),
             composer,
             composer_empty: true,
+            synced: None,
+            held: None,
             width: WidthClass::Wide,
             panels: Vec::new(),
             trays: Vec::new(),
@@ -868,7 +930,7 @@ impl SessionView {
     /// turn that ends gives it news from then on), and what was typed is
     /// kept.
     fn window_closed(&mut self, cx: &mut App) {
-        self.keep_draft(cx);
+        self.keep_draft(None, cx);
         self.closed = true;
         self._session.clear();
         if let Some(session) = self.session.take() {
@@ -876,33 +938,113 @@ impl SessionView {
         }
     }
 
-    fn keep_draft(&mut self, cx: &mut App) {
+    /// The user's draft, which is the composer's, or the one put aside while
+    /// a message is edited, with the words held for a recording.
+    fn users_draft(&self, cx: &App) -> Outgoing {
+        let draft = match &self.editing {
+            Some(editing) => Outgoing {
+                text: editing.draft.clone(),
+                images: editing.images.clone(),
+            },
+            None => self.composer.read(cx).draft(cx),
+        };
+        match &self.held {
+            Some(held) => drafts::with_back(draft, held),
+            None => draft,
+        }
+    }
+
+    /// Keeps the user's draft as its session's ([`drafts::save`]), `sent`
+    /// being what a send just took from the composer.
+    fn keep_draft(&mut self, sent: Option<&Outgoing>, cx: &mut App) {
         self._draft = None;
         if self.closed {
             return;
         }
-        if let Some(key) = self.draft_key(cx) {
-            // While a message is edited, the user's draft is the one put
-            // aside, not the message in the composer.
-            let draft = match &self.editing {
-                Some(editing) => Outgoing {
-                    text: editing.draft.clone(),
-                    images: editing.images.clone(),
-                },
-                None => self.composer.read(cx).draft(cx),
-            };
-            drafts::set(&key, &draft, cx);
+        let Some(key) = self.draft_key(cx) else {
+            return;
+        };
+        let draft = self.users_draft(cx);
+        let kept = match self.synced.take() {
+            Some((synced, kept)) if synced == key => kept,
+            _ => Outgoing::default(),
+        };
+        drafts::save(&key, &draft, &kept, sent, cx);
+        self.synced = Some((key, draft));
+    }
+
+    /// Puts `back`, words given back to the session it shows, after what the
+    /// user's draft holds unless it holds them already ([`drafts::with_back`]).
+    /// That's the composer, or the draft an edit put aside, which the
+    /// composer gets back when the edit ends. A composer that records takes
+    /// them once the recording ends, and holds what it had meanwhile.
+    fn take_back(&mut self, back: &Outgoing, window: &mut Window, cx: &mut Context<Self>) {
+        let own = self.users_draft(cx);
+        let draft = drafts::with_back(own.clone(), back);
+        // What the window last kept takes them as the stored draft did, so
+        // one with nothing new of its own still has nothing new, and a send
+        // of them empties the stored draft. That holds when the composer
+        // already shows the words too.
+        let key = self.draft_key(cx);
+        if let Some((synced, kept)) = &mut self.synced
+            && Some(&*synced) == key.as_ref()
+        {
+            *kept = drafts::with_back(std::mem::take(kept), back);
+        }
+        if drafts::same(&draft, &own) {
+            return;
+        }
+        let recording = self.composer.read(cx).dictation().read(cx).is_recording(cx);
+        if self.editing.is_none() && recording {
+            self.held = Some(drafts::with_back(
+                self.held.take().unwrap_or_default(),
+                back,
+            ));
+        } else {
+            self.put_draft(draft, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Gives the composer the words held for a recording, once it ended.
+    fn take_held(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let recording = self.composer.read(cx).dictation().read(cx).is_recording(cx);
+        if self.held.is_some() && !recording {
+            let draft = self.users_draft(cx);
+            self.put_draft(draft, window, cx);
+            cx.notify();
+        }
+    }
+
+    /// Puts `draft`, the user's with the words held for a recording, in the
+    /// composer, or in the draft an edit put aside.
+    fn put_draft(&mut self, draft: Outgoing, window: &mut Window, cx: &mut Context<Self>) {
+        self.held = None;
+        match &mut self.editing {
+            Some(editing) => {
+                editing.draft = draft.text;
+                editing.images = draft.images;
+            }
+            None => {
+                self.composer_empty = draft.text.is_empty() && draft.images.is_empty();
+                self.composer
+                    .update(cx, |composer, cx| composer.restore(draft, window, cx));
+            }
         }
     }
 
     fn restore_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let draft = self
-            .draft_key(cx)
-            .and_then(|key| drafts::get(&key, cx))
+        // The draft it shows has the words held for a recording.
+        self.held = None;
+        let key = self.draft_key(cx);
+        let draft = key
+            .as_deref()
+            .and_then(|key| drafts::get(key, cx))
             .unwrap_or_default();
         self.composer_empty = draft.text.is_empty() && draft.images.is_empty();
         self.composer
             .update(cx, |composer, cx| composer.restore(draft, window, cx));
+        self.synced = key.map(|key| (key, self.users_draft(cx)));
     }
 
     /// Shows `session`, or a new session when `None`. The composer keeps
@@ -920,7 +1062,7 @@ impl SessionView {
         // an edit.
         self.end_edit(window, cx);
         self.close_find(window, cx);
-        self.keep_draft(cx);
+        self.keep_draft(None, cx);
         if let Some(tray) = self.kept_tray().cloned() {
             tray.update(cx, |tray, cx| tray.set_exposed(false, cx));
         }
@@ -1442,7 +1584,11 @@ impl SessionView {
         let words = answers.words.is_some().then(|| {
             self.composer
                 .update(cx, |composer, cx| composer.set_text("", window, cx));
-            self.keep_draft(cx);
+            let sent = Outgoing {
+                text: words.clone(),
+                images: Vec::new(),
+            };
+            self.keep_draft(Some(&sent), cx);
             Unsent {
                 text: words,
                 images: Vec::new(),
@@ -1653,7 +1799,7 @@ impl SessionView {
                 // The draft is kept once typing rests.
                 self._draft = Some(cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(DRAFT_REST).await;
-                    this.update(cx, |this, cx| this.keep_draft(cx)).ok();
+                    this.update(cx, |this, cx| this.keep_draft(None, cx)).ok();
                 }));
             }
         }
@@ -2186,6 +2332,23 @@ impl SessionView {
         cx.notify();
     }
 
+    /// Edits a message whose text is `text`, as [`Self::edit_message`] does
+    /// one the transcript shows (tests).
+    #[cfg(test)]
+    pub fn edit_for_tests(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let composer = self.composer.read(cx);
+        self.editing = Some(Editing {
+            item: 0,
+            draft: composer.expanded_text(cx),
+            images: composer.images().to_vec(),
+            lost_images: 0,
+        });
+        self.composer
+            .update(cx, |composer, cx| composer.set_text(text, window, cx));
+        self.sync_composer(window, cx);
+        cx.notify();
+    }
+
     /// Ends the edit: the composer gets back what it held.
     pub fn end_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editing) = self.editing.take() else {
@@ -2539,7 +2702,7 @@ impl SessionView {
             Ok(sent) => {
                 self.composer
                     .update(cx, |composer, cx| composer.sent(&text, window, cx));
-                self.keep_draft(cx);
+                self.keep_draft(Some(&Outgoing { text, images }), cx);
                 self.composer_empty = true;
                 if let Some((session, sent)) = sent {
                     self.follow(session, sent, Given::Message(unsent), window, cx);
@@ -2575,23 +2738,36 @@ impl SessionView {
     ) {
         let Sent { attempt, verdict } = sent;
         let owner = Owner { session, attempt };
-        cx.spawn_in(window, async move |view, cx| {
+        let handle = window.window_handle();
+        cx.spawn(async move |view, cx| {
             let verdict = verdict.await.ok();
-            view.update_in(cx, |view, window, cx| {
-                view.take_verdict(owner, verdict, given, window, cx)
-            })
-            .ok();
+            let mut given = Some(given);
+            handle
+                .update(cx, |_, window, cx| {
+                    view.update(cx, |view, cx| {
+                        if let Some(given) = given.take() {
+                            view.take_verdict(owner.clone(), verdict.clone(), given, window, cx)
+                        }
+                    })
+                })
+                .ok();
+            // Its window is gone. What didn't go goes back to its session
+            // all the same.
+            if let Some(given) = given {
+                cx.update(|cx| give_back_unsent(&owner.session, given, verdict.as_ref(), cx));
+            }
         })
         .detach();
     }
 
     /// Takes what became of a send that took `given` (`None` when Arko
-    /// stopped before it said, so it may have gone), while its owner is
-    /// current. A refused send, or one whose outcome isn't known, gives
-    /// back what it took, and the window says why, or asks with Arko's
-    /// words when sending it again needs the user's agreement. What an
-    /// attempt that failed to open took goes back where it came from,
-    /// wherever the window is now.
+    /// stopped before it said, so it may have gone). A refused send, or one
+    /// whose outcome isn't known, gives back what it took. While its owner
+    /// is current, the window says why, or asks with Arko's words when
+    /// sending it again needs the user's agreement. Otherwise the words go
+    /// back to their session wherever the window is now, and a window that
+    /// shows another session names the one they were for, unless that
+    /// session's opening failed, which the window said already.
     fn take_verdict(
         &mut self,
         owner: Owner,
@@ -2601,8 +2777,29 @@ impl SessionView {
         cx: &mut Context<Self>,
     ) {
         if !owner.current(self, cx) {
-            if owner.session.read(cx).never_opened(owner.attempt) {
-                self.send_home(&owner.session, given, window, cx);
+            // What went stays gone, and nothing is asked of another attempt.
+            let words: fn(&str) -> String = match verdict {
+                Some(arko::Verdict::Refused(_)) => |title| {
+                    format!("A message to “{title}” wasn’t sent. It’s back in its message box.")
+                },
+                None => |title| {
+                    format!(
+                        "A message to “{title}” may not have gone. It’s back in its message box, so check the transcript before you send it again."
+                    )
+                },
+                Some(_) => return,
+            };
+            let session = owner.session;
+            let elsewhere = self.send_home(&session, given, window, cx);
+            if elsewhere && !session.read(cx).never_opened(owner.attempt) {
+                let title = session.read(cx).title().clone();
+                let note = crate::notify::session_note(
+                    &session,
+                    gpui_kit::component::notification::NotificationType::Warning,
+                    words(&title),
+                    cx,
+                );
+                window.push_notification(note, cx);
             }
             return;
         }
@@ -2684,42 +2881,32 @@ impl SessionView {
         }
     }
 
-    /// Puts back the message an attempt to open `session` took, which
-    /// failed, so it never went, text and images: in the composer of the
-    /// session it was written for, after what that holds now. That's the
-    /// new session's composer for a session that never had an id. Where
-    /// the window shows another, it goes into that composer's kept draft.
+    /// Puts back the message a send to `session` took that didn't go, or
+    /// may not have, text and images, after what is there now. The words go
+    /// to the session's draft, and from there into this window's composer
+    /// while it shows the session (or into the draft an edit put aside,
+    /// which comes back when the edit ends), and into every other window
+    /// that shows it. A session that never had an id keeps them in the new
+    /// session's draft. Returns whether they went where this window doesn't
+    /// show them.
     fn send_home(
         &mut self,
         session: &Entity<LiveSession>,
         given: Given,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(Unsent { text, images, .. }) = given.into_message() else {
-            return;
+            return false;
         };
-        let home = match session.read(cx).id() {
-            Some(id) => id.0.clone(),
-            None => drafts::NEW_SESSION.to_string(),
-        };
-        let shown = self.editing.is_none() && self.draft_key(cx).as_deref() == Some(home.as_str());
-        let mut draft = if shown {
-            self.composer.read(cx).draft(cx)
-        } else {
-            drafts::get(&home, cx).unwrap_or_default()
-        };
-        draft.text = joined(&draft.text, &text);
-        draft.images.extend(images);
+        let back = Outgoing { text, images };
+        let key = draft_of(session, cx);
+        give_back(&key, &back, Some(cx.entity_id()), cx);
+        let shown = self.draft_key(cx).as_deref() == Some(key.as_str());
         if shown {
-            self.composer_empty = false;
-            self.composer
-                .update(cx, |composer, cx| composer.restore(draft, window, cx));
-            self.keep_draft(cx);
-            cx.notify();
-        } else {
-            drafts::set(&home, &draft, cx);
+            self.take_back(&back, window, cx);
         }
+        !shown
     }
 
     /// Asks, with Arko's `warning`, before `outgoing` continues `worker`, a
@@ -2769,7 +2956,9 @@ impl SessionView {
     /// Puts `unsent` back in the composer, to whom it went and with the
     /// questions it answered, while the composer holds just what the send
     /// left in it and no message is being edited. Gives back what
-    /// returned.
+    /// returned. Otherwise its words join what came since, and nothing
+    /// returns whole. Either way the session's draft and its other windows
+    /// get the words too.
     fn restore_unsent(
         &mut self,
         unsent: Unsent,
@@ -2777,6 +2966,9 @@ impl SessionView {
         cx: &mut Context<Self>,
     ) -> Option<Outgoing> {
         if self.editing.is_some() || !unsent.left.holds(self.composer.read(cx), cx) {
+            if let Some(session) = self.session.clone() {
+                self.send_home(&session, Given::Message(unsent), window, cx);
+            }
             return None;
         }
         let Unsent {
@@ -2791,13 +2983,11 @@ impl SessionView {
         if let Some(session) = &self.session {
             session.update(cx, |session, cx| session.reattach_questions(&answers, cx));
         }
-        self.composer_empty = false;
-        self.composer.update(cx, |composer, cx| {
-            composer.set_text(&text, window, cx);
-            for image in images.iter().cloned() {
-                composer.attach_image(image, cx);
-            }
-        });
+        let back = Outgoing { text, images };
+        if let Some(key) = self.draft_key(cx) {
+            give_back(&key, &back, Some(cx.entity_id()), cx);
+        }
+        self.take_back(&back, window, cx);
         // Include message is as it was for the words, unless a request came
         // since they went.
         if let (Some(previous), Some(session)) = (message, self.session.clone()) {
@@ -2806,9 +2996,8 @@ impl SessionView {
                 session.message_restored(&previous, has_text, cx)
             });
         }
-        self.keep_draft(cx);
         cx.notify();
-        Some(Outgoing { text, images })
+        Some(back)
     }
 
     /// Runs Arko's command `name` as if typed: at once when it takes no

@@ -17,7 +17,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::backend::SharedBackend;
-use crate::live::{LiveSession, McpRequest, PromptAnswer, PromptKind};
+use crate::live::{LiveSession, McpRequest, PromptAnswer, PromptId, PromptKind};
 use crate::prefs;
 use crate::workers;
 
@@ -69,33 +69,39 @@ pub fn show(session: &Entity<LiveSession>, window: &mut Window, cx: &mut App) {
     if window.has_active_dialog(cx) {
         return;
     }
-    match session.read(cx).prompt() {
-        Some(PromptKind::Credentials(need)) => {
+    let (Some(id), Some(kind)) = (session.read(cx).prompt_id(), session.read(cx).prompt()) else {
+        return;
+    };
+    match kind {
+        PromptKind::Credentials(need) => {
             let need = need.clone();
-            show_credentials(session.clone(), need, window, cx)
+            show_credentials(session.clone(), id, need, window, cx)
         }
-        Some(PromptKind::Mcp(request)) => {
+        PromptKind::Mcp(request) => {
             let request = request.clone();
-            show_mcp(session.clone(), request, window, cx)
+            show_mcp(session.clone(), id, request, window, cx)
         }
-        None => {}
     }
 }
 
 /// The form in the credentials dialog.
 pub struct CredentialsForm {
     session: Entity<LiveSession>,
+    /// The prompt it answers, and no other.
+    prompt: PromptId,
     need: arko::Need,
     /// The provider whose key is entered.
     provider: &'static str,
     key: Entity<InputState>,
     error: Option<SharedString>,
+    /// A key is being saved, or a login file chosen.
     busy: bool,
 }
 
 impl CredentialsForm {
     fn new(
         session: Entity<LiveSession>,
+        prompt: PromptId,
         need: arko::Need,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -109,6 +115,7 @@ impl CredentialsForm {
         Self {
             provider: key_provider(&need).unwrap_or("anthropic"),
             session,
+            prompt,
             need,
             key,
             error: None,
@@ -116,14 +123,34 @@ impl CredentialsForm {
         }
     }
 
+    /// A button of the dialog answers its prompt, which does nothing once
+    /// that was answered elsewhere, and closes the dialog clicked.
     fn answer(&mut self, answer: PromptAnswer, window: &mut Window, cx: &mut Context<Self>) {
+        let prompt = self.prompt;
         self.session
-            .update(cx, |session, cx| session.answer_prompt(answer, cx));
+            .update(cx, |session, cx| session.answer_prompt(prompt, answer, cx));
         window.close_dialog(cx);
     }
 
+    /// What a save or a chosen login file answers once it's done. The
+    /// dialog closes only if its prompt took the answer, since another may
+    /// be on top by then.
+    fn answered(&mut self, answer: PromptAnswer, window: &mut Window, cx: &mut Context<Self>) {
+        let prompt = self.prompt;
+        if self
+            .session
+            .update(cx, |session, cx| session.answer_prompt(prompt, answer, cx))
+        {
+            window.close_dialog(cx);
+        }
+    }
+
     /// Saves the key in Arko's folder, then lets the session check again.
+    /// It saves once while a save runs (Enter pressed twice).
     fn save_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         let value = self.key.read(cx).value().trim().to_string();
         if value.is_empty() {
             self.error = Some("Paste the key first.".into());
@@ -142,7 +169,7 @@ impl CredentialsForm {
             this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match saved {
-                    Ok(_) => this.answer(PromptAnswer::Again, window, cx),
+                    Ok(_) => this.answered(PromptAnswer::Again, window, cx),
                     Err(why) => {
                         this.error = Some(why.into());
                         this.key.update(cx, |key, cx| key.focus(window, cx));
@@ -155,8 +182,14 @@ impl CredentialsForm {
         .detach();
     }
 
-    /// Asks for Codex's `auth.json`, then lets the session check again.
+    /// Asks for Codex's `auth.json`, then lets the session check again. It
+    /// asks once while it waits for the choice or uses it.
     fn choose_login(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        cx.notify();
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -165,21 +198,25 @@ impl CredentialsForm {
         });
         let backend = cx.global::<SharedBackend>().clone();
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = paths.await else {
-                return;
+            let path = match paths.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                _ => None,
             };
-            let Some(path) = paths.into_iter().next() else {
-                return;
+            let chosen = match path {
+                Some(path) => Some(
+                    cx.background_spawn(async move { backend.set_chatgpt_login(&path) })
+                        .await,
+                ),
+                None => None,
             };
-            let chosen = cx
-                .background_spawn(async move { backend.set_chatgpt_login(&path) })
-                .await;
-            this.update_in(cx, |this, window, cx| match chosen {
-                Ok(_) => this.answer(PromptAnswer::Again, window, cx),
-                Err(why) => {
-                    this.error = Some(why.into());
-                    cx.notify();
+            this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                match chosen {
+                    Some(Ok(_)) => this.answered(PromptAnswer::Again, window, cx),
+                    Some(Err(why)) => this.error = Some(why.into()),
+                    None => {}
                 }
+                cx.notify();
             })
             .ok();
         })
@@ -300,6 +337,7 @@ impl Render for CredentialsForm {
                                 .outline()
                                 .small()
                                 .label("Choose auth.json…")
+                                .loading(self.busy)
                                 .on_click(
                                     cx.listener(|this, _, window, cx| {
                                         this.choose_login(window, cx)
@@ -339,12 +377,13 @@ impl Render for CredentialsForm {
 
 fn show_credentials(
     session: Entity<LiveSession>,
+    prompt: PromptId,
     need: arko::Need,
     window: &mut Window,
     cx: &mut App,
 ) {
     let title = need_title(&need);
-    let form = cx.new(|cx| CredentialsForm::new(session, need, window, cx));
+    let form = cx.new(|cx| CredentialsForm::new(session, prompt, need, window, cx));
     window.open_dialog(cx, move |dialog, _, _| {
         let form = form.clone();
         dialog
@@ -361,7 +400,15 @@ fn show_credentials(
     });
 }
 
-fn show_mcp(session: Entity<LiveSession>, request: McpRequest, window: &mut Window, cx: &mut App) {
+/// The question whether to start a project's MCP servers. Its buttons
+/// answer the prompt `prompt` only, and close the dialog.
+fn show_mcp(
+    session: Entity<LiveSession>,
+    prompt: PromptId,
+    request: McpRequest,
+    window: &mut Window,
+    cx: &mut App,
+) {
     window.open_dialog(cx, move |dialog, _, cx| {
         let theme = cx.theme();
         let request = request.clone();
@@ -423,7 +470,7 @@ fn show_mcp(session: Entity<LiveSession>, request: McpRequest, window: &mut Wind
                             .label("Don’t start")
                             .on_click(move |_, window, cx| {
                                 refuse.update(cx, |session, cx| {
-                                    session.answer_prompt(PromptAnswer::Mcp(Some(false)), cx)
+                                    session.answer_prompt(prompt, PromptAnswer::Mcp(Some(false)), cx)
                                 });
                                 window.close_dialog(cx);
                             }),
@@ -435,7 +482,7 @@ fn show_mcp(session: Entity<LiveSession>, request: McpRequest, window: &mut Wind
                             .label("Start")
                             .on_click(move |_, window, cx| {
                                 start.update(cx, |session, cx| {
-                                    session.answer_prompt(PromptAnswer::Mcp(Some(true)), cx)
+                                    session.answer_prompt(prompt, PromptAnswer::Mcp(Some(true)), cx)
                                 });
                                 window.close_dialog(cx);
                             }),

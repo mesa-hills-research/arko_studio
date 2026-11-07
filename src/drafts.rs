@@ -4,6 +4,11 @@
 //! the file is written after a pause, on a background thread, never per key.
 //! A draft's images are kept in memory only, beside its text, so they're
 //! gone when Studio quits.
+//!
+//! The drafts are where a session's unsent words belong, whichever window
+//! shows the session. A window keeps the words it shows ([`save`]), and
+//! words given back go to the draft and into every window that shows the
+//! session, so a window can't erase words it never had.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -41,6 +46,9 @@ pub struct Drafts {
     drafts: BTreeMap<String, String>,
     /// The images of each, kept in memory only.
     images: BTreeMap<String, Vec<Attached>>,
+    /// What a send or a delete last took from each, which a window still
+    /// showing it doesn't put back (in memory only).
+    taken: BTreeMap<String, Outgoing>,
     path: Option<PathBuf>,
     changed: bool,
     saving: Option<Task<()>>,
@@ -65,6 +73,7 @@ pub fn init(drafts: BTreeMap<String, String>, path: Option<PathBuf>, cx: &mut Ap
     cx.set_global(Drafts {
         drafts,
         images: BTreeMap::new(),
+        taken: BTreeMap::new(),
         path,
         changed: false,
         saving: None,
@@ -139,6 +148,84 @@ pub fn set(key: &str, draft: &Outgoing, cx: &mut App) {
         drafts.changed = true;
     });
     schedule_save(cx);
+}
+
+/// Keeps `draft`, what a window holds now, as the draft of `key`. `kept` is
+/// what the window held when it last took, kept or was given back the
+/// draft, and `sent` is what a send just took from it.
+/// - A window that changed its words keeps them. One that changed nothing
+///   keeps them only where the stored draft is empty, unless a send or a
+///   delete took those very words from it.
+/// - An empty draft takes the stored one's place only when the stored one
+///   is what the window held, or what its own send just took. So a window
+///   that never had another window's words can't erase them.
+///
+/// Between two windows with different typed words, the last to type wins.
+/// After a resend, another window may still show the words.
+pub fn save(key: &str, draft: &Outgoing, kept: &Outgoing, sent: Option<&Outgoing>, cx: &mut App) {
+    let stored = get(key, cx).unwrap_or_default();
+    let keeps = if is_empty(draft) {
+        same(&stored, kept) || sent.is_some_and(|sent| same(&stored, sent))
+    } else if same(draft, kept) {
+        let taken = cx.global::<Drafts>().taken.get(key);
+        is_empty(&stored) && !taken.is_some_and(|taken| same(taken, draft))
+    } else {
+        true
+    };
+    if !keeps {
+        return;
+    }
+    if is_empty(draft) && !is_empty(&stored) {
+        cx.global_mut::<Drafts>()
+            .taken
+            .insert(key.to_string(), stored);
+    }
+    set(key, draft, cx);
+}
+
+/// Puts `back`, the words of a send that didn't go, after the draft of
+/// `key` ([`with_back`]).
+pub fn give_back(key: &str, back: &Outgoing, cx: &mut App) {
+    cx.global_mut::<Drafts>().taken.remove(key);
+    let draft = with_back(get(key, cx).unwrap_or_default(), back);
+    set(key, &draft, cx);
+}
+
+/// `draft` with `back`, words given back, after its own words unless it
+/// holds them already, and with the images of `back` it lacks.
+pub fn with_back(mut draft: Outgoing, back: &Outgoing) -> Outgoing {
+    // Words joined before are one of the draft's parts between blank lines.
+    let parts = format!("\n\n{}\n\n", draft.text.trim());
+    if !parts.contains(&format!("\n\n{}\n\n", back.text.trim())) {
+        draft.text = joined(&draft.text, &back.text);
+    }
+    for image in &back.images {
+        if !draft.images.iter().any(|kept| kept.is(image)) {
+            draft.images.push(image.clone());
+        }
+    }
+    draft
+}
+
+/// Whether `a` and `b` hold the same text and the same images.
+pub fn same(a: &Outgoing, b: &Outgoing) -> bool {
+    a.text == b.text
+        && a.images.len() == b.images.len()
+        && a.images.iter().zip(&b.images).all(|(a, b)| a.is(b))
+}
+
+/// Whether `draft` has neither words nor images.
+fn is_empty(draft: &Outgoing) -> bool {
+    draft.text.trim().is_empty() && draft.images.is_empty()
+}
+
+/// `more` after `text`, a blank line between them when both have words.
+fn joined(text: &str, more: &str) -> String {
+    match (text.trim().is_empty(), more.trim().is_empty()) {
+        (true, _) => more.to_string(),
+        (false, true) => text.to_string(),
+        (false, false) => format!("{}\n\n{more}", text.trim_end()),
+    }
 }
 
 /// Keeps `text`, with no images, as the draft of `key`.
@@ -219,6 +306,82 @@ mod tests {
         cx.run_until_parked();
         assert!(load(&path).is_empty());
         assert!(cx.read(|cx| get("s1", cx)).is_none());
+    }
+
+    fn text(text: &str) -> Outgoing {
+        Outgoing {
+            text: text.into(),
+            images: Vec::new(),
+        }
+    }
+
+    /// A window keeps the words it changed, the last kept winning. One that
+    /// changed nothing keeps its words only in an empty draft that no send
+    /// or delete emptied of them. A window empties the draft only where it
+    /// held it or its send took it.
+    #[gpui_kit::test]
+    fn a_window_keeps_its_words_and_empties_only_its_own(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| init(BTreeMap::new(), None, cx));
+        let stored =
+            |cx: &mut gpui_kit::TestAppContext| cx.read(|cx| get("s1", cx)).map(|draft| draft.text);
+        let keep =
+            |cx: &mut gpui_kit::TestAppContext, draft: &str, kept: &str, sent: Option<&str>| {
+                let sent = sent.map(text);
+                cx.update(|cx| save("s1", &text(draft), &text(kept), sent.as_ref(), cx));
+                stored(cx)
+            };
+        assert_eq!(
+            keep(cx, "Count the pears", "", None).as_deref(),
+            Some("Count the pears")
+        );
+        assert_eq!(keep(cx, "Hello", "", None).as_deref(), Some("Hello"));
+        // A window that never had them, untouched or sending other words.
+        assert_eq!(keep(cx, "", "", None).as_deref(), Some("Hello"));
+        assert_eq!(keep(cx, "", "", Some("Go on.")).as_deref(), Some("Hello"));
+        // The window that held them sends them.
+        assert_eq!(keep(cx, "", "Hello", Some("Hello")), None);
+        // Words another window still shows are kept again, unless a send
+        // took them.
+        let pears = Some("Count the pears");
+        assert_eq!(
+            keep(cx, "Count the pears", "Count the pears", None).as_deref(),
+            pears
+        );
+        assert_eq!(keep(cx, "", "Count the pears", pears), None);
+        assert_eq!(keep(cx, "Count the pears", "Count the pears", None), None);
+        // Words given back are no longer taken, and come back once.
+        cx.update(|cx| give_back("s1", &text("Go on."), cx));
+        cx.update(|cx| give_back("s1", &text("Go on."), cx));
+        assert_eq!(stored(cx).as_deref(), Some("Go on."));
+        let both = Some("Count the pears\n\nGo on.");
+        assert_eq!(
+            keep(cx, "Count the pears\n\nGo on.", "Go on.", None).as_deref(),
+            both
+        );
+        // A window that holds only some of them, unchanged, keeps the rest.
+        assert_eq!(keep(cx, "Go on.", "Go on.", None).as_deref(), both);
+        // A changed one keeps its own, and an emptied one empties it, which
+        // another window still showing them doesn't undo.
+        assert_eq!(keep(cx, "Go on", "Go on.", None).as_deref(), Some("Go on"));
+        assert_eq!(keep(cx, "", "Go on", None), None);
+        assert_eq!(keep(cx, "Go on", "Go on", None), None);
+        // Nor does one with older words over newer ones.
+        assert_eq!(keep(cx, "Stop.", "", None).as_deref(), Some("Stop."));
+        assert_eq!(keep(cx, "Go on", "Go on", None).as_deref(), Some("Stop."));
+    }
+
+    /// Words given back come after a draft's own, once, as a part of it.
+    #[test]
+    fn words_given_back_join_a_draft_once() {
+        let back = text("Go on.");
+        let with = |draft: &str| with_back(text(draft), &back).text;
+        assert_eq!(with(""), "Go on.");
+        assert_eq!(with("Count the pears"), "Count the pears\n\nGo on.");
+        assert_eq!(
+            with("Count the pears\n\nGo on."),
+            "Count the pears\n\nGo on."
+        );
+        assert_eq!(with("Go on. Then stop."), "Go on. Then stop.\n\nGo on.");
     }
 
     /// A draft's images are kept beside its text, in memory only: a draft

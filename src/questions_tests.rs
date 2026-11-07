@@ -421,7 +421,8 @@ fn a_reply_arko_refused_comes_back_replying_to_its_questions(cx: &mut TestAppCon
         let view = app.workspace.read(cx).session_view().clone();
         view.read(cx).composer().read(cx).text(cx)
     });
-    assert_eq!(composer, "Wait.");
+    // Its words come after what was typed since, no longer replying.
+    assert_eq!(composer, "Wait.\n\nSpaces, all of them, main.");
     assert!(!app.shows(cx, "questions-replying"));
     assert_eq!(
         app.label(cx, "questions-open").as_deref(),

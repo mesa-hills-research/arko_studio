@@ -589,6 +589,36 @@ fn missing_credentials_are_entered_in_a_dialog(cx: &mut TestAppContext) {
     });
 }
 
+/// Enter pressed twice before the key is saved saves it once, answers the
+/// session once and closes the one dialog.
+#[gpui_kit::test]
+fn enter_twice_in_the_key_dialog_saves_the_key_once(cx: &mut TestAppContext) {
+    let (backend, window, workspace) = start(cx);
+    open_row(window, &workspace, "Split the engine out of main.rs", cx);
+    let session = cx.read(|cx| workspace.read(cx).live_session().cloned().unwrap());
+    let need = PromptKind::Credentials(arko::Need::AnthropicKey {
+        model: "claude-opus-5-5".into(),
+    });
+    let mut answer = cx.update(|cx| session.update(cx, |session, cx| session.ask(need, cx)));
+    // Saving with nothing typed puts the keyboard in the key's field.
+    act(cx, window, |window, cx| {
+        window.click("credentials-save", cx)
+    });
+    act(cx, window, |window, cx| {
+        window.input("sk-ant-test-0123456789", cx)
+    });
+    // Both presses come before the save does.
+    act(cx, window, |window, cx| {
+        window.press("enter", cx);
+        window.press("enter", cx);
+    });
+    assert_eq!(backend.added_keys().len(), 1);
+    assert_eq!(answer.try_recv(), Ok(PromptAnswer::Again));
+    act(cx, window, |window, cx| {
+        assert!(!window.has_active_dialog(cx))
+    });
+}
+
 #[gpui_kit::test]
 fn claude_code_is_checked_again_from_its_dialog(cx: &mut TestAppContext) {
     let (_, window, workspace) = start(cx);
@@ -2101,9 +2131,9 @@ fn a_message_arko_refused_comes_back_to_arko(cx: &mut TestAppContext) {
     assert_eq!(sent(&session, cx), ["Carry on."]);
 }
 
-/// A message Arko refused comes back to the composer whole, unless
-/// something else was typed since, and one Arko accepted doesn't. A message
-/// of an image alone comes back with its image.
+/// A message Arko refused comes back to the composer whole, or after what
+/// was typed since, and one Arko accepted doesn't. A message of an image
+/// alone comes back with its image.
 #[gpui_kit::test]
 fn a_message_arko_refused_comes_back_whole(cx: &mut TestAppContext) {
     let (window, workspace, session) = started_session(cx);
@@ -2135,12 +2165,12 @@ fn a_message_arko_refused_comes_back_whole(cx: &mut TestAppContext) {
     });
     act(cx, window, |_, _| {});
     assert_eq!(composer_text(&workspace, cx), "");
-    // Not over what was typed since.
+    // After what was typed since.
     act(cx, window, |window, cx| window.input("Carry on.", cx));
     act(cx, window, |window, cx| window.press("enter", cx));
     act(cx, window, |window, cx| window.input("Wait.", cx));
     refused(cx);
-    assert_eq!(composer_text(&workspace, cx), "Wait.");
+    assert_eq!(composer_text(&workspace, cx), "Wait.\n\nCarry on.");
     // A message of an image alone comes back with its image.
     let composer = cx.read(|cx| view.read(cx).composer().clone());
     act(cx, window, |window, cx| {

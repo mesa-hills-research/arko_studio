@@ -288,6 +288,11 @@ pub enum PromptAnswer {
     Mcp(Option<bool>),
 }
 
+/// Tells a prompt from those asked before and after it, so that an answer
+/// goes only to the prompt it was made for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromptId(u64);
+
 /// A question the engine waits on.
 pub struct Prompt {
     pub kind: PromptKind,
@@ -494,7 +499,9 @@ pub struct LiveSession {
     queued_requests: std::cell::RefCell<Vec<arko::Request>>,
     /// A Stop or Close invalidates earlier Share completions in every window.
     sharing_epoch: std::cell::Cell<u64>,
-    prompt: Option<Prompt>,
+    prompt: Option<(PromptId, Prompt)>,
+    /// Counts the prompts asked, which [`PromptId`] tells apart.
+    prompts: u64,
     quit_ask: Option<arko::QuitAsk>,
     /// What the user agreed to stop to close it.
     quit_agreed: Option<arko::QuitAsk>,
@@ -569,6 +576,7 @@ impl LiveSession {
             queued_requests: Default::default(),
             sharing_epoch: Default::default(),
             prompt: None,
+            prompts: 0,
             quit_ask: None,
             quit_agreed: None,
             questions: Questions::default(),
@@ -666,34 +674,56 @@ impl LiveSession {
             Launch::Engine(running) => {
                 self.phase = Phase::Opening;
                 let arko::Running { opened, ended } = running;
+                let attempt = self.attempt;
+                // The attempt's opening, then its end, in that order, each
+                // taken once and only while the attempt is the session's.
                 self._tasks.push(cx.spawn(async move |this, cx| {
+                    #[cfg(test)]
+                    crate::testing::attempt_waits();
                     let opened = opened.await;
-                    this.update(cx, |this, cx| match opened {
-                        Ok(Ok(seam)) => this.opened(seam, cx),
-                        Ok(Err(error)) => this.failed(open_error(&error), cx),
-                        Err(_) => this.failed("The session stopped as it opened.".into(), cx),
+                    let open = this.update(cx, |this, cx| {
+                        if this.attempt != attempt {
+                            return false;
+                        }
+                        match opened {
+                            Ok(Ok(seam)) => {
+                                this.opened(seam, cx);
+                                true
+                            }
+                            Ok(Err(error)) => {
+                                this.failed(open_error(&error), cx);
+                                false
+                            }
+                            Err(_) => {
+                                this.failed("The session stopped as it opened.".into(), cx);
+                                false
+                            }
+                        }
+                    });
+                    // One that didn't open has no end to wait for, and
+                    // `failed` said why.
+                    if !matches!(open, Ok(true)) {
+                        return;
+                    }
+                    let end = ended.await;
+                    this.update(cx, |this, cx| {
+                        if this.attempt != attempt {
+                            return;
+                        }
+                        match end {
+                            // It switched between Chat and Agent: it opens again.
+                            Ok(arko::RunEnd::Reopen) => this.reopen(cx),
+                            Ok(_) => this.ended(cx),
+                            // It stopped without saying how (it panicked).
+                            Err(_) => this.stopped(cx),
+                        }
                     })
                     .ok();
                 }));
                 self._tasks.push(cx.spawn(async move |this, cx| {
-                    // It fails when the session didn't open: then `failed` said why.
-                    if let Ok(end) = ended.await {
-                        this.update(cx, |this, cx| match end {
-                            // It switched between Chat and Agent: it opens again.
-                            arko::RunEnd::Reopen => this.reopen(cx),
-                            _ => this.ended(cx),
-                        })
-                        .ok();
-                    }
-                }));
-                self._tasks.push(cx.spawn(async move |this, cx| {
                     while let Some(asked) = asks.recv().await {
                         let kept = this.update(cx, |this, cx| match asked {
-                            Asked::Prompt(prompt) => {
-                                this.prompt = Some(prompt);
-                                cx.emit(LiveEvent::Prompt);
-                                cx.notify();
-                            }
+                            Asked::Prompt(prompt) => this.prompted(prompt, cx),
                             Asked::Note(level, text) => cx.emit(LiveEvent::Note(level, text)),
                         });
                         if kept.is_err() {
@@ -941,6 +971,11 @@ impl LiveSession {
     /// Opens the session again after its engine closed it to switch modes:
     /// a new seam, the same entity, so every window keeps showing it.
     fn reopen(&mut self, cx: &mut Context<Self>) {
+        // The user asked to close it as its engine shut down to reopen, so
+        // it has closed. (The Quit queued behind the switch is never read.)
+        if self.phase == Phase::Closing {
+            return self.ended(cx);
+        }
         let Some(id) = self.id.clone() else {
             return self.ended(cx);
         };
@@ -955,14 +990,72 @@ impl LiveSession {
     /// forgets the requests, since arko numbers each engine's from a1 and
     /// the next engine's are other requests.
     fn depart(&mut self) {
-        self.link = None;
-        self._feed.clear();
-        self.activity = Activity::default();
-        self.questions.reopened();
-        self.approvals = Approvals::default();
-        Arc::make_mut(&mut self.reading).approvals.clear();
+        // Every field is named, so that a new one has to say whether it
+        // outlives the engine.
+        let Self {
+            // The session itself, which the next engine opens.
+            key: _,
+            id: _,
+            title: _,
+            mode: _,
+            workspace: _,
+            model: _,
+            shown: _,
+            touched_at: _,
+            input_epoch: _,
+            sharing_epoch: _,
+            opened: _,
+            attempt: _,
+            sends: _,
+            // `launch` sets it next.
+            phase: _,
+            link,
+            reading,
+            activity,
+            // Each engine's feed sends them again.
+            workers: _,
+            // They went as the engine opened.
+            queued_requests: _,
+            // Asked only while an engine opens, and cleared once it has.
+            prompt: _,
+            prompts: _,
+            quit_ask,
+            quit_agreed,
+            questions,
+            approvals,
+            // It describes the draft, which outlives the engine.
+            message: _,
+            pending,
+            refresh_coming,
+            refresh_running,
+            refreshed_last,
+            #[cfg(test)]
+                applied: _,
+            #[cfg(test)]
+                refresh_answer: _,
+            #[cfg(test)]
+                followed: _,
+            // The tasks of earlier engines, which end with them.
+            _tasks: _,
+            _feed,
+            _rename: _,
+        } = self;
+        *link = None;
+        _feed.clear();
+        *activity = Activity::default();
+        questions.reopened();
+        *approvals = Approvals::default();
+        Arc::make_mut(reading).approvals.clear();
+        pending.clear();
+        // What that engine asked about quitting, and what the user agreed
+        // to stop, name its jobs and workers.
+        *quit_ask = None;
+        *quit_agreed = None;
+        // A refresh's turn is that engine's.
+        *refresh_coming = false;
+        *refresh_running = false;
+        *refreshed_last = false;
         self.follow_requests();
-        self.pending.clear();
     }
 
     /// Switches the session between Chat and Agent (between turns): the
@@ -1023,10 +1116,17 @@ impl LiveSession {
         cx: &mut Context<Self>,
     ) -> Task<Result<arko::Refreshed, String>> {
         let answer = self.ask_refresh(cx);
+        let attempt = self.attempt;
         cx.spawn(async move |this, cx| {
             let answer = answer.await;
             if answer == Ok(arko::Refreshed::Message) {
-                this.update(cx, |this, _| this.refresh_coming = true).ok();
+                // The engine that took it runs its turn, not a later one.
+                this.update(cx, |this, _| {
+                    if this.attempt == attempt {
+                        this.refresh_coming = true;
+                    }
+                })
+                .ok();
             }
             answer
         })
@@ -1222,9 +1322,17 @@ impl LiveSession {
         self._feed.clear();
         self.activity = Activity::default();
         self.quit_ask = None;
+        self.quit_agreed = None;
         LiveSessions::remove(cx.entity_id(), self.id.as_ref(), cx);
         cx.emit(LiveEvent::Ended);
         cx.notify();
+    }
+
+    /// Its engine stopped without saying how, so it has ended, and the
+    /// window says so.
+    fn stopped(&mut self, cx: &mut Context<Self>) {
+        cx.emit(LiveEvent::Refused(STOPPED.to_string()));
+        self.ended(cx);
     }
 
     pub fn key(&self) -> u64 {
@@ -1846,23 +1954,48 @@ impl LiveSession {
         cx: &mut Context<Self>,
     ) -> oneshot::Receiver<PromptAnswer> {
         let (reply, answer) = oneshot::channel();
-        self.prompt = Some(Prompt { kind, reply });
+        self.prompted(Prompt { kind, reply }, cx);
+        answer
+    }
+
+    /// The engine asks the user `prompt` as it opens. One the user is
+    /// closing doesn't open, so the answer is Cancel, with no dialog.
+    fn prompted(&mut self, prompt: Prompt, cx: &mut Context<Self>) {
+        if self.phase == Phase::Closing {
+            let _ = prompt.reply.send(PromptAnswer::Cancel);
+            return;
+        }
+        self.prompts += 1;
+        self.prompt = Some((PromptId(self.prompts), prompt));
         cx.emit(LiveEvent::Prompt);
         cx.notify();
-        answer
     }
 
     /// The prompt waiting for the user, if any.
     pub fn prompt(&self) -> Option<&PromptKind> {
-        self.prompt.as_ref().map(|prompt| &prompt.kind)
+        self.prompt.as_ref().map(|(_, prompt)| &prompt.kind)
     }
 
-    /// Answers the waiting prompt.
-    pub fn answer_prompt(&mut self, answer: PromptAnswer, cx: &mut Context<Self>) {
-        if let Some(prompt) = self.prompt.take() {
+    /// Which prompt waits for the user, if any.
+    pub fn prompt_id(&self) -> Option<PromptId> {
+        self.prompt.as_ref().map(|(id, _)| *id)
+    }
+
+    /// Answers the prompt `id`, if it still waits. Returns whether it did.
+    pub fn answer_prompt(
+        &mut self,
+        id: PromptId,
+        answer: PromptAnswer,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.prompt_id() != Some(id) {
+            return false;
+        }
+        if let Some((_, prompt)) = self.prompt.take() {
             let _ = prompt.reply.send(answer);
             cx.notify();
         }
+        true
     }
 
     /// What closing it would stop, as its status says now.
@@ -1896,7 +2029,7 @@ impl LiveSession {
                     .push(quit(arko::Input::Quit(Some(Vec::new()))));
                 self.quit_agreed = Some(agreed);
                 self.phase = Phase::Closing;
-                if let Some(prompt) = self.prompt.take() {
+                if let Some((_, prompt)) = self.prompt.take() {
                     let _ = prompt.reply.send(PromptAnswer::Cancel);
                 }
             }
@@ -1960,6 +2093,10 @@ impl LiveSession {
 /// send, which may have gone.
 pub const NO_VERDICT: &str =
     "Arko stopped before saying whether it went. Check the transcript before you send it again.";
+
+/// What the window says when Arko stopped without saying how, which ended
+/// the session.
+const STOPPED: &str = "Arko stopped unexpectedly. Open the session to go on.";
 
 /// Sends `input`, a quit, in order with what was sent before it. Nothing
 /// waits for its verdict.

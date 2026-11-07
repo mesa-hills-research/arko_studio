@@ -84,6 +84,33 @@ enum Edge {
 #[derive(Clone)]
 struct ResizeDrag(Edge);
 
+/// The pane at the window's right, which the workers panel and the
+/// notifications panel share.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RightPane {
+    Workers,
+    Notifications,
+}
+
+impl RightPane {
+    /// The pane a sheet at `edge` shows, if it's one of these.
+    fn of(edge: Edge) -> Option<Self> {
+        match edge {
+            Edge::Sidebar => None,
+            Edge::Panel => Some(Self::Workers),
+            Edge::Notifications => Some(Self::Notifications),
+        }
+    }
+
+    /// Where its sheet comes from.
+    fn edge(self) -> Edge {
+        match self {
+            Self::Workers => Edge::Panel,
+            Self::Notifications => Edge::Notifications,
+        }
+    }
+}
+
 impl Render for ResizeDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         Empty
@@ -105,10 +132,8 @@ pub struct Workspace {
     /// The title the window last showed.
     shown_title: Option<SharedString>,
     width: WidthClass,
-    workers_open: bool,
-    /// The notifications panel docks where the workers panel does, one of
-    /// the two at a time.
-    notifications_open: bool,
+    /// The pane docked at the right, where the width docks it.
+    right: Option<RightPane>,
     /// The pane showing as a sheet over a narrow window.
     sheet: Option<Edge>,
     /// The sidebar's state and the panes' widths in the preferences, as the
@@ -184,8 +209,7 @@ impl Workspace {
             _session: Vec::new(),
             shown_title: None,
             width: WidthClass::of(window.viewport_size().width),
-            workers_open: false,
-            notifications_open: false,
+            right: None,
             sheet: None,
             panes: (sidebar_prefs.open, sidebar_prefs.width(), panel_width),
             sidebar_width: sidebar_prefs.width(),
@@ -253,15 +277,21 @@ impl Workspace {
         self.width
     }
 
+    /// Whether the workers panel shows, docked or as a sheet.
     pub fn is_workers_open(&self) -> bool {
-        self.workers_open
+        self.shows(RightPane::Workers)
     }
 
     /// Whether the notifications panel shows, docked or as a sheet.
     pub fn is_notifications_open(&self) -> bool {
+        self.shows(RightPane::Notifications)
+    }
+
+    /// Whether `pane` shows, docked or as a sheet.
+    fn shows(&self, pane: RightPane) -> bool {
         match self.width.docks_panel() {
-            true => self.notifications_open,
-            false => self.sheet == Some(Edge::Notifications),
+            true => self.right == Some(pane),
+            false => self.sheet == Some(pane.edge()),
         }
     }
 
@@ -278,13 +308,16 @@ impl Workspace {
         let was = self.width;
         self.width = width;
         // A sheet opened for a narrower window gives way to the docked view.
+        // The pane at the right that the sheet showed docks in its place.
         let docks = match self.sheet {
             Some(Edge::Sidebar) => !was.docks_sidebar() && width.docks_sidebar(),
             Some(Edge::Panel | Edge::Notifications) => !was.docks_panel() && width.docks_panel(),
             None => false,
         };
         if docks {
-            self.sheet = None;
+            if let Some(pane) = self.sheet.take().and_then(RightPane::of) {
+                self.right = Some(pane);
+            }
             window.defer(cx, |window, cx| window.close_sheet(cx));
         }
         self.sync_chrome(window, cx);
@@ -341,10 +374,7 @@ impl Workspace {
         };
         // The workers panel's button: for a session that has or had
         // workers, or while the panel shows anyway (from the View menu).
-        let workers_open = match self.width.docks_panel() {
-            true => self.workers_open,
-            false => self.sheet == Some(Edge::Panel),
-        };
+        let workers_open = self.is_workers_open();
         let workers = (had_workers || workers_open).then_some(workers_open);
         self.workers
             .update(cx, |panel, cx| panel.set_shown(workers_open, cx));
@@ -658,7 +688,7 @@ impl Workspace {
             // docked panel shows that transcript, a notification says it went.
             SessionViewEvent::SentToWorker(id) => {
                 let shown = self.width.docks_panel()
-                    && self.workers_open
+                    && self.right == Some(RightPane::Workers)
                     && self.workers.read(cx).open_worker() == Some(id);
                 if !shown {
                     window.push_notification(Notification::info(sent_to(id)), cx);
@@ -670,9 +700,8 @@ impl Workspace {
     /// Makes sure the workers panel shows: docked, or as a sheet.
     fn show_workers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.width.docks_panel() {
-            if !self.workers_open {
-                self.workers_open = true;
-                self.notifications_open = false;
+            if self.right != Some(RightPane::Workers) {
+                self.right = Some(RightPane::Workers);
                 self.sync_chrome(window, cx);
                 cx.notify();
             }
@@ -1005,12 +1034,7 @@ impl Workspace {
     ) {
         let had_focus = self.workers.read(cx).contains_focus(window, cx);
         let open = if self.width.docks_panel() {
-            self.workers_open = !self.workers_open;
-            // The two panels share the place at the right.
-            self.notifications_open &= !self.workers_open;
-            self.sync_chrome(window, cx);
-            cx.notify();
-            self.workers_open
+            self.toggle_right(RightPane::Workers, window, cx)
         } else if self.sheet == Some(Edge::Panel) {
             self.close_sheet(window, cx);
             false
@@ -1038,12 +1062,7 @@ impl Workspace {
     ) {
         let had_focus = self.notifications.read(cx).contains_focus(window, cx);
         let open = if self.width.docks_panel() {
-            self.notifications_open = !self.notifications_open;
-            // The two panels share the place at the right.
-            self.workers_open &= !self.notifications_open;
-            self.sync_chrome(window, cx);
-            cx.notify();
-            self.notifications_open
+            self.toggle_right(RightPane::Notifications, window, cx)
         } else if self.sheet == Some(Edge::Notifications) {
             self.close_sheet(window, cx);
             false
@@ -1061,6 +1080,21 @@ impl Workspace {
         } else if had_focus {
             self.focus_composer(window, cx);
         }
+    }
+
+    /// Docks `pane` at the right, in place of the other, or takes it away.
+    /// Returns whether it shows now.
+    fn toggle_right(
+        &mut self,
+        pane: RightPane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let open = self.right != Some(pane);
+        self.right = open.then_some(pane);
+        self.sync_chrome(window, cx);
+        cx.notify();
+        open
     }
 
     /// What the notifications panel asks.
@@ -1314,8 +1348,7 @@ impl Render for Workspace {
             theme.sidebar_border,
         );
         let sidebar_docked = self.is_sidebar_docked(cx);
-        let panel_docked =
-            self.width.docks_panel() && (self.workers_open || self.notifications_open);
+        let panel_docked = self.width.docks_panel() && self.right.is_some();
         // A pane never takes more than its share of a small window.
         let room = f32::from(window.viewport_size().width) / f32::from(window.rem_size());
         let sidebar_width = self.sidebar_width.min(room * 0.4);
@@ -1530,7 +1563,7 @@ impl Render for Workspace {
                                 // worker's spinner draws the panel again,
                                 // and its other rows, each kept, stay as
                                 // they were drawn.
-                                .child(if self.notifications_open {
+                                .child(if self.right == Some(RightPane::Notifications) {
                                     pane(&self.notifications)
                                 } else {
                                     pane(&self.workers)

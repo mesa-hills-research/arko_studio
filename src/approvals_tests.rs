@@ -539,8 +539,8 @@ fn a_refused_message_keeps_include_message_as_it_was(cx: &mut TestAppContext) {
 
 /// An answer to the requests ready takes the words, and a request still
 /// waits. A new draft written meanwhile, with Include message turned off,
-/// keeps that choice when the answer is refused and its words can't come
-/// back over the draft.
+/// keeps that choice when the answer is refused and its words come back
+/// after the draft.
 #[gpui_kit::test]
 fn a_refused_answer_leaves_a_newer_drafts_choice(cx: &mut TestAppContext) {
     let app = start(cx);
@@ -556,7 +556,7 @@ fn a_refused_answer_leaves_a_newer_drafts_choice(cx: &mut TestAppContext) {
     app.click(cx, "approval-message");
     assert_eq!(app.include_message(cx), Some(false));
     app.refuse(cx);
-    assert_eq!(app.composer_text(cx), "Later draft");
+    assert_eq!(app.composer_text(cx), "Later draft\n\nUse opus");
     assert_eq!(app.include_message(cx), Some(false));
 }
 
