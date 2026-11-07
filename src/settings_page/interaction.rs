@@ -1696,6 +1696,36 @@ fn a_read_of_an_earlier_save_does_not_replace_the_last_one(cx: &mut TestAppConte
     }
 }
 
+/// A reading begun while a change is saved doesn't land first and show the
+/// settings as they were, not even for a moment.
+#[gpui_kit::test(iterations = 50)]
+fn a_read_begun_while_a_change_is_written_never_flickers(cx: &mut TestAppContext) {
+    let backend = start_on(
+        cx,
+        FakeBackend::sample("/arko", SystemTime::now()),
+        prefs::Prefs::default(),
+    );
+    let (window, _) = open(cx, 1300.);
+    let part = openrouter_part(cx, window);
+    let zdr = |cx: &TestAppContext| cx.read(|cx| part.read(cx).settings().unwrap().zdr());
+    cx.update(|cx| {
+        part.update(cx, |part, cx| {
+            part.change(|settings| settings.set_zdr(true), cx);
+            part.read(cx);
+        })
+    });
+    // One task at a time, so the reading can land before the save does.
+    loop {
+        assert!(zdr(cx), "the change shows at every step");
+        if !cx.executor().tick() {
+            break;
+        }
+    }
+    cx.run_until_parked();
+    assert!(backend.openrouter().zdr());
+    assert!(zdr(cx));
+}
+
 /// A saved change to what rules OpenRouter's models out fetches them again,
 /// also when the save of a later change fails.
 #[gpui_kit::test]
@@ -1709,7 +1739,7 @@ fn a_saved_filter_fetches_the_models_again_when_a_later_save_fails(cx: &mut Test
     let (window, _) = open(cx, 1300.);
     let part = openrouter_part(cx, window);
     let asked = backend.catalog_asks();
-    // The save after zero data retention's fails.
+    // The save that follows the one for zero data retention fails.
     let _fail_next = cx.update(|cx| {
         let backend = backend.clone();
         cx.observe_global::<crate::backend::OpenRouterSaved>(move |cx| {
