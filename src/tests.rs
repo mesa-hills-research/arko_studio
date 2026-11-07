@@ -1702,6 +1702,33 @@ fn words_sent_with_the_next_message_dont_stay_as_a_draft(cx: &mut TestAppContext
     assert_eq!(composer_text(&view, cx), "");
 }
 
+/// Words given back to a box that already holds them, because the user typed
+/// them again over a kept draft, are sent once and leave no draft behind.
+#[gpui_kit::test]
+fn words_given_back_to_a_box_that_holds_them_leave_no_draft_once_sent(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let view = cx.read(|cx| first.read(cx).session_view().clone());
+    send_text(cx, one, "Go on.");
+    act(cx, one, |window, cx| window.input("Old draft", cx));
+    rest(cx);
+    act(cx, one, |window, cx| {
+        window.press("secondary-a", cx);
+        window.input("Go on.", cx);
+    });
+    refuse_sends(&session, cx);
+    assert_eq!(composer_text(&view, cx), "Go on.");
+    act(cx, one, |window, cx| window.press("enter", cx));
+    accept_all(&session, cx);
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    show_in(cx, one, &first, &session);
+    assert_eq!(
+        composer_text(&view, cx),
+        "",
+        "the replaced and the sent words stayed as a draft"
+    );
+}
+
 /// The same, where some of what was typed had been kept before the words
 /// came back.
 #[gpui_kit::test]

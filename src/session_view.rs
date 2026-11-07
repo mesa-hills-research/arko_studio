@@ -1006,17 +1006,18 @@ impl SessionView {
     fn take_back(&mut self, back: &Outgoing, window: &mut Window, cx: &mut Context<Self>) {
         let own = self.users_draft(cx);
         let draft = drafts::with_back(own.clone(), back);
-        if drafts::same(&draft, &own) {
-            return;
-        }
         // What the window last kept takes them as the stored draft did, so
         // one with nothing new of its own still has nothing new, and a send
-        // of them empties the stored draft.
+        // of them empties the stored draft. That holds when the composer
+        // already shows the words too.
         let key = self.draft_key(cx);
         if let Some((synced, kept)) = &mut self.synced
             && Some(&*synced) == key.as_ref()
         {
             *kept = drafts::with_back(std::mem::take(kept), back);
+        }
+        if drafts::same(&draft, &own) {
+            return;
         }
         let recording = self.composer.read(cx).dictation().read(cx).is_recording(cx);
         if self.editing.is_none() && recording {
