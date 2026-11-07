@@ -6,9 +6,9 @@
 //! gone when Studio quits.
 //!
 //! The drafts are where a session's unsent words belong, whichever window
-//! shows the session. Each draft has a revision that every change bumps,
-//! and a composer saves against the one it last saw ([`save`]), so a window
-//! that hasn't seen newer words can't put an older draft over them.
+//! shows the session. A window keeps the words it shows ([`save`]), and
+//! words given back go to the draft and into every window that shows the
+//! session, so a window can't erase words it never had.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -46,8 +46,9 @@ pub struct Drafts {
     drafts: BTreeMap<String, String>,
     /// The images of each, kept in memory only.
     images: BTreeMap<String, Vec<Attached>>,
-    /// Each one's revision, which every change bumps (in memory only).
-    revisions: BTreeMap<String, u64>,
+    /// What a send last took from each, which a window still showing it
+    /// doesn't put back (in memory only).
+    taken: BTreeMap<String, Outgoing>,
     path: Option<PathBuf>,
     changed: bool,
     saving: Option<Task<()>>,
@@ -72,7 +73,7 @@ pub fn init(drafts: BTreeMap<String, String>, path: Option<PathBuf>, cx: &mut Ap
     cx.set_global(Drafts {
         drafts,
         images: BTreeMap::new(),
-        revisions: BTreeMap::new(),
+        taken: BTreeMap::new(),
         path,
         changed: false,
         saving: None,
@@ -120,11 +121,6 @@ pub fn get(key: &str, cx: &App) -> Option<Outgoing> {
 /// Keeps `draft` as the draft of `key`: its text saved, its images in
 /// memory. A draft with neither words nor images forgets it.
 pub fn set(key: &str, draft: &Outgoing, cx: &mut App) {
-    if !same(&get(key, cx).unwrap_or_default(), draft) {
-        cx.update_global::<Drafts, _>(|drafts, _| {
-            *drafts.revisions.entry(key.to_string()).or_default() += 1;
-        });
-    }
     let text = &draft.text;
     let drafts = cx.global::<Drafts>();
     let same = match drafts.drafts.get(key) {
@@ -154,54 +150,58 @@ pub fn set(key: &str, draft: &Outgoing, cx: &mut App) {
     schedule_save(cx);
 }
 
-/// What a composer last took from the drafts or gave them, for one key:
-/// the draft, and its revision then.
-#[derive(Clone, Default)]
-pub struct Seen {
-    pub revision: u64,
-    pub draft: Outgoing,
-}
-
-/// The draft of `key` and its revision, as a composer takes it.
-pub fn seen(key: &str, cx: &App) -> Seen {
-    Seen {
-        revision: revision(key, cx),
-        draft: get(key, cx).unwrap_or_default(),
-    }
-}
-
-fn revision(key: &str, cx: &App) -> u64 {
-    let drafts = cx.global::<Drafts>();
-    drafts.revisions.get(key).copied().unwrap_or(0)
-}
-
-/// Keeps `draft`, a composer's, as the draft of `key`, the composer having
-/// last seen `seen` of it. A composer that has nothing new keeps the stored
-/// draft as it is. One that saw the latest revision puts its own in place.
-/// Otherwise the draft changed meanwhile (another window, or words given
-/// back), and the two are joined rather than one put over the other. It
-/// gives what is kept, for the composer to show.
-pub fn save(key: &str, draft: Outgoing, seen: Option<&Seen>, cx: &mut App) -> Seen {
+/// Keeps `draft`, what a window holds now, as the draft of `key`. `kept` is
+/// what the window held when it last took, kept or was given back the
+/// draft, and `sent` is what a send just took from it. Of two windows'
+/// different words, the last kept wins.
+/// - Words a window shows are kept, unless it changed nothing since and
+///   the stored draft has them already, or a send took them from it.
+/// - An empty draft takes the stored one's place only when the stored one
+///   is what the window held, or what its send just took. So a window that
+///   never had another window's words can't erase them.
+pub fn save(key: &str, draft: &Outgoing, kept: &Outgoing, sent: Option<&Outgoing>, cx: &mut App) {
     let stored = get(key, cx).unwrap_or_default();
-    let kept = match seen {
-        Some(seen) if same(&draft, &seen.draft) => stored,
-        Some(seen) if seen.revision == revision(key, cx) => draft,
-        _ => merged(&stored, draft, seen.map(|seen| &seen.draft)),
+    let keeps = if is_empty(draft) {
+        same(&stored, kept) || sent.is_some_and(|sent| same(&stored, sent))
+    } else if same(draft, kept) {
+        let taken = cx.global::<Drafts>().taken.get(key);
+        !has(&stored, draft) && !taken.is_some_and(|taken| same(taken, draft))
+    } else {
+        true
     };
-    set(key, &kept, cx);
-    Seen {
-        revision: revision(key, cx),
-        draft: kept,
+    if !keeps {
+        return;
     }
+    if sent.is_some() && is_empty(draft) && !is_empty(&stored) {
+        cx.global_mut::<Drafts>()
+            .taken
+            .insert(key.to_string(), stored);
+    }
+    set(key, draft, cx);
 }
 
 /// Puts `back`, the words of a send that didn't go, after the draft of
-/// `key`.
+/// `key` ([`with_back`]).
 pub fn give_back(key: &str, back: &Outgoing, cx: &mut App) {
-    let mut draft = get(key, cx).unwrap_or_default();
-    draft.text = joined(&draft.text, &back.text);
-    draft.images.extend(back.images.iter().cloned());
+    cx.global_mut::<Drafts>().taken.remove(key);
+    let draft = with_back(get(key, cx).unwrap_or_default(), back);
     set(key, &draft, cx);
+}
+
+/// `draft` with `back`, words given back, after its own words unless it
+/// holds them already, and with the images of `back` it lacks.
+pub fn with_back(mut draft: Outgoing, back: &Outgoing) -> Outgoing {
+    // Words joined before are one of the draft's parts between blank lines.
+    let parts = format!("\n\n{}\n\n", draft.text.trim());
+    if !parts.contains(&format!("\n\n{}\n\n", back.text.trim())) {
+        draft.text = joined(&draft.text, &back.text);
+    }
+    for image in &back.images {
+        if !draft.images.iter().any(|kept| kept.is(image)) {
+            draft.images.push(image.clone());
+        }
+    }
+    draft
 }
 
 /// Whether `a` and `b` hold the same text and the same images.
@@ -211,39 +211,27 @@ pub fn same(a: &Outgoing, b: &Outgoing) -> bool {
         && a.images.iter().zip(&b.images).all(|(a, b)| a.is(b))
 }
 
+/// Whether `stored` has the words and the images of `draft` already.
+fn has(stored: &Outgoing, draft: &Outgoing) -> bool {
+    stored.text.contains(draft.text.trim())
+        && draft
+            .images
+            .iter()
+            .all(|image| stored.images.iter().any(|kept| kept.is(image)))
+}
+
+/// Whether `draft` has neither words nor images.
+fn is_empty(draft: &Outgoing) -> bool {
+    draft.text.trim().is_empty() && draft.images.is_empty()
+}
+
 /// `more` after `text`, a blank line between them when both have words.
-pub fn joined(text: &str, more: &str) -> String {
+fn joined(text: &str, more: &str) -> String {
     match (text.trim().is_empty(), more.trim().is_empty()) {
         (true, _) => more.to_string(),
         (false, true) => text.to_string(),
         (false, false) => format!("{}\n\n{more}", text.trim_end()),
     }
-}
-
-/// A composer's draft `mine`, from `base`, with `stored`, which changed
-/// since the composer saw it. One that holds the other is taken as it is.
-/// Where the store only added after `base`, that comes after `mine`, and
-/// otherwise all of `stored` does. The images are both's, each once.
-fn merged(stored: &Outgoing, mine: Outgoing, base: Option<&Outgoing>) -> Outgoing {
-    let (s, m) = (stored.text.trim(), mine.text.trim());
-    let base = base.map_or("", |base| base.text.trim());
-    let text = if s.starts_with(m) || s.ends_with(m) {
-        stored.text.clone()
-    } else if m.starts_with(s) || m.ends_with(s) {
-        mine.text.clone()
-    } else {
-        match s.strip_prefix(base) {
-            Some(added) => joined(&mine.text, added.trim_start()),
-            None => joined(&mine.text, &stored.text),
-        }
-    };
-    let mut images = mine.images;
-    for image in &stored.images {
-        if !images.iter().any(|kept| kept.is(image)) {
-            images.push(image.clone());
-        }
-    }
-    Outgoing { text, images }
 }
 
 /// Keeps `text`, with no images, as the draft of `key`.
@@ -333,42 +321,67 @@ mod tests {
         }
     }
 
-    /// A composer saves over the draft it last saw, keeps a newer one when
-    /// it has nothing new itself, and joins a newer one when both changed,
-    /// without repeating what they share.
+    /// A window keeps the words it shows, the last kept winning, but none
+    /// the draft has already or a send took, unless it changed them. It
+    /// empties the draft only where it held it or its send took it.
     #[gpui_kit::test]
-    fn a_composer_saves_over_only_the_draft_it_saw(cx: &mut gpui_kit::TestAppContext) {
+    fn a_window_keeps_its_words_and_empties_only_its_own(cx: &mut gpui_kit::TestAppContext) {
         cx.update(|cx| init(BTreeMap::new(), None, cx));
         let stored =
             |cx: &mut gpui_kit::TestAppContext| cx.read(|cx| get("s1", cx)).map(|draft| draft.text);
-        // It saw the latest, so its own goes in.
-        let seen = cx.update(|cx| seen("s1", cx));
-        let seen = cx.update(|cx| save("s1", text("Count the pears"), Some(&seen), cx));
-        assert_eq!(stored(cx).as_deref(), Some("Count the pears"));
-        // Words come back to the session meanwhile.
-        cx.update(|cx| give_back("s1", &text("Go on."), cx));
-        // Nothing new here: the stored draft stays.
-        let kept = cx.update(|cx| save("s1", text("Count the pears"), Some(&seen), cx));
-        assert_eq!(kept.draft.text, "Count the pears\n\nGo on.");
-        assert_eq!(stored(cx).as_deref(), Some("Count the pears\n\nGo on."));
-        // Typed meanwhile: what the store added comes after it, once.
-        let kept = cx.update(|cx| save("s1", text("Count the apples"), Some(&seen), cx));
-        assert_eq!(kept.draft.text, "Count the apples\n\nGo on.");
-        // Another window's draft that holds this one's is taken as it is.
-        cx.update(|cx| set_text("s1", "Count the apples\n\nGo on. Then the plums.", cx));
-        let kept = cx.update(|cx| save("s1", text("Count the apples"), Some(&kept), cx));
+        let keep =
+            |cx: &mut gpui_kit::TestAppContext, draft: &str, kept: &str, sent: Option<&str>| {
+                let sent = sent.map(text);
+                cx.update(|cx| save("s1", &text(draft), &text(kept), sent.as_ref(), cx));
+                stored(cx)
+            };
         assert_eq!(
-            kept.draft.text,
-            "Count the apples\n\nGo on. Then the plums."
+            keep(cx, "Count the pears", "", None).as_deref(),
+            Some("Count the pears")
         );
-        // And one this draft holds gives way to it.
-        cx.update(|cx| set_text("s1", "plums", cx));
-        let kept = cx.update(|cx| save("s1", text("Count the plums"), Some(&kept), cx));
-        assert_eq!(kept.draft.text, "Count the plums");
-        // Two that differ are joined, the composer's first.
-        cx.update(|cx| set_text("s1", "Sort the figs.", cx));
-        let kept = cx.update(|cx| save("s1", text("Weigh the dates."), Some(&kept), cx));
-        assert_eq!(kept.draft.text, "Weigh the dates.\n\nSort the figs.");
+        assert_eq!(keep(cx, "Hello", "", None).as_deref(), Some("Hello"));
+        // A window that never had them, untouched or sending other words.
+        assert_eq!(keep(cx, "", "", None).as_deref(), Some("Hello"));
+        assert_eq!(keep(cx, "", "", Some("Go on.")).as_deref(), Some("Hello"));
+        // The window that held them sends them.
+        assert_eq!(keep(cx, "", "Hello", Some("Hello")), None);
+        // Words another window still shows are kept again, unless a send
+        // took them.
+        let pears = Some("Count the pears");
+        assert_eq!(
+            keep(cx, "Count the pears", "Count the pears", None).as_deref(),
+            pears
+        );
+        assert_eq!(keep(cx, "", "Count the pears", pears), None);
+        assert_eq!(keep(cx, "Count the pears", "Count the pears", None), None);
+        // Words given back are no longer taken, and come back once.
+        cx.update(|cx| give_back("s1", &text("Go on."), cx));
+        cx.update(|cx| give_back("s1", &text("Go on."), cx));
+        assert_eq!(stored(cx).as_deref(), Some("Go on."));
+        let both = Some("Count the pears\n\nGo on.");
+        assert_eq!(
+            keep(cx, "Count the pears\n\nGo on.", "Go on.", None).as_deref(),
+            both
+        );
+        // A window that holds only some of them, unchanged, keeps the rest.
+        assert_eq!(keep(cx, "Go on.", "Go on.", None).as_deref(), both);
+        // A changed one keeps its own, and an emptied one empties it.
+        assert_eq!(keep(cx, "Go on", "Go on.", None).as_deref(), Some("Go on"));
+        assert_eq!(keep(cx, "", "Go on", None), None);
+    }
+
+    /// Words given back come after a draft's own, once, as a part of it.
+    #[test]
+    fn words_given_back_join_a_draft_once() {
+        let back = text("Go on.");
+        let with = |draft: &str| with_back(text(draft), &back).text;
+        assert_eq!(with(""), "Go on.");
+        assert_eq!(with("Count the pears"), "Count the pears\n\nGo on.");
+        assert_eq!(
+            with("Count the pears\n\nGo on."),
+            "Count the pears\n\nGo on."
+        );
+        assert_eq!(with("Go on. Then stop."), "Go on. Then stop.\n\nGo on.");
     }
 
     /// A draft's images are kept beside its text, in memory only: a draft

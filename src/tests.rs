@@ -1223,9 +1223,10 @@ fn the_question_about_continuing_a_worker_works_from_the_keyboard(cx: &mut TestA
 }
 
 /// Two windows show one session and send the same words. Arko refuses the
-/// second window's, and only that window gets its text back.
+/// second window's, so the words come back once, to the session and to both
+/// its windows, and only the second window says why.
 #[gpui_kit::test]
-fn only_the_window_whose_send_arko_refused_gets_it_back(cx: &mut TestAppContext) {
+fn a_refused_send_comes_back_once_to_each_window_of_its_session(cx: &mut TestAppContext) {
     let (one, workspace, session) = session_in_workspace(cx, 1300.);
     let (two, other) = open(cx, 1300.);
     act(cx, two, |window, cx| {
@@ -1248,8 +1249,9 @@ fn only_the_window_whose_send_arko_refused_gets_it_back(cx: &mut TestAppContext)
         })
     });
     cx.run_until_parked();
-    assert_eq!(composer_text(&views[0], cx), "");
+    assert_eq!(composer_text(&views[0], cx), "Go on.");
     assert_eq!(composer_text(&views[1], cx), "Go on.");
+    assert_eq!(kept_draft(cx, "s1").as_deref(), Some("Go on."));
     assert_eq!(notifications(cx, one), 0);
     assert_eq!(notifications(cx, two), 1);
 }
@@ -1474,6 +1476,205 @@ fn words_given_back_outlive_the_other_windows_showing_their_session(cx: &mut Tes
             .as_deref(),
         Some("Go on.")
     );
+}
+
+/// The text of the session `key`'s kept draft.
+fn kept_draft(cx: &mut TestAppContext, key: &str) -> Option<String> {
+    cx.read(|cx| crate::drafts::get(key, cx))
+        .map(|draft| draft.text)
+}
+
+/// Long enough for typing to rest and the draft to be kept.
+fn rest(cx: &mut TestAppContext) {
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+}
+
+fn refuse_sends(session: &Entity<crate::live::LiveSession>, cx: &mut TestAppContext) {
+    session.update(cx, |session, _| {
+        session.answer_sends(|_| {
+            arko::Verdict::refused(arko::RefusalKind::Undelivered, "It didn't go.")
+        })
+    });
+    cx.run_until_parked();
+}
+
+fn show_in(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    workspace: &Entity<Workspace>,
+    session: &Entity<crate::live::LiveSession>,
+) {
+    act(cx, window, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_session(session.clone(), window, cx)
+        })
+    });
+}
+
+/// A send from a window that never had the other window's draft leaves it
+/// kept, when the window moves on and when the other one does.
+#[gpui_kit::test]
+fn a_send_from_another_window_keeps_the_draft_it_never_had(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    show_in(cx, two, &second, &session);
+    act(cx, two, |window, cx| window.input("Count the pears", cx));
+    rest(cx);
+    send_text(cx, one, "Go on.");
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    show_in(cx, two, &second, &elsewhere);
+    assert_eq!(kept_draft(cx, "s1").as_deref(), Some("Count the pears"));
+}
+
+/// A refusal that comes back to the window that sent it goes to its other
+/// window too, after what that one holds, and both are kept as the windows
+/// move on.
+#[gpui_kit::test]
+fn a_refusal_where_it_was_sent_keeps_the_other_windows_words(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    show_in(cx, two, &second, &session);
+    let views =
+        [&first, &second].map(|workspace| cx.read(|cx| workspace.read(cx).session_view().clone()));
+    send_text(cx, one, "Go on.");
+    act(cx, two, |window, cx| window.input("Count the pears", cx));
+    rest(cx);
+    refuse_sends(&session, cx);
+    assert_eq!(composer_text(&views[0], cx), "Go on.");
+    assert_eq!(composer_text(&views[1], cx), "Count the pears\n\nGo on.");
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    show_in(cx, two, &second, &elsewhere);
+    assert_eq!(
+        kept_draft(cx, "s1").as_deref(),
+        Some("Count the pears\n\nGo on.")
+    );
+}
+
+/// The window that sent holds only the words that came back, and the other
+/// window holds them after its own. Whichever moves on last, both are kept.
+#[gpui_kit::test]
+fn the_window_that_sent_moving_on_last_keeps_the_other_windows_words(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    show_in(cx, two, &second, &session);
+    send_text(cx, one, "Go on.");
+    act(cx, two, |window, cx| window.input("Count the pears", cx));
+    rest(cx);
+    refuse_sends(&session, cx);
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, two, &second, &elsewhere);
+    show_in(cx, one, &first, &elsewhere);
+    assert_eq!(
+        kept_draft(cx, "s1").as_deref(),
+        Some("Count the pears\n\nGo on.")
+    );
+}
+
+/// Three windows show one session, two of them with words of their own. The
+/// third sends, moves on, and is refused. Each of the other two keeps its own
+/// words, with the ones that came back after them, once.
+#[gpui_kit::test]
+fn words_given_back_join_each_windows_own_words_once(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    let (three, third) = open(cx, 1300.);
+    show_in(cx, two, &second, &session);
+    show_in(cx, three, &third, &session);
+    let views =
+        [&second, &third].map(|workspace| cx.read(|cx| workspace.read(cx).session_view().clone()));
+    act(cx, two, |window, cx| window.input("apples", cx));
+    rest(cx);
+    act(cx, three, |window, cx| window.input("pears", cx));
+    rest(cx);
+    act(cx, two, |window, cx| window.input(" and plums", cx));
+    send_text(cx, one, "Go on.");
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    refuse_sends(&session, cx);
+    assert_eq!(composer_text(&views[0], cx), "apples and plums\n\nGo on.");
+    assert_eq!(composer_text(&views[1], cx), "pears\n\nGo on.");
+    show_in(cx, two, &second, &elsewhere);
+    show_in(cx, three, &third, &elsewhere);
+    assert!(kept_draft(cx, "s1").is_some_and(|kept| kept.ends_with("\n\nGo on.")));
+}
+
+/// Typing in one window leaves another window's unsent words out of its
+/// composer, so Enter sends only what it shows. The other window's words are
+/// still kept when it moves on.
+#[gpui_kit::test]
+fn typing_in_one_window_leaves_the_other_windows_words_out(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    show_in(cx, two, &second, &session);
+    let views =
+        [&first, &second].map(|workspace| cx.read(|cx| workspace.read(cx).session_view().clone()));
+    act(cx, two, |window, cx| window.input("Count the pears", cx));
+    rest(cx);
+    act(cx, one, |window, cx| window.input("Hello", cx));
+    rest(cx);
+    assert_eq!(composer_text(&views[0], cx), "Hello");
+    act(cx, one, |window, cx| window.press("enter", cx));
+    assert_eq!(queued_messages(&session, cx), ["Hello"]);
+    assert_eq!(composer_text(&views[1], cx), "Count the pears");
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, two, &second, &elsewhere);
+    assert_eq!(kept_draft(cx, "s1").as_deref(), Some("Count the pears"));
+}
+
+/// A composer the user empties stays empty, and the newer words another
+/// window kept meanwhile stay kept.
+#[gpui_kit::test]
+fn an_emptied_composer_stays_empty_beside_another_windows_words(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    show_in(cx, two, &second, &session);
+    let view = cx.read(|cx| first.read(cx).session_view().clone());
+    act(cx, one, |window, cx| window.input("hello", cx));
+    rest(cx);
+    act(cx, two, |window, cx| window.input("world", cx));
+    rest(cx);
+    act(cx, one, |window, cx| window.press("secondary-a", cx));
+    act(cx, one, |window, cx| window.press("backspace", cx));
+    rest(cx);
+    assert_eq!(composer_text(&view, cx), "");
+    assert_eq!(kept_draft(cx, "s1").as_deref(), Some("world"));
+}
+
+/// A window that still shows words another window has sent doesn't keep
+/// them again when it moves on.
+#[gpui_kit::test]
+fn a_window_showing_words_sent_elsewhere_doesnt_keep_them(cx: &mut TestAppContext) {
+    let (one, _, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    act(cx, one, |window, cx| window.input("Go on.", cx));
+    rest(cx);
+    show_in(cx, two, &second, &session);
+    act(cx, one, |window, cx| window.press("enter", cx));
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, two, &second, &elsewhere);
+    assert_eq!(kept_draft(cx, "s1"), None);
+}
+
+/// Words that come back to a window that already holds them aren't added
+/// again.
+#[gpui_kit::test]
+fn words_given_back_come_once_to_a_window_that_holds_them(cx: &mut TestAppContext) {
+    let (one, first, session) = session_in_workspace(cx, 1300.);
+    let (two, second) = open(cx, 1300.);
+    act(cx, one, |window, cx| window.input("Go on.", cx));
+    rest(cx);
+    show_in(cx, two, &second, &session);
+    act(cx, one, |window, cx| window.press("enter", cx));
+    let elsewhere = cx.new(|cx| crate::live::LiveSession::for_tests("s2", cx));
+    show_in(cx, one, &first, &elsewhere);
+    refuse_sends(&session, cx);
+    let view = cx.read(|cx| second.read(cx).session_view().clone());
+    assert_eq!(composer_text(&view, cx), "Go on.");
+    assert_eq!(kept_draft(cx, "s1").as_deref(), Some("Go on."));
 }
 
 /// A login file chosen for a question another window answered meanwhile
