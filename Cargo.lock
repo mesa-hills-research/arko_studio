@@ -239,9 +239,8 @@ dependencies = [
 
 [[package]]
 name = "arko-tui"
-version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc141c1467e2696e028a9a57f9f52b17c157f1c022c694a008feb530fadb6822"
+version = "0.20.0"
+source = "git+https://github.com/mesa-hills-research/arko?rev=1bedd459ce7fbf04f6ef0232026dbda98b874e1a#1bedd459ce7fbf04f6ef0232026dbda98b874e1a"
 dependencies = [
  "arko_agents",
  "arko_ai",
@@ -297,13 +296,14 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "arko_agents"
-version = "0.6.1"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "547bd6cb225f012938cf8dbc87d9a04e81d25c6496db3843675f7402f2dff5ab"
+checksum = "6f9e7e41f186210f91339502706c6de15e5e64d1dd1a26a5f371ffb8fc5b807f"
 dependencies = [
  "arko_ai",
  "async-trait",
@@ -329,9 +329,9 @@ dependencies = [
 
 [[package]]
 name = "arko_ai"
-version = "0.2.4"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fbf7fb4c9205e0f7098e36c2c89100e3639e51041a96f2c4dd2a10f3785283"
+checksum = "d9290d4e70ce56c6e9e300c163388b53f8df250ddd5d73287d00085894b1fbaa"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -459,9 +459,9 @@ dependencies = [
 
 [[package]]
 name = "arko_workflows"
-version = "0.7.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab955a0f2ad64a014aaf9b9f215c51f14e96578db8ea5e707c4a5b1bba43a496"
+checksum = "dc098c4122d7214340476c1e9d95219fb91e455b0d23f6fc10920a35a15fa16e"
 dependencies = [
  "arko_agents",
  "arko_ai",
@@ -8666,9 +8666,9 @@ dependencies = [
 
 [[package]]
 name = "telmo"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fca96d3a6c7dff9193f4903d60b6377c43983447394e88c289e96553d2cfb55"
+checksum = "34b2f97f3483787d4bb2f272dd79be9a6b72f01ddec5f3a31d9f44e72617dd86"
 
 [[package]]
 name = "tempfile"

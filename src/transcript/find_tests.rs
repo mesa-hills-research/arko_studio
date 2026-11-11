@@ -62,6 +62,7 @@ fn command(feed: &Feed, line: &str, output: &str) {
             tool_call_id: id,
             tool_name: "shell".into(),
             output: format!("exit code 0, 0.1 s\n{output}"),
+            receipt: None,
         }),
         None,
     );
@@ -1368,6 +1369,7 @@ fn the_find_covers_a_failure_a_workers_title_and_a_turns_footer(cx: &mut TestApp
             tool_call_id: id,
             tool_name: "shell".into(),
             output: "exit code 101, 0.2 s\nthe tests failed".into(),
+            receipt: None,
         }),
         None,
     );

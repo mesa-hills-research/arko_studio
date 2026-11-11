@@ -27,7 +27,7 @@ dictation = ["arko/dictation", "gpui-kit/speech"]
 # its own.
 gpui-kit = { package = "mhr-gpui-kit", version = "=0.7.15", features = ["fonts", "tree-sitter-languages", "writing"] }
 # Arko's engine, as a library: no terminal crates, the web page's server kept.
-arko = { package = "arko-tui", version = "0.18.1", default-features = false, features = ["remote"] }
+arko = { package = "arko-tui", version = "0.20.0", default-features = false, features = ["remote"] }
 anyhow = "1.0"
 # arko's Prompter trait is an async trait.
 async-trait = "0.1"
@@ -62,14 +62,14 @@ uuid = "1"
 # The same GPUI Kit with GPUI's test harness, for tests that click and type
 # into real windows on a fake clock.
 gpui-kit = { package = "mhr-gpui-kit", version = "=0.7.15", features = ["test-support"] }
-arko = { package = "arko-tui", version = "0.18.1", default-features = false, features = ["remote", "testing"] }
+arko = { package = "arko-tui", version = "0.20.0", default-features = false, features = ["remote", "testing"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # The feed's events as arko gets them from the framework, for tests that
 # drive a feed the way a session does.
-arko_agents = "0.6.0"
-arko_workflows = "0.7.0"
+arko_agents = "0.8.0"
+arko_workflows = "0.9.0"
 # A session's saved conversation, for tests that reopen its transcript.
-arko_ai = "0.2.4"
+arko_ai = "0.2.6"
 # The time zone database built in, so tests of times in a named zone pass on any machine.
 jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 
@@ -102,3 +102,7 @@ taffy = { opt-level = 3 }
 # The speech engine is far too slow to dictate with unoptimized.
 telmo = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
+
+# Arko 0.20.0 from its release branch, until it's published.
+[patch.crates-io]
+arko-tui = { git = "https://github.com/mesa-hills-research/arko", rev = "1bedd459ce7fbf04f6ef0232026dbda98b874e1a" }

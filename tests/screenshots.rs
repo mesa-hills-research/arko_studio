@@ -973,6 +973,7 @@ mod feed {
                 tool_call_id: id,
                 tool_name: tool.into(),
                 output: output.into(),
+                receipt: None,
             }),
             None,
         );

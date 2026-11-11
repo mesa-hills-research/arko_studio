@@ -130,6 +130,7 @@ pub(super) fn result(feed: &Feed, agent: &str, id: Uuid, tool: &str, output: &st
                 tool_call_id: id,
                 tool_name: tool.into(),
                 output: output.into(),
+                receipt: None,
             },
         ),
         label,

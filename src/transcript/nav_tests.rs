@@ -50,6 +50,7 @@ fn command(feed: &Feed, line: &str) {
             tool_call_id: id,
             tool_name: "shell".into(),
             output: "exit code 0, 0.1 s\nok".into(),
+            receipt: None,
         }),
         None,
     );
