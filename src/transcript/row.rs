@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arko::remote::{
-    CallStatus, Delivery, Item, JobKind, JobState, JobSummary, Kind, Level, Source, WorkerState,
+    CallStatus, ContentKind, Delivery, Item, JobKind, JobState, JobSummary, Kind, Level, Source,
+    WorkerState,
 };
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::image_cache::LruImageCache;
@@ -122,16 +123,43 @@ fn from_line(diff: Diff, by: usize) -> Diff {
     Diff::parse(&unified)
 }
 
-/// The parameters a call's details show: none where its line says them
-/// all or its diff does, else its parameters (or, from before the feed kept
-/// them, the line's long part: a multi-line command, a worker's task).
-pub(super) fn shown_parameters(item: &Item) -> Option<Arc<str>> {
+/// What a call's details show of what it was given.
+pub(super) enum Given {
+    /// Once it ended, what its line cut, as one muted line (a command's
+    /// whole text, a long query), as every client shows it.
+    Detail(Arc<str>),
+    /// While it runs, its parameters under a caption, or an old edit's patch.
+    Parameters(Arc<str>),
+}
+
+impl Given {
+    pub(super) fn text(&self) -> &Arc<str> {
+        match self {
+            Given::Detail(text) | Given::Parameters(text) => text,
+        }
+    }
+}
+
+/// What a call's details show of what it was given: none where its line
+/// says it all or its diff does.
+pub(super) fn shown_given(item: &Item) -> Option<Given> {
+    if let Some(patch) = apply_diff_patch(item) {
+        // An edit from a session saved before edit_file: its patch.
+        return Some(Given::Parameters(patch.into()));
+    }
+    if let Some(act) = &item.act {
+        return (!act.detail.is_empty()).then(|| Given::Detail(act.detail.as_str().into()));
+    }
+    shown_parameters(item).map(Given::Parameters)
+}
+
+/// The parameters a running call's details show: none where its line says
+/// them all or its diff does, else its parameters (or, from before the feed
+/// kept them, the line's long part: a multi-line command, a worker's task).
+fn shown_parameters(item: &Item) -> Option<Arc<str>> {
     let line = item.text.trim();
     if parameters_shown_by_line(item) {
         None
-    } else if let Some(patch) = apply_diff_patch(item) {
-        // An edit from a session saved before edit_file: its patch.
-        Some(patch.into())
     } else if let Some(parameters) = item.parameters.clone() {
         Some(parameters)
     } else if line.contains('\n') || item.detail.is_some() {
@@ -141,19 +169,60 @@ pub(super) fn shown_parameters(item: &Item) -> Option<Arc<str>> {
     }
 }
 
-/// What a call's details show came back: its command's output block, or
-/// its tool's result. An edit's diff stands for its result.
+/// What a call's details show came back: its content (the lines it read,
+/// its output, its message, its result), or from a session without one,
+/// its tool's result. An edit's or a write's diff stands for its content.
 pub(super) fn shown_output(entry: &super::model::Entry) -> Option<Arc<str>> {
     let item = &entry.item;
+    if shows_diff(item) && item.status == Some(CallStatus::Ok) {
+        return None;
+    }
     match (&entry.result, item.output.clone()) {
-        (Some(result), _) => result
-            .whole
-            .clone()
-            .or_else(|| result.detail.clone().map(Arc::from)),
-        (None, Some(_)) if shows_diff(item) && item.status == Some(CallStatus::Ok) => None,
+        (Some(result), _) => Some(content_text(result)),
         (None, Some(output)) if !output.trim().is_empty() => Some(output),
         _ => None,
     }
+}
+
+/// A call's content whole, from its `result`, with a file's lines and a
+/// diff's numbered in a gutter ("100  text", "-100  text").
+fn content_text(result: &Item) -> Arc<str> {
+    use arko::remote::content::{self, Line, Mark};
+    let Some(kind) = result
+        .content
+        .filter(|kind| matches!(kind, ContentKind::Lines | ContentKind::Diff))
+    else {
+        return result
+            .whole
+            .clone()
+            .unwrap_or_else(|| result.text.as_str().into());
+    };
+    let text = result.whole.as_deref().unwrap_or(&result.text);
+    let width = content::number_width(kind, text);
+    let lines: Vec<String> = text
+        .lines()
+        .map(|line| match content::line(kind, line) {
+            Line::Numbered {
+                number,
+                mark: Mark::None,
+                text,
+            } => format!("{number:>width$}  {text}"),
+            Line::Numbered { number, mark, text } => {
+                format!("{}{number:>width$}  {text}", mark.symbol())
+            }
+            Line::Plain(line) => line.to_string(),
+        })
+        .collect();
+    lines.join("\n").into()
+}
+
+/// Whether a call's details end with its outcome in words, which they do
+/// when nothing came back to show and no diff (`has_diff`) says what it did.
+fn says_outcome(entry: &super::model::Entry, has_diff: bool) -> bool {
+    let item = &entry.item;
+    entry.result.is_none()
+        && item.outcome.is_some()
+        && !(has_diff && item.status == Some(CallStatus::Ok))
 }
 
 /// Whether a call's details show a diff: an edit's or a write's.
@@ -444,31 +513,34 @@ impl TranscriptView {
         let caption = m.line_xs;
         let mut parts = Vec::new();
         let diff = self.ui.get(&item.id).and_then(|ui| ui.diff.clone());
-        let has_diff = diff.is_some();
+        let mut named = false;
         if let Some(diff) = &diff {
             let rows = diff.read(cx).row_count().clamp(1, DIFF_ROWS);
             parts.push(f32::from(DiffView::row_height(cx)) * rows as f32);
-        } else if let Some(parameters) = shown_parameters(item) {
-            parts.push(caption);
-            parts.push(lines(&parameters));
-        }
-        match (&entry.result, item.output.as_deref()) {
-            (Some(_), _) => {
-                parts.push(caption);
-                if let Some(body) = shown_output(entry) {
-                    parts.push(lines(&body));
+        } else {
+            match shown_given(item) {
+                Some(Given::Detail(detail)) => parts.push(
+                    m.mono
+                        .text_lines(&super::height::hard_lines(&detail), width)
+                        * m.line_mono,
+                ),
+                Some(Given::Parameters(parameters)) => {
+                    parts.push(caption);
+                    parts.push(lines(&parameters));
+                    named = true;
                 }
+                None => {}
             }
-            (None, Some(_)) if has_diff && item.status == Some(CallStatus::Ok) => {}
-            (None, Some(output)) if !output.trim().is_empty() => {
-                parts.push(caption);
-                parts.push(lines(output));
-            }
-            (None, _) => {
-                if item.outcome.is_some() {
+        }
+        match shown_output(entry) {
+            Some(body) => {
+                if named {
                     parts.push(caption);
                 }
+                parts.push(lines(&body));
             }
+            None if says_outcome(entry, diff.is_some()) => parts.push(caption),
+            None => {}
         }
         // Their top padding, and the gaps between them.
         0.25 * rem + parts.iter().sum::<f32>() + 0.375 * rem * parts.len().saturating_sub(1) as f32
@@ -1720,45 +1792,59 @@ impl TranscriptView {
         // part: a multi-line command, a worker's task).
         let diff = self.ui.get(&id).and_then(|ui| ui.diff.clone());
         let has_diff = diff.is_some();
-        let parameters = shown_parameters(item);
+        let mut named = false;
         if let Some(diff) = diff {
             details = details.child(DiffView::new(&diff).max_rows(DIFF_ROWS));
-        } else if let Some(parameters) = parameters {
-            details = details.child(caption("Parameters".into())).child(lines(
-                parameters,
-                "parameters",
-                Place::Parameters,
-                format!("Parameters of {line}"),
-            ));
-        }
-        // What came back: a command's output block, or the tool's result.
-        match (&entry.result, item.output.clone()) {
-            (Some(result), _) => {
-                details = details.child(caption(result.text.clone()));
-                if let Some(body) = shown_output(entry) {
-                    details = details.child(lines(
-                        body,
-                        "output",
-                        Place::Output,
-                        format!("Output of {line}"),
-                    ));
+        } else {
+            match shown_given(item) {
+                Some(Given::Detail(detail)) => {
+                    details = details.child(
+                        div()
+                            .w_full()
+                            .code_font(theme)
+                            .text_size(theme.mono_font_size)
+                            .child(self.marked(
+                                ("detail", id),
+                                id,
+                                Place::Parameters,
+                                detail.to_string(),
+                                Ink::on(theme.muted_foreground, theme.background),
+                                cx,
+                            )),
+                    );
                 }
+                Some(Given::Parameters(parameters)) => {
+                    details = details.child(caption("Parameters".into())).child(lines(
+                        parameters,
+                        "parameters",
+                        Place::Parameters,
+                        format!("Parameters of {line}"),
+                    ));
+                    named = true;
+                }
+                None => {}
             }
-            // An edit's diff says what its result would.
-            (None, Some(_)) if has_diff && item.status == Some(CallStatus::Ok) => {}
-            (None, Some(output)) if !output.trim().is_empty() => {
-                details = details.child(caption("Result".into())).child(lines(
+        }
+        // What came back, directly under the line, or named under the
+        // parameters.
+        match shown_output(entry) {
+            Some(output) => {
+                if named {
+                    details = details.child(caption("Result".into()));
+                }
+                details = details.child(lines(
                     output,
                     "output",
                     Place::Output,
                     format!("Result of {line}"),
                 ));
             }
-            (None, _) => {
+            None if says_outcome(entry, has_diff) => {
                 if let Some(outcome) = &item.outcome {
                     details = details.child(caption(outcome.clone()));
                 }
             }
+            None => {}
         }
         details.into_any_element()
     }

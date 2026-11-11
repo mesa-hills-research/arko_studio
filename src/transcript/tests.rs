@@ -2475,6 +2475,93 @@ fn a_failed_call_says_why_and_its_details_open(cx: &mut TestAppContext) {
     });
 }
 
+/// A call that ended opens to its content once, as every client shows it:
+/// a read to its lines in a gutter, a message to its text with no
+/// parameters over it, a command to its output under the whole command, an
+/// edit to its diff alone.
+#[gpui_kit::test]
+fn a_call_opens_to_its_content_once(cx: &mut TestAppContext) {
+    use super::row::{Given, shown_given, shown_output};
+    start(cx);
+    let feed = Feed::new("main");
+    feed.turn_started();
+    let read = call(
+        &feed,
+        "main",
+        "read_file",
+        &[("path", "src/parse.rs".into())],
+    );
+    result(
+        &feed,
+        "main",
+        read,
+        "read_file",
+        "9 | fn parse() {\n10 |     todo!()\n11 | }\n",
+    );
+    let message = call(
+        &feed,
+        "main",
+        "message_agent",
+        &[("to", "r1".into()), ("message", "Use plan B".into())],
+    );
+    result(&feed, "main", message, "message_agent", "Sent to r1.");
+    let command = call(
+        &feed,
+        "main",
+        "shell",
+        &[("command", "cd parse\ncargo test".into())],
+    );
+    result(
+        &feed,
+        "main",
+        command,
+        "shell",
+        "exit code 0, 0.4 s\n12 passed",
+    );
+    let edit = call(
+        &feed,
+        "main",
+        "edit_file",
+        &[
+            ("path", "src/lib.rs".into()),
+            ("old_string", "fn a() {}\n".into()),
+            ("new_string", "fn a() -> u8 { 1 }\n".into()),
+        ],
+    );
+    result(
+        &feed,
+        "main",
+        edit,
+        "edit_file",
+        "Edited src/lib.rs at lines 3-3",
+    );
+    let (_window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let calls: Vec<u64> = item_ids(&feed)
+        .into_iter()
+        .filter(|(_, kind)| *kind == Kind::Call)
+        .map(|(id, _)| id)
+        .collect();
+    cx.read(|cx| {
+        let model = &view.read(cx).model;
+        let entry = |at: usize| model.entry(calls[at]).unwrap();
+        let output = |at: usize| shown_output(entry(at)).map(|text| text.to_string());
+        assert!(shown_given(&entry(0).item).is_none());
+        assert_eq!(
+            output(0).as_deref(),
+            Some(" 9  fn parse() {\n10      todo!()\n11  }")
+        );
+        assert!(shown_given(&entry(1).item).is_none());
+        assert_eq!(output(1).as_deref(), Some("Use plan B"));
+        assert!(matches!(
+            shown_given(&entry(2).item),
+            Some(Given::Detail(text)) if text.contains("cd parse")
+        ));
+        assert_eq!(output(2).as_deref(), Some("12 passed"));
+        assert!(shown_given(&entry(3).item).is_none());
+        assert_eq!(output(3), None);
+    });
+}
+
 #[gpui_kit::test]
 fn worker_cards_open_the_worker_and_its_own_transcript(cx: &mut TestAppContext) {
     start(cx);

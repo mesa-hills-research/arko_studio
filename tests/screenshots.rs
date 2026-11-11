@@ -1002,6 +1002,49 @@ pub fn feed(&mut self, chunk: &str) -> Vec<Block> {
 The new test streams a document one byte at a time and compares the blocks with a \
 parse of the whole text.";
 
+    /// Calls whose details show what they gave back: a read, a message to a
+    /// worker, and a command of two lines.
+    pub fn call_contents() -> Feed {
+        let feed = Feed::new("main");
+        feed.user("Plan the tokenizer's tests.", Source::App, Delivery::Turn);
+        feed.turn_started();
+        let read = call(
+            &feed,
+            "read_file",
+            &[("path", "src/parse.rs".into()), ("start_line", 9.into())],
+        );
+        result(
+            &feed,
+            read,
+            "read_file",
+            "9 | pub fn parse(text: &str) -> Vec<Block> {\n10 |     let mut parser = Parser::new();\n11 |     parser.feed(text)\n12 | }\n",
+        );
+        let message = call(
+            &feed,
+            "message_agent",
+            &[
+                ("to", "r1".into()),
+                (
+                    "message",
+                    "Use plan B for the tokenizer, and keep the old tests.".into(),
+                ),
+            ],
+        );
+        result(&feed, message, "message_agent", "Sent to r1.");
+        let command = call(
+            &feed,
+            "shell",
+            &[("command", "cd parse\ncargo test tokenizer".into())],
+        );
+        result(
+            &feed,
+            command,
+            "shell",
+            "exit code 0, 1.2 s\nrunning 4 tests\ntest result: ok. 4 passed; 0 failed",
+        );
+        feed
+    }
+
     /// A reply still streaming, with a note the user typed meanwhile that
     /// the agent hasn't read yet.
     pub fn note_mid_reply() -> Feed {
@@ -1629,8 +1672,27 @@ fn transcript_working_dark() {
 }
 
 /// The representative transcript alone in a window `width` wide, its
-/// running times read at a fixed moment.
+/// running times read at a fixed moment. The edit and the failed test show
+/// their details.
 fn transcript_window(mode: ThemeMode, width: f32) -> Screenshot {
+    transcript_window_of(mode, width, feed::representative(), |item| {
+        item.tool.as_deref() == Some("edit_file")
+            || item
+                .outcome
+                .as_deref()
+                .is_some_and(|o| o.starts_with("exit"))
+    })
+}
+
+/// The transcript of `feed` alone in a window `width` wide, its running
+/// times read at a fixed moment, with the details of the items `open`
+/// picks shown.
+fn transcript_window_of(
+    mode: ThemeMode,
+    width: f32,
+    feed: arko::remote::Feed,
+    open: impl Fn(&arko::remote::Item) -> bool,
+) -> Screenshot {
     use arko_studio::transcript::{AgentFilter, TranscriptView};
     use gpui_kit::AppContext as _;
 
@@ -1643,18 +1705,10 @@ fn transcript_window(mode: ThemeMode, width: f32) -> Screenshot {
         .with_prefs(settings)
         .with_fonts(fonts::bundled());
     app.update(|cx| arko_studio::init(startup, cx));
-    let feed = feed::representative();
-    // The edit and the failed test show their details.
     let items = feed.subscribe().0.items;
     let open: Vec<u64> = items
         .iter()
-        .filter(|item| {
-            item.tool.as_deref() == Some("edit_file")
-                || item
-                    .outcome
-                    .as_deref()
-                    .is_some_and(|o| o.starts_with("exit"))
-        })
+        .filter(|item| open(item))
         .map(|item| item.id)
         .collect();
     // The call and the worker started a moment ago: they show 12 s.
@@ -1676,6 +1730,30 @@ fn transcript_window(mode: ThemeMode, width: f32) -> Screenshot {
         })
         .unwrap();
     app.capture(window).unwrap()
+}
+
+/// A read, a message to a worker and a command of two lines, each opened to
+/// what it gave back.
+fn call_contents_window(mode: ThemeMode) -> Screenshot {
+    transcript_window_of(mode, 1000., feed::call_contents(), |item| {
+        item.kind == arko::remote::Kind::Call
+    })
+}
+
+#[test]
+fn transcript_call_contents_light() {
+    goldens().assert(
+        "transcript-call-contents-light",
+        &call_contents_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn transcript_call_contents_dark() {
+    goldens().assert(
+        "transcript-call-contents-dark",
+        &call_contents_window(ThemeMode::Dark),
+    );
 }
 
 #[test]

@@ -808,7 +808,7 @@ impl TranscriptView {
                 {
                     texts.push((Place::Outcome, outcome.clone()));
                 }
-                if let Some(parameters) = row::shown_parameters(item) {
+                if let Some(parameters) = row::shown_given(item).map(|given| given.text().clone()) {
                     texts.push((Place::Parameters, parameters.to_string()));
                 }
                 if let Some(output) = row::shown_output(entry) {
@@ -834,7 +834,7 @@ impl TranscriptView {
     fn full_text(&self, found: &Match) -> Option<std::sync::Arc<str>> {
         let entry = self.model.entry(found.entry)?;
         match found.place {
-            Place::Parameters => row::shown_parameters(&entry.item),
+            Place::Parameters => row::shown_given(&entry.item).map(|given| given.text().clone()),
             Place::Output => row::shown_output(entry),
             _ => None,
         }
@@ -1398,7 +1398,9 @@ impl TranscriptView {
                 .model
                 .entry(entry)
                 .and_then(|item| match place {
-                    Place::Parameters => row::shown_parameters(&item.item),
+                    Place::Parameters => {
+                        row::shown_given(&item.item).map(|given| given.text().clone())
+                    }
                     _ => row::shown_output(item),
                 })
                 .map_or(0, |text| shown_prefix(&text)),
