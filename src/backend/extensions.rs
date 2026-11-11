@@ -248,7 +248,7 @@ impl Extensions {
                 approval: Approval::Approved,
             }],
             skills: vec![SkillFolder {
-                skills: ["docx", "pdf", "repo-docs-style"]
+                skills: ["docx", "pdf", "ponytail"]
                     .into_iter()
                     .map(|name| sample_skill(&skills, name))
                     .collect(),
@@ -257,23 +257,23 @@ impl Extensions {
             }],
             builtin: vec![
                 BuiltinSkill {
-                    name: "user-facing-prose".into(),
-                    description: "How to write any text a person reads, such as UI text, messages, docs and commit messages. Load it before writing or reviewing any of these.".into(),
-                    auto_load: false,
+                    name: "prose".into(),
+                    description: "How to write anything someone reads, from UI text, errors, help and messages between agents to a project's README, docs, commit messages and comments in code. Load it before writing or reviewing any of these.".into(),
+                    auto_load: true,
                     replaced_by: Vec::new(),
                 },
                 BuiltinSkill {
-                    name: "repo-docs-style".into(),
-                    description: "Rules for repository documentation, such as READMEs and docs pages. Load it before creating or editing project docs.".into(),
+                    name: "ponytail".into(),
+                    description: "Finish the whole task with the best change, kept as small as that allows, split the work sensibly between workers, and check it in proportion to the risk. Use it for any coding task (writing, fixing, refactoring, reviewing, choosing dependencies), for running workers, and when the user asks for the simplest solution or complains about over-engineering.".into(),
                     auto_load: false,
                     replaced_by: vec![
-                        home.join(".claude/skills/repo-docs-style"),
-                        home.join("src/arko/.agents/skills/repo-docs-style"),
+                        home.join(".claude/skills/ponytail"),
+                        home.join("src/arko/.agents/skills/ponytail"),
                     ],
                 },
                 BuiltinSkill {
-                    name: "ponytail".into(),
-                    description: "Finish the whole task with the smallest change that fully works, split the work sensibly between workers, and check it in proportion to the risk. Use it for any coding task, for running workers, and when the user asks for the simplest solution.".into(),
+                    name: "arko-taste".into(),
+                    description: "Twelve checks for anything a person sees in an interface, such as a transcript row, a fold, a label, a status or a control. Load it before designing, building or reviewing a screen or a change to one. It asks for rows that earn their place, nothing shown twice, controls that keep their promise, the effect rather than the mechanism, and a rendering of every state before any code.".into(),
                     auto_load: false,
                     replaced_by: Vec::new(),
                 },
@@ -643,8 +643,8 @@ mod tests {
         let root = temp.path().join("arko");
         let project = temp.path().join("project");
         write(
-            &project.join(".skills/repo-docs-style/SKILL.md"),
-            "---\nname: repo-docs-style\ndescription: Our docs rules\n---\nWrite plainly.",
+            &project.join(".skills/ponytail/SKILL.md"),
+            "---\nname: ponytail\ndescription: Our coding rules\n---\nKeep it small.",
         );
         let found = read(&root, std::slice::from_ref(&project), &[]);
         let names: Vec<&str> = found
@@ -652,12 +652,16 @@ mod tests {
             .iter()
             .map(|skill| skill.name.as_str())
             .collect();
-        assert_eq!(names, ["user-facing-prose", "repo-docs-style", "ponytail"]);
+        assert_eq!(names, ["prose", "ponytail", "arko-taste"]);
         assert!(!found.builtin[0].description.is_empty());
+        // prose is always in the agents' instructions, and the others load
+        // when a task calls for them.
+        let always: Vec<bool> = found.builtin.iter().map(|skill| skill.auto_load).collect();
+        assert_eq!(always, [true, false, false]);
         // The user's own skill folders (a home folder may hold skills of these names) can
         // replace a built-in too, so the test looks only at the project's folder.
         let ours = project.join(".skills");
-        let replacing = ours.join("repo-docs-style");
+        let replacing = ours.join("ponytail");
         assert!(!found.builtin[0].replaced_by.contains(&replacing));
         assert!(found.builtin[1].replaced_by.contains(&replacing));
         // The folders hold only the folders' own skills, with a path.
@@ -673,7 +677,7 @@ mod tests {
             .find(|folder| folder.path == ours)
             .unwrap();
         assert_eq!(folder.skills.len(), 1);
-        assert_eq!(folder.skills[0].name, "repo-docs-style");
+        assert_eq!(folder.skills[0].name, "ponytail");
     }
 
     /// Every built-in skill is listed, the ones Arko has.

@@ -1204,17 +1204,17 @@ fn the_built_in_skill_switches_reach_the_sessions_options(cx: &mut TestAppContex
         .unwrap()
     };
     assert_eq!(on(cx, "builtin-skills"), Some(true));
-    assert_eq!(on(cx, "builtin-skill-user-facing-prose"), Some(true));
+    assert_eq!(on(cx, "builtin-skill-prose"), Some(true));
     act(cx, window, |window, cx| {
-        window.click("builtin-skill-repo-docs-style", cx)
+        window.click("builtin-skill-ponytail", cx)
     });
     assert_eq!(
         backend.defaults().builtin_skills_off,
-        Some(vec!["repo-docs-style".to_string()])
+        Some(vec!["ponytail".to_string()])
     );
     assert_eq!(backend.defaults().builtin_skills, None);
-    assert_eq!(on(cx, "builtin-skill-repo-docs-style"), Some(false));
-    assert_eq!(on(cx, "builtin-skill-user-facing-prose"), Some(true));
+    assert_eq!(on(cx, "builtin-skill-ponytail"), Some(false));
+    assert_eq!(on(cx, "builtin-skill-prose"), Some(true));
     act(cx, window, |window, cx| window.click("builtin-skills", cx));
     assert_eq!(backend.defaults().builtin_skills, Some(false));
     assert_eq!(on(cx, "builtin-skills"), Some(false));
@@ -1222,11 +1222,11 @@ fn the_built_in_skill_switches_reach_the_sessions_options(cx: &mut TestAppContex
     // them off gets them again.
     act(cx, window, |window, cx| window.click("builtin-skills", cx));
     act(cx, window, |window, cx| {
-        window.click("builtin-skill-repo-docs-style", cx)
+        window.click("builtin-skill-ponytail", cx)
     });
     assert_eq!(backend.defaults().builtin_skills, Some(true));
     assert_eq!(backend.defaults().builtin_skills_off, Some(Vec::new()));
-    assert_eq!(on(cx, "builtin-skill-repo-docs-style"), Some(true));
+    assert_eq!(on(cx, "builtin-skill-ponytail"), Some(true));
 }
 
 /// MCP config files added under Advanced reach every session's options,

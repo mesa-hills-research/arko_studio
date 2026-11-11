@@ -533,6 +533,47 @@ fn settings_added_window(mode: ThemeMode) -> Screenshot {
     })
 }
 
+/// Settings › Extensions scrolled to its end, the built-in skills: prose,
+/// which is always loaded, ponytail, which folders' skills replace, and
+/// arko-taste.
+fn settings_built_in_window(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+    settings_window_with(
+        FakeBackend::sample("/arko", SystemTime::now()),
+        mode,
+        1300.,
+        EXTENSIONS_PAGE,
+        |app, window| {
+            app.run_until_parked();
+            app.update_window(window, |_, window, cx| {
+                window.scroll(
+                    "ask-before-adding-mcp",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-2000.))),
+                    cx,
+                )
+            })
+            .unwrap();
+            app.run_until_parked();
+        },
+    )
+}
+
+#[test]
+fn settings_extensions_built_in_light() {
+    goldens().assert(
+        "settings-extensions-built-in-light",
+        &settings_built_in_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn settings_extensions_built_in_dark() {
+    goldens().assert(
+        "settings-extensions-built-in-dark",
+        &settings_built_in_window(ThemeMode::Dark),
+    );
+}
+
 #[test]
 fn settings_extensions_added_light() {
     goldens().assert(
@@ -4199,8 +4240,8 @@ fn session_info(mode: ThemeMode) -> Screenshot {
                     Some("/home/ada/.claude/skills/docs-style"),
                 ),
                 (
-                    "user-facing-prose",
-                    "How to write any text a person reads, such as UI text, messages, docs and commit messages.",
+                    "prose",
+                    "How to write anything someone reads, from UI text, errors, help and messages between agents to a project's README, docs, commit messages and comments in code.",
                     None,
                 ),
             ]
@@ -4208,7 +4249,8 @@ fn session_info(mode: ThemeMode) -> Screenshot {
             .map(|(name, description, path)| SkillFacts {
                 name: name.into(),
                 description: description.into(),
-                always: false,
+                // (The built-in one, prose.)
+                always: path.is_none(),
                 builtin: path.is_none(),
                 replaces_builtin: None,
                 path: path.map(PathBuf::from),
@@ -4219,7 +4261,7 @@ fn session_info(mode: ThemeMode) -> Screenshot {
             .collect(),
             folders: Vec::new(),
             own_folder: PathBuf::new(),
-            builtin_off: vec!["repo-docs-style".into()],
+            builtin_off: vec!["arko-taste".into()],
         }),
         indexes: [
             ("arko", IndexKind::Code, "voyage-code-4", IndexWatch::Here),
