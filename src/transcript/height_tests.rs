@@ -7,7 +7,7 @@ use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, px};
 
 use super::height::BlockFacts;
 use super::model::RowKey;
-use super::tests::{call, item_ids, load_all, open, result, say, settle, start, think};
+use super::tests::{call, event, item_ids, load_all, open, result, say, settle, start, think};
 use super::{AgentFilter, TranscriptView};
 use crate::prefs;
 
@@ -121,6 +121,62 @@ pub(super) fn every_kind(feed: &Feed) {
         "edit_file",
         "Edited src/a.rs at lines 1-3",
     );
+    // A chain of commands in its strip, a long command, a write, a long
+    // message, a search whose line wraps, and a failure that opens to its
+    // words.
+    let id = call(
+        feed,
+        "main",
+        "shell",
+        &[("command", "cd src\ncargo test -p a && cargo clippy".into())],
+    );
+    result(feed, "main", id, "shell", "exit code 0, 1.0 s\nok");
+    let long = format!("cargo run -p a -- {}", "--flag value ".repeat(20));
+    let id = call(feed, "main", "shell", &[("command", long.into())]);
+    result(feed, "main", id, "shell", "exit code 0, 2.0 s\ndone");
+    let id = call(
+        feed,
+        "main",
+        "write_file",
+        &[
+            ("path", "src/b.rs".into()),
+            ("content", "fn b() {}\n\nfn c() {}\n".into()),
+        ],
+    );
+    result(feed, "main", id, "write_file", "Wrote 3 lines to src/b.rs");
+    let id = call(
+        feed,
+        "main",
+        "message_agent",
+        &[("to", "r1".into()), ("message", words.repeat(2).into())],
+    );
+    result(feed, "main", id, "message_agent", "Sent to r1.");
+    let id = call(
+        feed,
+        "main",
+        "index_search",
+        &[("query", words.trim().into()), ("index", "a".into())],
+    );
+    result(
+        feed,
+        "main",
+        id,
+        "index_search",
+        "1 result from a (code, hybrid):\nsrc/a.rs:1-1 · fn a\n",
+    );
+    let id = call(feed, "main", "read_file", &[("path", "src/c.rs".into())]);
+    feed.event(
+        &event(
+            "main",
+            arko_agents::AgentEvent::ErrorEncountered {
+                error_message: format!("Tool 'read_file' execution failed: {}", words.repeat(2)),
+                requires_approval_to_retry: false,
+                tool_call_id: Some(id),
+                error_kind: None,
+            },
+        ),
+        None,
+    );
     feed.notice(Level::Warn, "rate limited, retrying in 2 s (attempt 1)");
     feed.notice(Level::Info, &words.repeat(3));
     let mut reply = String::new();
@@ -225,6 +281,13 @@ fn height(view: &TranscriptView, ix: usize, cx: &gpui_kit::App) -> (RowKey, f32,
             .get(&id)
             .and_then(|ui| ui.doc.as_ref()?.blocks.get(block))
             .is_some_and(|block| !matches!(block.facts, BlockFacts::Code(_))),
+        // An open call whose line wraps.
+        RowKey::Call(id) => {
+            view.ui.get(&id).and_then(|ui| ui.expanded) == Some(true)
+                && view.model.entry(id).is_some_and(|entry| {
+                    super::row::opens(entry) && super::row::shown_given(&entry.item).is_none()
+                })
+        }
         _ => false,
     };
     let off = if prose { metrics.line + 1. } else { 1. };

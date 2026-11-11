@@ -24,7 +24,7 @@ use gpui_kit::*;
 
 /// How tall a line of text is, as a share of its font's size (GPUI's
 /// default line height, which the transcript's text keeps).
-const LINE_HEIGHT: f32 = 1.618_034;
+pub(super) const LINE_HEIGHT: f32 = 1.618_034;
 
 /// The prose the fonts' average character width is measured on, sentences
 /// as an agent writes them with names in code among them.
@@ -53,6 +53,12 @@ impl Font {
         }
         let per_line = (width / self.advance - self.waste).max(1.);
         (chars as f32 / per_line).ceil()
+    }
+
+    /// The width of a character, on average (of every one, in a monospaced
+    /// font).
+    pub fn advance(&self) -> f32 {
+        self.advance
     }
 
     /// The lines of a text whose hard lines have `lines` characters each.
