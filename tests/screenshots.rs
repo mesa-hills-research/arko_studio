@@ -533,6 +533,47 @@ fn settings_added_window(mode: ThemeMode) -> Screenshot {
     })
 }
 
+/// Settings › Extensions scrolled to its end, the built-in skills: prose,
+/// which is always loaded, ponytail, which folders' skills replace, and
+/// arko-taste.
+fn settings_built_in_window(mode: ThemeMode) -> Screenshot {
+    use gpui_kit::test::TestWindowExt as _;
+    settings_window_with(
+        FakeBackend::sample("/arko", SystemTime::now()),
+        mode,
+        1300.,
+        EXTENSIONS_PAGE,
+        |app, window| {
+            app.run_until_parked();
+            app.update_window(window, |_, window, cx| {
+                window.scroll(
+                    "ask-before-adding-mcp",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-2000.))),
+                    cx,
+                )
+            })
+            .unwrap();
+            app.run_until_parked();
+        },
+    )
+}
+
+#[test]
+fn settings_extensions_built_in_light() {
+    goldens().assert(
+        "settings-extensions-built-in-light",
+        &settings_built_in_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn settings_extensions_built_in_dark() {
+    goldens().assert(
+        "settings-extensions-built-in-dark",
+        &settings_built_in_window(ThemeMode::Dark),
+    );
+}
+
 #[test]
 fn settings_extensions_added_light() {
     goldens().assert(
@@ -973,6 +1014,7 @@ mod feed {
                 tool_call_id: id,
                 tool_name: tool.into(),
                 output: output.into(),
+                receipt: None,
             }),
             None,
         );
@@ -1000,6 +1042,299 @@ pub fn feed(&mut self, chunk: &str) -> Vec<Block> {
 
 The new test streams a document one byte at a time and compares the blocks with a \
 parse of the whole text.";
+
+    /// Calls whose details show what they gave back: a read, a message to a
+    /// worker, and a command of two lines.
+    pub fn call_contents() -> Feed {
+        let feed = Feed::new("main");
+        feed.user("Plan the tokenizer's tests.", Source::App, Delivery::Turn);
+        feed.turn_started();
+        let read = call(
+            &feed,
+            "read_file",
+            &[("path", "src/parse.rs".into()), ("start_line", 9.into())],
+        );
+        result(
+            &feed,
+            read,
+            "read_file",
+            "9 | pub fn parse(text: &str) -> Vec<Block> {\n10 |     let mut parser = Parser::new();\n11 |     parser.feed(text)\n12 | }\n",
+        );
+        let message = call(
+            &feed,
+            "message_agent",
+            &[
+                ("to", "r1".into()),
+                (
+                    "message",
+                    "Use plan B for the tokenizer, and keep the old tests.".into(),
+                ),
+            ],
+        );
+        result(&feed, message, "message_agent", "Sent to r1.");
+        let command = call(
+            &feed,
+            "shell",
+            &[("command", "cd parse\ncargo test tokenizer".into())],
+        );
+        result(
+            &feed,
+            command,
+            "shell",
+            "exit code 0, 1.2 s\nrunning 4 tests\ntest result: ok. 4 passed; 0 failed",
+        );
+        feed
+    }
+
+    /// A finished call of each kind the content model has, as a session
+    /// shows them.
+    pub fn call_kinds() -> Feed {
+        let feed = Feed::new("main");
+        feed.user(
+            "Make the tokenizer take its input in chunks, then have r1 review it.",
+            Source::App,
+            Delivery::Turn,
+        );
+        feed.turn_started();
+        let read = call(
+            &feed,
+            "read_file",
+            &[
+                ("path", "src/tokenizer.rs".into()),
+                ("start_line", 12.into()),
+            ],
+        );
+        result(
+            &feed,
+            read,
+            "read_file",
+            "12 | pub fn tokens(text: &str) -> Vec<Token> {\n13 |     let mut out = Vec::new();\n14 |     for word in text.split_whitespace() {\n15 |         out.push(Token::new(word));\n16 |     }\n17 |     out\n18 | }\n",
+        );
+        let search = call(
+            &feed,
+            "index_search",
+            &[
+                (
+                    "query",
+                    "where the tokenizer keeps a partial token between two chunks of input, and where it hands it back".into(),
+                ),
+                ("index", "parser".into()),
+                ("mode", "semantic".into()),
+            ],
+        );
+        result(
+            &feed,
+            search,
+            "index_search",
+            "3 results from parser (code, semantic):\nsrc/tokenizer.rs:12-18 · fn tokens\n    pub fn tokens(text: &str) -> Vec<Token> {\nsrc/parse.rs:40-58 · impl Parser › fn feed\nsrc/lib.rs:1-12 · mod tokenizer\n",
+        );
+        let list = call(&feed, "list_files", &[("directory", "src".into())]);
+        result(
+            &feed,
+            list,
+            "list_files",
+            "lib.rs\nparse.rs\ntokenizer.rs\n",
+        );
+        let edit = call(
+            &feed,
+            "edit_file",
+            &[
+                ("path", "src/tokenizer.rs".into()),
+                (
+                    "old_string",
+                    "pub fn tokens(text: &str) -> Vec<Token> {\n".into(),
+                ),
+                (
+                    "new_string",
+                    "pub fn feed(&mut self, chunk: &str) -> Vec<Token> {\n".into(),
+                ),
+            ],
+        );
+        result(
+            &feed,
+            edit,
+            "edit_file",
+            "Edited src/tokenizer.rs at lines 12-12",
+        );
+        let write = call(
+            &feed,
+            "write_file",
+            &[
+                ("path", "src/tokenizer_tests.rs".into()),
+                (
+                    "content",
+                    "use super::*;\n\n#[test]\nfn a_token_split_across_chunks_comes_whole() {\n    let mut tokenizer = Tokenizer::default();\n    assert!(tokenizer.feed(\"str\").is_empty());\n    assert_eq!(tokenizer.feed(\"eam \"), [Token::new(\"stream\")]);\n}\n".into(),
+                ),
+            ],
+        );
+        result(
+            &feed,
+            write,
+            "write_file",
+            "Wrote 8 lines to src/tokenizer_tests.rs",
+        );
+        let build = call(
+            &feed,
+            "shell",
+            &[("command", "cargo build -p parse".into())],
+        );
+        result(&feed, build, "shell", "exit code 0, 4.2 s\n(no output)");
+        let status = call(&feed, "shell", &[("command", "git status --short".into())]);
+        result(
+            &feed,
+            status,
+            "shell",
+            "exit code 0, 0.1 s\n M src/tokenizer.rs\n?? src/tokenizer_tests.rs",
+        );
+        let two = call(
+            &feed,
+            "shell",
+            &[("command", "cd parse\ncargo test tokenizer".into())],
+        );
+        result(
+            &feed,
+            two,
+            "shell",
+            "exit code 0, 1.2 s\nrunning 4 tests\ntest result: ok. 4 passed; 0 failed",
+        );
+        let failing = call(
+            &feed,
+            "shell",
+            &[("command", "cargo clippy -p parse".into())],
+        );
+        result(
+            &feed,
+            failing,
+            "shell",
+            "exit code 101, 3.1 s\nerror: unused variable: `rest`\n  --> src/tokenizer.rs:20:13\n\nerror: could not compile `parse` (lib) due to 1 previous error",
+        );
+        let missing = call(&feed, "read_file", &[("path", "src/stream.rs".into())]);
+        feed.event(
+            &event(AgentEvent::ErrorEncountered {
+                error_message: "Tool 'read_file' execution failed: src/stream.rs doesn't exist. The tokenizer is in src/tokenizer.rs and the parser in src/parse.rs.".into(),
+                requires_approval_to_retry: false,
+                tool_call_id: Some(missing),
+                error_kind: None,
+            }),
+            None,
+        );
+        let message = call(
+            &feed,
+            "message_agent",
+            &[
+                ("to", "r1".into()),
+                (
+                    "message",
+                    "Review the chunked tokenizer in src/tokenizer.rs and its test. Say if a token split across three chunks comes out whole.".into(),
+                ),
+            ],
+        );
+        result(&feed, message, "message_agent", "Sent to r1.");
+        let wait = call(&feed, "wait_for_agents", &[("runs", "r1".into())]);
+        result(
+            &feed,
+            wait,
+            "wait_for_agents",
+            "[mail 1] r1 (agent `worker`) finished. Its report:\nThe tokenizer keeps the partial token between chunks, and the test covers two chunks. A third is handled the same way. Nothing blocks a merge.\n[end of mail 1]",
+        );
+        let note = call(
+            &feed,
+            "keep_note",
+            &[(
+                "text",
+                "The tokenizer takes chunks now. Its tests are in src/tokenizer_tests.rs.".into(),
+            )],
+        );
+        result(&feed, note, "keep_note", "Kept note 3.");
+        let skill = call(&feed, "load_skill", &[("name", "root-cause".into())]);
+        result(
+            &feed,
+            skill,
+            "load_skill",
+            "--- BEGIN SKILL: root-cause ---\n# Root cause\n\nFix a bug where it starts, not where it shows.\n\n1. Reproduce it with a failing test.\n2. Find the first wrong value, and why it's wrong.\n--- END SKILL: root-cause ---\n",
+        );
+        let issue = call(
+            &feed,
+            "mcp__github__create_issue",
+            // (One argument, since Arko lists several in no set order.)
+            &[(
+                "title",
+                "Tokenizer drops a token split across chunks".into(),
+            )],
+        );
+        result(
+            &feed,
+            issue,
+            "mcp__github__create_issue",
+            "Created #412 https://github.com/example/parser/issues/412",
+        );
+        {
+            use arko::remote::{JobKind, JobStart, MAIN_AGENT};
+            let job = Uuid::new_v4();
+            let started = chrono::Utc::now().timestamp_millis() - 60_000;
+            let id = call(
+                &feed,
+                "monitor_start",
+                &[
+                    ("command", "npm run dev".into()),
+                    ("pattern", "error|warn".into()),
+                ],
+            );
+            feed.job_started(
+                JobStart::new(job, MAIN_AGENT, JobKind::Monitor, "npm run dev")
+                    .made_by(id)
+                    .started(started)
+                    .monitoring("lines that match error|warn", started + 30 * 60_000),
+            );
+            result(
+                &feed,
+                id,
+                "monitor_start",
+                &format!("Monitor {job} started. It watches `npm run dev`."),
+            );
+        }
+        let options = call(&feed, "worker_options", &[]);
+        result(
+            &feed,
+            options,
+            "worker_options",
+            "Prefer the models on your plans.\nProfiles:\n- reviewer: opus, high effort\n- builder: sonnet",
+        );
+        feed
+    }
+
+    /// Commands that chain 2, 3 and 5 others, a pipeline among them, a long
+    /// command and a heredoc.
+    pub fn chains() -> Feed {
+        let feed = Feed::new("main");
+        feed.user("Test the tokenizer.", Source::App, Delivery::Turn);
+        feed.turn_started();
+        let ran = |command: &str, output: &str| {
+            let id = call(&feed, "shell", &[("command", command.into())]);
+            result(&feed, id, "shell", output);
+        };
+        ran(
+            "cd parse\ncargo test tokenizer",
+            "exit code 0, 1.2 s\nrunning 4 tests\ntest result: ok. 4 passed; 0 failed",
+        );
+        ran(
+            "cd parse\ncargo test tokenizer 2>&1 | tail -2\ngit status --short",
+            "exit code 0, 1.3 s\ntest tokenizer::a_token_split_across_chunks_comes_whole ... ok\ntest result: ok. 4 passed; 0 failed\n M src/tokenizer.rs",
+        );
+        ran(
+            "cd ~/src/parser && git pull --rebase\ncargo fmt --check; cargo test --workspace --no-fail-fast -- --test-threads=4 2>&1 | grep -E '^(test result|failures|error)'\ngit status --short",
+            "exit code 0, 9.8 s\nAlready up to date.\ntest result: ok. 41 passed; 0 failed\n M src/tokenizer.rs",
+        );
+        ran(
+            "RUSTFLAGS=\"-C target-cpu=native\" cargo run --release -p parse --bin bench -- --input tests/fixtures/large-document.md --iterations 200 --warmup 20 --output target/bench/large-document.json --format json --compare target/bench/baseline.json",
+            "exit code 0, 41.0 s\nlarge-document.md: 3.1 ms a parse, 2% faster than the baseline",
+        );
+        ran(
+            "cat > src/tokenizer_tests.rs <<'EOF'\nuse super::*;\n\n#[test]\nfn a_token_split_across_chunks_comes_whole() {\n    let mut tokenizer = Tokenizer::default();\n    assert!(tokenizer.feed(\"str\").is_empty());\n}\nEOF\ncargo test tokenizer",
+            "exit code 0, 1.1 s\nrunning 5 tests\ntest result: ok. 5 passed; 0 failed",
+        );
+        feed
+    }
 
     /// A reply still streaming, with a note the user typed meanwhile that
     /// the agent hasn't read yet.
@@ -1628,8 +1963,27 @@ fn transcript_working_dark() {
 }
 
 /// The representative transcript alone in a window `width` wide, its
-/// running times read at a fixed moment.
+/// running times read at a fixed moment. The edit and the failed test show
+/// their details.
 fn transcript_window(mode: ThemeMode, width: f32) -> Screenshot {
+    transcript_window_of(mode, width, feed::representative(), |item| {
+        item.tool.as_deref() == Some("edit_file")
+            || item
+                .outcome
+                .as_deref()
+                .is_some_and(|o| o.starts_with("exit"))
+    })
+}
+
+/// The transcript of `feed` alone in a window `width` wide, its running
+/// times read at a fixed moment, with the details of the items `open`
+/// picks shown.
+fn transcript_window_of(
+    mode: ThemeMode,
+    width: f32,
+    feed: arko::remote::Feed,
+    open: impl Fn(&arko::remote::Item) -> bool,
+) -> Screenshot {
     use arko_studio::transcript::{AgentFilter, TranscriptView};
     use gpui_kit::AppContext as _;
 
@@ -1642,18 +1996,10 @@ fn transcript_window(mode: ThemeMode, width: f32) -> Screenshot {
         .with_prefs(settings)
         .with_fonts(fonts::bundled());
     app.update(|cx| arko_studio::init(startup, cx));
-    let feed = feed::representative();
-    // The edit and the failed test show their details.
     let items = feed.subscribe().0.items;
     let open: Vec<u64> = items
         .iter()
-        .filter(|item| {
-            item.tool.as_deref() == Some("edit_file")
-                || item
-                    .outcome
-                    .as_deref()
-                    .is_some_and(|o| o.starts_with("exit"))
-        })
+        .filter(|item| open(item))
         .map(|item| item.id)
         .collect();
     // The call and the worker started a moment ago: they show 12 s.
@@ -1675,6 +2021,156 @@ fn transcript_window(mode: ThemeMode, width: f32) -> Screenshot {
         })
         .unwrap();
     app.capture(window).unwrap()
+}
+
+/// Every call of `feed` opened, in a window `width` by `height` at `scale`.
+fn calls_window(
+    mode: ThemeMode,
+    width: f32,
+    height: f32,
+    scale: f32,
+    feed: arko::remote::Feed,
+) -> Screenshot {
+    calls_window_finding(mode, width, height, scale, feed, None)
+}
+
+/// [`calls_window`], finding `find` if it's given.
+fn calls_window_finding(
+    mode: ThemeMode,
+    width: f32,
+    height: f32,
+    scale: f32,
+    feed: arko::remote::Feed,
+    find: Option<&str>,
+) -> Screenshot {
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let open: Vec<u64> = feed
+        .subscribe()
+        .0
+        .items
+        .iter()
+        .filter(|item| item.kind == arko::remote::Kind::Call)
+        .map(|item| item.id)
+        .collect();
+    let now = chrono::Utc::now().timestamp_millis() + 12_000;
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(width), px(height)), scale, |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
+                    view.set_clock(move || now, cx);
+                    for item in open {
+                        view.set_expanded(item, true, cx);
+                    }
+                    view
+                })
+            })
+            .map(|(window, view)| {
+                opened = Some(view);
+                window
+            })
+        })
+        .unwrap();
+    if let (Some(find), Some(view)) = (find, opened) {
+        app.run_until_parked();
+        app.update_window(window, |_, _, cx| {
+            view.update(cx, |view, cx| view.find(find, cx))
+        })
+        .unwrap();
+    }
+    app.capture(window).unwrap()
+}
+
+/// A call of each kind, opened to its content, and a find marking the
+/// numbers and the words of a file's lines.
+#[test]
+fn transcript_call_kinds() {
+    for (mode, scheme) in [(ThemeMode::Light, "light"), (ThemeMode::Dark, "dark")] {
+        for (width, height, name) in [(1000., 2300., "wide"), (600., 2900., "narrow")] {
+            goldens().assert(
+                &format!("transcript-call-kinds-{name}-{scheme}"),
+                &calls_window(mode, width, height, 1., feed::call_kinds()),
+            );
+        }
+    }
+    goldens().assert(
+        "transcript-call-kinds-find-light",
+        &calls_window_finding(
+            ThemeMode::Light,
+            1000.,
+            2300.,
+            1.,
+            feed::call_kinds(),
+            Some("token"),
+        ),
+    );
+}
+
+/// Chains of commands in their strips, each command on a row of its own
+/// with the timeline between them, and at twice the size, where the line
+/// sits on the `$`'s stem.
+#[test]
+fn transcript_chains() {
+    for (mode, scheme) in [(ThemeMode::Light, "light"), (ThemeMode::Dark, "dark")] {
+        for (width, height, name) in [(1000., 1300., "wide"), (600., 1700., "narrow")] {
+            goldens().assert(
+                &format!("transcript-chains-{name}-{scheme}"),
+                &calls_window(mode, width, height, 1., feed::chains()),
+            );
+        }
+    }
+    goldens().assert(
+        "transcript-chains-2x-light",
+        &calls_window(ThemeMode::Light, 600., 700., 2., feed::chains()),
+    );
+    // A find marks its matches in each command of a chain.
+    goldens().assert(
+        "transcript-chains-find-light",
+        &calls_window_finding(
+            ThemeMode::Light,
+            1000.,
+            1300.,
+            1.,
+            feed::chains(),
+            Some("test"),
+        ),
+    );
+}
+
+/// A read, a message to a worker and a command of two lines, each opened to
+/// what it gave back.
+fn call_contents_window(mode: ThemeMode) -> Screenshot {
+    transcript_window_of(mode, 1000., feed::call_contents(), |item| {
+        item.kind == arko::remote::Kind::Call
+    })
+}
+
+#[test]
+fn transcript_call_contents_light() {
+    goldens().assert(
+        "transcript-call-contents-light",
+        &call_contents_window(ThemeMode::Light),
+    );
+}
+
+#[test]
+fn transcript_call_contents_dark() {
+    goldens().assert(
+        "transcript-call-contents-dark",
+        &call_contents_window(ThemeMode::Dark),
+    );
 }
 
 #[test]
@@ -4120,8 +4616,8 @@ fn session_info(mode: ThemeMode) -> Screenshot {
                     Some("/home/ada/.claude/skills/docs-style"),
                 ),
                 (
-                    "user-facing-prose",
-                    "How to write any text a person reads, such as UI text, messages, docs and commit messages.",
+                    "prose",
+                    "How to write anything someone reads, from UI text, errors, help and messages between agents to a project's README, docs, commit messages and comments in code.",
                     None,
                 ),
             ]
@@ -4129,7 +4625,8 @@ fn session_info(mode: ThemeMode) -> Screenshot {
             .map(|(name, description, path)| SkillFacts {
                 name: name.into(),
                 description: description.into(),
-                always: false,
+                // (The built-in one, prose.)
+                always: path.is_none(),
                 builtin: path.is_none(),
                 replaces_builtin: None,
                 path: path.map(PathBuf::from),
@@ -4140,7 +4637,7 @@ fn session_info(mode: ThemeMode) -> Screenshot {
             .collect(),
             folders: Vec::new(),
             own_folder: PathBuf::new(),
-            builtin_off: vec!["repo-docs-style".into()],
+            builtin_off: vec!["arko-taste".into()],
         }),
         indexes: [
             ("arko", IndexKind::Code, "voyage-code-4", IndexWatch::Here),
@@ -4649,7 +5146,10 @@ impl arko_studio::dictation::Service for DownloadingService {
     ) -> Result<Box<dyn arko_studio::dictation::Opened>, arko::dictation::DictationError> {
         if !options.download {
             return Err(arko::dictation::DictationError::NeedsDownload(
-                &arko::dictation::models::GRANITE,
+                arko::dictation::Download {
+                    speech: Some(&arko::dictation::models::GRANITE),
+                    cleanup: None,
+                },
             ));
         }
         self.0.borrow_mut().push(sink);
@@ -4721,6 +5221,7 @@ fn composer_preparing(
 
 fn downloading() -> arko::dictation::Preparing {
     arko::dictation::Preparing::Downloading {
+        model: arko::dictation::ModelKind::Speech,
         done: 412_000_000,
         total: arko::dictation::models::GRANITE.download_bytes(),
     }

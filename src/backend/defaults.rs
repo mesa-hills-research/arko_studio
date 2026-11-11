@@ -351,10 +351,8 @@ mod tests {
     fn the_built_in_skill_choice_reaches_new_and_resumed_sessions() {
         let mut prefs = Prefs::default();
         prefs.extensions.builtin_skills = Some(false);
-        prefs.extensions.builtin_skills_off = Some(vec![
-            "repo-docs-style".into(),
-            "dropped-by-a-later-arko".into(),
-        ]);
+        prefs.extensions.builtin_skills_off =
+            Some(vec!["ponytail".into(), "dropped-by-a-later-arko".into()]);
         let defaults = SessionDefaults::from_prefs(&prefs);
         for mode in [Some(Mode::Agent), Some(Mode::Chat), None] {
             let mut options = new_options();
@@ -362,7 +360,7 @@ mod tests {
             assert_eq!(options.builtin_skills, Some(false), "{mode:?}");
             assert_eq!(
                 options.builtin_skills_off,
-                Some(vec!["repo-docs-style".to_string()]),
+                Some(vec!["ponytail".to_string()]),
                 "{mode:?}"
             );
         }

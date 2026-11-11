@@ -76,7 +76,7 @@ pub(super) fn keys(view: &Entity<TranscriptView>, cx: &mut TestAppContext) -> Ve
     cx.read(|cx| view.read(cx).rows.iter().map(|row| row.key).collect())
 }
 
-fn event(agent: &str, event: AgentEvent) -> WorkflowEvent {
+pub(super) fn event(agent: &str, event: AgentEvent) -> WorkflowEvent {
     WorkflowEvent {
         timestamp: chrono::Utc::now(),
         workflow_run_id: Uuid::nil(),
@@ -130,6 +130,7 @@ pub(super) fn result(feed: &Feed, agent: &str, id: Uuid, tool: &str, output: &st
                 tool_call_id: id,
                 tool_name: tool.into(),
                 output: output.into(),
+                receipt: None,
             },
         ),
         label,
@@ -2472,6 +2473,222 @@ fn a_failed_call_says_why_and_its_details_open(cx: &mut TestAppContext) {
         let diff = diff.read(cx).diff();
         assert_eq!((diff.added_lines(), diff.removed_lines()), (1, 1));
     });
+}
+
+/// A call that ended opens to its content once, as every client shows it:
+/// a read to its lines in a gutter, a message to its text with no
+/// parameters over it, a command to its output under the whole command, an
+/// edit to its diff alone.
+#[gpui_kit::test]
+fn a_call_opens_to_its_content_once(cx: &mut TestAppContext) {
+    use super::row::{Given, shown_given, shown_output};
+    start(cx);
+    let feed = Feed::new("main");
+    feed.turn_started();
+    let read = call(
+        &feed,
+        "main",
+        "read_file",
+        &[("path", "src/parse.rs".into())],
+    );
+    result(
+        &feed,
+        "main",
+        read,
+        "read_file",
+        "9 | fn parse() {\n10 |     todo!()\n11 | }\n",
+    );
+    let message = call(
+        &feed,
+        "main",
+        "message_agent",
+        &[("to", "r1".into()), ("message", "Use plan B".into())],
+    );
+    result(&feed, "main", message, "message_agent", "Sent to r1.");
+    let command = call(
+        &feed,
+        "main",
+        "shell",
+        &[("command", "cd parse\ncargo test".into())],
+    );
+    result(
+        &feed,
+        "main",
+        command,
+        "shell",
+        "exit code 0, 0.4 s\n12 passed",
+    );
+    let edit = call(
+        &feed,
+        "main",
+        "edit_file",
+        &[
+            ("path", "src/lib.rs".into()),
+            ("old_string", "fn a() {}\n".into()),
+            ("new_string", "fn a() -> u8 { 1 }\n".into()),
+        ],
+    );
+    result(
+        &feed,
+        "main",
+        edit,
+        "edit_file",
+        "Edited src/lib.rs at lines 3-3",
+    );
+    let (_window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let calls: Vec<u64> = item_ids(&feed)
+        .into_iter()
+        .filter(|(_, kind)| *kind == Kind::Call)
+        .map(|(id, _)| id)
+        .collect();
+    cx.read(|cx| {
+        let model = &view.read(cx).model;
+        let entry = |at: usize| model.entry(calls[at]).unwrap();
+        let output = |at: usize| shown_output(entry(at)).map(|text| text.to_string());
+        assert!(shown_given(&entry(0).item).is_none());
+        assert_eq!(
+            output(0).as_deref(),
+            Some(" 9  fn parse() {\n10      todo!()\n11  }")
+        );
+        assert!(shown_given(&entry(1).item).is_none());
+        assert_eq!(output(1).as_deref(), Some("Use plan B"));
+        assert!(matches!(
+            shown_given(&entry(2).item),
+            Some(Given::Detail(text)) if text.contains("cd parse")
+        ));
+        assert_eq!(output(2).as_deref(), Some("12 passed"));
+        assert!(shown_given(&entry(3).item).is_none());
+        assert_eq!(output(3), None);
+    });
+}
+
+/// A call's line doesn't say what opening it shows: a message's names whom
+/// it went to, an MCP call's the tool. A write opens to its lines, a failure
+/// to its words only where the line cut them, and a call with nothing more
+/// to show doesn't open.
+#[gpui_kit::test]
+fn a_calls_line_and_its_content_say_each_thing_once(cx: &mut TestAppContext) {
+    use super::row::{call_line, opens, shown_given, shown_output};
+    start(cx);
+    let feed = Feed::new("main");
+    feed.turn_started();
+    let message = call(
+        &feed,
+        "main",
+        "message_agent",
+        &[("to", "r1".into()), ("message", "Use plan B".into())],
+    );
+    result(&feed, "main", message, "message_agent", "Sent to r1.");
+    let issue = call(
+        &feed,
+        "main",
+        "mcp__github__create_issue",
+        &[("title", "Tokens split across chunks".into())],
+    );
+    result(
+        &feed,
+        "main",
+        issue,
+        "mcp__github__create_issue",
+        "Created #412",
+    );
+    let write = call(
+        &feed,
+        "main",
+        "write_file",
+        &[
+            ("path", "src/b.rs".into()),
+            ("content", "fn b() {}\n".into()),
+        ],
+    );
+    result(
+        &feed,
+        "main",
+        write,
+        "write_file",
+        "Wrote 1 line to src/b.rs",
+    );
+    let build = call(&feed, "main", "shell", &[("command", "cargo build".into())]);
+    result(
+        &feed,
+        "main",
+        build,
+        "shell",
+        "exit code 0, 4.2 s\n(no output)",
+    );
+    let fail = |path: &str, why: &str| {
+        let id = call(&feed, "main", "read_file", &[("path", path.into())]);
+        feed.event(
+            &event(
+                "main",
+                AgentEvent::ErrorEncountered {
+                    error_message: why.into(),
+                    requires_approval_to_retry: false,
+                    tool_call_id: Some(id),
+                    error_kind: None,
+                },
+            ),
+            None,
+        );
+    };
+    fail("src/c.rs", "no such file");
+    fail(
+        "src/d.rs",
+        "src/d.rs doesn't exist. The tokenizer is in src/tokenizer.rs and the parser in src/parse.rs.",
+    );
+    let (_window, view) = open(cx, &feed, AgentFilter::Main, 720.);
+    let calls: Vec<u64> = item_ids(&feed)
+        .into_iter()
+        .filter(|(_, kind)| *kind == Kind::Call)
+        .map(|(id, _)| id)
+        .collect();
+    cx.read(|cx| {
+        let model = &view.read(cx).model;
+        let entry = |at: usize| model.entry(calls[at]).unwrap();
+        let output = |at: usize| shown_output(entry(at)).map(|text| text.to_string());
+        assert_eq!(call_line(&entry(0).item), "message r1");
+        assert_eq!(output(0).as_deref(), Some("Use plan B"));
+        assert_eq!(call_line(&entry(1).item), "create_issue (github)");
+        assert!(output(1).unwrap().contains("Tokens split across chunks"));
+        assert_eq!(output(2).as_deref(), Some("1  fn b() {}"));
+        assert!(!opens(entry(3)));
+        assert!(shown_given(&entry(4).item).is_none());
+        assert_eq!(output(4), None);
+        assert!(!opens(entry(4)));
+        assert!(output(5).unwrap().contains("The tokenizer is in"));
+    });
+}
+
+/// A command splits into a row for each command its chain joins with `&&`,
+/// `||`, `;` or a new line. A pipeline is one command, and quotes, `$( )`,
+/// a heredoc's body and a line that ends in `\` stay inside theirs.
+#[test]
+fn a_chain_splits_where_its_commands_do() {
+    let parts = |command: &str| -> Vec<String> {
+        super::row::chain(command)
+            .into_iter()
+            .map(|range| command[range].to_string())
+            .collect()
+    };
+    assert_eq!(parts("cd parse\ncargo test"), ["cd parse", "cargo test"]);
+    assert_eq!(parts("a && b || c; d"), ["a", "b", "c", "d"]);
+    assert_eq!(
+        parts("cargo test 2>&1 | tail -2"),
+        ["cargo test 2>&1 | tail -2"]
+    );
+    assert_eq!(parts("echo 'a && b' && c"), ["echo 'a && b'", "c"]);
+    assert_eq!(parts("echo \"a; b\"; c"), ["echo \"a; b\"", "c"]);
+    assert_eq!(parts("x=$(a; b) && c"), ["x=$(a; b)", "c"]);
+    assert_eq!(
+        parts("cat > f <<'EOF'\na && b\nEOF\nc"),
+        ["cat > f <<'EOF'\na && b\nEOF", "c"]
+    );
+    assert_eq!(
+        parts("cargo test \\\n  --all && x"),
+        ["cargo test \\\n  --all", "x"]
+    );
+    assert_eq!(parts("a &\n\nb"), ["a &", "b"]);
+    assert_eq!(parts("  "), Vec::<String>::new());
 }
 
 #[gpui_kit::test]

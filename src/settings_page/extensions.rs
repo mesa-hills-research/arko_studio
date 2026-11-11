@@ -637,7 +637,7 @@ fn skills_item(folder: &SkillFolder, home: Option<&Path>) -> SettingItem {
                 }
                 let mut notes = store::skill_notes(None, &skill.models, skill.workers);
                 if skill.auto_load {
-                    notes.insert(0, "loaded automatically".into());
+                    notes.insert(0, "always loaded".into());
                 }
                 if notes.is_empty() {
                     skill.name.clone()
@@ -671,8 +671,10 @@ fn replaced_words(skill: &BuiltinSkill, home: Option<&Path>) -> Option<String> {
 
 /// A built-in skill's row, one line as Arko's /skills lists it: its name,
 /// its description cut to fit, in muted text what replaces it if a folder's
-/// skill does, and its switch.
+/// skill does, else whether it's always loaded, and its switch.
 fn builtin_row(skill: &BuiltinSkill, home: Option<&Path>) -> SettingItem {
+    // (A skill that replaces it decides that.)
+    let always = skill.auto_load && skill.replaced_by.is_empty();
     let name = SharedString::from(skill.name.clone());
     let description = SharedString::from(
         skill
@@ -706,6 +708,15 @@ fn builtin_row(skill: &BuiltinSkill, home: Option<&Path>) -> SettingItem {
                     .truncate()
                     .child(description.clone()),
             )
+            .when(always, |this| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(muted)
+                        .child("Always loaded"),
+                )
+            })
             .when_some(replaced.clone(), |this, replaced| {
                 // "Replaced by" stays whole, and a long path loses its
                 // leading folders first.

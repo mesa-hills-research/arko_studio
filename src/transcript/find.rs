@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 
 use arko::remote::Kind;
+use gpui_kit::base::SelectableText;
 use gpui_kit::base::text::{RangeHighlight, RenderedText};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::text::TextBlockContent;
@@ -799,16 +800,13 @@ impl TranscriptView {
                     .collect()
             }
             Kind::Call => {
-                let mut texts = vec![(
-                    Place::Text,
-                    item.text.lines().next().unwrap_or_default().to_string(),
-                )];
+                let mut texts = vec![(Place::Text, row::call_line(item))];
                 if item.status == Some(arko::remote::CallStatus::Failed)
                     && let Some(outcome) = &item.outcome
                 {
                     texts.push((Place::Outcome, outcome.clone()));
                 }
-                if let Some(parameters) = row::shown_parameters(item) {
+                if let Some(parameters) = row::shown_given(item).map(|given| given.text().clone()) {
                     texts.push((Place::Parameters, parameters.to_string()));
                 }
                 if let Some(output) = row::shown_output(entry) {
@@ -834,7 +832,7 @@ impl TranscriptView {
     fn full_text(&self, found: &Match) -> Option<std::sync::Arc<str>> {
         let entry = self.model.entry(found.entry)?;
         match found.place {
-            Place::Parameters => row::shown_parameters(&entry.item),
+            Place::Parameters => row::shown_given(&entry.item).map(|given| given.text().clone()),
             Place::Output => row::shown_output(entry),
             _ => None,
         }
@@ -1398,7 +1396,9 @@ impl TranscriptView {
                 .model
                 .entry(entry)
                 .and_then(|item| match place {
-                    Place::Parameters => row::shown_parameters(&item.item),
+                    Place::Parameters => {
+                        row::shown_given(&item.item).map(|given| given.text().clone())
+                    }
                     _ => row::shown_output(item),
                 })
                 .map_or(0, |text| shown_prefix(&text)),
@@ -1434,6 +1434,100 @@ impl TranscriptView {
             return selectable.into_any_element();
         }
         self.found(entry, place, selectable.highlights(highlights))
+    }
+
+    /// [`Self::marked`], with the ranges `muted` of `text` (the numbers of a
+    /// file's lines) in `muted_color`, where no match covers them.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn marked_with(
+        &self,
+        id: impl Into<ElementId>,
+        entry: u64,
+        place: Place,
+        text: impl Into<SharedString>,
+        ink: Ink,
+        muted: Vec<Range<usize>>,
+        muted_color: Hsla,
+        cx: &App,
+    ) -> AnyElement {
+        let text = text.into();
+        let found = self.highlights(entry, place, &text, ink, cx);
+        let mut highlights: Vec<(Range<usize>, HighlightStyle)> = muted
+            .into_iter()
+            .filter(|range| {
+                text.get(range.clone()).is_some()
+                    && !found
+                        .iter()
+                        .any(|(hit, _)| hit.start < range.end && range.start < hit.end)
+            })
+            .map(|range| {
+                (
+                    range,
+                    HighlightStyle {
+                        color: Some(muted_color),
+                        ..HighlightStyle::default()
+                    },
+                )
+            })
+            .collect();
+        let has_found = !found.is_empty();
+        highlights.extend(found);
+        highlights.sort_by_key(|(range, _)| range.start);
+        let selectable = self.selectable(id, entry, place, text);
+        if highlights.is_empty() {
+            return selectable.into_any_element();
+        }
+        let selectable = selectable.highlights(highlights);
+        if !has_found {
+            return selectable.into_any_element();
+        }
+        self.found(entry, place, selectable)
+    }
+
+    /// The part `part` of `place`'s text `text`, selectable on its own, with
+    /// the matches inside it painted on it, such as one command of a chain.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn marked_part(
+        &self,
+        id: impl Into<ElementId>,
+        entry: u64,
+        place: Place,
+        text: &str,
+        part: Range<usize>,
+        ink: Ink,
+        cx: &App,
+    ) -> AnyElement {
+        let shown = SharedString::from(text.get(part.clone()).unwrap_or_default().to_string());
+        let highlights: Vec<_> = self
+            .highlights(entry, place, text, ink, cx)
+            .into_iter()
+            .filter(|(range, _)| part.start <= range.start && range.end <= part.end)
+            .map(|(range, style)| (range.start - part.start..range.end - part.start, style))
+            .collect();
+        let selectable = SelectableText::new(id, shown);
+        if highlights.is_empty() {
+            return selectable.into_any_element();
+        }
+        let selectable = selectable.highlights(highlights);
+        // (The transcript scrolls to the current match from the part it's in.)
+        if let Some(find) = &self.find
+            && let Some(key) = find
+                .current
+                .filter(|key| key.entry == entry && key.place == place)
+            && let Some(found) = self.current_match()
+            && part.start <= found.range.start
+            && found.range.end <= part.end
+        {
+            return plain::FoundText::new(
+                selectable,
+                key,
+                found.range.start - part.start,
+                find.plain_reveal.clone(),
+                self.list.handle(),
+            )
+            .into_any_element();
+        }
+        selectable.into_any_element()
     }
 
     /// `text` with the matches of `place` painted on it (for text that

@@ -65,11 +65,12 @@ struct Open {
     taken: Rc<RefCell<Taken>>,
 }
 
-/// The fake service, with whether its model is downloaded and each
-/// dictation it opened.
+/// The fake service, with whether its model is downloaded, whether full
+/// cleanup's is missing, and each dictation it opened.
 #[derive(Default)]
 struct Fake {
     installed: Cell<bool>,
+    cleanup_missing: Cell<bool>,
     busy: Cell<bool>,
     opened: RefCell<Vec<Open>>,
 }
@@ -83,8 +84,12 @@ impl Service for FakeService {
         sink: Sink,
         session: Option<&crate::live::Link>,
     ) -> Result<Box<dyn Opened>, DictationError> {
-        if !options.download && !self.0.installed.get() {
-            return Err(DictationError::NeedsDownload(&GRANITE));
+        let missing = arko::dictation::Download {
+            speech: (!self.0.installed.get()).then_some(&GRANITE),
+            cleanup: self.0.cleanup_missing.get().then_some(157_673_903),
+        };
+        if !options.download && (missing.speech.is_some() || missing.cleanup.is_some()) {
+            return Err(DictationError::NeedsDownload(missing));
         }
         if self.0.busy.get() {
             return Err(DictationError::Busy);
@@ -408,6 +413,25 @@ fn words_go_in_at_the_caret(cx: &mut TestAppContext) {
     // The next words follow the first.
     test.hear(0, text(" round", ""), cx);
     assert_eq!(test.text(cx), "Hello big round world");
+}
+
+/// With medium or full cleanup, a whole utterance stays tentative until it
+/// ends, then settles shorter, its repeats gone. The box ends with the
+/// settled words alone.
+#[gpui_kit::test]
+fn an_utterance_can_settle_shorter_than_it_showed(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    test.type_text("Fix the form.", cx);
+    test.listening(cx);
+    test.hear(0, text("", " So we need to, we need to fix the"), cx);
+    assert_eq!(test.text(cx), "Fix the form.");
+    assert_eq!(test.tentative(cx), " So we need to, we need to fix the");
+    test.hear(0, text(" We need to fix the login page.", ""), cx);
+    assert_eq!(
+        test.text(cx),
+        "Fix the form. We need to fix the login page."
+    );
+    assert_eq!(test.tentative(cx), "");
 }
 
 /// The words that may still change join what's before the caret wherever
@@ -873,6 +897,7 @@ fn the_first_recording_asks_before_downloading_the_model(cx: &mut TestAppContext
     test.hear(
         0,
         DictationEvent::Preparing(Preparing::Downloading {
+            model: arko::dictation::ModelKind::Speech,
             done: 412_000_000,
             total: GRANITE.download_bytes(),
         }),
@@ -909,6 +934,53 @@ fn the_first_recording_asks_before_downloading_the_model(cx: &mut TestAppContext
     });
 }
 
+/// Full cleanup's model alone is asked about and downloads beside the box
+/// as the speech model does, its steps naming it, and a notification
+/// follows. A download that brought nothing, because another window
+/// finished it first, says nothing.
+#[gpui_kit::test]
+fn full_cleanups_model_downloads_as_the_speech_model_does(cx: &mut TestAppContext) {
+    let test = Test::start(true, cx);
+    test.fake.cleanup_missing.set(true);
+    test.click(cx);
+    act(cx, test.window, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        window.within("dialog").click("ok", cx)
+    });
+    assert!(test.fake.opened.borrow()[0].download, "it downloads");
+    assert!(!test.microphone.on.get());
+    assert_eq!(
+        test.words(cx).as_deref(),
+        Some("Downloading cleanup model (0 of 158 MB)")
+    );
+    test.hear(
+        0,
+        DictationEvent::Preparing(Preparing::Downloading {
+            model: arko::dictation::ModelKind::Cleanup,
+            done: 12_000_000,
+            total: 157_673_903,
+        }),
+        cx,
+    );
+    assert_eq!(
+        test.words(cx).as_deref(),
+        Some("Downloading cleanup model (12 of 158 MB)")
+    );
+    let notes = test.notifications(cx);
+    test.hear(0, DictationEvent::Listening, cx);
+    assert_eq!(test.notifications(cx), notes + 1);
+    assert_eq!(test.words(cx), None);
+
+    test.click(cx);
+    act(cx, test.window, |window, cx| {
+        window.within("dialog").click("ok", cx)
+    });
+    let notes = test.notifications(cx);
+    test.hear(1, DictationEvent::Listening, cx);
+    assert_eq!(test.notifications(cx), notes);
+    assert_eq!(test.words(cx), None);
+}
+
 /// The steps after the download shimmer their label, without motion they
 /// show it plain, and the download's count never shimmers.
 #[gpui_kit::test]
@@ -925,6 +997,7 @@ fn the_steps_after_the_download_shimmer_unless_motion_is_reduced(cx: &mut TestAp
         test.hear(
             0,
             DictationEvent::Preparing(Preparing::Downloading {
+                model: arko::dictation::ModelKind::Speech,
                 done: 1_000_000,
                 total: GRANITE.download_bytes(),
             }),
@@ -1030,50 +1103,20 @@ impl AudioInput for WavMicrophone {
     }
 }
 
-/// A WAV file dictated through the recognizer, Arko's service and Granite
-/// Speech's real pack, without a microphone. The model loads, the words go
-/// into the box as they settle, and a click lets the last ones come. It runs
-/// only with `ARKO_TEST_SPEECH_PACK` naming Granite's int8 pack and
-/// `ARKO_TEST_SPEECH_WAV` LibriSpeech's clip 260-123286-0018, as Arko's own
-/// test does.
-#[gpui_kit::test]
-fn a_wav_file_is_dictated_through_arkos_service(cx: &mut TestAppContext) {
-    let (Some(pack), Some(wav)) = (
-        std::env::var_os("ARKO_TEST_SPEECH_PACK"),
-        std::env::var_os("ARKO_TEST_SPEECH_WAV"),
-    ) else {
-        eprintln!("skipped: ARKO_TEST_SPEECH_PACK and ARKO_TEST_SPEECH_WAV aren't set");
-        return;
-    };
-    let root = tempfile::tempdir().unwrap();
-    std::fs::write(
-        root.path().join(arko::dictation::settings::FILE),
-        r#"{"model": "granite"}"#,
-    )
-    .unwrap();
-    std::fs::create_dir_all(GRANITE.dir(root.path())).unwrap();
+/// Puts the file at `from` at `to`, a link where the system has them.
+fn link(from: &std::ffi::OsStr, to: &std::path::Path) {
+    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&pack, GRANITE.pack(root.path())).unwrap();
+    std::os::unix::fs::symlink(from, to).unwrap();
     #[cfg(not(unix))]
-    std::fs::copy(&pack, GRANITE.pack(root.path())).unwrap();
-    // The service's thread wakes the app's tasks, which the test scheduler
-    // allows as for real I/O.
-    cx.executor().allow_parking();
-    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
-    cx.update(|cx| {
-        crate::init(Startup::for_tests(backend), cx);
-        crate::dictation::init(root.path().to_path_buf(), cx);
-        let mut speech = cx.global::<Speech>().clone();
-        speech.input = Some(Rc::new(WavMicrophone(wav_at_48_khz(wav.as_ref()))));
-        cx.set_global(speech);
-    });
-    let (window, workspace) = open(cx, 1300.);
-    let test = Test {
-        window,
-        workspace,
-        fake: Rc::default(),
-        microphone: FakeMicrophone::default(),
-    };
+    std::fs::copy(from, to).unwrap();
+}
+
+/// Dictates the clip after "Notes:" in an empty box. The model loads, the
+/// words go into the box as they settle, and a click lets the last ones
+/// come. The box then holds the clip's words.
+fn dictate_the_clip(test: &Test, cx: &mut TestAppContext) {
+    test.set_text("", cx);
     test.type_text("Notes:", cx);
     let started = std::time::Instant::now();
     test.click(cx);
@@ -1094,6 +1137,60 @@ fn a_wav_file_is_dictated_through_arkos_service(cx: &mut TestAppContext) {
     for word in ["i saw", "hamburg", "skeleton", "thirty feet in length"] {
         assert!(lower.contains(word), "{text:?}");
     }
+}
+
+/// A WAV file dictated through the recognizer, Arko's service and Granite
+/// Speech's real pack, without a microphone ([`dictate_the_clip`]), then
+/// again with full cleanup and the tagger's real pack. It runs only with `ARKO_TEST_SPEECH_PACK` naming Granite's
+/// int8 pack and `ARKO_TEST_SPEECH_WAV` LibriSpeech's clip 260-123286-0018,
+/// as Arko's own test does, and full cleanup only with
+/// `ARKO_TEST_CLEANUP_PACK` naming the tagger's pack. One test does both,
+/// since the process has one service, for the first folder it's given.
+#[gpui_kit::test]
+fn a_wav_file_is_dictated_through_arkos_service(cx: &mut TestAppContext) {
+    let (Some(pack), Some(wav)) = (
+        std::env::var_os("ARKO_TEST_SPEECH_PACK"),
+        std::env::var_os("ARKO_TEST_SPEECH_WAV"),
+    ) else {
+        eprintln!("skipped: ARKO_TEST_SPEECH_PACK and ARKO_TEST_SPEECH_WAV aren't set");
+        return;
+    };
+    let root = tempfile::tempdir().unwrap();
+    let settings = root.path().join(arko::dictation::settings::FILE);
+    std::fs::write(&settings, r#"{"model": "granite"}"#).unwrap();
+    link(&pack, &GRANITE.pack(root.path()));
+    // The service's thread wakes the app's tasks, which the test scheduler
+    // allows as for real I/O.
+    cx.executor().allow_parking();
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    cx.update(|cx| {
+        crate::init(Startup::for_tests(backend), cx);
+        crate::dictation::init(root.path().to_path_buf(), cx);
+        let mut speech = cx.global::<Speech>().clone();
+        speech.input = Some(Rc::new(WavMicrophone(wav_at_48_khz(wav.as_ref()))));
+        cx.set_global(speech);
+    });
+    let (window, workspace) = open(cx, 1300.);
+    let test = Test {
+        window,
+        workspace,
+        fake: Rc::default(),
+        microphone: FakeMicrophone::default(),
+    };
+    dictate_the_clip(&test, cx);
+
+    let Some(tagger) = std::env::var_os("ARKO_TEST_CLEANUP_PACK") else {
+        eprintln!("skipped full cleanup: ARKO_TEST_CLEANUP_PACK isn't set");
+        return;
+    };
+    let dir = arko::dictation::models::tagger_dir(root.path());
+    link(&tagger, &dir.join(arko::dictation::models::PACK_FILE));
+    std::fs::write(
+        &settings,
+        r#"{"model": "granite", "cleanup": "full", "language": "en"}"#,
+    )
+    .unwrap();
+    dictate_the_clip(&test, cx);
 }
 
 /// Listening draws the session view once per level (80 ms of audio), with

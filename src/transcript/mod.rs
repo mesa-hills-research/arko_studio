@@ -1020,8 +1020,7 @@ impl TranscriptView {
         (ui.small, ui.labeled) = text_look(&entry.item, self.model.filter());
         ui.images = entry.item.images.len();
         if ui.expanded == Some(true) {
-            ui.diff =
-                row::edit_diff(&entry.item).map(|diff| cx.new(|cx| DiffViewState::new(diff, cx)));
+            ui.diff = row::shown_diff(entry).map(|diff| cx.new(|cx| DiffViewState::new(diff, cx)));
         }
         if has_doc {
             ui.doc = Some(self.new_doc(id, text, cx));
@@ -1635,11 +1634,7 @@ impl TranscriptView {
             .ui
             .get(&id)
             .is_none_or(|ui| ui.diff.is_none())
-            .then(|| {
-                self.model
-                    .entry(id)
-                    .and_then(|entry| row::edit_diff(&entry.item))
-            })
+            .then(|| self.model.entry(id).and_then(row::shown_diff))
             .flatten()
             .map(|diff| cx.new(|cx| DiffViewState::new(diff, cx)));
         let row = self.rows.iter().position(

@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arko::remote::{
-    CallStatus, Delivery, Item, JobKind, JobState, JobSummary, Kind, Level, Source, WorkerState,
+    CallStatus, ContentKind, Delivery, Item, JobKind, JobState, JobSummary, Kind, Level, Source,
+    WorkerState,
 };
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::image_cache::LruImageCache;
@@ -61,6 +62,60 @@ const REGENERATE_ROOM: f32 = 1.75;
 pub(super) const OUTPUT_LINES: usize = 40;
 /// Rows of an edit's diff shown before it scrolls inside.
 const DIFF_ROWS: usize = 24;
+/// The space between the commands of a chain in a command's strip, which
+/// its timeline runs through.
+pub(super) const CHAIN_GAP: f32 = 6.;
+/// How strong a command's timeline is, as an opacity of the muted text. Its
+/// line is 2 px wide, as the `$`'s stem is, so it's lighter than the text to
+/// keep it thin.
+const TIMELINE_ALPHA: f32 = 0.35;
+/// How far a `$` reaches above and below the middle of its line, as parts
+/// of the code font's size (JetBrains Mono's sits a little high), and how
+/// far the timeline stays from it.
+const DOLLAR_ABOVE: f32 = 0.58;
+const DOLLAR_BELOW: f32 = 0.5;
+const TIMELINE_GAP: f32 = 3.;
+/// The line height of a call's line that wraps, in pixels at a `rem`, which
+/// keeps one line of it as tall as the line that doesn't wrap (an extra-small
+/// button, inside its 1 px border).
+pub(super) fn wrapped_line(rem: f32) -> f32 {
+    1.25 * rem - 2.
+}
+
+/// Where a command's timeline stops above a `$` and starts again below it,
+/// down from the top of its line, for a line `line` tall in a font `size`.
+pub(super) fn timeline_gaps(line: f32, size: f32) -> (f32, f32) {
+    (
+        (line / 2. - size * DOLLAR_ABOVE - TIMELINE_GAP).max(0.),
+        line / 2. + size * DOLLAR_BELOW + TIMELINE_GAP,
+    )
+}
+
+/// The ranges of the numbers before the lines of `text`, `numbers`
+/// characters each, as a call's content shows a file's lines ("100  text",
+/// "-100  text"). A line without them (a note between a diff's parts) has
+/// none.
+pub(super) fn numbered_gutters(text: &str, numbers: usize) -> Vec<std::ops::Range<usize>> {
+    if numbers == 0 {
+        return Vec::new();
+    }
+    let mut gutters = Vec::new();
+    let mut at = 0;
+    for line in text.split('\n') {
+        let gutter = line.get(..numbers).filter(|gutter| {
+            gutter
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || b" +-".contains(&byte))
+                && gutter.bytes().any(|byte| byte.is_ascii_digit())
+                && line[numbers..].starts_with("  ")
+        });
+        if gutter.is_some() {
+            gutters.push(at..at + numbers);
+        }
+        at += line.len() + 1;
+    }
+    gutters
+}
 
 /// The diff an edit or a write made, from the call's parameters, numbered
 /// from the line the edit's result names ("Edited a.rs at lines 40-42").
@@ -122,16 +177,174 @@ fn from_line(diff: Diff, by: usize) -> Diff {
     Diff::parse(&unified)
 }
 
-/// The parameters a call's details show: none where its line says them
-/// all or its diff does, else its parameters (or, from before the feed kept
-/// them, the line's long part: a multi-line command, a worker's task).
-pub(super) fn shown_parameters(item: &Item) -> Option<Arc<str>> {
+/// A call's line as its row says it: the first line of its words, without
+/// what its content holds. A message's line names whom it went to, and an
+/// MCP call's names the tool, since opening them shows the message and the
+/// arguments.
+pub(super) fn call_line(item: &Item) -> String {
+    let line = item.text.lines().next().unwrap_or_default();
+    let tool = item.tool.as_deref().unwrap_or_default();
+    let cut = if tool == "message_agent" {
+        line.split_once(" “").map(|(to, _)| to)
+    } else if tool.starts_with("mcp__") {
+        line.split_once(" {").map(|(name, _)| name)
+    } else {
+        None
+    };
+    cut.unwrap_or(line).to_string()
+}
+
+/// The commands of a shell command, one for each part a chain joins with
+/// `&&`, `||`, `;` or a new line, as ranges of `command` without their
+/// spaces. A pipeline stays one command. Quotes, `$( )`, a line that ends in
+/// `\` and a heredoc's body stay inside the command they belong to.
+pub(super) fn chain(command: &str) -> Vec<std::ops::Range<usize>> {
+    let bytes = command.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let (mut single, mut double, mut depth) = (false, false, 0i32);
+    let mut heredocs: Vec<String> = Vec::new();
+    let mut at = 0;
+    let mut push = |from: usize, to: usize| {
+        let part = &command[from..to];
+        let trimmed = part.trim();
+        if !trimmed.is_empty() {
+            let lead = part.len() - part.trim_start().len();
+            parts.push(from + lead..from + lead + trimmed.len());
+        }
+    };
+    while at < bytes.len() {
+        let c = bytes[at];
+        let next = bytes.get(at + 1).copied();
+        if single {
+            single = c != b'\'';
+            at += 1;
+            continue;
+        }
+        if double {
+            match c {
+                b'\\' => at += 2,
+                b'"' => {
+                    double = false;
+                    at += 1;
+                }
+                _ => at += 1,
+            }
+            continue;
+        }
+        match c {
+            b'\\' => {
+                at += 2;
+                continue;
+            }
+            b'\'' => single = true,
+            b'"' => double = true,
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b'<' if next == Some(b'<') && bytes.get(at + 2) != Some(&b'<') => {
+                // A heredoc's word, after <<, <<- and its quotes.
+                let mut end = at + 2;
+                if bytes.get(end) == Some(&b'-') {
+                    end += 1;
+                }
+                while bytes.get(end) == Some(&b' ') {
+                    end += 1;
+                }
+                let word_start = end;
+                while end < bytes.len()
+                    && !bytes[end].is_ascii_whitespace()
+                    && !b";&|<>()".contains(&bytes[end])
+                {
+                    end += 1;
+                }
+                let word: String = command[word_start..end]
+                    .chars()
+                    .filter(|c| !matches!(c, '\'' | '"'))
+                    .collect();
+                if !word.is_empty() {
+                    heredocs.push(word);
+                }
+                at = end;
+                continue;
+            }
+            b'\n' if depth <= 0 && !heredocs.is_empty() => {
+                // The body, up to each word's own line, is the command's.
+                at += 1;
+                for word in std::mem::take(&mut heredocs) {
+                    while at < bytes.len() {
+                        let end = command[at..].find('\n').map_or(bytes.len(), |n| at + n);
+                        let done = command[at..end].trim() == word;
+                        at = end;
+                        if done {
+                            break;
+                        }
+                        at += 1;
+                    }
+                }
+                continue;
+            }
+            b'\n' | b';' if depth <= 0 => {
+                push(start, at);
+                start = at + 1;
+            }
+            b'&' | b'|' if depth <= 0 && next == Some(c) => {
+                push(start, at);
+                at += 2;
+                start = at;
+                continue;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    push(start, bytes.len());
+    parts
+}
+
+/// What a call's details show of what it was given.
+pub(super) enum Given {
+    /// What its line cut (a command's whole text, a long query), muted, as
+    /// Full's detail says it.
+    Detail(Arc<str>),
+    /// From a session saved before calls said what their lines cut, its
+    /// parameters under a caption, or an old edit's patch.
+    Parameters(Arc<str>),
+}
+
+impl Given {
+    pub(super) fn text(&self) -> &Arc<str> {
+        match self {
+            Given::Detail(text) | Given::Parameters(text) => text,
+        }
+    }
+}
+
+/// What a call's details show of what it was given: none where its line
+/// says it all or its diff does.
+pub(super) fn shown_given(item: &Item) -> Option<Given> {
+    if let Some(patch) = apply_diff_patch(item) {
+        // An edit from a session saved before edit_file: its patch.
+        return Some(Given::Parameters(patch.into()));
+    }
+    if item.act.is_some() {
+        // (The line is Full's, so what it cut is Full's detail.)
+        return item
+            .detail
+            .as_deref()
+            .map(str::trim)
+            .filter(|detail| !detail.is_empty())
+            .map(|detail| Given::Detail(detail.into()));
+    }
+    shown_parameters(item).map(Given::Parameters)
+}
+
+/// The parameters an old session's call shows: none where its line says
+/// them all or its diff does, else its parameters (or, from before the feed
+/// kept them, the line's long part: a multi-line command, a worker's task).
+fn shown_parameters(item: &Item) -> Option<Arc<str>> {
     let line = item.text.trim();
     if parameters_shown_by_line(item) {
         None
-    } else if let Some(patch) = apply_diff_patch(item) {
-        // An edit from a session saved before edit_file: its patch.
-        Some(patch.into())
     } else if let Some(parameters) = item.parameters.clone() {
         Some(parameters)
     } else if line.contains('\n') || item.detail.is_some() {
@@ -141,24 +354,104 @@ pub(super) fn shown_parameters(item: &Item) -> Option<Arc<str>> {
     }
 }
 
-/// What a call's details show came back: its command's output block, or
-/// its tool's result. An edit's diff stands for its result.
+/// What a call's details show came back: its content (the lines it read
+/// or wrote, its output, its message, its result), or from a session
+/// without one, its tool's result. An edit's diff stands for its content,
+/// and a failure whose words its line says whole has none.
 pub(super) fn shown_output(entry: &super::model::Entry) -> Option<Arc<str>> {
     let item = &entry.item;
+    if shows_diff(entry) && item.status == Some(CallStatus::Ok) {
+        return None;
+    }
     match (&entry.result, item.output.clone()) {
-        (Some(result), _) => result
-            .whole
-            .clone()
-            .or_else(|| result.detail.clone().map(Arc::from)),
-        (None, Some(_)) if shows_diff(item) && item.status == Some(CallStatus::Ok) => None,
-        (None, Some(output)) if !output.trim().is_empty() => Some(output),
+        (Some(result), _) => {
+            let text = content_text(result);
+            let said = item.outcome.as_deref().unwrap_or_default().trim();
+            (!(item.status == Some(CallStatus::Failed) && text.trim() == said)).then_some(text)
+        }
+        // (From a session saved before contents. A call with a content and
+        // none to show, such as a monitor's, shows its detail alone.)
+        (None, Some(output)) if item.act.is_none() && !output.trim().is_empty() => Some(output),
         _ => None,
     }
 }
 
-/// Whether a call's details show a diff: an edit's or a write's.
-fn shows_diff(item: &Item) -> bool {
-    matches!(item.tool.as_deref(), Some("edit_file" | "write_file")) && item.parameters.is_some()
+/// How a call's content draws: the characters of the numbers before a
+/// file's lines (none for other text), and whether it's muted (a tool's
+/// result, a failure).
+pub(super) fn output_look(entry: &super::model::Entry) -> (usize, bool) {
+    use arko::remote::content;
+    let Some(result) = &entry.result else {
+        return (0, false);
+    };
+    let kind = result.content.unwrap_or(ContentKind::Muted);
+    let numbers = match kind {
+        ContentKind::Lines | ContentKind::Diff => {
+            let text = result.whole.as_deref().unwrap_or(&result.text);
+            match (kind, content::number_width(kind, text)) {
+                (_, 0) => 0,
+                (ContentKind::Diff, width) => width + 1,
+                (_, width) => width,
+            }
+        }
+        _ => 0,
+    };
+    (numbers, kind == ContentKind::Muted)
+}
+
+/// A call's content whole, from its `result`, with a file's lines and a
+/// diff's numbered in a gutter ("100  text", "-100  text").
+fn content_text(result: &Item) -> Arc<str> {
+    use arko::remote::content::{self, Line, Mark};
+    let Some(kind) = result
+        .content
+        .filter(|kind| matches!(kind, ContentKind::Lines | ContentKind::Diff))
+    else {
+        return result
+            .whole
+            .clone()
+            .unwrap_or_else(|| result.text.as_str().into());
+    };
+    let text = result.whole.as_deref().unwrap_or(&result.text);
+    let width = content::number_width(kind, text);
+    let lines: Vec<String> = text
+        .lines()
+        .map(|line| match content::line(kind, line) {
+            Line::Numbered {
+                number,
+                mark: Mark::None,
+                text,
+            } => format!("{number:>width$}  {text}"),
+            Line::Numbered { number, mark, text } => {
+                format!("{}{number:>width$}  {text}", mark.symbol())
+            }
+            Line::Plain(line) => line.to_string(),
+        })
+        .collect();
+    lines.join("\n").into()
+}
+
+/// Whether a call's details show a diff: an edit's, or a write's from a
+/// session that has no content for it (one has its lines).
+pub(super) fn shows_diff(entry: &super::model::Entry) -> bool {
+    let item = &entry.item;
+    item.parameters.is_some()
+        && match item.tool.as_deref() {
+            Some("edit_file") => true,
+            Some("write_file") => entry.result.is_none(),
+            _ => false,
+        }
+}
+
+/// The diff a call's details show ([`shows_diff`]).
+pub(super) fn shown_diff(entry: &super::model::Entry) -> Option<Diff> {
+    shows_diff(entry).then(|| edit_diff(&entry.item)).flatten()
+}
+
+/// Whether a call opens to anything: what its line cut, its content, its
+/// diff. One that has none of them doesn't open.
+pub(super) fn opens(entry: &super::model::Entry) -> bool {
+    shown_given(&entry.item).is_some() || shown_output(entry).is_some() || shows_diff(entry)
 }
 
 /// The patch an `apply_diff` call applied (sessions saved before
@@ -407,6 +700,35 @@ impl TranscriptView {
             return 0.;
         };
         let mut height = 1.25 * rem;
+        if ui.expanded == Some(true)
+            && let Some(entry) = self.model.entry(id)
+            && opens(entry)
+            && shown_given(&entry.item).is_none()
+        {
+            // Its line wraps, beside its icon and before how it went.
+            let item = &entry.item;
+            let xs = m.body_at(0.75);
+            let mut width = column - 0.5 * rem - 0.75 * rem - 0.375 * rem;
+            if !item.is_main() {
+                width -=
+                    item.agent.chars().count() as f32 * m.mono.advance_at(0.75 * rem) + 0.375 * rem;
+            }
+            match item.status {
+                Some(CallStatus::Failed) => {
+                    let words = item.outcome.as_deref().unwrap_or_default().chars().count();
+                    let failure = rem + words as f32 * xs.advance();
+                    width -= failure.min(18. * rem) + 0.375 * rem;
+                }
+                Some(CallStatus::Ok) if item.tool.as_deref() == Some("shell") => {
+                    if let Some(outcome) = &item.outcome {
+                        width -= outcome.chars().count() as f32 * xs.advance() + 0.375 * rem;
+                    }
+                }
+                _ => {}
+            }
+            let lines = xs.lines(call_line(item).chars().count() as u32, width);
+            height = 2. + wrapped_line(rem) * lines;
+        }
         // The thumbnails and the details are indented past the icon.
         let inside = column - 1.5 * rem;
         if ui.images > 0 {
@@ -429,46 +751,70 @@ impl TranscriptView {
         m: &Metrics,
         cx: &App,
     ) -> f32 {
+        if !opens(entry) {
+            return 0.;
+        }
         let rem = m.rem;
         let item = &entry.item;
-        // The first lines of a text in the code font, and "Show all".
-        let lines = |text: &str| {
-            let (shown, total) = preview(text);
-            let lines = super::height::hard_lines(&shown);
-            let mut height = 0.75 * rem + m.mono.text_lines(&lines, width - rem) * m.line_mono;
-            if total > OUTPUT_LINES {
-                height += 0.25 * rem + 1.25 * rem;
-            }
-            height
+        let mono = |text: &str, width: f32| {
+            m.mono.text_lines(&super::height::hard_lines(text), width) * m.line_mono
         };
-        let caption = m.line_xs;
+        let door = |text: &str| (text.lines().count() > OUTPUT_LINES).then_some(1.25 * rem);
+        let given = shown_given(item);
+        let output = shown_output(entry);
         let mut parts = Vec::new();
-        let diff = self.ui.get(&item.id).and_then(|ui| ui.diff.clone());
-        let has_diff = diff.is_some();
-        if let Some(diff) = &diff {
-            let rows = diff.read(cx).row_count().clamp(1, DIFF_ROWS);
-            parts.push(f32::from(DiffView::row_height(cx)) * rows as f32);
-        } else if let Some(parameters) = shown_parameters(item) {
-            parts.push(caption);
-            parts.push(lines(&parameters));
-        }
-        match (&entry.result, item.output.as_deref()) {
-            (Some(_), _) => {
-                parts.push(caption);
-                if let Some(body) = shown_output(entry) {
-                    parts.push(lines(&body));
+        if let Some(Given::Parameters(parameters)) = &given {
+            // Captions over blocks padded 0.5 rem each side.
+            let block = |text: &str| 0.75 * rem + mono(&preview(text).0, width - rem);
+            parts.push(m.line_xs);
+            parts.push(block(parameters));
+            parts.extend(door(parameters));
+            if let Some(output) = &output {
+                parts.push(m.line_xs);
+                parts.push(block(output));
+                parts.extend(door(output));
+            }
+        } else {
+            if let Some(diff) = self.ui.get(&item.id).and_then(|ui| ui.diff.clone()) {
+                let rows = diff.read(cx).row_count().clamp(1, DIFF_ROWS);
+                parts.push(f32::from(DiffView::row_height(cx)) * rows as f32 + 2.);
+            }
+            let detail = match &given {
+                Some(Given::Detail(detail)) => Some(detail.clone()),
+                _ => None,
+            };
+            let (strip, noted) = match detail {
+                Some(detail) if item.tool.as_deref() == Some("shell") => (Some(detail), None),
+                detail => (None, detail),
+            };
+            // Inside the card's border and its sides' padding.
+            let inside = width - 2. - 1.5 * rem;
+            let body = (noted.is_some() || output.is_some()).then(|| {
+                let mut lines = Vec::new();
+                if let Some(noted) = &noted {
+                    lines.push(mono(noted, inside));
                 }
-            }
-            (None, Some(_)) if has_diff && item.status == Some(CallStatus::Ok) => {}
-            (None, Some(output)) if !output.trim().is_empty() => {
-                parts.push(caption);
-                parts.push(lines(output));
-            }
-            (None, _) => {
-                if item.outcome.is_some() {
-                    parts.push(caption);
+                if let Some(output) = &output {
+                    lines.push(mono(&preview(output).0, inside));
                 }
+                0.75 * rem + lines.iter().sum::<f32>() + 0.25 * rem * (lines.len() - 1) as f32
+            });
+            let strip = strip.map(|command| {
+                // Beside the copy button, after each command's `$`.
+                let advance = m.mono.advance();
+                let text = inside - 0.5 * rem - 1.25 * rem - 2. * advance;
+                let parts = chain(&command);
+                let rows: f32 = parts
+                    .iter()
+                    .map(|part| mono(&command[part.clone()], text))
+                    .sum::<f32>()
+                    + CHAIN_GAP * parts.len().saturating_sub(1) as f32;
+                0.5 * rem + rows.max(1.25 * rem) + if body.is_some() { 1. } else { 0. }
+            });
+            if strip.is_some() || body.is_some() {
+                parts.push(2. + strip.unwrap_or(0.) + body.unwrap_or(0.));
             }
+            parts.extend(output.as_deref().and_then(door));
         }
         // Their top padding, and the gaps between them.
         0.25 * rem + parts.iter().sum::<f32>() + 0.375 * rem * parts.len().saturating_sub(1) as f32
@@ -1463,6 +1809,8 @@ impl TranscriptView {
                         open,
                         label: name,
                         full_width: false,
+                        wraps: false,
+                        inert: false,
                         content: h_flex()
                             .gap_1()
                             .text_xs()
@@ -1486,7 +1834,7 @@ impl TranscriptView {
         };
         let item = &entry.item;
         let open = self.ui.get(&id).and_then(|ui| ui.expanded).unwrap_or(false);
-        let line = item.text.lines().next().unwrap_or_default().to_string();
+        let line = call_line(item);
         let tool = Tool::of(item);
         let job = self.job_line(item);
         let muted = |text: String| {
@@ -1541,10 +1889,20 @@ impl TranscriptView {
                     })
                     .into_any_element(),
             ),
+            // A command that ran says how long it took, or how its tests
+            // went, where its timer ran.
+            (None, Some(CallStatus::Ok)) if item.tool.as_deref() == Some("shell") => item
+                .outcome
+                .clone()
+                .map(|outcome| muted(outcome.to_string())),
             _ => None,
         };
         let action = self.call_action(item, job.as_ref(), view);
         let header_view = view.downgrade();
+        let opens = opens(entry);
+        // Open, the line wraps to say its words whole, unless what it cut
+        // shows under it, which would say them twice.
+        let wraps = open && opens && shown_given(item).is_none();
         let marked_line = self.marked_plain(
             id,
             Place::Text,
@@ -1557,10 +1915,13 @@ impl TranscriptView {
             open,
             label: line.clone().into(),
             full_width: true,
+            wraps,
+            inert: !opens,
             content: h_flex()
                 .w_full()
                 .min_w_0()
                 .gap_1p5()
+                .when(wraps, |this| this.items_start())
                 .text_color(theme.muted_foreground)
                 .when(!item.is_main(), |this| {
                     this.child(
@@ -1571,12 +1932,21 @@ impl TranscriptView {
                             .child(item.agent.clone()),
                     )
                 })
-                .child(Icon::new(tool.icon()).xsmall().flex_none())
+                .child(
+                    Icon::new(tool.icon())
+                        .xsmall()
+                        .flex_none()
+                        // (Beside the first line, as it is centred on one.)
+                        .when(wraps, |this| {
+                            let rem = self.metrics.as_ref().map_or(16., |m| m.rem);
+                            this.mt(px((wrapped_line(rem) - 0.75 * rem) / 2.))
+                        }),
+                )
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .truncate()
+                        .when(!wraps, |this| this.truncate())
                         .text_left()
                         .child(marked_line),
                 )
@@ -1604,7 +1974,7 @@ impl TranscriptView {
                 self.thumbnails(item, view, cx)
                     .map(|thumbnails| div().pl_6().pt_1().child(thumbnails)),
             )
-            .when(open, |this| this.child(self.call_details(id, cx)))
+            .when(open && opens, |this| this.child(self.call_details(id, cx)))
             .into_any_element()
     }
 
@@ -1661,7 +2031,10 @@ impl TranscriptView {
         }
     }
 
-    /// A call's details: its parameters in full, its output, its diff.
+    /// A call's details. One that ended shows a card: what its line cut
+    /// (a command as a strip at its top, any other detail muted in its
+    /// body), then its content, and an edit its diff. One from an old
+    /// session shows its parameters and its result under captions.
     fn call_details(&self, id: u64, cx: &App) -> AnyElement {
         use super::find::Place;
         let theme = cx.theme();
@@ -1669,98 +2042,246 @@ impl TranscriptView {
             return div().into_any_element();
         };
         let item = &entry.item;
-        let mono = |text: String, key: &'static str, place: Place| {
-            div()
-                .w_full()
-                .px_2()
-                .py_1p5()
-                .rounded(theme.radius)
-                .bg(theme.muted)
-                .code_font(theme)
-                .text_size(theme.mono_font_size)
-                .child(self.marked(
-                    (key, id),
-                    id,
-                    place,
-                    text,
-                    Ink::on(theme.foreground, theme.muted),
-                    cx,
+        let line = item.text.trim().to_string();
+        let given = shown_given(item);
+        let output = shown_output(entry);
+        let diff = self.ui.get(&id).and_then(|ui| ui.diff.clone());
+        let details = v_flex().w_full().gap_1p5().pt_1().pl_6();
+        // The first lines of a long text show, and a button opens it all.
+        let door = |text: Arc<str>, key: &'static str, title: String| {
+            let total = text.lines().count();
+            (total > OUTPUT_LINES).then(|| {
+                let title: SharedString = title.into();
+                Button::new((key, id))
+                    .ghost()
+                    .xsmall()
+                    .label(format!("Show all {total} lines"))
+                    .on_click(move |_, window, cx| {
+                        open_output(title.clone(), text.clone(), window, cx)
+                    })
+            })
+        };
+        if let Some(Given::Parameters(parameters)) = &given {
+            let caption = |text: &str| {
+                div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(text.to_string())
+            };
+            let block = |text: &Arc<str>, key: &'static str, place: Place| {
+                let (shown, _) = preview(text);
+                div()
+                    .w_full()
+                    .px_2()
+                    .py_1p5()
+                    .rounded(theme.radius)
+                    .bg(theme.muted)
+                    .code_font(theme)
+                    .text_size(theme.mono_font_size)
+                    .child(self.marked(
+                        (key, id),
+                        id,
+                        place,
+                        shown,
+                        Ink::on(theme.foreground, theme.muted),
+                        cx,
+                    ))
+            };
+            return details
+                .child(caption("Parameters"))
+                .child(block(parameters, "parameters", Place::Parameters))
+                .children(door(
+                    parameters.clone(),
+                    "all-parameters",
+                    format!("Parameters of {line}"),
                 ))
+                .when_some(output, |this, output| {
+                    this.child(caption("Result"))
+                        .child(block(&output, "output", Place::Output))
+                        .children(door(output, "all-output", format!("Result of {line}")))
+                })
+                .into_any_element();
+        }
+        let detail = match given {
+            Some(Given::Detail(detail)) => Some(detail),
+            _ => None,
         };
-        let caption = |text: String| {
-            div()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(text)
+        let (strip, noted) = match detail {
+            Some(detail) if item.tool.as_deref() == Some("shell") => (Some(detail), None),
+            detail => (None, detail),
         };
-        // The first lines of a long text, and a button that shows it all.
-        let lines = |text: Arc<str>, key: &'static str, place: Place, title: String| {
-            let (shown, total) = preview(&text);
-            let title: SharedString = title.into();
+        let editor = theme.editor_background();
+        let body = (noted.is_some() || output.is_some()).then(|| {
+            let (numbers, muted) = output_look(entry);
+            let ink = if muted {
+                theme.muted_foreground
+            } else {
+                theme.foreground
+            };
             v_flex()
                 .w_full()
                 .gap_1()
-                .child(mono(shown, key, place))
-                .when(total > OUTPUT_LINES, |this| {
-                    this.child(
-                        Button::new((key, id))
-                            .ghost()
-                            .xsmall()
-                            .label(format!("Show all {total} lines"))
-                            .on_click(move |_, window, cx| {
-                                open_output(title.clone(), text.clone(), window, cx)
-                            }),
-                    )
+                .px_3()
+                .py_1p5()
+                .bg(editor)
+                .code_font(theme)
+                .text_size(theme.mono_font_size)
+                .when_some(noted, |this, noted| {
+                    this.child(div().w_full().text_color(theme.muted_foreground).child(
+                        self.marked(
+                            ("detail", id),
+                            id,
+                            Place::Parameters,
+                            noted.to_string(),
+                            Ink::on(theme.muted_foreground, editor),
+                            cx,
+                        ),
+                    ))
                 })
-        };
-        let line = item.text.trim().to_string();
-        let mut details = v_flex().w_full().gap_1p5().pt_1().pl_6();
-        // What the call was given: an edit's changes as a diff, else the
-        // parameters (or, from before the feed kept them, the line's long
-        // part: a multi-line command, a worker's task).
-        let diff = self.ui.get(&id).and_then(|ui| ui.diff.clone());
-        let has_diff = diff.is_some();
-        let parameters = shown_parameters(item);
-        if let Some(diff) = diff {
-            details = details.child(DiffView::new(&diff).max_rows(DIFF_ROWS));
-        } else if let Some(parameters) = parameters {
-            details = details.child(caption("Parameters".into())).child(lines(
-                parameters,
-                "parameters",
-                Place::Parameters,
-                format!("Parameters of {line}"),
-            ));
-        }
-        // What came back: a command's output block, or the tool's result.
-        match (&entry.result, item.output.clone()) {
-            (Some(result), _) => {
-                details = details.child(caption(result.text.clone()));
-                if let Some(body) = shown_output(entry) {
-                    details = details.child(lines(
-                        body,
-                        "output",
+                .when_some(output.clone(), |this, output| {
+                    let (shown, _) = preview(&output);
+                    let gutters = numbered_gutters(&shown, numbers);
+                    this.child(div().w_full().text_color(ink).child(self.marked_with(
+                        ("output", id),
+                        id,
                         Place::Output,
-                        format!("Output of {line}"),
-                    ));
-                }
-            }
-            // An edit's diff says what its result would.
-            (None, Some(_)) if has_diff && item.status == Some(CallStatus::Ok) => {}
-            (None, Some(output)) if !output.trim().is_empty() => {
-                details = details.child(caption("Result".into())).child(lines(
-                    output,
-                    "output",
-                    Place::Output,
-                    format!("Result of {line}"),
-                ));
-            }
-            (None, _) => {
-                if let Some(outcome) = &item.outcome {
-                    details = details.child(caption(outcome.clone()));
-                }
-            }
-        }
-        details.into_any_element()
+                        shown,
+                        Ink::on(ink, editor),
+                        gutters,
+                        theme.muted_foreground,
+                        cx,
+                    )))
+                })
+        });
+        let has_body = body.is_some();
+        let strip = strip.map(|command| {
+            h_flex()
+                .w_full()
+                .items_start()
+                .gap_2()
+                .px_3()
+                .py_1()
+                .bg(theme.muted)
+                .when(has_body, |this| {
+                    this.border_b_1().border_color(theme.border)
+                })
+                .child(self.timeline(id, &command, cx))
+                .child(
+                    Clipboard::new(("command-copy", id))
+                        .xsmall()
+                        .value(command.to_string())
+                        .tooltip("Copy the command"),
+                )
+        });
+        let card = (strip.is_some() || has_body).then(|| {
+            v_flex()
+                .w_full()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .overflow_hidden()
+                .children(strip)
+                .children(body)
+        });
+        let framed = diff.map(|diff| {
+            div()
+                .w_full()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .overflow_hidden()
+                .child(DiffView::new(&diff).max_rows(DIFF_ROWS))
+        });
+        details
+            .children(framed)
+            .children(card)
+            .children(
+                output.and_then(|output| door(output, "all-output", format!("Output of {line}"))),
+            )
+            .into_any_element()
+    }
+
+    /// A command as its card's strip shows it: each command of its chain on
+    /// a row of its own after a `$`, and a timeline, a line from each `$` to
+    /// the next that keeps clear of them.
+    fn timeline(&self, id: u64, command: &Arc<str>, cx: &App) -> AnyElement {
+        use super::find::Place;
+        let theme = cx.theme();
+        let size = f32::from(theme.mono_font_size);
+        let (line, advance) = self
+            .metrics
+            .as_ref()
+            .map_or((size * super::height::LINE_HEIGHT, size * 0.6), |m| {
+                (m.line_mono, m.mono.advance())
+            });
+        let parts = chain(command);
+        let count = parts.len();
+        let rule = theme.muted_foreground.opacity(TIMELINE_ALPHA);
+        // 2 px wide, as the `$`'s stem is, and centred under it.
+        let x = (advance / 2. - 1.).round();
+        let (above, below) = timeline_gaps(line, size);
+        let rows: Vec<Div> = parts
+            .into_iter()
+            .enumerate()
+            .map(|(at, part)| {
+                let (first, last) = (at == 0, at + 1 == count);
+                let gutter = div()
+                    .flex_none()
+                    .relative()
+                    .w(px(2. * advance))
+                    .child("$")
+                    .when(!first, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .left(px(x))
+                                .top_0()
+                                .w(px(2.))
+                                .h(px(above))
+                                .bg(rule),
+                        )
+                    })
+                    .when(!last, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .left(px(x))
+                                .top(px(below))
+                                .bottom_0()
+                                .w(px(2.))
+                                .bg(rule),
+                        )
+                    });
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .items_stretch()
+                    .child(gutter)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .when(!last, |this| this.pb(px(CHAIN_GAP)))
+                            .child(self.marked_part(
+                                (SharedString::from(format!("command-{id}")), at),
+                                id,
+                                Place::Parameters,
+                                command,
+                                part,
+                                Ink::on(theme.muted_foreground, theme.muted),
+                                cx,
+                            )),
+                    )
+            })
+            .collect();
+        v_flex()
+            .flex_1()
+            .min_w_0()
+            .code_font(theme)
+            .text_size(theme.mono_font_size)
+            .text_color(theme.muted_foreground)
+            .children(rows)
+            .into_any_element()
     }
 
     fn group(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
@@ -1803,49 +2324,48 @@ impl TranscriptView {
         };
         let view = view.downgrade();
         let summary = tool::summary(calls.iter().copied());
-        let header =
-            Disclosure {
-                id: ("group-toggle", id).into(),
-                open,
-                label: summary.clone().into(),
-                full_width: true,
-                content: h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_1p5()
-                    .text_color(theme.muted_foreground)
-                    .child(Icon::new(chevron(open)).xsmall())
-                    .child(div().min_w_0().truncate().child(summary))
-                    .when_some(active, |this, active| {
-                        this.child(
-                            h_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_1()
-                                .when(active.status == Some(CallStatus::Running), |this| {
-                                    this.child(self.spinner(active.id, cx))
-                                })
-                                .child(div().min_w_0().truncate().child(
-                                    active.text.lines().next().unwrap_or_default().to_string(),
-                                )),
-                        )
-                    })
-                    .when(active.is_none(), |this| this.child(div().flex_1()))
-                    .when(failed > 0, |this| {
-                        this.child(
-                            h_flex()
-                                .flex_none()
-                                .gap_1()
-                                .text_color(theme.danger)
-                                .child(Icon::new(Lucide::CircleX).xsmall())
-                                .child(format!("{failed} failed")),
-                        )
-                    })
-                    .into_any_element(),
-                on_toggle: Rc::new(move |_, cx| {
-                    view.update(cx, |this, cx| this.toggle_group(id, cx)).ok();
-                }),
-            };
+        let header = Disclosure {
+            id: ("group-toggle", id).into(),
+            open,
+            label: summary.clone().into(),
+            full_width: true,
+            wraps: false,
+            inert: false,
+            content: h_flex()
+                .w_full()
+                .min_w_0()
+                .gap_1p5()
+                .text_color(theme.muted_foreground)
+                .child(Icon::new(chevron(open)).xsmall())
+                .child(div().min_w_0().truncate().child(summary))
+                .when_some(active, |this, active| {
+                    this.child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .when(active.status == Some(CallStatus::Running), |this| {
+                                this.child(self.spinner(active.id, cx))
+                            })
+                            .child(div().min_w_0().truncate().child(call_line(active))),
+                    )
+                })
+                .when(active.is_none(), |this| this.child(div().flex_1()))
+                .when(failed > 0, |this| {
+                    this.child(
+                        h_flex()
+                            .flex_none()
+                            .gap_1()
+                            .text_color(theme.danger)
+                            .child(Icon::new(Lucide::CircleX).xsmall())
+                            .child(format!("{failed} failed")),
+                    )
+                })
+                .into_any_element(),
+            on_toggle: Rc::new(move |_, cx| {
+                view.update(cx, |this, cx| this.toggle_group(id, cx)).ok();
+            }),
+        };
         let Some(action) = action else {
             return header.into_any_element();
         };
@@ -2578,6 +3098,10 @@ struct Disclosure {
     label: SharedString,
     content: AnyElement,
     full_width: bool,
+    /// Its line wraps rather than ends at its width.
+    wraps: bool,
+    /// It has nothing to show, so it's its content alone, where it would be.
+    inert: bool,
     on_toggle: Callback,
 }
 
@@ -2595,7 +3119,28 @@ impl RenderOnce for Disclosure {
         // An extra-small button's size and padding, its border (the focus
         // ring) taken out of the padding.
         let padding = window.rem_size() * 0.25 - px(1.);
-        div()
+        let wraps = self.wraps;
+        let line = px(wrapped_line(f32::from(window.rem_size())));
+        let sized = move |this: Div| {
+            if wraps {
+                this.min_h_5().items_start().line_height(line)
+            } else {
+                this.h_5().items_center()
+            }
+        };
+        if self.inert {
+            return sized(div())
+                .when(self.full_width, |this| this.w_full())
+                .min_w_0()
+                .flex()
+                .px(padding)
+                .text_xs()
+                .border_1()
+                .border_color(transparent_black())
+                .child(self.content)
+                .into_any_element();
+        }
+        sized(div())
             .id(self.id)
             .role(Role::Button)
             .aria_expanded(self.open)
@@ -2604,9 +3149,7 @@ impl RenderOnce for Disclosure {
             .track_focus(&focus)
             .when(self.full_width, |this| this.w_full())
             .min_w_0()
-            .h_5()
             .flex()
-            .items_center()
             .px(padding)
             .text_xs()
             .rounded(theme.radius)
@@ -2617,6 +3160,7 @@ impl RenderOnce for Disclosure {
             .child(self.content)
             // A click, or Enter or Space while it has the focus.
             .on_click(move |_, window, cx| (self.on_toggle)(window, cx))
+            .into_any_element()
     }
 }
 

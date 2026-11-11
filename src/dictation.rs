@@ -37,8 +37,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use arko::dictation::{
-    CANCEL, DOWNLOAD, DOWNLOAD_TITLE, DictationError, DictationEvent, DictationOptions,
-    DictationService, Preparing, Sink, SpeechModel, favour_session_words,
+    CANCEL, DOWNLOAD, DictationError, DictationEvent, DictationOptions, DictationService,
+    ModelKind, Preparing, Sink, downloaded, favour_session_words,
 };
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::TextareaState;
@@ -76,9 +76,6 @@ const RATE: u32 = 48_000;
 /// most 30 s of it, so a computer that kept up while listening takes far
 /// less.
 const LAST_WORDS: Duration = Duration::from_secs(30);
-
-/// What the window says once the model is downloaded and ready.
-const MODEL_READY: &str = "Speech model downloaded.";
 
 /// What the window says when the last words took longer than
 /// [`LAST_WORDS`].
@@ -139,9 +136,10 @@ impl Service for Arko {
         // A missing model downloads on its own, never inside a recording, so
         // the microphone never runs through a download. Whether that asks
         // first is up to `Dictation::offer_download`.
-        let model = service.model();
-        if !options.download && !model.is_installed(&self.root) {
-            return Err(DictationError::NeedsDownload(model));
+        if !options.download
+            && let Some(download) = service.missing()
+        {
+            return Err(DictationError::NeedsDownload(download));
         }
         let dictation = service.open(options, sink)?;
         if let Some(link) = session {
@@ -307,11 +305,13 @@ struct Owned {
     revision: u64,
 }
 
-/// The model downloading for the recordings to come. Dropping it stops the
+/// The models downloading for the recordings to come. Dropping it stops the
 /// download, and the next one resumes it.
 struct Download {
     _opened: Box<dyn Opened>,
     step: Preparing,
+    /// The speech model and the cleanup model came, as the steps said.
+    came: (bool, bool),
     _events: Task<()>,
 }
 
@@ -739,8 +739,8 @@ impl Dictation {
         }
         let words = match error {
             SpeechError::Recognizer(error) => match error.downcast_ref::<DictationError>() {
-                Some(DictationError::NeedsDownload(model)) => {
-                    return self.offer_download(model, window, cx);
+                Some(DictationError::NeedsDownload(download)) => {
+                    return self.offer_download(*download, window, cx);
                 }
                 Some(busy @ DictationError::Busy) => {
                     window.push_notification(curly(&busy.to_string()), cx);
@@ -758,39 +758,40 @@ impl Dictation {
         window.push_notification(Notification::error(curly(&words)), cx);
     }
 
-    /// Asks before downloading `model`, unless Arko's settings download it
-    /// without asking.
+    /// Asks before `download`, unless Arko's settings download without
+    /// asking.
     fn offer_download(
         &mut self,
-        model: &'static SpeechModel,
+        download: arko::dictation::Download,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if cx.global::<Speech>().service.downloads_without_asking() {
-            return self.download(model, window, cx);
+            return self.download(download, window, cx);
         }
         let this = cx.weak_entity();
-        let offer = curly(&model.offer());
+        let offer = curly(&download.offer());
         window.open_alert_dialog(cx, move |alert, _, _| {
             let this = this.clone();
             alert
-                .title(DOWNLOAD_TITLE)
+                .title(download.title())
                 .description(offer.clone())
                 .confirm()
                 .ok_text(DOWNLOAD)
                 .cancel_text(CANCEL)
                 .on_ok(move |_, window, cx| {
-                    this.update(cx, |this, cx| this.download(model, window, cx))
+                    this.update(cx, |this, cx| this.download(download, window, cx))
                         .ok();
                     true
                 })
         });
     }
 
-    /// Downloads `model` beside the box, then loads it, without recording.
+    /// Downloads the models beside the box, then loads them, without
+    /// recording.
     fn download(
         &mut self,
-        model: &'static SpeechModel,
+        download: arko::dictation::Download,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -821,10 +822,8 @@ impl Dictation {
         });
         self.download = Some(Download {
             _opened: opened,
-            step: Preparing::Downloading {
-                done: 0,
-                total: model.download_bytes(),
-            },
+            step: download.first_step(),
+            came: (false, false),
             _events: events,
         });
         cx.notify();
@@ -840,13 +839,27 @@ impl Dictation {
             DictationEvent::Preparing(step) => {
                 if let Some(download) = &mut self.download {
                     download.step = step;
+                    match step {
+                        Preparing::Downloading {
+                            model: ModelKind::Speech,
+                            ..
+                        } => download.came.0 = true,
+                        Preparing::Downloading {
+                            model: ModelKind::Cleanup,
+                            ..
+                        } => download.came.1 = true,
+                        _ => {}
+                    }
                 }
             }
-            // The model is ready. It stays loaded a while, and the
-            // microphone waits for the button.
+            // The models are ready. They stay loaded a while, and the
+            // microphone waits for the button. Nothing came when another
+            // window finished the download first, so nothing is said.
             DictationEvent::Listening | DictationEvent::Done => {
-                self.download = None;
-                window.push_notification(MODEL_READY, cx);
+                let came = self.download.take().map(|download| download.came);
+                if let Some((speech, cleanup)) = came.filter(|came| *came != (false, false)) {
+                    window.push_notification(downloaded(speech, cleanup), cx);
+                }
             }
             DictationEvent::Failed(why) => {
                 self.download = None;
