@@ -1292,8 +1292,8 @@ fn landing_in_a_long_code_block_in_a_list_shows_it_whole(cx: &mut TestAppContext
     assert_eq!(uncapped, 0);
 }
 
-/// Matches past the lines a call's details show (its first 40, each cut at
-/// 500 characters) are found: the find bar says they're in the full
+/// Matches past the lines a call's details show (its first 40, up to a line
+/// cut at 500 characters) are found: the find bar says they're in the full
 /// output, which opens at the match.
 #[gpui_kit::test]
 fn matches_past_an_outputs_first_lines_are_found_in_the_full_output(cx: &mut TestAppContext) {

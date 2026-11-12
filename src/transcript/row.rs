@@ -468,20 +468,35 @@ fn apply_diff_patch(item: &Item) -> Option<String> {
 /// one-line JSON shows its start.
 pub(super) const PREVIEW_LINE_CHARS: usize = 500;
 
-/// The first lines of `text` for a preview, each at most
-/// [`PREVIEW_LINE_CHARS`] long, and how many lines it has.
-pub(super) fn preview(text: &str) -> (String, usize) {
-    let total = text.lines().count();
-    let shown = text
-        .lines()
-        .take(OUTPUT_LINES)
-        .map(|line| match line.char_indices().nth(PREVIEW_LINE_CHARS) {
-            Some((end, _)) => format!("{}…", &line[..end]),
-            None => line.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    (shown, total)
+/// The preview of `text`, which is its first [`OUTPUT_LINES`] lines, and
+/// whether it leaves any out. A line over [`PREVIEW_LINE_CHARS`] ends it
+/// cut with "…", so what it leaves out all comes after what it shows.
+pub(super) fn preview(text: &str) -> (String, bool) {
+    let mut shown = String::new();
+    for (index, line) in text.lines().enumerate() {
+        if index == OUTPUT_LINES {
+            return (shown, true);
+        }
+        if index > 0 {
+            shown.push('\n');
+        }
+        if let Some((end, _)) = line.char_indices().nth(PREVIEW_LINE_CHARS) {
+            shown.push_str(&line[..end]);
+            shown.push('…');
+            return (shown, true);
+        }
+        shown.push_str(line);
+    }
+    (shown, false)
+}
+
+/// What the button that opens a call's whole `text` says, when its preview
+/// leaves some out.
+fn show_all(text: &str) -> Option<String> {
+    preview(text).1.then(|| match text.lines().count() {
+        1 => "Show all".to_string(),
+        total => format!("Show all {total} lines"),
+    })
 }
 
 /// Whether a call's line already says all its parameters do: a one-line
@@ -759,7 +774,7 @@ impl TranscriptView {
         let mono = |text: &str, width: f32| {
             m.mono.text_lines(&super::height::hard_lines(text), width) * m.line_mono
         };
-        let door = |text: &str| (text.lines().count() > OUTPUT_LINES).then_some(1.25 * rem);
+        let door = |text: &str| preview(text).1.then_some(1.25 * rem);
         let given = shown_given(item);
         let output = shown_output(entry);
         let mut parts = Vec::new();
@@ -2049,17 +2064,17 @@ impl TranscriptView {
         let details = v_flex().w_full().gap_1p5().pt_1().pl_6();
         // The first lines of a long text show, and a button opens it all.
         let door = |text: Arc<str>, key: &'static str, title: String| {
-            let total = text.lines().count();
-            (total > OUTPUT_LINES).then(|| {
-                let title: SharedString = title.into();
+            let label = show_all(&text)?;
+            let title: SharedString = title.into();
+            Some(
                 Button::new((key, id))
                     .ghost()
                     .xsmall()
-                    .label(format!("Show all {total} lines"))
+                    .label(label)
                     .on_click(move |_, window, cx| {
                         open_output(title.clone(), text.clone(), window, cx)
-                    })
-            })
+                    }),
+            )
         };
         if let Some(Given::Parameters(parameters)) = &given {
             let caption = |text: &str| {
@@ -3423,10 +3438,11 @@ impl RenderOnce for Thumbnail {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
+    use super::super::find::shown_prefix;
     use super::{
-        AgentFilter, CACHE_REFRESHED, Lucide, OutputViewer, REGENERATE_HINT, apply_diff_patch,
-        code_lines, duration, edit_diff, longest_code, message_label, notice_icon, preview,
-        user_tags,
+        AgentFilter, CACHE_REFRESHED, Lucide, OutputViewer, PREVIEW_LINE_CHARS, REGENERATE_HINT,
+        apply_diff_patch, code_lines, duration, edit_diff, longest_code, message_label,
+        notice_icon, preview, show_all, user_tags,
     };
     use arko::remote::{Delivery, Item, Kind, Level, Source};
     use gpui_kit::AppContext as _;
@@ -3509,12 +3525,30 @@ mod tests {
     #[test]
     fn a_preview_shows_forty_lines_of_at_most_500_characters() {
         let long = "x".repeat(300_000);
-        let (shown, total) = preview(&long);
-        assert_eq!(total, 1);
+        let (shown, more) = preview(&long);
+        assert!(more);
         assert_eq!(shown.chars().count(), 501);
         let many: String = (0..100).map(|n| format!("line {n}\n")).collect();
-        let (shown, total) = preview(&many);
-        assert_eq!((shown.lines().count(), total), (40, 100));
+        let (shown, more) = preview(&many);
+        assert_eq!((shown.lines().count(), more), (40, true));
+        assert_eq!(show_all(&many).as_deref(), Some("Show all 100 lines"));
+    }
+
+    /// A long line ends the preview at its cut, so the lines after it stay
+    /// behind Show all with the rest of the line, and the find counts as
+    /// shown just what the preview shows.
+    #[test]
+    fn a_cut_line_ends_the_preview_and_show_all_opens_the_rest() {
+        let first = format!("{}tail.", "x".repeat(PREVIEW_LINE_CHARS));
+        let text = format!("{first}\n\nSecond paragraph.");
+        let (shown, more) = preview(&text);
+        assert_eq!(shown, format!("{}…", "x".repeat(PREVIEW_LINE_CHARS)));
+        assert!(more);
+        assert_eq!(show_all(&text).as_deref(), Some("Show all 3 lines"));
+        assert_eq!(&text[..shown_prefix(&text)], shown.trim_end_matches('…'));
+        assert_eq!(show_all(&first).as_deref(), Some("Show all"));
+        assert_eq!(preview("a\nb"), ("a\nb".to_string(), false));
+        assert_eq!(show_all("a\nb"), None);
     }
 
     #[test]

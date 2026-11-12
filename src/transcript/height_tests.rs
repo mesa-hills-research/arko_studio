@@ -151,6 +151,15 @@ pub(super) fn every_kind(feed: &Feed) {
         &[("to", "r1".into()), ("message", words.repeat(2).into())],
     );
     result(feed, "main", id, "message_agent", "Sent to r1.");
+    // A message whose first paragraph is cut, which Show all opens.
+    let message = format!("{}\n\nA second paragraph.", words.repeat(8));
+    let id = call(
+        feed,
+        "main",
+        "message_agent",
+        &[("to", "r1".into()), ("message", message.into())],
+    );
+    result(feed, "main", id, "message_agent", "Sent to r1.");
     let id = call(
         feed,
         "main",
