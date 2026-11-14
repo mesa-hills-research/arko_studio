@@ -4955,9 +4955,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit"
-version = "0.7.16"
+version = "0.7.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab280d4255f0d27143c75172075c32c193544e672273c57b8c5cfc634e491fd5"
+checksum = "1236fa6974ef559a708daea8e851fa12be6f2147e15712737d09d18d86cbd4f7"
 dependencies = [
  "mhr-gpui",
  "mhr-gpui-kit-assets",
@@ -4970,9 +4970,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-assets"
-version = "0.7.16"
+version = "0.7.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a7971765e37c508d4acb58bb748e78def2d061b0ce5b0e9482ade4d43f65338"
+checksum = "ec283215a9e20d8546e0fdb6609917c1c68aa10a6a2cd153b8d4bfe345d1b536"
 dependencies = [
  "anyhow",
  "gpui-pre-reqwest",
@@ -4985,9 +4985,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-base"
-version = "0.7.16"
+version = "0.7.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12dfe592999a68b9405caad5dc3384a70a15f9673e9e8fef88a931ef13bc1f82"
+checksum = "dc332bfa5bcc4eeb3065f89dec7c03e01d01db859715549ba6c2b6593f0c4031"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -5028,9 +5028,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-component"
-version = "0.7.16"
+version = "0.7.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab684ca502fbadd22473bfe56d10dcbd38b95bae53918a0fc8dd21e4836f7822"
+checksum = "5fdd63f657ba6b8e7607721ab09fe1086e15878b5f50e1df7ac2cdf97f82f142"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -5129,9 +5129,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-component-macros"
-version = "0.7.16"
+version = "0.7.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd4a2e9206196eb99c53622d90f4f649e3a30522e63bfb9d8bb2f8e333a31e32"
+checksum = "95fc0b3c5a65ebe8a34bc32d6116768e9cf6e6fa877dcaa4a936fa54100b592b"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -5141,9 +5141,9 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-writing"
-version = "0.7.16"
+version = "0.7.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb421ce98ba22504ee079650e8679e9c6297e5f3f0e8095d38a6ea3a45785ff0"
+checksum = "29cf522297ddcc62844e11805229a22b7f45521a3cb60857dc7ecc83bd89b56a"
 dependencies = [
  "anyhow",
  "log",
