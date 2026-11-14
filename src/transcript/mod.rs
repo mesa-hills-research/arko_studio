@@ -13,6 +13,8 @@
 //! Mount it with [`TranscriptView::cached`], so that what happens around it
 //! (a keystroke in the composer) doesn't draw it again.
 
+#[cfg(test)]
+mod feed_design_tests;
 mod find;
 mod fold;
 #[cfg(test)]
@@ -60,7 +62,7 @@ use crate::prefs;
 
 pub use find::FindStatus;
 pub use model::AgentFilter;
-use model::{Changes, Layout, Model, Row, RowKey, Waiting};
+use model::{Changes, Count, Layout, Model, QuietRow, Row, RowKey, Waiting};
 pub use nav::{FocusTranscript, Leave, SelectNext, SelectPrevious, ToggleRow};
 
 /// The key context of the transcript, for its key bindings.
@@ -272,8 +274,8 @@ struct EntryUi {
     /// A call's details or a thinking's text, opened or closed by the
     /// reader. `None` follows the defaults.
     expanded: Option<bool>,
-    /// The group of calls this entry starts (Quiet), opened or closed by the
-    /// reader, apart from the entry's own details.
+    /// The Quiet row this call starts, opened or closed by the reader,
+    /// apart from the call's own details.
     group_open: Option<bool>,
     /// The reader turned the entry's source view the other way from the
     /// session's ("View source", "View formatted"), so the text shows as
@@ -389,6 +391,18 @@ pub struct TranscriptView {
     /// yet, by its item.
     chosen: HashMap<u64, bool>,
     rows: Vec<Row>,
+    /// What each Quiet row says and holds, by its first call, as the rows
+    /// were made.
+    quiet: HashMap<u64, QuietRow>,
+    /// What each turn's count (Messages) counts, by its first call.
+    counts: HashMap<u64, Count>,
+    /// The calls of Quiet rows of one call that the reader opened, and the
+    /// thoughts the reader opened on lines of their own, which keep their
+    /// form as calls come.
+    sealed: HashSet<u64>,
+    /// The turns' counts the reader opened (Messages), by their first
+    /// calls.
+    counts_open: HashSet<u64>,
     list: list::RowList,
     focus_handle: FocusHandle,
     settings: Settings,
@@ -420,9 +434,6 @@ pub struct TranscriptView {
     /// The oldest entry ready to show, while older ones wait to be made
     /// ready ([`FIRST_ENTRIES`]).
     loaded_from: Option<u64>,
-    /// Where to scroll once the rows are built (the Messages view's
-    /// counts open the Full view at their calls).
-    scroll_to: Option<RowKey>,
     clock: Clock,
     /// Draws again every second while a call or a worker runs, and as the
     /// minutes of a background job's time turn.
@@ -467,6 +478,8 @@ pub struct TranscriptView {
     /// The sizes the rows' heights are estimated with, for the theme and
     /// fonts of the last frame.
     metrics: Option<height::Metrics>,
+    /// The list's width, as laid out in this frame before its rows.
+    list_width: Rc<Cell<f32>>,
     measuring: Option<(height::Key, Task<()>)>,
     /// Blocks whose text grew since the last frame, by entry and index. The
     /// list counts their new height before it draws them again.
@@ -540,6 +553,10 @@ impl TranscriptView {
             ui: HashMap::new(),
             chosen: HashMap::new(),
             rows: Vec::new(),
+            quiet: HashMap::new(),
+            counts: HashMap::new(),
+            sealed: HashSet::new(),
+            counts_open: HashSet::new(),
             list: list::RowList::new(),
             // A Tab stop, so the keyboard reaches the transcript to scroll it.
             focus_handle: cx.focus_handle().tab_stop(true),
@@ -554,7 +571,6 @@ impl TranscriptView {
             new_while_away: 0,
             core_rows: 0,
             loaded_from: None,
-            scroll_to: None,
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
             ticker: None,
             tick_every: Duration::ZERO,
@@ -574,6 +590,7 @@ impl TranscriptView {
             drawing_row: Cell::new(0),
             drawn_runs: RefCell::default(),
             metrics: None,
+            list_width: Rc::default(),
             measuring: None,
             grown: Vec::new(),
             streaming: HashSet::new(),
@@ -705,9 +722,24 @@ impl TranscriptView {
             && matches!(self.model.filter(), AgentFilter::Main)
     }
 
+    /// Opens or closes the Quiet row that starts with the call `item`.
+    pub fn set_row_open(&mut self, item: u64, open: bool, cx: &mut Context<Self>) {
+        if self.group_open(item) != open {
+            self.toggle_group(item, cx);
+        }
+    }
+
+    /// Opens or closes the count (Messages) of the turn whose first call is
+    /// `item`.
+    pub fn set_count_open(&mut self, item: u64, open: bool, cx: &mut Context<Self>) {
+        if self.counts_open.contains(&item) != open {
+            self.toggle_count(item, cx);
+        }
+    }
+
     /// Opens or closes the details of the feed item `item`: a call's
-    /// parameters and output, a thinking's text, a group of calls. (Find
-    /// opens the row it lands on.)
+    /// parameters and output, a thought's text. (Find opens the row it
+    /// lands on.)
     pub fn set_expanded(&mut self, item: u64, open: bool, cx: &mut Context<Self>) {
         // An entry not made ready yet opens or closes as it is.
         if !self.ui.contains_key(&item) {
@@ -1218,7 +1250,8 @@ impl TranscriptView {
 
     /// Makes the handles of the plain runs the row `key` draws, the first
     /// time it is drawn, and notes that they are drawn this frame.
-    fn run_handles(&mut self, key: RowKey, cx: &mut Context<Self>) {
+    fn run_handles(&mut self, row: Row, cx: &mut Context<Self>) {
+        let key = row.key;
         use find::Place;
         let mut places = [None, None];
         match key {
@@ -1231,7 +1264,13 @@ impl TranscriptView {
                 ..
             } => places[0] = Some(Place::Source(block)),
             // A call's details, while they show.
-            RowKey::Call(_) if self.row_expanded(key) == Some(true) => {
+            RowKey::Call(_) if self.row_expanded(row) == Some(true) => {
+                places = [Some(Place::Parameters), Some(Place::Output)];
+            }
+            RowKey::Group(first)
+                if self.row_expanded(row) == Some(true)
+                    && self.quiet.get(&first).is_some_and(|row| !row.merged) =>
+            {
                 places = [Some(Place::Parameters), Some(Place::Output)];
             }
             RowKey::Question(_) => {}
@@ -1378,9 +1417,11 @@ impl TranscriptView {
         };
         let expanded = |id: u64| ui.get(&id).and_then(|ui| ui.expanded);
         let group_open = |id: u64| ui.get(&id).and_then(|ui| ui.group_open);
+        let sealed = |id: u64| self.sealed.contains(&id);
+        let count_open = |id: u64| self.counts_open.contains(&id);
         let source =
             |id: u64| !render_markdown || (ui.get(&id).is_some_and(|ui| ui.flipped) != show_source);
-        let rows = model::rows(
+        let laid = model::rows(
             &self.model,
             &Layout {
                 view: self.settings.view,
@@ -1388,11 +1429,16 @@ impl TranscriptView {
                 blocks: &blocks,
                 expanded: &expanded,
                 group_open: &group_open,
+                sealed: &sealed,
+                count_open: &count_open,
                 source: &source,
                 first: self.loaded_from,
                 working: self.working,
             },
         );
+        self.quiet = laid.quiet;
+        self.counts = laid.counts;
+        let rows = laid.rows;
         // The reader's place, unless they follow the latest row.
         let scrolled_up = self.list.is_scrolled_up();
         let anchor = (!self.list.is_following())
@@ -1465,12 +1511,6 @@ impl TranscriptView {
             && let Some((ix, offset)) = self.place_of(key, offset)
         {
             self.list.scroll_to(ix, offset);
-        }
-        if let Some(key) = self.scroll_to
-            && let Some(ix) = self.rows.iter().position(|row| row.key == key)
-        {
-            self.scroll_to = None;
-            self.list.scroll_to(ix, px(0.));
         }
         self.remeasure_grown();
     }
@@ -1627,9 +1667,8 @@ impl TranscriptView {
         self.new_while_away = away;
     }
 
-    /// Opens or closes an entry's disclosure: a call's details, a thinking's
-    /// text, a group of calls.
-    fn toggle(&mut self, id: u64, open_by_default: bool, cx: &mut Context<Self>) {
+    /// Makes the diff a call's details show, the first time they open.
+    fn ensure_diff(&mut self, id: u64, cx: &mut Context<Self>) {
         let diff = self
             .ui
             .get(&id)
@@ -1637,53 +1676,113 @@ impl TranscriptView {
             .then(|| self.model.entry(id).and_then(row::shown_diff))
             .flatten()
             .map(|diff| cx.new(|cx| DiffViewState::new(diff, cx)));
-        let row = self.rows.iter().position(
-            |row| matches!(row.key, RowKey::Call(entry) | RowKey::Thinking(entry) if entry == id),
-        );
+        if diff.is_some() {
+            self.ui.entry(id).or_default().diff = diff;
+        }
+    }
+
+    /// Keeps the line at row `ix`, which the reader opened or closed, where
+    /// it is on screen, though the space above it changed from `gap`. What
+    /// is above moves instead.
+    fn keep_in_place(&mut self, ix: usize, gap: model::Gap) {
+        let Some(row) = self.rows.get(ix) else {
+            return;
+        };
+        let rem = self.metrics.as_ref().map_or(16., |m| m.rem);
+        let grew = (row::gap_rems(row.gap) - row::gap_rems(gap)) * rem;
+        if grew != 0. && self.list.top().item_ix < ix {
+            self.list.scroll_by(px(grew));
+        }
+    }
+
+    /// Opens or closes an entry's disclosure, a call's details or a
+    /// thought. The line stays where it is on screen.
+    fn toggle(&mut self, id: u64, open_by_default: bool, cx: &mut Context<Self>) {
+        self.ensure_diff(id, cx);
+        let row = self.rows.iter().position(|row| {
+            matches!(row.key, RowKey::Call(entry) | RowKey::Thinking(entry)
+                | RowKey::Block { id: entry, .. } if entry == id)
+        });
+        let before = row.map(|ix| self.rows[ix]);
         if let Some(ix) = row {
             self.list.hold_place(ix);
         }
         let ui = self.ui.entry(id).or_default();
-        ui.expanded = Some(!ui.expanded.unwrap_or(open_by_default));
-        if diff.is_some() {
-            ui.diff = diff;
+        let opening = !ui.expanded.unwrap_or(open_by_default);
+        ui.expanded = Some(opening);
+        // A thought the reader opened on a line of its own stays there as
+        // calls come (Quiet).
+        let thought = self
+            .model
+            .entry(id)
+            .is_some_and(|entry| entry.item.kind == Kind::Thinking);
+        if opening
+            && thought
+            && before.is_some_and(|row| row.rail == model::Rail::No)
+            && self.settings.view != prefs::TranscriptView::Full
+        {
+            self.sealed.insert(id);
         }
         if let Some(ix) = row {
             self.list.remeasure_row(ix);
         }
         self.refresh_rows_after_opening(cx);
+        if let (Some(ix), Some(before)) = (row, before) {
+            self.keep_in_place(ix, before.gap);
+        }
         cx.notify();
     }
 
-    /// Whether the Quiet group of calls that starts with the entry `first`
-    /// shows its calls: as the reader chose, else when the reader opened one
-    /// of them (a run that folds as it grows keeps that call in sight).
+    /// Whether the Quiet row that starts with the call `first` is open, as
+    /// the reader chose.
     fn group_open(&self, first: u64) -> bool {
-        if let Some(open) = self.ui.get(&first).and_then(|ui| ui.group_open) {
-            return open;
-        }
-        let entries = self.model.entries();
-        model::run_of(&self.model, first, self.settings.view)
-            .iter()
-            .any(|ix| {
-                self.ui
-                    .get(&entries[*ix].item.id)
-                    .and_then(|ui| ui.expanded)
-                    == Some(true)
-            })
+        self.ui.get(&first).and_then(|ui| ui.group_open) == Some(true)
     }
 
-    /// Opens or closes a Quiet group of calls.
+    /// Opens or closes a Quiet row. Its line stays where it is on screen,
+    /// and a row of one call that the reader opened keeps its form as calls
+    /// come.
     fn toggle_group(&mut self, first: u64, cx: &mut Context<Self>) {
         let open = self.group_open(first);
+        let row = self
+            .rows
+            .iter()
+            .position(|row| row.key == RowKey::Group(first));
+        let before = row.map(|ix| self.rows[ix].gap);
+        if let Some(ix) = row {
+            self.list.hold_place(ix);
+        }
+        let single = self.quiet.get(&first).is_some_and(|row| !row.merged);
+        if single {
+            self.ensure_diff(first, cx);
+            if !open {
+                self.sealed.insert(first);
+            }
+        }
+        self.ui.entry(first).or_default().group_open = Some(!open);
+        if let Some(ix) = row {
+            self.list.remeasure_row(ix);
+        }
+        self.refresh_rows_after_opening(cx);
+        if let (Some(ix), Some(gap)) = (row, before) {
+            self.keep_in_place(ix, gap);
+        }
+        cx.notify();
+    }
+
+    /// Opens or closes a turn's count (Messages). Open, the turn's work
+    /// shows under it as Quiet shows it.
+    fn toggle_count(&mut self, first: u64, cx: &mut Context<Self>) {
         if let Some(ix) = self
             .rows
             .iter()
-            .position(|row| row.key == RowKey::Group(first))
+            .position(|row| row.key == RowKey::Count(first))
         {
             self.list.hold_place(ix);
         }
-        self.ui.entry(first).or_default().group_open = Some(!open);
+        if !self.counts_open.remove(&first) {
+            self.counts_open.insert(first);
+        }
         self.refresh_rows_after_opening(cx);
         cx.notify();
     }
@@ -1768,12 +1867,6 @@ impl TranscriptView {
                 }));
             }
         }
-    }
-
-    /// The Messages view's count of a run: opens the Full view there.
-    fn open_run(&mut self, first: u64, cx: &mut Context<Self>) {
-        self.scroll_to = Some(RowKey::Call(first));
-        prefs::update(cx, |prefs| prefs.view = prefs::TranscriptView::Full);
     }
 
     fn open_worker(&mut self, worker: SharedString, cx: &mut Context<Self>) {
@@ -1966,6 +2059,17 @@ impl Render for TranscriptView {
                         }
                     }),
                 )
+                // The list's width, before its rows draw, where they cut
+                // their lines.
+                .child({
+                    let width = self.list_width.clone();
+                    canvas(
+                        move |bounds, _, _| width.set(f32::from(bounds.size.width)),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full()
+                })
                 .child(rows)
                 .children(
                     ring.map(|ring| div().absolute().inset_0().border_1().border_color(ring)),

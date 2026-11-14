@@ -62,7 +62,9 @@ fn short() -> Feed {
     feed.user("Run the tests.", Source::App, Delivery::Turn);
     feed.turn_started();
     feed.event(
-        &event(AgentEvent::ReasoningChunk("The tests first.".into())),
+        &event(AgentEvent::ReasoningChunk(
+            "The tests first.\n\nThen the build.".into(),
+        )),
         None,
     );
     command(&feed, "cargo test");

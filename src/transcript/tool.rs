@@ -1,8 +1,6 @@
-//! What a tool call is, for its icon and for a line that sums up a run of
-//! calls ("Read 5 files, ran 2 commands").
+//! What tool a call used, by the tool's name or by the call's line.
 
 use arko::remote::Item;
-use gpui_kit::assets::IconName;
 
 /// The kind of tool a call used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,42 +111,6 @@ impl Tool {
             _ => Tool::Shell,
         }
     }
-
-    /// The Lucide icon of the tool.
-    pub fn icon(self) -> IconName {
-        match self {
-            Tool::Shell => IconName::SquareTerminal,
-            Tool::Read => IconName::FileText,
-            Tool::Write | Tool::Edit => IconName::FilePen,
-            Tool::List => IconName::FolderTree,
-            Tool::Search => IconName::Search,
-            Tool::Workers => IconName::Bot,
-            Tool::Monitor => IconName::Activity,
-            Tool::Web => IconName::Globe,
-            Tool::Mcp => IconName::Plug,
-            Tool::Skill => IconName::BookOpen,
-            Tool::Other => IconName::Wrench,
-        }
-    }
-
-    /// The tool's part of a summary: "read 5 files".
-    fn phrase(self, count: usize) -> String {
-        let (verb, one, many) = match self {
-            Tool::Shell => ("ran", "command", "commands"),
-            Tool::Read => ("read", "file", "files"),
-            Tool::Write => ("wrote", "file", "files"),
-            Tool::Edit => ("made", "edit", "edits"),
-            Tool::List => ("listed", "folder", "folders"),
-            Tool::Search => ("searched", "time", "times"),
-            Tool::Workers => ("used workers", "time", "times"),
-            Tool::Monitor => ("used monitors", "time", "times"),
-            Tool::Web => ("made", "web request", "web requests"),
-            Tool::Mcp => ("made", "MCP call", "MCP calls"),
-            Tool::Skill => ("loaded", "skill", "skills"),
-            Tool::Other => ("made", "other call", "other calls"),
-        };
-        format!("{verb} {count} {}", if count == 1 { one } else { many })
-    }
 }
 
 /// Whether a tool's or a server's name says it reaches the web.
@@ -157,29 +119,6 @@ fn is_web(name: &str) -> bool {
     ["web", "fetch", "browser", "http", "url"]
         .iter()
         .any(|word| name.contains(word))
-}
-
-/// "Read 5 files, ran 2 commands": the calls `items`, by tool, in the order
-/// each tool first came.
-pub(crate) fn summary<'a>(items: impl IntoIterator<Item = &'a Item>) -> String {
-    let mut counts: Vec<(Tool, usize)> = Vec::new();
-    for item in items {
-        let tool = Tool::of(item);
-        match counts.iter_mut().find(|(seen, _)| *seen == tool) {
-            Some((_, count)) => *count += 1,
-            None => counts.push((tool, 1)),
-        }
-    }
-    let text = counts
-        .into_iter()
-        .map(|(tool, count)| tool.phrase(count))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => text,
-    }
 }
 
 #[cfg(test)]
@@ -245,17 +184,5 @@ mod tests {
             Tool::Monitor
         );
         assert_eq!(named("x", "something_new"), Tool::Other);
-    }
-
-    #[test]
-    fn a_run_is_summed_up_by_tool_in_order() {
-        let calls = [
-            call("read a.rs"),
-            call("cargo test"),
-            call("read b.rs"),
-            call("edit a.rs"),
-        ];
-        assert_eq!(summary(&calls), "Read 2 files, ran 1 command, made 1 edit");
-        assert_eq!(summary(&[]), "");
     }
 }

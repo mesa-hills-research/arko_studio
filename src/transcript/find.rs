@@ -1,8 +1,8 @@
 //! Find in the transcript (Mod+F): where the reader's words are in what the
 //! rows show, collapsed rows included, highlighted, and moving between
-//! them. Landing on a match opens what hides it (a thinking, a call's
-//! details, a group of calls, a long code block), and closes it again when
-//! the find moves on.
+//! them. Landing on a match opens what hides it (a thought, a call's
+//! details, a Quiet row, a long code block), and closes it again when the
+//! find moves on.
 //!
 //! The find ignores case and how accents are written ([`super::fold`]). It
 //! keeps each entry's matches apart, and each entry's texts folded for as
@@ -24,7 +24,6 @@ use gpui_kit::*;
 use super::fold::{Folded, fold};
 use super::model::{self, Entry, RowKey, Show};
 use super::{CODE_LINES, TranscriptEvent, TranscriptView, row};
-use crate::prefs::TranscriptView as View;
 
 /// The bytes of text above which the first search of a find folds
 /// the transcript's texts off the UI thread.
@@ -1004,18 +1003,13 @@ impl TranscriptView {
             return Vec::new();
         };
         let mut needs = Vec::new();
-        // A folded group of calls (Quiet) opens first.
-        if self.settings.view == View::Quiet {
-            let position = self.model.position(found.entry).ok();
-            let group = self.rows.iter().find_map(|row| match row.key {
-                RowKey::Group(first) => model::run_of(&self.model, first, View::Quiet)
-                    .contains(&position?)
-                    .then_some(first),
-                _ => None,
-            });
-            if let Some(first) = group {
-                needs.push(Opening::Group(first));
-            }
+        // A Quiet row that holds it opens first.
+        let group = self
+            .quiet
+            .iter()
+            .find_map(|(first, row)| row.members.contains(&found.entry).then_some(*first));
+        if let Some(first) = group {
+            needs.push(Opening::Group(first));
         }
         match (entry.item.kind, found.place) {
             (Kind::Thinking, _) | (Kind::Call, Place::Parameters | Place::Output) => {

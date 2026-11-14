@@ -1,7 +1,8 @@
 //! The transcript's rows from the keyboard: Up and Down move a focused row
 //! (its hover actions show, and Tab reaches them), Enter opens or closes the
-//! row (a call's details, a thinking, a group of calls, a long code block, a
-//! worker's card), and Esc gives the keyboard back to the composer. Page
+//! row (a call's details, a thought, a Quiet row, a turn's count, a long
+//! code block, a worker's card), and Esc gives the keyboard back to the
+//! composer. Page
 //! Up, Page Down, Home and End scroll the list as they did.
 
 use arko::remote::Kind;
@@ -69,7 +70,7 @@ impl TranscriptView {
                     .map(first_line)
                     .unwrap_or_default();
                 match (item.kind, block) {
-                    (Kind::Thinking, _) => format!("Thinking, {text}"),
+                    (Kind::Thinking, _) => format!("Thought, {text}"),
                     (_, 0) => match super::model::to_you(self.model.filter(), item) {
                         Some(to_you) => format!("{to_you}, {text}"),
                         None => format!("Arko, {text}"),
@@ -77,7 +78,7 @@ impl TranscriptView {
                     _ => text,
                 }
             }
-            RowKey::Thinking(_) => "Thinking".to_string(),
+            RowKey::Thinking(_) => format!("Thought, {}", first_line(&item.text)),
             RowKey::Call(_) => match item.status {
                 Some(arko::remote::CallStatus::Failed) => {
                     format!("{}, failed", first_line(&item.text))
@@ -85,10 +86,21 @@ impl TranscriptView {
                 _ => first_line(&item.text),
             },
             RowKey::Group(first) => {
-                let calls = super::model::run_of(&self.model, first, self.settings.view).len();
-                format!("{calls} calls")
+                let Some(row) = self.quiet.get(&first) else {
+                    return SharedString::default();
+                };
+                match row.words.failed {
+                    true => format!("{}, failed", row.words.said()),
+                    false => row.words.said(),
+                }
             }
-            RowKey::Count(_) => "Calls".to_string(),
+            RowKey::Count(first) => {
+                let calls = self.counts.get(&first).map_or(0, |count| count.calls);
+                match calls {
+                    1 => "1 tool call".to_string(),
+                    calls => format!("{calls} tool calls"),
+                }
+            }
             RowKey::Actions(_) => "Actions".to_string(),
             RowKey::Refresh(_) => super::row::CACHE_REFRESHED.to_string(),
             RowKey::Worker(_) => {
@@ -139,12 +151,15 @@ impl TranscriptView {
     }
 
     /// Whether row `key` is open, for a row that opens and closes.
-    pub(super) fn row_expanded(&self, key: RowKey) -> Option<bool> {
+    pub(super) fn row_expanded(&self, row: super::model::Row) -> Option<bool> {
         let expanded = |id: u64| self.ui.get(&id).and_then(|ui| ui.expanded);
-        match key {
-            RowKey::Call(id) => Some(expanded(id).unwrap_or(false)),
-            RowKey::Thinking(id) => Some(expanded(id).unwrap_or(self.thinking_open_by_default())),
-            RowKey::Group(first) => Some(self.group_open(first)),
+        let inner = row.rail != super::model::Rail::No;
+        match row.key {
+            RowKey::Call(id) if self.call_opens(id, inner) => Some(expanded(id).unwrap_or(false)),
+            // (A thought shows as its line while it's closed.)
+            RowKey::Thinking(id) if self.thought_opens(id, inner) => Some(false),
+            RowKey::Group(first) if self.group_opens(first) => Some(self.group_open(first)),
+            RowKey::Count(first) => Some(self.counts_open.contains(&first)),
             _ => None,
         }
     }
@@ -224,13 +239,26 @@ impl TranscriptView {
             cx.propagate();
             return;
         };
+        let inner = self
+            .rows
+            .iter()
+            .find(|row| row.key == key)
+            .is_some_and(|row| row.rail != super::model::Rail::No);
         match key {
-            RowKey::Thinking(id) => {
+            RowKey::Thinking(id) if self.thought_opens(id, inner) => {
                 let default = self.thinking_open_by_default();
                 self.toggle(id, default, cx);
+                // The keyboard stays on the thought, on its text.
+                self.cursor = self
+                    .rows
+                    .iter()
+                    .find(|row| matches!(row.key, RowKey::Block { id: block, .. } if block == id))
+                    .map(|row| row.key)
+                    .or(self.cursor);
             }
-            RowKey::Call(id) | RowKey::Group(id) => self.toggle(id, false, cx),
-            RowKey::Count(id) => self.open_run(id, cx),
+            RowKey::Call(id) if self.call_opens(id, inner) => self.toggle(id, false, cx),
+            RowKey::Group(first) if self.group_opens(first) => self.toggle_group(first, cx),
+            RowKey::Count(first) => self.toggle_count(first, cx),
             // The line of a card with questions open opens the answer panel.
             RowKey::Question(id) => {
                 let open = self
@@ -263,7 +291,7 @@ impl TranscriptView {
                     .and_then(|doc| doc.blocks.get(block))
                     .is_some_and(|row| matches!(row.content, TextBlockContent::CodeBlock(_)));
                 if thinking {
-                    // The thought folds back into its row.
+                    // The thought closes to its line.
                     let default = self.thinking_open_by_default();
                     self.toggle(id, default, cx);
                     self.cursor = Some(RowKey::Thinking(id));
