@@ -2,9 +2,12 @@
 //! how an open thought, an open count and Messages' live line behave.
 
 use arko::remote::{Delivery, Feed, Kind, Source};
+use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::{AppContext as _, TestAppContext};
 
+use super::AgentFilter;
 use super::model::RowKey;
-use super::tests::{item_ids, say, think};
+use super::tests::{call, item_ids, keys, open, result, say, settle, start, think};
 use crate::prefs::{self, TranscriptView as View};
 
 fn ids_of(feed: &Feed, kind: Kind) -> Vec<u64> {
@@ -13,6 +16,10 @@ fn ids_of(feed: &Feed, kind: Kind) -> Vec<u64> {
         .filter(|(_, found)| *found == kind)
         .map(|(id, _)| id)
         .collect()
+}
+
+fn set_view(cx: &mut TestAppContext, view: View) {
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = view));
 }
 
 /// The thoughts a reader meets, one line each, cut at word ends to lengths
@@ -96,4 +103,47 @@ fn a_thought_whose_line_is_cut_opens() {
         }
     }
     assert!(cut > 0);
+}
+
+/// The reader scrolled up, a thought's line is the first row on screen,
+/// and they open it. Its first paragraph stays where its line was.
+#[gpui_kit::test]
+fn the_thought_opened_at_the_top_of_the_screen_stays_there(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    for turn in 0..20 {
+        feed.user(&format!("Question {turn}"), Source::App, Delivery::Turn);
+        feed.turn_started();
+        think(
+            &feed,
+            &format!("Turn {turn}, the first paragraph.\n\nThe second.\n\nThe third.\n\nThe last."),
+        );
+        let read = call(&feed, "main", "read_file", &[("path", "src/a.rs".into())]);
+        result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
+        feed.reply("Answer.\n\nMore of it.");
+        feed.turn_ended("1 s", None);
+    }
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    super::tests::load_all(cx, window, &view);
+    let thought = ids_of(&feed, Kind::Thinking)[10];
+    let ix = keys(&view, cx)
+        .iter()
+        .position(|key| *key == RowKey::Thinking(thought))
+        .unwrap();
+    view.update(cx, |view, cx| {
+        view.list.scroll_to(ix, gpui_kit::px(0.));
+        cx.notify();
+    });
+    settle(cx, window);
+    cx.update_window(window, |_, window, cx| {
+        window.click(("thinking-toggle", thought), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    let first = keys(&view, cx)
+        .iter()
+        .position(|key| matches!(key, RowKey::Block { id, block: 0, .. } if *id == thought))
+        .unwrap();
+    assert_eq!(cx.read(|cx| view.read(cx).list.top().item_ix), first);
 }

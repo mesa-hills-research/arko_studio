@@ -159,6 +159,15 @@ impl TranscriptView {
             // (A thought shows as its line while it's closed.)
             RowKey::Thinking(id) if self.thought_opens(id, inner) => Some(false),
             RowKey::Group(first) if self.group_opens(first) => Some(self.group_open(first)),
+            // An open thought's text closes to its line.
+            RowKey::Block { id, .. }
+                if self
+                    .model
+                    .entry(id)
+                    .is_some_and(|entry| entry.item.kind == Kind::Thinking) =>
+            {
+                Some(true)
+            }
             RowKey::Count(first) => Some(self.counts_open.contains(&first)),
             _ => None,
         }

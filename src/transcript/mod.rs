@@ -1527,9 +1527,10 @@ impl TranscriptView {
         self.remeasure_grown();
     }
 
-    /// Where the row `key` is now, `offset` into it: the row itself, the
-    /// same block of its text shown another way, or else the row that
-    /// stands for its entry now (a group of calls), from its top.
+    /// Where the row `key` is now, `offset` into it. That is the row
+    /// itself, the same block of its text shown another way, the first row
+    /// of its entry, or else the row that stands for its entry now (a Quiet
+    /// row of calls), from its top.
     fn place_of(&self, key: RowKey, offset: Pixels) -> Option<(usize, Pixels)> {
         if let Some(ix) = self.rows.iter().position(|row| row.key == key) {
             return Some((ix, offset));
@@ -1542,7 +1543,12 @@ impl TranscriptView {
         {
             return Some((ix, offset));
         }
+        // Rows of the same entry in its place, the text of a thought that
+        // opened, or the line of one that closed: its first.
         let entry = key.entry();
+        if let Some(ix) = self.rows.iter().position(|row| row.key.entry() == entry) {
+            return Some((ix, offset));
+        }
         let ix = self
             .rows
             .iter()
