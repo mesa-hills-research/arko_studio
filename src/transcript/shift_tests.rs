@@ -1977,6 +1977,9 @@ fn measure(seeds: Option<u64>) -> Meter {
 /// and every panel, menu and resize around it, in every view, but for the
 /// moves the meter allows. What opens and closes again puts every line
 /// back on its row.
+#[path = "following_tests.rs"]
+mod following;
+
 #[test]
 fn no_line_moves_down_as_an_agent_works() {
     let seeds = std::env::var("SHIFT_METER_SEEDS")
