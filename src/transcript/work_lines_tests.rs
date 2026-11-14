@@ -525,3 +525,39 @@ fn streamed_text_makes_the_rows_again_only_for_new_blocks(cx: &mut TestAppContex
     settle(cx, window);
     assert!(made(cx) > before);
 }
+
+/// What the reader opens as a view opens, before its history comes, stays
+/// open once it comes: a Quiet row, and a call's details.
+#[gpui_kit::test]
+fn what_is_opened_before_the_history_comes_stays_open(cx: &mut TestAppContext) {
+    use gpui_kit::{Bounds, Point, WindowBounds, WindowOptions, px, size};
+
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let read = call(&feed, "main", "read_file", &[("path", "src/a.rs".into())]);
+    result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
+    let first = ids_of(&feed, Kind::Call)[0];
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: Point::default(),
+            size: size(px(800.), px(600.)),
+        })),
+        ..Default::default()
+    };
+    let (window, view) = cx
+        .update(|cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
+                    view.set_row_open(first, true, cx);
+                    view
+                })
+            })
+        })
+        .unwrap();
+    settle(cx, window);
+    assert!(cx.read(|cx| view.read(cx).group_open(first)));
+}

@@ -273,6 +273,15 @@ fn code_lines(text: &str, range: &Option<Range<usize>>, content: &TextBlockConte
     }
 }
 
+/// What the reader chose for an entry not made ready yet: what its
+/// [`EntryUi`] takes when it is.
+#[derive(Debug, Clone, Copy, Default)]
+struct Chosen {
+    expanded: Option<bool>,
+    expanded_elsewhere: Option<bool>,
+    group_open: Option<bool>,
+}
+
 /// What the reader chose for an entry, and what its rows need.
 #[derive(Default)]
 struct EntryUi {
@@ -396,9 +405,9 @@ pub struct TranscriptView {
     model: Model,
     inbox: inbox::Inbox,
     ui: HashMap<u64, EntryUi>,
-    /// Whether the reader opened or closed an entry that isn't made ready
-    /// yet, by its item.
-    chosen: HashMap<u64, bool>,
+    /// What the reader chose for entries that aren't made ready yet, by
+    /// their items.
+    chosen: HashMap<u64, Chosen>,
     rows: Vec<Row>,
     /// What each Quiet row says and holds, by its first call, as the rows
     /// were made.
@@ -779,7 +788,7 @@ impl TranscriptView {
     pub fn set_expanded(&mut self, item: u64, open: bool, cx: &mut Context<Self>) {
         // An entry not made ready yet opens or closes as it is.
         if !self.ui.contains_key(&item) {
-            self.chosen.insert(item, open);
+            self.chosen.entry(item).or_default().expanded = Some(open);
             return;
         }
         let current = self.ui.get(&item).and_then(|ui| ui.expanded);
@@ -948,18 +957,7 @@ impl TranscriptView {
             self.text_at = (self.clock)();
         }
         if changes.reset {
-            // What the reader chose to open stays open (also before the
-            // history came: a row opened from elsewhere as the view opens).
-            for (id, ui) in self.ui.drain() {
-                if let Some(expanded) = ui.expanded {
-                    self.chosen.insert(id, expanded);
-                }
-            }
-            let model = &self.model;
-            self.chosen.retain(|id, _| model.entry(*id).is_some());
-            self.hovered = None;
-            self.hovered_row = None;
-            self.cursor = None;
+            self.start_over();
             let ids: Vec<u64> = self.model.entries().iter().map(|e| e.item.id).collect();
             let start = ids.len().saturating_sub(FIRST_ENTRIES);
             for id in &ids[start..] {
@@ -977,10 +975,6 @@ impl TranscriptView {
                 }
             }
             self.loaded_from = ids.get(start).copied().filter(|_| start > 0);
-            self.rows.clear();
-            self.list.reset(0);
-            self.new_while_away = 0;
-            self.core_rows = 0;
         } else {
             for id in &changes.removed {
                 self.ui.remove(id);
@@ -1038,6 +1032,110 @@ impl TranscriptView {
         }
     }
 
+    /// Readies the view for the feed's history over again, a snapshot or
+    /// another conversation. What the reader chose for the entries still
+    /// there stays, also from before the history came (a row opened from
+    /// elsewhere as the view opens), and what was made of the old rows goes.
+    /// The caller makes the entries ready again.
+    fn start_over(&mut self) {
+        let Self {
+            model,
+            inbox: _,
+            ui,
+            chosen,
+            rows,
+            quiet,
+            quiet_of,
+            quiet_changed,
+            counts,
+            seen_quiet,
+            sealed,
+            counts_open,
+            list,
+            focus_handle: _,
+            settings: _,
+            usual: _,
+            window: _,
+            show_source: _,
+            movable: _,
+            hovered,
+            hovered_row,
+            hover_grace: _,
+            closing,
+            new_while_away,
+            core_rows,
+            loaded_from: _,
+            clock: _,
+            ticker: _,
+            tick_every: _,
+            working: _,
+            shows_working: _,
+            text_at: _,
+            stall: _,
+            image_cache: _,
+            images: _,
+            image_copies: _,
+            find: _,
+            cursor,
+            renders: _,
+            views_made: _,
+            runs_made: _,
+            document: _,
+            drawing_row: _,
+            drawn_runs: _,
+            metrics: _,
+            list_width: _,
+            thought_widths,
+            measuring: _,
+            grown: _,
+            streaming: _,
+            estimates: _,
+            #[cfg(test)]
+                frames: _,
+            #[cfg(test)]
+                rows_made: _,
+            _prefs: _,
+            _show_source: _,
+            _theme: _,
+        } = self;
+        for (id, ui) in ui.drain() {
+            let EntryUi {
+                expanded,
+                expanded_elsewhere,
+                group_open,
+                ..
+            } = ui;
+            if expanded.is_some() || expanded_elsewhere.is_some() || group_open.is_some() {
+                chosen.insert(
+                    id,
+                    Chosen {
+                        expanded,
+                        expanded_elsewhere,
+                        group_open,
+                    },
+                );
+            }
+        }
+        let kept = |id: &u64| model.entry(*id).is_some();
+        chosen.retain(|id, _| kept(id));
+        sealed.retain(kept);
+        counts_open.retain(kept);
+        thought_widths.get_mut().retain(|id, _| kept(id));
+        rows.clear();
+        list.reset(0);
+        quiet.clear();
+        quiet_of.clear();
+        quiet_changed.clear();
+        counts.clear();
+        seen_quiet.clear();
+        *hovered = None;
+        *hovered_row = None;
+        *cursor = None;
+        *closing = None;
+        *new_while_away = 0;
+        *core_rows = 0;
+    }
+
     /// Marks finished the texts that stopped streaming in, so a table row
     /// they cut off shows.
     fn finish_streams(&mut self, cx: &mut Context<Self>) {
@@ -1091,8 +1189,11 @@ impl TranscriptView {
             Kind::Text | Kind::Reply | Kind::Message | Kind::Question | Kind::Thinking
         );
         let text = entry.item.text.clone();
+        let chosen = self.chosen.remove(&id).unwrap_or_default();
         let mut ui = EntryUi {
-            expanded: self.chosen.remove(&id),
+            expanded: chosen.expanded,
+            expanded_elsewhere: chosen.expanded_elsewhere,
+            group_open: chosen.group_open,
             text: (entry.item.kind == Kind::User).then(|| entry.item.text.clone().into()),
             lines: if plain_text(entry.item.kind) {
                 height::hard_lines(&entry.item.text)
@@ -1752,13 +1853,20 @@ impl TranscriptView {
     /// terminal and the web page do, so a thought opened in Quiet stays
     /// open there, sealed on its line, whatever Full showed meanwhile.
     fn swap_thoughts_open(&mut self) {
-        for (id, ui) in self.ui.iter_mut() {
-            if self
-                .model
+        let model = &self.model;
+        let thought = |id: &u64| {
+            model
                 .entry(*id)
                 .is_some_and(|entry| entry.item.kind == Kind::Thinking)
-            {
+        };
+        for (id, ui) in self.ui.iter_mut() {
+            if thought(id) {
                 std::mem::swap(&mut ui.expanded, &mut ui.expanded_elsewhere);
+            }
+        }
+        for (id, chosen) in self.chosen.iter_mut() {
+            if thought(id) {
+                std::mem::swap(&mut chosen.expanded, &mut chosen.expanded_elsewhere);
             }
         }
     }
