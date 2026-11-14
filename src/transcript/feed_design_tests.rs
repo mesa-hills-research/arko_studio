@@ -279,3 +279,67 @@ fn an_opened_row_keeps_its_line_in_place(cx: &mut TestAppContext) {
     let gap = cx.read(|cx| view.read(cx).metrics.as_ref().unwrap().rem) * 0.5;
     assert_eq!(top(cx), before - gap);
 }
+
+/// A row of one call that cuts its words at the reader's width opens to the
+/// call as written, then its detail, so a monitor's whole command shows
+/// before its settings. A command's strip says it whole itself.
+#[gpui_kit::test]
+fn a_cut_row_opens_to_the_call_as_written(cx: &mut TestAppContext) {
+    use arko::remote::{JobKind, JobStart, MAIN_AGENT};
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Watch it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let command = "npm run dev -- --port 3000 --host 0.0.0.0 --watch src";
+    let job = uuid::Uuid::new_v4();
+    let monitor = call(
+        &feed,
+        "main",
+        "monitor_start",
+        &[("command", command.into()), ("pattern", "error".into())],
+    );
+    feed.job_started(
+        JobStart::new(job, MAIN_AGENT, JobKind::Monitor, command)
+            .made_by(monitor)
+            .monitoring("lines that match error", i64::MAX),
+    );
+    result(
+        &feed,
+        "main",
+        monitor,
+        "monitor_start",
+        &format!("Monitor {job} started. It watches `{command}`."),
+    );
+    let long = format!("cargo run -p a -- {}", "--flag value ".repeat(20));
+    let shell = call(&feed, "main", "shell", &[("command", long.trim().into())]);
+    result(&feed, "main", shell, "shell", "exit code 0, 1.0 s\ndone");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    cx.simulate_window_resize(
+        window,
+        gpui_kit::size(gpui_kit::px(360.), gpui_kit::px(600.)),
+    );
+    settle(cx, window);
+    let calls = ids_of(&feed, Kind::Call);
+    let whole = |cx: &mut TestAppContext, id: u64| {
+        cx.update_window(window, |_, window, _| {
+            window.try_find(("whole", id)).is_some()
+        })
+        .unwrap()
+    };
+    for shown in [View::Full, View::Quiet] {
+        set_view(cx, shown);
+        settle(cx, window);
+        view.update(cx, |view, cx| {
+            for id in &calls {
+                match shown {
+                    View::Quiet => view.set_row_open(*id, true, cx),
+                    _ => view.set_expanded(*id, true, cx),
+                }
+            }
+        });
+        settle(cx, window);
+        assert!(whole(cx, calls[0]), "{shown:?}");
+        assert!(!whole(cx, calls[1]), "{shown:?}");
+    }
+}

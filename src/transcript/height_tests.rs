@@ -293,17 +293,19 @@ fn height(view: &TranscriptView, ix: usize, cx: &gpui_kit::App) -> (RowKey, f32,
             .and_then(|ui| ui.doc.as_ref()?.blocks.get(block))
             .is_some_and(|block| !matches!(block.facts, BlockFacts::Code(_))),
         // An open call whose line cut its words, which show whole under it
-        // and wrap, as a long command does in its strip.
+        // and wrap, or a long command that wraps in its strip.
         RowKey::Call(id) => {
             let room = super::row::room(width, row.rail != Rail::No, metrics.rem);
             view.ui.get(&id).and_then(|ui| ui.expanded) == Some(true)
                 && view.model.entry(id).is_some_and(|entry| {
-                    match super::row::shown_given(&entry.item) {
-                        None => view.call_cut(&entry.item, room, &metrics),
-                        Some(super::row::Given::Detail(command)) => {
+                    let item = &entry.item;
+                    match super::row::shown_given(item) {
+                        Some(super::row::Given::Detail(command))
+                            if super::row::strip_says_it(item) =>
+                        {
                             command.chars().count() as f32 * metrics.mono.advance() > room
                         }
-                        Some(_) => false,
+                        _ => view.call_cut(item, room, &metrics),
                     }
                 })
         }
@@ -316,7 +318,7 @@ fn height(view: &TranscriptView, ix: usize, cx: &gpui_kit::App) -> (RowKey, f32,
                         && view
                             .model
                             .entry(first)
-                            .is_some_and(|entry| super::row::shown_given(&entry.item).is_none())
+                            .is_some_and(|entry| !super::row::strip_says_it(&entry.item))
                 })
         }
         _ => false,

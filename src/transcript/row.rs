@@ -577,6 +577,12 @@ pub(super) fn shown_diff(entry: &super::model::Entry) -> Option<Diff> {
     shows_diff(entry).then(|| edit_diff(&entry.item)).flatten()
 }
 
+/// Whether a command's details show it whole, in their strip, so a line
+/// that cut its words needn't show them again.
+pub(super) fn strip_says_it(item: &Item) -> bool {
+    item.tool.as_deref() == Some("shell") && matches!(shown_given(item), Some(Given::Detail(_)))
+}
+
 /// Whether a call opens to anything: what its line cut, its content, its
 /// diff. One that has none of them doesn't open.
 pub(super) fn opens(entry: &super::model::Entry) -> bool {
@@ -888,7 +894,7 @@ impl TranscriptView {
         {
             let cut = self.call_cut(&entry.item, room(width, inner, rem), m);
             if opens(entry) || cut {
-                let whole = cut && shown_given(&entry.item).is_none();
+                let whole = cut && !strip_says_it(&entry.item);
                 let whole = whole.then(|| entry.item.text.trim());
                 height += self.details_height(entry, whole, inside, m, cx);
             }
@@ -924,7 +930,7 @@ impl TranscriptView {
             && !row.merged
             && let Some(entry) = self.model.entry(first)
         {
-            let whole = cut && shown_given(&entry.item).is_none();
+            let whole = cut && !strip_says_it(&entry.item);
             let whole = whole.then(|| entry.item.text.trim());
             height += self.details_height(entry, whole, inside, m, cx);
         }
@@ -2291,8 +2297,8 @@ impl TranscriptView {
                     .ok();
             }),
         };
-        // What the line cut shows first, unless its detail says it whole.
-        let whole = (cut && shown_given(item).is_none()).then(|| item.text.trim().to_string());
+        // What the line cut shows first, unless the command's strip says it.
+        let whole = (cut && !strip_says_it(item)).then(|| item.text.trim().to_string());
         v_flex()
             .w_full()
             .child(
@@ -2392,6 +2398,8 @@ impl TranscriptView {
         let diff = self.ui.get(&id).and_then(|ui| ui.diff.clone());
         let details = v_flex().w_full().gap_1().children(whole.map(|whole| {
             div()
+                .id(("whole", id))
+                .test_support()
                 .w_full()
                 .code_font(theme)
                 .text_size(theme.mono_font_size)
@@ -2814,7 +2822,7 @@ impl TranscriptView {
         let held = (open && !row.merged).then(|| {
             let item = calls.first().copied();
             let whole = item
-                .filter(|item| cut && shown_given(item).is_none())
+                .filter(|item| cut && !strip_says_it(item))
                 .map(|item| item.text.trim().to_string());
             on_rail(self.call_details(first, whole, cx), theme)
         });
