@@ -1,5 +1,6 @@
 //! How each row of the transcript draws.
 
+use std::cell::OnceCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +21,6 @@ use gpui_kit::component::{
     diff_view::{Diff, DiffView},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
-    shimmer::ShimmerText,
     tooltip::{ManagedTooltipExt as _, Tooltip},
     v_flex,
 };
@@ -31,8 +31,8 @@ use super::find::{Ink, Place, QuestionPart};
 use crate::fonts::CodeFont as _;
 
 use super::height::Metrics;
-use super::model::{Gap, RowKey};
-use super::tool::{self, Tool};
+use super::model::{Gap, QuietRow, Rail, Row, RowKey};
+use super::tool::Tool;
 use super::{AgentFilter, CODE_LINES, TranscriptEvent, TranscriptView};
 
 /// How often a label shimmers, in frames a second.
@@ -75,11 +75,147 @@ const TIMELINE_ALPHA: f32 = 0.35;
 const DOLLAR_ABOVE: f32 = 0.58;
 const DOLLAR_BELOW: f32 = 0.5;
 const TIMELINE_GAP: f32 = 3.;
-/// The line height of a call's line that wraps, in pixels at a `rem`, which
-/// keeps one line of it as tall as the line that doesn't wrap (an extra-small
-/// button, inside its 1 px border).
-pub(super) fn wrapped_line(rem: f32) -> f32 {
-    1.25 * rem - 2.
+/// The width of a line of work's markers' column, in rem. ▸, ▾ or the
+/// spinner stands centred in it.
+const MARKER: f32 = 0.625;
+/// The space between a line's marker and its words, and between its
+/// parts, in rem.
+const GAP: f32 = 0.375;
+/// Where a line's words start, past its marker, in rem, and where what an
+/// open line holds starts.
+pub(super) const WORDS: f32 = 1.;
+/// A line of work's height, in rem, and a thought's line height.
+pub(super) const LINE: f32 = 1.25;
+/// Where an open line's rail stands, in rem, under its marker's centre,
+/// and how wide it is, in pixels.
+const RAIL_AT: f32 = 0.25;
+const RAIL_WIDTH: f32 = 2.;
+/// A thought's text size, and "Working…"'s, in rem.
+pub(super) const THOUGHT_SIZE: f32 = 0.875;
+/// What the live line says while the agent waits on the model.
+const WORKING: &str = "Working…";
+
+/// What stands in a line's markers' column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Marker {
+    /// Nothing, as the line shows all there is.
+    None,
+    /// ▸, as the line opens.
+    Closed,
+    /// ▾, as the line is open.
+    Open,
+    /// The spinner, on the one line that is live.
+    Live,
+}
+
+impl Marker {
+    /// The marker of a line that `opens`, `open` or not.
+    fn of(opens: bool, open: bool) -> Self {
+        match (opens, open) {
+            (false, _) => Marker::None,
+            (true, false) => Marker::Closed,
+            (true, true) => Marker::Open,
+        }
+    }
+
+    fn live(live: bool) -> Self {
+        if live { Marker::Live } else { Marker::None }
+    }
+}
+
+/// A line of work, `marker` in the markers' column, then whose it is,
+/// `who`, then its `words`, cut to fit, then `after`, and at its right
+/// `right`.
+fn work_line(
+    marker: AnyElement,
+    who: Option<AnyElement>,
+    words: AnyElement,
+    after: Vec<AnyElement>,
+    right: Option<AnyElement>,
+) -> Div {
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .h_full()
+        .gap(rems(GAP))
+        .line_height(rems(LINE))
+        .child(marker)
+        .children(who.map(|who| div().flex_none().child(who)))
+        .child(div().flex_initial().min_w_0().truncate().child(words))
+        .children(after)
+        .when_some(right, |this, right| {
+            this.child(div().flex_1())
+                .child(div().flex_none().child(right))
+        })
+}
+
+/// What an open line holds, under it on a rail that hangs from its
+/// marker's centre, starting at the line's words.
+fn on_rail(held: AnyElement, theme: &Theme) -> Div {
+    div()
+        .relative()
+        .mt_1()
+        .pl(rems(WORDS))
+        .child(
+            div()
+                .absolute()
+                .left(rems(RAIL_AT))
+                .top_0()
+                .bottom_0()
+                .w(px(RAIL_WIDTH))
+                .bg(theme.border),
+        )
+        .child(held)
+}
+
+/// Whose a call is, a worker's ID on the secondary fill.
+fn who(agent: &str, theme: &Theme) -> AnyElement {
+    div()
+        .px_1()
+        .rounded(theme.semantic_tokens().radius.sm)
+        .bg(theme.secondary)
+        .text_color(theme.secondary_foreground)
+        .font_family(theme.font_family.clone())
+        .text_xs()
+        .line_height(rems(1.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(agent.to_string())
+        .into_any_element()
+}
+
+/// The characters whose a call is takes on its line, as mono characters.
+fn who_chars(item: &Item) -> usize {
+    if item.is_main() {
+        0
+    } else {
+        item.agent.chars().count() + 2
+    }
+}
+
+/// The room, in pixels, that a line's words and what follows them have in
+/// a list `width` wide, on a rail (`inner`) or not.
+pub(super) fn room(width: f32, inner: bool, rem: f32) -> f32 {
+    let column = width.min(COLUMN * rem) - 2. * rem;
+    column - if inner { 2. * WORDS } else { WORDS } * rem
+}
+
+/// The widest that what follows a line's words may be in `room` pixels.
+/// The words give way first, down to about 8 characters.
+pub(super) fn after_room(room: f32, m: &Metrics) -> f32 {
+    (room - 8. * m.mono.advance() - 2. * GAP * m.rem).max(0.)
+}
+
+/// The first line of a thought with words in it, without Markdown's bold
+/// marks, and whether lines with words follow it.
+pub(super) fn first_line(text: &str) -> (String, bool) {
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or_default().replace("**", "");
+    (first, lines.next().is_some())
+}
+
+/// `count` and its noun, one or many.
+fn plural(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
 }
 
 /// Where a command's timeline stops above a `$` and starts again below it,
@@ -356,9 +492,11 @@ fn shown_parameters(item: &Item) -> Option<Arc<str>> {
 
 /// What a call's details show came back: its content (the lines it read
 /// or wrote, its output, its message, its result), or from a session
-/// without one, its tool's result. An edit's diff stands for its content,
-/// and a failure whose words its line says whole has none.
-pub(super) fn shown_output(entry: &super::model::Entry) -> Option<Arc<str>> {
+/// without one, its tool's result. An edit's diff stands for its content.
+/// A failure has none where the line shown says its words whole
+/// (`says_outcome`), as a Full line does at a width that keeps its outcome
+/// whole. A Quiet row says only that the call failed, so it shows why.
+pub(super) fn shown_output(entry: &super::model::Entry, says_outcome: bool) -> Option<Arc<str>> {
     let item = &entry.item;
     if shows_diff(entry) && item.status == Some(CallStatus::Ok) {
         return None;
@@ -367,7 +505,8 @@ pub(super) fn shown_output(entry: &super::model::Entry) -> Option<Arc<str>> {
         (Some(result), _) => {
             let text = content_text(result);
             let said = item.outcome.as_deref().unwrap_or_default().trim();
-            (!(item.status == Some(CallStatus::Failed) && text.trim() == said)).then_some(text)
+            let failed = item.status == Some(CallStatus::Failed);
+            (!(says_outcome && failed && text.trim() == said)).then_some(text)
         }
         // (From a session saved before contents. A call with a content and
         // none to show, such as a monitor's, shows its detail alone.)
@@ -448,10 +587,19 @@ pub(super) fn shown_diff(entry: &super::model::Entry) -> Option<Diff> {
     shows_diff(entry).then(|| edit_diff(&entry.item)).flatten()
 }
 
+/// Whether a command's details show it whole, in their strip, so a line
+/// that cut its words needn't show them again.
+pub(super) fn strip_says_it(item: &Item) -> bool {
+    item.tool.as_deref() == Some("shell") && matches!(shown_given(item), Some(Given::Detail(_)))
+}
+
 /// Whether a call opens to anything: what its line cut, its content, its
-/// diff. One that has none of them doesn't open.
-pub(super) fn opens(entry: &super::model::Entry) -> bool {
-    shown_given(&entry.item).is_some() || shown_output(entry).is_some() || shows_diff(entry)
+/// diff. One that has none of them doesn't open. A line that doesn't say
+/// its outcome whole (`says_outcome`) opens to a failure's words.
+pub(super) fn opens(entry: &super::model::Entry, says_outcome: bool) -> bool {
+    shown_given(&entry.item).is_some()
+        || shown_output(entry, says_outcome).is_some()
+        || shows_diff(entry)
 }
 
 /// The patch an `apply_diff` call applied (sessions saved before
@@ -468,20 +616,35 @@ fn apply_diff_patch(item: &Item) -> Option<String> {
 /// one-line JSON shows its start.
 pub(super) const PREVIEW_LINE_CHARS: usize = 500;
 
-/// The first lines of `text` for a preview, each at most
-/// [`PREVIEW_LINE_CHARS`] long, and how many lines it has.
-pub(super) fn preview(text: &str) -> (String, usize) {
-    let total = text.lines().count();
-    let shown = text
-        .lines()
-        .take(OUTPUT_LINES)
-        .map(|line| match line.char_indices().nth(PREVIEW_LINE_CHARS) {
-            Some((end, _)) => format!("{}…", &line[..end]),
-            None => line.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    (shown, total)
+/// The preview of `text`, which is its first [`OUTPUT_LINES`] lines, and
+/// whether it leaves any out. A line over [`PREVIEW_LINE_CHARS`] ends it
+/// cut with "…", so what it leaves out all comes after what it shows.
+pub(super) fn preview(text: &str) -> (String, bool) {
+    let mut shown = String::new();
+    for (index, line) in text.lines().enumerate() {
+        if index == OUTPUT_LINES {
+            return (shown, true);
+        }
+        if index > 0 {
+            shown.push('\n');
+        }
+        if let Some((end, _)) = line.char_indices().nth(PREVIEW_LINE_CHARS) {
+            shown.push_str(&line[..end]);
+            shown.push('…');
+            return (shown, true);
+        }
+        shown.push_str(line);
+    }
+    (shown, false)
+}
+
+/// What the button that opens a call's whole `text` says, when its preview
+/// leaves some out.
+fn show_all(text: &str) -> Option<String> {
+    preview(text).1.then(|| match text.lines().count() {
+        1 => "Show all".to_string(),
+        total => format!("Show all {total} lines"),
+    })
 }
 
 /// Whether a call's line already says all its parameters do: a one-line
@@ -506,20 +669,28 @@ pub(super) fn render(
     };
     // A block's row gets its view the first time it is drawn, and a row of
     // plain text the handles that keep it in a selection.
-    match view.read(cx).rows.get(ix).map(|row| row.key) {
-        Some(key @ RowKey::Block { id, block, .. }) => view.update(cx, |this, cx| {
+    match view.read(cx).rows.get(ix).copied() {
+        Some(
+            row @ Row {
+                key: RowKey::Block { id, block, .. },
+                ..
+            },
+        ) => view.update(cx, |this, cx| {
             this.block_view(id, block, cx);
-            this.run_handles(key, cx);
+            this.run_handles(row, cx);
         }),
-        Some(key) => view.update(cx, |this, cx| this.run_handles(key, cx)),
+        Some(row) => view.update(cx, |this, cx| this.run_handles(row, cx)),
         None => {}
     }
     let this = view.read(cx);
     let Some(row) = this.rows.get(ix).copied() else {
         return div().into_any_element();
     };
+    if let RowKey::Thinking(id) = row.key {
+        this.measure_thought(id, window, cx);
+    }
     this.drawing_row.set(ix);
-    let content = this.row(row.key, &view, cx);
+    let content = this.row(row, &view, cx);
     let run_texts = this.drawn_runs.take();
     // The pointer over any row of an entry with hover actions shows them,
     // the gap above a row included, so crossing from one row to the next
@@ -536,6 +707,7 @@ pub(super) fn render(
     let hover_view = view.downgrade();
     let key = row.key;
     let gap = gap_rems(row.gap);
+    let rail = row.rail;
     // The row the keyboard is on shows a ring, laid over it so nothing
     // moves, while the keyboard is in use.
     let cursor = this.is_cursor(row.key, window, cx);
@@ -545,8 +717,8 @@ pub(super) fn render(
             .absolute()
             .top_neg_0p5()
             .bottom_neg_0p5()
-            .left_2()
-            .right_2()
+            .left(rems(-0.5))
+            .right(rems(-0.5))
             .border_2()
             .border_color(theme.ring)
             .rounded(theme.radius)
@@ -555,7 +727,7 @@ pub(super) fn render(
     // the keyboard is on is the one in focus.
     let announced = this.row_announced(row.key);
     let label = this.row_label(row.key);
-    let expanded = this.row_expanded(row.key);
+    let expanded = this.row_expanded(row);
     // The reading column: centred and at most ~46 rem wide, with the side
     // padding inside it, so narrow windows read edge to edge.
     let element = div()
@@ -569,7 +741,7 @@ pub(super) fn render(
                 .when(cursor, |this| this.aria_active_descendant())
         })
         .w_full()
-        .pt(rems(gap))
+        .when(rail == Rail::No, |this| this.pt(rems(gap)))
         .flex()
         .justify_center()
         .when(hover, |this| {
@@ -585,8 +757,22 @@ pub(super) fn render(
                 .w_full()
                 .max_w(rems(COLUMN))
                 .px_4()
-                .child(content)
-                .children(ring),
+                // On an open row's rail, the rail hangs from the row's
+                // marker, through the gap above unless it starts here, and
+                // the row stands at the row's words.
+                .when(rail != Rail::No, |this| {
+                    let line = cx.theme().border;
+                    this.pt(rems(gap)).pl(rems(1. + WORDS)).child(
+                        div()
+                            .absolute()
+                            .left(rems(1. + RAIL_AT))
+                            .top(rems(if rail == Rail::First { gap } else { 0. }))
+                            .bottom_0()
+                            .w(px(RAIL_WIDTH))
+                            .bg(line),
+                    )
+                })
+                .child(div().relative().w_full().child(content).children(ring)),
         )
         .into_any_element();
     if !run_texts.is_empty() {
@@ -596,13 +782,14 @@ pub(super) fn render(
 }
 
 /// The space above a row, in rem.
-fn gap_rems(gap: Gap) -> f32 {
+pub(super) fn gap_rems(gap: Gap) -> f32 {
     match gap {
         Gap::None => 0.,
-        Gap::Tight => 0.25,
+        Gap::Stack => 0.25,
         Gap::Small => 0.5,
+        Gap::Apart => 0.75,
         Gap::Section => 1.,
-        Gap::Turn => 1.75,
+        Gap::Turn => 1.5,
     }
 }
 
@@ -646,20 +833,23 @@ impl TranscriptView {
         cx: &App,
     ) -> f32 {
         let rem = m.rem;
-        // The reading column, inside its side padding.
-        let column = width.min(COLUMN * rem) - 2. * rem;
+        let inner = row.rail != Rail::No;
+        // The reading column, inside its side padding, and on a rail past
+        // the open row's marker.
+        let column = width.min(COLUMN * rem) - 2. * rem - if inner { WORDS * rem } else { 0. };
         let body = match row.key {
-            RowKey::Separator(_) | RowKey::Refresh(_) | RowKey::Turn(_) => m.line_xs,
-            // Extra-small buttons and toggles.
+            RowKey::Separator(_) | RowKey::Turn(_) => m.line_xs,
+            // Lines of work, and extra-small buttons.
             RowKey::Working(_)
+            | RowKey::Refresh(_)
             | RowKey::Actions(_)
             | RowKey::Thinking(_)
-            | RowKey::Group(_)
-            | RowKey::Count(_) => 1.25 * rem,
+            | RowKey::Count(_) => LINE * rem,
             // A small button.
             RowKey::Worker(_) => 1.5 * rem,
             RowKey::User(id) => self.user_height(id, column, m),
-            RowKey::Call(id) => self.call_height(id, column, m, cx),
+            RowKey::Group(first) => self.group_height(first, width, column, m, cx),
+            RowKey::Call(id) => self.call_height(id, width, inner, column, m, cx),
             RowKey::Notice(id) => self.notice_height(id, column, m),
             RowKey::Question(id) => self.question_height(id, column, m),
             RowKey::Output(id) => {
@@ -694,64 +884,90 @@ impl TranscriptView {
         content + rem + border + 0.25 * rem + 1.25 * rem
     }
 
-    fn call_height(&self, id: u64, column: f32, m: &Metrics, cx: &App) -> f32 {
+    /// The height of a call's row, its line and what shows under it, in
+    /// a list `width` wide, on a rail (`inner`) or not, in `column`.
+    fn call_height(
+        &self,
+        id: u64,
+        width: f32,
+        inner: bool,
+        column: f32,
+        m: &Metrics,
+        cx: &App,
+    ) -> f32 {
         let rem = m.rem;
         let Some(ui) = self.ui.get(&id) else {
             return 0.;
         };
-        let mut height = 1.25 * rem;
-        if ui.expanded == Some(true)
-            && let Some(entry) = self.model.entry(id)
-            && opens(entry)
-            && shown_given(&entry.item).is_none()
-        {
-            // Its line wraps, beside its icon and before how it went.
-            let item = &entry.item;
-            let xs = m.body_at(0.75);
-            let mut width = column - 0.5 * rem - 0.75 * rem - 0.375 * rem;
-            if !item.is_main() {
-                width -=
-                    item.agent.chars().count() as f32 * m.mono.advance_at(0.75 * rem) + 0.375 * rem;
-            }
-            match item.status {
-                Some(CallStatus::Failed) => {
-                    let words = item.outcome.as_deref().unwrap_or_default().chars().count();
-                    let failure = rem + words as f32 * xs.advance();
-                    width -= failure.min(18. * rem) + 0.375 * rem;
-                }
-                Some(CallStatus::Ok) if item.tool.as_deref() == Some("shell") => {
-                    if let Some(outcome) = &item.outcome {
-                        width -= outcome.chars().count() as f32 * xs.advance() + 0.375 * rem;
-                    }
-                }
-                _ => {}
-            }
-            let lines = xs.lines(call_line(item).chars().count() as u32, width);
-            height = 2. + wrapped_line(rem) * lines;
-        }
-        // The thumbnails and the details are indented past the icon.
-        let inside = column - 1.5 * rem;
+        let mut height = LINE * rem;
+        // The thumbnails and what it holds start at its words.
+        let inside = column - WORDS * rem;
         if ui.images > 0 {
             height += 0.25 * rem + thumbnails_height(ui.images, inside, rem);
         }
-        if ui.expanded == Some(true)
-            && let Some(entry) = self.model.entry(id)
+        if let Some(entry) = self.model.entry(id)
+            && ui.expanded == Some(true)
         {
-            height += self.details_height(entry, inside, m, cx);
+            let room = room(width, inner, rem);
+            let cut = self.call_cut(&entry.item, room, m);
+            let says = !self.outcome_cut(&entry.item, room, m);
+            if opens(entry, says) || cut {
+                let whole = cut && !strip_says_it(&entry.item);
+                let whole = whole.then(|| entry.item.text.trim());
+                height += self.details_height(entry, says, whole, inside, m, cx);
+            }
+        }
+        height
+    }
+
+    /// The height of a Quiet row, its line and what shows under it, in a
+    /// list `width` wide, in `column`.
+    fn group_height(&self, first: u64, width: f32, column: f32, m: &Metrics, cx: &App) -> f32 {
+        let rem = m.rem;
+        let mut height = LINE * rem;
+        let Some(row) = self.quiet.get(&first) else {
+            return height;
+        };
+        let cut = self.row_cut(row, room(width, false, rem), m);
+        let open = (row.opens || cut) && self.group_open(first);
+        let inside = column - WORDS * rem;
+        if !(open && row.merged) {
+            let tiles: Vec<f32> = row
+                .members
+                .iter()
+                .filter_map(|id| self.ui.get(id))
+                .filter(|ui| ui.images > 0)
+                .map(|ui| thumbnails_height(ui.images, inside, rem))
+                .collect();
+            if !tiles.is_empty() {
+                height +=
+                    0.25 * rem + tiles.iter().sum::<f32>() + 0.5 * rem * (tiles.len() - 1) as f32;
+            }
+        }
+        if open
+            && !row.merged
+            && let Some(entry) = self.model.entry(first)
+        {
+            let whole = cut && !strip_says_it(&entry.item);
+            let whole = whole.then(|| entry.item.text.trim());
+            height += self.details_height(entry, false, whole, inside, m, cx);
         }
         height
     }
 
     /// The height of a call's details, as [`Self::call_details`] lays them
     /// out in `width`.
+    #[allow(clippy::too_many_arguments)]
     fn details_height(
         &self,
         entry: &super::model::Entry,
+        says_outcome: bool,
+        whole: Option<&str>,
         width: f32,
         m: &Metrics,
         cx: &App,
     ) -> f32 {
-        if !opens(entry) {
+        if !opens(entry, says_outcome) && whole.is_none() {
             return 0.;
         }
         let rem = m.rem;
@@ -759,10 +975,11 @@ impl TranscriptView {
         let mono = |text: &str, width: f32| {
             m.mono.text_lines(&super::height::hard_lines(text), width) * m.line_mono
         };
-        let door = |text: &str| (text.lines().count() > OUTPUT_LINES).then_some(1.25 * rem);
+        let door = |text: &str| preview(text).1.then_some(1.25 * rem);
         let given = shown_given(item);
-        let output = shown_output(entry);
+        let output = shown_output(entry, says_outcome);
         let mut parts = Vec::new();
+        parts.extend(whole.map(|whole| mono(whole, width)));
         if let Some(Given::Parameters(parameters)) = &given {
             // Captions over blocks padded 0.5 rem each side.
             let block = |text: &str| 0.75 * rem + mono(&preview(text).0, width - rem);
@@ -816,8 +1033,8 @@ impl TranscriptView {
             }
             parts.extend(output.as_deref().and_then(door));
         }
-        // Their top padding, and the gaps between them.
-        0.25 * rem + parts.iter().sum::<f32>() + 0.375 * rem * parts.len().saturating_sub(1) as f32
+        // The space above them, and the gaps between them.
+        0.25 * rem + parts.iter().sum::<f32>() + 0.25 * rem * parts.len().saturating_sub(1) as f32
     }
 
     fn notice_height(&self, id: u64, column: f32, m: &Metrics) -> f32 {
@@ -825,11 +1042,11 @@ impl TranscriptView {
         let Some(item) = self.item(id) else {
             return 0.;
         };
-        // Inside its padding, past its icon.
-        let mut width = column - rem - 0.75 * rem - 0.375 * rem;
+        // Past its icon, in the words' column.
+        let mut width = column - WORDS * rem;
         if !item.is_main() {
             let agent = self.agent_label(item).chars().count() as f32;
-            width -= agent * m.mono.advance_at(0.75 * rem) + 0.375 * rem;
+            width -= agent * m.mono.advance_at(0.75 * rem) + GAP * rem;
         }
         if self.offers_regenerate(RowKey::Notice(id)) {
             width -= REGENERATE_ROOM * rem;
@@ -902,11 +1119,12 @@ impl TranscriptView {
         let Some(row) = ui.doc.as_ref().and_then(|doc| doc.blocks.get(block)) else {
             return 0.;
         };
-        // A thinking's text is small.
-        let (body, line) = if ui.small {
-            (m.body_at(0.875), m.line_sm)
+        // A thought's text is small, on lines of work's height, in the
+        // words' column.
+        let (body, line, column) = if ui.small {
+            (m.body_at(THOUGHT_SIZE), LINE * rem, column - WORDS * rem)
         } else {
-            (m.body, m.line)
+            (m.body, m.line, column)
         };
         // "Question" or "From …" over the first block.
         let label = if block == 0 && ui.labeled {
@@ -1356,8 +1574,9 @@ fn stream_motion(fade: bool) -> TextViewMotion {
 }
 
 impl TranscriptView {
-    fn row(&self, key: RowKey, view: &Entity<Self>, cx: &App) -> AnyElement {
-        match key {
+    fn row(&self, row: Row, view: &Entity<Self>, cx: &App) -> AnyElement {
+        let inner = row.rail != Rail::No;
+        match row.key {
             RowKey::Separator(id) => self.separator(id, cx),
             RowKey::User(id) => self.user(id, view, cx),
             RowKey::Refresh(_) => self.refresh(cx),
@@ -1365,8 +1584,8 @@ impl TranscriptView {
                 id, block, source, ..
             } => self.block(id, block, source, view, cx),
             RowKey::Actions(id) => self.actions(id, view, cx),
-            RowKey::Thinking(id) => self.thinking(id, view, cx),
-            RowKey::Call(id) => self.call(id, view, cx),
+            RowKey::Thinking(id) => self.thinking(id, inner, view, cx),
+            RowKey::Call(id) => self.call(id, inner, view, cx),
             RowKey::Group(id) => self.group(id, view, cx),
             RowKey::Count(id) => self.count(id, view, cx),
             RowKey::Notice(id) => self.notice(id, view, cx),
@@ -1400,13 +1619,17 @@ impl TranscriptView {
             .into_any_element()
     }
 
-    /// The quiet line of a message that only kept the prompt cache warm.
+    /// The quiet line of a message that only kept the prompt cache warm, a
+    /// line of work in the words' column.
     fn refresh(&self, cx: &App) -> AnyElement {
         let theme = cx.theme();
         div()
             .w_full()
-            .px_2()
-            .text_xs()
+            .h(rems(LINE))
+            .pl(rems(WORDS))
+            .flex()
+            .items_center()
+            .text_sm()
             .text_color(theme.muted_foreground)
             .child(CACHE_REFRESHED)
             .into_any_element()
@@ -1615,7 +1838,11 @@ impl TranscriptView {
                 .code_block_actions(|code, _, cx| {
                     let theme = cx.theme();
                     let copy = code.code();
+                    // (A click on them is theirs, not the open thought's
+                    // around them.)
                     h_flex()
+                        .id("code-actions")
+                        .on_click(|_, _, cx| cx.stop_propagation())
                         .gap_1()
                         .pl_1()
                         .text_xs()
@@ -1635,6 +1862,8 @@ impl TranscriptView {
                         format!("Show all {lines} lines")
                     })
                     .on_click(move |_, _, cx| {
+                        // (Its click is its own, not the open thought's.)
+                        cx.stop_propagation();
                         view.update(cx, |this, cx| this.toggle_code(id, block, cx))
                             .ok();
                     })
@@ -1649,11 +1878,56 @@ impl TranscriptView {
                 }))
                 .into_any_element()
         };
+        if thinking {
+            // An open thought, muted and italic in the words' column, with
+            // the spinner beside its first block while it streams. A click
+            // on it closes it once no second click follows, so a
+            // double-click selects a word and a drag selects its words.
+            let live = block == 0
+                && self
+                    .model
+                    .position(id)
+                    .is_ok_and(|ix| self.model.is_streaming(ix));
+            let view = view.downgrade();
+            let down_view = view.clone();
+            return h_flex()
+                .id(("thought-text", block_number(id, 0, block, false)))
+                .w_full()
+                .items_start()
+                .gap(rems(GAP))
+                .text_color(theme.muted_foreground)
+                .text_size(rems(THOUGHT_SIZE))
+                .line_height(rems(LINE))
+                .italic()
+                .cursor_pointer()
+                .child(div().flex_none().h(rems(LINE)).child(self.marker(
+                    ("live", id),
+                    Marker::live(live),
+                    cx,
+                )))
+                .child(div().flex_1().min_w_0().child(body))
+                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                    if event.click_count > 1 {
+                        down_view
+                            .update(cx, |this, _| this.closing.remove(&id))
+                            .ok();
+                    }
+                })
+                .on_click(move |event, _, cx| {
+                    let ClickEvent::Mouse(click) = event else {
+                        view.update(cx, |this, cx| this.toggle(id, cx)).ok();
+                        return;
+                    };
+                    let moved = click.up.position - click.down.position;
+                    let far = f32::from(moved.x).abs() > 3. || f32::from(moved.y).abs() > 3.;
+                    if !far && click.down.click_count == 1 {
+                        view.update(cx, |this, cx| this.close_soon(id, cx)).ok();
+                    }
+                })
+                .into_any_element();
+        }
         div()
             .w_full()
-            .when(thinking, |this| {
-                this.text_color(theme.muted_foreground).text_sm()
-            })
             .children(label)
             .children(from)
             .child(body)
@@ -1749,18 +2023,57 @@ impl TranscriptView {
         spinner(("running", id), cx)
     }
 
+    /// What stands in a line's markers' column, ▸, ▾, the spinner or
+    /// nothing, centred, in the line's font.
+    fn marker(&self, id: impl Into<ElementId>, marker: Marker, cx: &App) -> AnyElement {
+        let theme = cx.theme();
+        let glyph = match marker {
+            Marker::Closed => Some("▸"),
+            Marker::Open => Some("▾"),
+            Marker::None | Marker::Live => None,
+        };
+        div()
+            .flex_none()
+            .w(rems(MARKER))
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .code_font(theme)
+            .text_color(theme.muted_foreground)
+            .when(marker == Marker::Live, |this| this.child(spinner(id, cx)))
+            .children(glyph)
+            .into_any_element()
+    }
+
+    /// What the live line at the end says: what the call `id` does while
+    /// it runs (Messages counts it), else "Working…".
+    pub(super) fn working_words(&self, id: u64) -> String {
+        self.item(id)
+            .filter(|item| item.kind == Kind::Call && item.status == Some(CallStatus::Running))
+            .and_then(|item| item.act.as_ref())
+            .map_or_else(
+                || WORKING.to_string(),
+                |act| format!("{}…", arko::remote::quiet::doing(act)),
+            )
+    }
+
     /// "Working…" while the agent waits on the model and no other row says
-    /// it's busy.
+    /// it's busy, or in Messages what the call that runs does. The spinner
+    /// stands in the markers' column and the words where a thought's start,
+    /// so the thought that takes its place starts where it stood. The
+    /// spinner alone moves.
     fn working(&self, id: u64, cx: &App) -> AnyElement {
         let theme = cx.theme();
         h_flex()
-            .h_5()
-            .px_1()
-            .gap_1()
-            .text_xs()
+            .w_full()
+            .h(rems(LINE))
+            .gap(rems(GAP))
+            .text_size(rems(THOUGHT_SIZE))
+            .line_height(rems(LINE))
             .text_color(theme.muted_foreground)
-            .child(spinner(("working-spinner", id), cx))
-            .child("Working…")
+            .child(self.marker(("working-spinner", id), Marker::Live, cx))
+            .child(div().min_w_0().truncate().child(self.working_words(id)))
             .into_any_element()
     }
 
@@ -1769,195 +2082,382 @@ impl TranscriptView {
         self.settings.expand_thinking && self.settings.view == crate::prefs::TranscriptView::Full
     }
 
-    fn thinking(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
+    /// Whether the thought `id` opens, on a rail (`inner`) or not, because
+    /// its first line leaves something out, the lines after it or what its
+    /// width cuts.
+    pub(super) fn thought_opens(&self, id: u64, inner: bool) -> bool {
+        let Some(item) = self.item(id) else {
+            return false;
+        };
+        let (first, more) = first_line(&item.text);
+        more || self.line_room(inner).is_some_and(|(room, m)| {
+            // As drawn, else from the font's average advance.
+            let width = self
+                .thought_widths
+                .borrow()
+                .get(&id)
+                .filter(|(measured, _)| *measured == first)
+                .map(|(_, width)| *width)
+                .unwrap_or_else(|| {
+                    first.chars().count() as f32 * m.body.advance_at(THOUGHT_SIZE * m.rem)
+                });
+            width > room
+        })
+    }
+
+    /// Measures the first line of the thought `id` as its line draws it,
+    /// for [`Self::thought_opens`].
+    fn measure_thought(&self, id: u64, window: &mut Window, cx: &App) {
+        if let Some(item) = self.item(id) {
+            let (first, _) = first_line(&item.text);
+            self.thought_width(id, &first, window.text_system(), window.rem_size(), cx);
+        }
+    }
+
+    /// The width of `first`, the first line of the thought `id`, as its
+    /// line draws it, in italic at a thought's size. It's laid out once for
+    /// each text, and again when the fonts change ([`Self::measure_heights`]).
+    fn thought_width(
+        &self,
+        id: u64,
+        first: &str,
+        text_system: &WindowTextSystem,
+        rem: Pixels,
+        cx: &App,
+    ) -> f32 {
+        if let Some((measured, width)) = self.thought_widths.borrow().get(&id)
+            && measured == first
+        {
+            return *width;
+        }
+        let theme = cx.theme();
+        let font = Font {
+            style: FontStyle::Italic,
+            ..font(theme.font_family.clone())
+        };
+        let run = TextRun {
+            len: first.len(),
+            font,
+            color: theme.muted_foreground,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let width = f32::from(
+            text_system
+                .layout_line(first, rem * THOUGHT_SIZE, &[run], None)
+                .width,
+        );
+        self.thought_widths
+            .borrow_mut()
+            .insert(id, (first.to_string(), width));
+        width
+    }
+
+    /// Whether the thought `id` ends on its first line and the line holds
+    /// it, in the list's column as it is now (`false` before the column's
+    /// width and the fonts are known). `text_system` lays the line out if it
+    /// wasn't yet.
+    pub(super) fn thought_fits(
+        &self,
+        id: u64,
+        text_system: &OnceCell<WindowTextSystem>,
+        cx: &App,
+    ) -> bool {
+        let Some(item) = self.item(id) else {
+            return false;
+        };
+        let (first, more) = first_line(&item.text);
+        let Some((room, m)) = self.line_room(false).filter(|_| !more) else {
+            return false;
+        };
+        // Prose draws within about a third of its estimate, so a line
+        // estimated at twice the room shows whole without being laid out.
+        if first.chars().count() as f32 * m.body.advance_at(THOUGHT_SIZE * m.rem) > 2. * room {
+            return false;
+        }
+        let text_system =
+            text_system.get_or_init(|| WindowTextSystem::new(cx.text_system().clone()));
+        self.thought_width(id, &first, text_system, px(m.rem), cx) <= room
+    }
+
+    /// A thought's line, its first line muted and italic in the words'
+    /// column, with no label or marker, cut to fit. A click or Enter opens
+    /// it whole where it leaves something out. While it streams, the
+    /// spinner turns in the markers' column.
+    fn thinking(&self, id: u64, inner: bool, view: &Entity<Self>, cx: &App) -> AnyElement {
         let theme = cx.theme();
         let Ok(ix) = self.model.position(id) else {
             return div().into_any_element();
         };
-        let default = self.thinking_open_by_default();
-        let open = self
-            .ui
-            .get(&id)
-            .and_then(|ui| ui.expanded)
-            .unwrap_or(default);
-        let streaming = self.model.is_streaming(ix);
-        let name: SharedString = if streaming {
-            "Thinking…".into()
+        let item = &self.model.entries()[ix].item;
+        let live = self.model.is_streaming(ix);
+        let (first, more) = first_line(&item.text);
+        let words: SharedString = if more {
+            format!("{first} …").into()
         } else {
-            match self.model.thought_for(ix) {
-                Some(ms) => format!("Thought for {}", arko::remote::duration(ms)).into(),
-                None => "Thought".into(),
-            }
+            first.into()
         };
-        let label: AnyElement = if streaming && !cx.reduce_motion() {
-            ShimmerText::new("Thinking…")
-                .id(("thinking-shimmer", id))
-                .max_fps(SHIMMER_FPS)
-                .into_any_element()
-        } else {
-            name.clone().into_any_element()
-        };
-        let view = view.downgrade();
-        h_flex()
+        let line = h_flex()
             .w_full()
-            .child(
-                div()
-                    .id(("thinking-row", id))
-                    .test_support()
-                    .child(Disclosure {
-                        id: ("thinking-toggle", id).into(),
-                        open,
-                        label: name,
-                        full_width: false,
-                        wraps: false,
-                        inert: false,
-                        content: h_flex()
-                            .gap_1()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(Icon::new(chevron(open)).xsmall())
-                            .child(label)
-                            .into_any_element(),
-                        on_toggle: Rc::new(move |_, cx| {
-                            view.update(cx, |this, cx| this.toggle(id, default, cx))
-                                .ok();
-                        }),
-                    }),
-            )
+            .min_w_0()
+            .h_full()
+            .gap(rems(GAP))
+            .text_size(rems(THOUGHT_SIZE))
+            .line_height(rems(LINE))
+            .italic()
+            .text_color(theme.muted_foreground)
+            .child(self.marker(("live", id), Marker::live(live), cx))
+            .child(div().flex_1().min_w_0().truncate().child(words.clone()));
+        let view = view.downgrade();
+        div()
+            .id(("thinking-row", id))
+            .test_support()
+            .child(Disclosure {
+                id: ("thinking-toggle", id).into(),
+                open: false,
+                label: words,
+                inert: !self.thought_opens(id, inner),
+                content: line.into_any_element(),
+                on_toggle: Rc::new(move |_, cx| {
+                    view.update(cx, |this, cx| this.toggle(id, cx)).ok();
+                }),
+            })
             .into_any_element()
     }
 
-    fn call(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
+    /// The room, in pixels, that a line's words and what follows them have
+    /// in the reading column past the markers' column, and past the rail's
+    /// on a rail (`inner`). `None` before the list is laid out.
+    fn line_room(&self, inner: bool) -> Option<(f32, &Metrics)> {
+        let m = self.metrics.as_ref()?;
+        let width = self.list_width.get();
+        (width > 0.).then(|| (room(width, inner, m.rem), m))
+    }
+
+    /// The widest that what follows a line's words may be where they show
+    /// now, on a rail (`inner`) or not, in pixels. The words give way first,
+    /// down to about 8 characters, and only then what follows them.
+    fn widest_after(&self, inner: bool) -> Option<Pixels> {
+        self.line_room(inner)
+            .map(|(room, m)| px(after_room(room, m)))
+    }
+
+    /// What a call's Full line says after its words, how it went. That is ✓
+    /// or ✗ and its outcome, or its job's state, or while it runs its time
+    /// and the spinner. Its parts, and how many characters they take.
+    fn call_after(
+        &self,
+        item: &Item,
+        job: Option<&JobLine>,
+        inner: bool,
+        cx: &App,
+    ) -> (Vec<AnyElement>, usize) {
+        let theme = cx.theme();
+        let id = item.id;
+        let muted = theme.muted_foreground;
+        let widest = self.widest_after(inner);
+        let part = |mark: Option<(&'static str, Hsla)>, words: AnyElement| {
+            h_flex()
+                .id(("outcome", id))
+                .test_support()
+                .flex_none()
+                .min_w_0()
+                .when_some(widest, |this, widest| this.max_w(widest))
+                .gap(rems(GAP))
+                .text_color(muted)
+                .child(div().flex_none().child("·"))
+                .children(mark.map(|(mark, color)| div().flex_none().text_color(color).child(mark)))
+                .child(div().min_w_0().truncate().child(words))
+                .into_any_element()
+        };
+        let outcome = item
+            .outcome
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        match (job, item.status) {
+            (Some(JobLine::Outcome { text, failed: true }), _) => (
+                vec![part(
+                    Some(("✗", theme.danger)),
+                    text.clone().into_any_element(),
+                )],
+                text.chars().count() + 4,
+            ),
+            (Some(job), _) => {
+                let words = self.job_words(job);
+                let chars = words.chars().count() + 2;
+                (vec![part(None, words.into_any_element())], chars)
+            }
+            (None, Some(CallStatus::Running)) => {
+                let time = duration((self.clock)() - item.at);
+                let chars = time.chars().count() + 4;
+                (
+                    vec![
+                        part(None, time.into_any_element()),
+                        div()
+                            .flex_none()
+                            .child(self.spinner(id, cx))
+                            .into_any_element(),
+                    ],
+                    chars,
+                )
+            }
+            (None, Some(CallStatus::Ok)) => {
+                let chars = outcome.chars().count() + 4;
+                (
+                    vec![part(Some(("✓", theme.success)), outcome.into_any_element())],
+                    chars,
+                )
+            }
+            (None, Some(CallStatus::Failed)) => {
+                let chars = outcome.chars().count() + 4;
+                let words =
+                    self.marked_plain(id, Place::Outcome, outcome, call_line_ink(muted, theme), cx);
+                (vec![part(Some(("✗", theme.danger)), words)], chars)
+            }
+            _ => (Vec::new(), 0),
+        }
+    }
+
+    /// How many characters what a call's Full line says after its words
+    /// takes ([`Self::call_after`]).
+    fn call_after_chars(&self, item: &Item, job: Option<&JobLine>) -> usize {
+        let outcome = item
+            .outcome
+            .as_deref()
+            .map_or(0, |outcome| outcome.trim().chars().count());
+        match (job, item.status) {
+            (Some(JobLine::Outcome { text, failed: true }), _) => text.chars().count() + 4,
+            (Some(job), _) => self.job_words(job).chars().count() + 2,
+            (None, Some(CallStatus::Running)) => {
+                duration((self.clock)() - item.at).chars().count() + 6
+            }
+            (None, Some(_)) => outcome + 4,
+            _ => 0,
+        }
+    }
+
+    /// The width of what a call offers beside its line while it or its job
+    /// runs ([`Self::call_action`]), in pixels.
+    fn action_width(&self, item: &Item, job: Option<&JobLine>, m: &Metrics) -> f32 {
+        let label = match job {
+            Some(JobLine::Running { .. } | JobLine::Monitoring { .. }) => "Stop",
+            None if item.status == Some(CallStatus::Running) && self.movable.contains(&item.id) => {
+                "Move to background"
+            }
+            _ => return 0.,
+        };
+        // An extra-small button's padding, and the gap before it.
+        label.chars().count() as f32 * m.body.advance_at(0.75 * m.rem) + 1.25 * m.rem
+    }
+
+    /// Whether a call's Full line cuts its words in `room` pixels. One that
+    /// does opens to them whole.
+    pub(super) fn call_cut(&self, item: &Item, room: f32, m: &Metrics) -> bool {
+        let job = self.job_line(item);
+        let advance = m.mono.advance();
+        let after = self.call_after_chars(item, job.as_ref()) as f32 * advance;
+        let words = (call_line(item).chars().count() + who_chars(item)) as f32 * advance;
+        let actions = self.action_width(item, job.as_ref(), m);
+        words + after.min(after_room(room, m)) + actions + 2. * GAP * m.rem > room
+    }
+
+    /// Whether a call's Full line cuts its outcome in `room` pixels, where
+    /// the words before it have given way as far as they do.
+    pub(super) fn outcome_cut(&self, item: &Item, room: f32, m: &Metrics) -> bool {
+        let job = self.job_line(item);
+        self.call_after_chars(item, job.as_ref()) as f32 * m.mono.advance() > after_room(room, m)
+    }
+
+    /// Whether the call `id`'s line opens, on a rail (`inner`) or not,
+    /// because it holds something or cuts its words.
+    pub(super) fn call_opens(&self, id: u64, inner: bool) -> bool {
+        self.model.entry(id).is_some_and(|entry| {
+            let (cut, says) = self.line_room(inner).map_or((false, true), |(room, m)| {
+                (
+                    self.call_cut(&entry.item, room, m),
+                    !self.outcome_cut(&entry.item, room, m),
+                )
+            });
+            opens(entry, says) || cut
+        })
+    }
+
+    /// Whether the Quiet row `first` opens, because it holds something or
+    /// its line cuts its words.
+    pub(super) fn group_opens(&self, first: u64) -> bool {
+        self.quiet.get(&first).is_some_and(|row| {
+            row.opens
+                || self
+                    .line_room(false)
+                    .is_some_and(|(room, m)| self.row_cut(row, room, m))
+        })
+    }
+
+    /// A call's line as Full writes it, its marker, whose it is (a
+    /// worker's, in the main transcript), its words and how it went, with
+    /// what it offers while it or its job runs. Open, what it holds shows
+    /// under it, on a rail, or on an open row's rail (`inner`) at the
+    /// line's words, where its line is muted.
+    fn call(&self, id: u64, inner: bool, view: &Entity<Self>, cx: &App) -> AnyElement {
         let theme = cx.theme();
         let Some(entry) = self.model.entry(id) else {
             return div().into_any_element();
         };
         let item = &entry.item;
-        let open = self.ui.get(&id).and_then(|ui| ui.expanded).unwrap_or(false);
         let line = call_line(item);
-        let tool = Tool::of(item);
         let job = self.job_line(item);
-        let muted = |text: String| {
-            div()
-                .flex_none()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(text)
-                .into_any_element()
+        let (after, _) = self.call_after(item, job.as_ref(), inner, cx);
+        // (A row's line says what its calls offer.)
+        let action = (!inner)
+            .then(|| self.call_action(item, job.as_ref(), view))
+            .flatten();
+        let (cut, says) = self.line_room(inner).map_or((false, true), |(room, m)| {
+            (
+                self.call_cut(item, room, m),
+                !self.outcome_cut(item, room, m),
+            )
+        });
+        let opens = opens(entry, says) || cut;
+        let open = opens && self.ui.get(&id).and_then(|ui| ui.expanded) == Some(true);
+        let color = if inner {
+            theme.muted_foreground
+        } else {
+            theme.foreground
         };
-        let trailing: Option<AnyElement> = match (&job, item.status) {
-            (Some(JobLine::Outcome { text, failed: true }), _) => Some(
-                h_flex()
-                    .flex_none()
-                    .min_w_0()
-                    .max_w(rems(18.))
-                    .gap_1()
-                    .text_xs()
-                    .text_color(theme.danger)
-                    .child(Icon::new(Lucide::CircleX).xsmall())
-                    .child(div().min_w_0().truncate().child(text.clone()))
-                    .into_any_element(),
-            ),
-            (Some(job), _) => Some(muted(self.job_words(job))),
-            (None, Some(CallStatus::Running)) => Some(
-                h_flex()
-                    .flex_none()
-                    .gap_1()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(self.spinner(id, cx))
-                    .child(duration((self.clock)() - item.at))
-                    .into_any_element(),
-            ),
-            (None, Some(CallStatus::Failed)) => Some(
-                h_flex()
-                    .flex_none()
-                    .min_w_0()
-                    .max_w(rems(18.))
-                    .gap_1()
-                    .text_xs()
-                    .text_color(theme.danger)
-                    .child(Icon::new(Lucide::CircleX).xsmall())
-                    .when_some(item.outcome.clone(), |this, outcome| {
-                        this.child(div().min_w_0().truncate().child(self.marked_plain(
-                            id,
-                            Place::Outcome,
-                            outcome,
-                            call_line_ink(theme.danger, theme),
-                            cx,
-                        )))
-                    })
-                    .into_any_element(),
-            ),
-            // A command that ran says how long it took, or how its tests
-            // went, where its timer ran.
-            (None, Some(CallStatus::Ok)) if item.tool.as_deref() == Some("shell") => item
-                .outcome
-                .clone()
-                .map(|outcome| muted(outcome.to_string())),
-            _ => None,
-        };
-        let action = self.call_action(item, job.as_ref(), view);
-        let header_view = view.downgrade();
-        let opens = opens(entry);
-        // Open, the line wraps to say its words whole, unless what it cut
-        // shows under it, which would say them twice.
-        let wraps = open && opens && shown_given(item).is_none();
-        let marked_line = self.marked_plain(
+        let words = div().text_color(color).child(self.marked_plain(
             id,
             Place::Text,
             line.clone(),
-            call_line_ink(theme.muted_foreground, theme),
+            call_line_ink(color, theme),
             cx,
-        );
+        ));
+        let who = (!item.is_main()).then(|| who(&item.agent, theme));
+        let content = work_line(
+            self.marker(("call-mark", id), Marker::of(opens, open), cx),
+            who,
+            words.into_any_element(),
+            after,
+            None,
+        )
+        .code_font(theme)
+        .text_size(theme.mono_font_size)
+        .into_any_element();
+        let header_view = view.downgrade();
         let header = Disclosure {
             id: ("call-toggle", id).into(),
             open,
-            label: line.clone().into(),
-            full_width: true,
-            wraps,
+            label: line.into(),
             inert: !opens,
-            content: h_flex()
-                .w_full()
-                .min_w_0()
-                .gap_1p5()
-                .when(wraps, |this| this.items_start())
-                .text_color(theme.muted_foreground)
-                .when(!item.is_main(), |this| {
-                    this.child(
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .code_font(theme)
-                            .child(item.agent.clone()),
-                    )
-                })
-                .child(
-                    Icon::new(tool.icon())
-                        .xsmall()
-                        .flex_none()
-                        // (Beside the first line, as it is centred on one.)
-                        .when(wraps, |this| {
-                            let rem = self.metrics.as_ref().map_or(16., |m| m.rem);
-                            this.mt(px((wrapped_line(rem) - 0.75 * rem) / 2.))
-                        }),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .when(!wraps, |this| this.truncate())
-                        .text_left()
-                        .child(marked_line),
-                )
-                .children(trailing)
-                .into_any_element(),
+            content,
             on_toggle: Rc::new(move |_, cx| {
-                header_view
-                    .update(cx, |this, cx| this.toggle(id, false, cx))
-                    .ok();
+                header_view.update(cx, |this, cx| this.toggle(id, cx)).ok();
             }),
         };
+        // What the line cut shows first, unless the command's strip says it.
+        let whole = (cut && !strip_says_it(item)).then(|| item.text.trim().to_string());
         v_flex()
             .w_full()
             .child(
@@ -1972,9 +2472,16 @@ impl TranscriptView {
             )
             .children(
                 self.thumbnails(item, view, cx)
-                    .map(|thumbnails| div().pl_6().pt_1().child(thumbnails)),
+                    .map(|thumbnails| div().pl(rems(WORDS)).pt_1().child(thumbnails)),
             )
-            .when(open && opens, |this| this.child(self.call_details(id, cx)))
+            .when(open, |this| {
+                let held = self.call_details(id, says, whole, cx);
+                this.child(if inner {
+                    div().pl(rems(WORDS)).pt_1().child(held)
+                } else {
+                    on_rail(held, theme)
+                })
+            })
             .into_any_element()
     }
 
@@ -2034,8 +2541,16 @@ impl TranscriptView {
     /// A call's details. One that ended shows a card: what its line cut
     /// (a command as a strip at its top, any other detail muted in its
     /// body), then its content, and an edit its diff. One from an old
-    /// session shows its parameters and its result under captions.
-    fn call_details(&self, id: u64, cx: &App) -> AnyElement {
+    /// session shows its parameters and its result under captions. Where
+    /// the line cut its words and nothing else says them, `whole` says them
+    /// first, muted.
+    fn call_details(
+        &self,
+        id: u64,
+        says_outcome: bool,
+        whole: Option<String>,
+        cx: &App,
+    ) -> AnyElement {
         use super::find::Place;
         let theme = cx.theme();
         let Some(entry) = self.model.entry(id) else {
@@ -2044,22 +2559,31 @@ impl TranscriptView {
         let item = &entry.item;
         let line = item.text.trim().to_string();
         let given = shown_given(item);
-        let output = shown_output(entry);
+        let output = shown_output(entry, says_outcome);
         let diff = self.ui.get(&id).and_then(|ui| ui.diff.clone());
-        let details = v_flex().w_full().gap_1p5().pt_1().pl_6();
+        let details = v_flex().w_full().gap_1().children(whole.map(|whole| {
+            div()
+                .id(("whole", id))
+                .test_support()
+                .w_full()
+                .code_font(theme)
+                .text_size(theme.mono_font_size)
+                .text_color(theme.muted_foreground)
+                .child(whole)
+        }));
         // The first lines of a long text show, and a button opens it all.
         let door = |text: Arc<str>, key: &'static str, title: String| {
-            let total = text.lines().count();
-            (total > OUTPUT_LINES).then(|| {
-                let title: SharedString = title.into();
+            let label = show_all(&text)?;
+            let title: SharedString = title.into();
+            Some(
                 Button::new((key, id))
                     .ghost()
                     .xsmall()
-                    .label(format!("Show all {total} lines"))
+                    .label(label)
                     .on_click(move |_, window, cx| {
                         open_output(title.clone(), text.clone(), window, cx)
-                    })
-            })
+                    }),
+            )
         };
         if let Some(Given::Parameters(parameters)) = &given {
             let caption = |text: &str| {
@@ -2141,16 +2665,23 @@ impl TranscriptView {
                 .when_some(output.clone(), |this, output| {
                     let (shown, _) = preview(&output);
                     let gutters = numbered_gutters(&shown, numbers);
-                    this.child(div().w_full().text_color(ink).child(self.marked_with(
-                        ("output", id),
-                        id,
-                        Place::Output,
-                        shown,
-                        Ink::on(ink, editor),
-                        gutters,
-                        theme.muted_foreground,
-                        cx,
-                    )))
+                    this.child(
+                        div()
+                            .id(("call-output", id))
+                            .test_support()
+                            .w_full()
+                            .text_color(ink)
+                            .child(self.marked_with(
+                                ("output", id),
+                                id,
+                                Place::Output,
+                                shown,
+                                Ink::on(ink, editor),
+                                gutters,
+                                theme.muted_foreground,
+                                cx,
+                            )),
+                    )
                 })
         });
         let has_body = body.is_some();
@@ -2284,135 +2815,268 @@ impl TranscriptView {
             .into_any_element()
     }
 
-    fn group(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
-        let theme = cx.theme();
-        let members = super::model::run_of(&self.model, id, self.settings.view);
-        let entries = self.model.entries();
-        let calls: Vec<&Item> = members
-            .iter()
-            .map(|ix| &entries[*ix].item)
-            .filter(|item| item.kind == Kind::Call)
-            .collect();
-        let running = calls
+    /// What a Quiet row says after its words, whole. That is a test run's
+    /// counts, how a job goes or what came, and while a call of it runs that
+    /// call's time and the spinner. Its parts, and how many characters they take.
+    fn row_after(
+        &self,
+        row: &QuietRow,
+        running: Option<&Item>,
+        cx: &App,
+    ) -> (Vec<AnyElement>, usize) {
+        let mut parts = Vec::new();
+        let mut chars = 0;
+        let words = &row.words;
+        if let Some(news) = &words.news {
+            let news = format!("({news})");
+            chars += news.chars().count() + 1;
+            parts.push(div().flex_none().child(news).into_any_element());
+        }
+        let mut note: Vec<String> = words.note.iter().cloned().collect();
+        if let Some(running) = running {
+            note.push(duration((self.clock)() - running.at));
+        }
+        if !note.is_empty() {
+            let note = format!("· {}", note.join(" · "));
+            chars += note.chars().count() + 1;
+            parts.push(
+                div()
+                    .flex_none()
+                    .min_w_0()
+                    .when_some(self.widest_after(false), |this, widest| this.max_w(widest))
+                    .truncate()
+                    .child(note)
+                    .into_any_element(),
+            );
+        }
+        if let Some(running) = running.filter(|_| words.running) {
+            chars += 3;
+            parts.push(
+                div()
+                    .flex_none()
+                    .child(self.spinner(running.id, cx))
+                    .into_any_element(),
+            );
+        }
+        (parts, chars)
+    }
+
+    /// The call of a Quiet row that runs, its latest.
+    fn running_call(&self, row: &QuietRow) -> Option<&Item> {
+        row.members
             .iter()
             .rev()
-            .find(|item| item.status == Some(CallStatus::Running))
-            .copied();
-        let failed = calls
-            .iter()
-            .filter(|item| item.status == Some(CallStatus::Failed))
-            .count();
-        let open = self.group_open(id);
-        // A folded group's header names the call that runs, or else the
-        // latest whose job runs, and offers what that call's own row does
-        // (Move to background, Stop).
-        let in_background = |item: &&&Item| {
-            matches!(
-                self.job_line(item),
-                Some(JobLine::Running { .. } | JobLine::Monitoring { .. })
-            )
-        };
-        let active = running.or_else(|| match open {
-            true => None,
-            false => calls.iter().rev().find(in_background).copied(),
-        });
-        let action = match open {
-            true => None,
-            false => {
-                active.and_then(|item| self.call_action(item, self.job_line(item).as_ref(), view))
+            .filter_map(|id| self.item(*id))
+            .find(|item| item.kind == Kind::Call && item.status == Some(CallStatus::Running))
+    }
+
+    /// Whether a Quiet row cuts its words in `room` pixels. One that does
+    /// opens to its call as written.
+    pub(super) fn row_cut(&self, row: &QuietRow, room: f32, m: &Metrics) -> bool {
+        let words = &row.words;
+        let advance = m.mono.advance();
+        let mut after = 0.;
+        if let Some(news) = &words.news {
+            after += (news.chars().count() + 2) as f32 * advance + GAP * m.rem;
+        }
+        let mut note = words
+            .note
+            .as_deref()
+            .map_or(0, |note| note.chars().count() + 2);
+        let running = self.running_call(row);
+        if let Some(running) = running {
+            note += duration((self.clock)() - running.at).chars().count() + 3;
+        }
+        if note > 0 {
+            after += (note as f32 * advance).min(after_room(room, m)) + GAP * m.rem;
+        }
+        if running.is_some() && words.running {
+            after += 0.75 * m.rem + GAP * m.rem;
+        }
+        if words.failed {
+            after += advance + GAP * m.rem;
+        }
+        for id in &row.members {
+            if let Some(item) = self.item(*id).filter(|item| item.kind == Kind::Call) {
+                after += self.action_width(item, self.job_line(item).as_ref(), m);
             }
+        }
+        words.text.chars().count() as f32 * advance + after + GAP * m.rem > room
+    }
+
+    /// A Quiet row, its marker and what its calls did in a few words, cut
+    /// to fit, and after them what stays whole, its news, how its job goes,
+    /// its running call's time, and one ✗ at its right when a call failed. It
+    /// offers what its calls offer while they run (Move to background,
+    /// Stop), and their images show under it. Open, a row of one call shows
+    /// the call's detail and content on its rail, after the call as written
+    /// where the line cut its words. A row of several shows its calls and
+    /// the thinking between them as rows on its rail.
+    fn group(&self, first: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
+        let theme = cx.theme();
+        let Some(row) = self.quiet.get(&first) else {
+            return div().into_any_element();
         };
-        let view = view.downgrade();
-        let summary = tool::summary(calls.iter().copied());
-        let header = Disclosure {
-            id: ("group-toggle", id).into(),
-            open,
-            label: summary.clone().into(),
-            full_width: true,
-            wraps: false,
-            inert: false,
-            content: h_flex()
-                .w_full()
-                .min_w_0()
-                .gap_1p5()
-                .text_color(theme.muted_foreground)
-                .child(Icon::new(chevron(open)).xsmall())
-                .child(div().min_w_0().truncate().child(summary))
-                .when_some(active, |this, active| {
-                    this.child(
-                        h_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1()
-                            .when(active.status == Some(CallStatus::Running), |this| {
-                                this.child(self.spinner(active.id, cx))
-                            })
-                            .child(div().min_w_0().truncate().child(call_line(active))),
-                    )
-                })
-                .when(active.is_none(), |this| this.child(div().flex_1()))
-                .when(failed > 0, |this| {
-                    this.child(
-                        h_flex()
-                            .flex_none()
-                            .gap_1()
-                            .text_color(theme.danger)
-                            .child(Icon::new(Lucide::CircleX).xsmall())
-                            .child(format!("{failed} failed")),
-                    )
-                })
+        let calls: Vec<&Item> = row
+            .members
+            .iter()
+            .filter_map(|id| self.item(*id))
+            .filter(|item| item.kind == Kind::Call)
+            .collect();
+        let running = self.running_call(row);
+        let (after, _) = self.row_after(row, running, cx);
+        let cut = self
+            .line_room(false)
+            .is_some_and(|(room, m)| self.row_cut(row, room, m));
+        let opens = row.opens || cut;
+        let open = opens && self.group_open(first);
+        let words = &row.words;
+        let color = if words.muted {
+            theme.muted_foreground
+        } else {
+            theme.foreground
+        };
+        let failed = words
+            .failed
+            .then(|| div().text_color(theme.danger).child("✗").into_any_element());
+        let content = work_line(
+            self.marker(("group-mark", first), Marker::of(opens, open), cx),
+            None,
+            div()
+                .text_color(color)
+                .child(self.marked_plain(
+                    first,
+                    Place::Row,
+                    words.text.clone(),
+                    call_line_ink(color, theme),
+                    cx,
+                ))
                 .into_any_element(),
+            after,
+            failed,
+        )
+        .code_font(theme)
+        .text_size(theme.mono_font_size)
+        .text_color(theme.muted_foreground)
+        .into_any_element();
+        // What its calls offer while they or their jobs run.
+        let actions: Vec<AnyElement> = calls
+            .iter()
+            .filter_map(|item| self.call_action(item, self.job_line(item).as_ref(), view))
+            .collect();
+        let toggle_view = view.downgrade();
+        let header = Disclosure {
+            id: ("group-toggle", first).into(),
+            open,
+            label: words.said().into(),
+            inert: !opens,
+            content,
             on_toggle: Rc::new(move |_, cx| {
-                view.update(cx, |this, cx| this.toggle_group(id, cx)).ok();
+                toggle_view
+                    .update(cx, |this, cx| this.toggle_group(first, cx))
+                    .ok();
             }),
         };
-        let Some(action) = action else {
-            return header.into_any_element();
-        };
-        h_flex()
+        // The images its calls' tools returned, under its line. (A row of
+        // several open shows them under each call.)
+        let images = (!(open && row.merged))
+            .then(|| {
+                let tiles: Vec<AnyElement> = calls
+                    .iter()
+                    .filter_map(|item| self.thumbnails(item, view, cx))
+                    .collect();
+                (!tiles.is_empty()).then(|| {
+                    v_flex()
+                        .pl(rems(WORDS))
+                        .pt_1()
+                        .gap_2()
+                        .children(tiles)
+                        .into_any_element()
+                })
+            })
+            .flatten();
+        let held = (open && !row.merged).then(|| {
+            let item = calls.first().copied();
+            let whole = item
+                .filter(|item| cut && !strip_says_it(item))
+                .map(|item| item.text.trim().to_string());
+            on_rail(self.call_details(first, false, whole, cx), theme)
+        });
+        v_flex()
             .w_full()
-            .min_w_0()
-            .gap_1()
-            .child(div().flex_1().min_w_0().child(header))
-            .child(div().flex_none().child(action))
+            .child(
+                h_flex()
+                    .id(("group-row", first))
+                    .test_support()
+                    .w_full()
+                    .min_w_0()
+                    .gap_1()
+                    .child(div().flex_1().min_w_0().child(header))
+                    .children(
+                        actions
+                            .into_iter()
+                            .map(|action| div().flex_none().child(action)),
+                    ),
+            )
+            .children(images)
+            .children(held)
             .into_any_element()
     }
 
-    fn count(&self, id: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
+    /// A turn's calls in one line (Messages), how many, how many failed and
+    /// whether one runs. It opens to the turn's work as Quiet shows it,
+    /// under it, from the turn's first thought.
+    fn count(&self, first: u64, view: &Entity<Self>, cx: &App) -> AnyElement {
         let theme = cx.theme();
-        let members = super::model::run_of(&self.model, id, self.settings.view);
-        let entries = self.model.entries();
-        let calls: Vec<&Item> = members.iter().map(|ix| &entries[*ix].item).collect();
-        let failed = calls
-            .iter()
-            .filter(|item| item.status == Some(CallStatus::Failed))
-            .count();
-        let running = calls
-            .iter()
-            .filter(|item| item.status == Some(CallStatus::Running))
-            .count();
-        let mut text = tool::summary(calls.iter().copied());
-        if running > 0 {
-            text.push_str(&format!(" · {running} running"));
+        let count = self.counts.get(&first).cloned().unwrap_or_default();
+        let open = self.counts_open.contains(&first);
+        let words = plural(count.calls, "tool call", "tool calls");
+        let mut after = Vec::new();
+        if count.failed > 0 {
+            after.push(
+                h_flex()
+                    .flex_none()
+                    .gap(rems(GAP))
+                    .child("·")
+                    .child(
+                        div()
+                            .text_color(theme.danger)
+                            .child(format!("{} failed", count.failed)),
+                    )
+                    .into_any_element(),
+            );
         }
+        if count.running > 0 {
+            after.push(div().flex_none().child("· running").into_any_element());
+        }
+        let content = work_line(
+            self.marker(("count-mark", first), Marker::of(true, open), cx),
+            None,
+            div()
+                .text_color(theme.foreground)
+                .child(words.clone())
+                .into_any_element(),
+            after,
+            None,
+        )
+        .code_font(theme)
+        .text_size(theme.mono_font_size)
+        .text_color(theme.muted_foreground)
+        .into_any_element();
         let view = view.downgrade();
-        Button::new(("count", id))
-            .ghost()
-            .xsmall()
-            .text_color(theme.muted_foreground)
-            .tooltip("Show in the full transcript")
-            .child(text)
-            .when(failed > 0, |this| {
-                this.child(
-                    h_flex()
-                        .gap_1()
-                        .text_color(theme.danger)
-                        .child(Icon::new(Lucide::CircleX).xsmall())
-                        .child(format!("{failed} failed")),
-                )
-            })
-            .on_click(move |_, _, cx| {
-                view.update(cx, |this, cx| this.open_run(id, cx)).ok();
+        div()
+            .id(("count", first))
+            .test_support()
+            .child(Disclosure {
+                id: ("count-toggle", first).into(),
+                open,
+                label: words.into(),
+                inert: false,
+                content,
+                on_toggle: Rc::new(move |_, cx| {
+                    view.update(cx, |this, cx| this.toggle_count(first, cx))
+                        .ok();
+                }),
             })
             .into_any_element()
     }
@@ -2653,30 +3317,42 @@ impl TranscriptView {
             _ => (theme.muted_foreground, theme.muted_foreground),
         };
         let icon = notice_icon(item);
+        // Its icon in the markers' column, on its first line, and its words
+        // after whose it is.
+        let line: DefiniteLength = self
+            .metrics
+            .as_ref()
+            .map_or(rems(1.5).into(), |m| px(m.line_sm).into());
         h_flex()
             .relative()
             .w_full()
             .items_start()
-            .gap_1p5()
-            .px_2()
+            .gap(rems(GAP))
             .text_sm()
             .text_color(text_color)
+            .child(
+                div()
+                    .flex_none()
+                    .w(rems(MARKER))
+                    .h(line)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(Icon::new(icon).xsmall().text_color(color)),
+            )
             .when(!item.is_main(), |this| {
                 this.child(
                     div()
                         .flex_none()
+                        .h(line)
+                        .flex()
+                        .items_center()
                         .text_xs()
                         .code_font(theme)
                         .text_color(theme.muted_foreground)
                         .child(self.agent_label(item)),
                 )
             })
-            .child(
-                div()
-                    .flex_none()
-                    .pt_0p5()
-                    .child(Icon::new(icon).xsmall().text_color(color)),
-            )
             .child(
                 div()
                     .flex_1()
@@ -3079,17 +3755,10 @@ fn notice_icon(item: &Item) -> Lucide {
     }
 }
 
-/// The chevron of a disclosure, open or closed.
-fn chevron(open: bool) -> IconName {
-    if open {
-        IconName::ChevronDown
-    } else {
-        IconName::ChevronRight
-    }
-}
-
-/// A row's toggle: a button, a Tab stop, that opens and closes the row's
-/// details and tells assistive technology whether they're open.
+/// A line's toggle, a button and a Tab stop that opens and closes what the
+/// line holds and tells assistive technology whether it's open. It is a
+/// line of work's height, and its padding stands out past the line's edges,
+/// so the line's marker stays in the markers' column.
 #[derive(IntoElement)]
 struct Disclosure {
     id: ElementId,
@@ -3097,9 +3766,6 @@ struct Disclosure {
     /// What it's called, read by assistive technology.
     label: SharedString,
     content: AnyElement,
-    full_width: bool,
-    /// Its line wraps rather than ends at its width.
-    wraps: bool,
     /// It has nothing to show, so it's its content alone, where it would be.
     inert: bool,
     on_toggle: Callback,
@@ -3116,29 +3782,22 @@ impl RenderOnce for Disclosure {
         let theme = cx.theme();
         let [_, hover] = disclosure_fills(theme);
         let ring = theme.ring;
-        // An extra-small button's size and padding, its border (the focus
-        // ring) taken out of the padding.
-        let padding = window.rem_size() * 0.25 - px(1.);
-        let wraps = self.wraps;
-        let line = px(wrapped_line(f32::from(window.rem_size())));
-        let sized = move |this: Div| {
-            if wraps {
-                this.min_h_5().items_start().line_height(line)
-            } else {
-                this.h_5().items_center()
-            }
-        };
-        if self.inert {
-            return sized(div())
-                .when(self.full_width, |this| this.w_full())
+        // An extra-small button's padding, its border (the focus ring)
+        // taken out of it.
+        let inset = window.rem_size() * 0.25;
+        let sized = |this: Div| {
+            this.h(rems(LINE))
+                .mx(-inset)
                 .min_w_0()
                 .flex()
-                .px(padding)
+                .items_center()
+                .px(inset - px(1.))
                 .text_xs()
                 .border_1()
                 .border_color(transparent_black())
-                .child(self.content)
-                .into_any_element();
+        };
+        if self.inert {
+            return sized(div()).child(self.content).into_any_element();
         }
         sized(div())
             .id(self.id)
@@ -3147,14 +3806,7 @@ impl RenderOnce for Disclosure {
             .aria_label(self.label)
             .test_support()
             .track_focus(&focus)
-            .when(self.full_width, |this| this.w_full())
-            .min_w_0()
-            .flex()
-            .px(padding)
-            .text_xs()
             .rounded(theme.radius)
-            .border_1()
-            .border_color(transparent_black())
             .hover(move |this| this.bg(hover))
             .focus_visible(move |this| this.border_color(ring))
             .child(self.content)
@@ -3423,10 +4075,11 @@ impl RenderOnce for Thumbnail {
 mod tests {
     // Named, not `super::*`: GPUI's glob brings a `test` macro that would
     // shadow Rust's.
+    use super::super::find::shown_prefix;
     use super::{
-        AgentFilter, CACHE_REFRESHED, Lucide, OutputViewer, REGENERATE_HINT, apply_diff_patch,
-        code_lines, duration, edit_diff, longest_code, message_label, notice_icon, preview,
-        user_tags,
+        AgentFilter, CACHE_REFRESHED, Lucide, OutputViewer, PREVIEW_LINE_CHARS, REGENERATE_HINT,
+        apply_diff_patch, code_lines, duration, edit_diff, longest_code, message_label,
+        notice_icon, preview, show_all, user_tags,
     };
     use arko::remote::{Delivery, Item, Kind, Level, Source};
     use gpui_kit::AppContext as _;
@@ -3509,12 +4162,30 @@ mod tests {
     #[test]
     fn a_preview_shows_forty_lines_of_at_most_500_characters() {
         let long = "x".repeat(300_000);
-        let (shown, total) = preview(&long);
-        assert_eq!(total, 1);
+        let (shown, more) = preview(&long);
+        assert!(more);
         assert_eq!(shown.chars().count(), 501);
         let many: String = (0..100).map(|n| format!("line {n}\n")).collect();
-        let (shown, total) = preview(&many);
-        assert_eq!((shown.lines().count(), total), (40, 100));
+        let (shown, more) = preview(&many);
+        assert_eq!((shown.lines().count(), more), (40, true));
+        assert_eq!(show_all(&many).as_deref(), Some("Show all 100 lines"));
+    }
+
+    /// A long line ends the preview at its cut, so the lines after it stay
+    /// behind Show all with the rest of the line, and the find counts as
+    /// shown just what the preview shows.
+    #[test]
+    fn a_cut_line_ends_the_preview_and_show_all_opens_the_rest() {
+        let first = format!("{}tail.", "x".repeat(PREVIEW_LINE_CHARS));
+        let text = format!("{first}\n\nSecond paragraph.");
+        let (shown, more) = preview(&text);
+        assert_eq!(shown, format!("{}…", "x".repeat(PREVIEW_LINE_CHARS)));
+        assert!(more);
+        assert_eq!(show_all(&text).as_deref(), Some("Show all 3 lines"));
+        assert_eq!(&text[..shown_prefix(&text)], shown.trim_end_matches('…'));
+        assert_eq!(show_all(&first).as_deref(), Some("Show all"));
+        assert_eq!(preview("a\nb"), ("a\nb".to_string(), false));
+        assert_eq!(show_all("a\nb"), None);
     }
 
     #[test]

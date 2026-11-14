@@ -1572,7 +1572,8 @@ parse of the whole text.";
         feed.turn_started();
         feed.event(
             &event(AgentEvent::ReasoningChunk(
-                "The parser keeps the open block, and `Parser::feed` returns the rest.".into(),
+                "The parser keeps the open block, and `Parser::feed` returns the rest.\n\nThe reply says so."
+                    .into(),
             )),
             None,
         );
@@ -1585,6 +1586,227 @@ parse of the whole text.";
         say(&feed, reply);
         feed.reply(reply);
         feed.turn_ended("9 s · $0.031 · context 12k", None);
+        feed
+    }
+
+    /// A step of a worker's, as its own feed lane has it.
+    fn worker_event(feed: &Feed, worker: &str, event: AgentEvent) {
+        let mut event = self::event(event);
+        event.agent_name = "worker".into();
+        feed.event(&event, Some(worker));
+    }
+
+    /// The ID of the background job the session below starts.
+    pub const DESIGN_JOB: &str = "12345678-1111-2222-3333-444455556666";
+
+    /// A session that thinks between its calls, as the transcript's design
+    /// is drawn on, played to step `until` (1 to 33). It clears a build,
+    /// starts tests in the background, reads three files with thoughts
+    /// between them, thinks at length, edits, asks a worker, runs a test
+    /// that fails and one that passes, and replies.
+    pub fn design(until: usize) -> Feed {
+        use arko::remote::{JobKind, JobStart, JobState, WorkerChange};
+
+        let feed = Feed::new("main");
+        let think = |text: &str| feed.event(&event(AgentEvent::ReasoningChunk(text.into())), None);
+        let run = |tool: &str, parameters: &[(&str, Value)], output: &str| {
+            let id = call(&feed, tool, parameters);
+            result(&feed, id, tool, output);
+        };
+        let job: Uuid = DESIGN_JOB.parse().unwrap();
+        for step in 1..=until {
+            match step {
+                1 => {
+                    feed.user(
+                        "Fix the stale cache test, check the neighbouring code, and ask a worker to check the fixture.",
+                        Source::App,
+                        Delivery::Turn,
+                    );
+                    feed.turn_started();
+                }
+                2 => think("I’ll clear the scratch build first."),
+                3 => run(
+                    "shell",
+                    &[("command", "rm -rf target/x".into())],
+                    "exit code 0, 0.1 s\n(no output)",
+                ),
+                4 => {
+                    let id = call(
+                        &feed,
+                        "terminal_start",
+                        &[
+                            ("command", "cargo-locked test cache".into()),
+                            ("terminal", false.into()),
+                        ],
+                    );
+                    feed.job_started(
+                        JobStart::new(job, "main", JobKind::Command, "cargo-locked test cache")
+                            .made_by(id),
+                    );
+                    result(
+                        &feed,
+                        id,
+                        "terminal_start",
+                        &format!("{{\"job_id\":\"{job}\",\"state\":\"running\"}}"),
+                    );
+                }
+                5 => think("The cache"),
+                6 => think(
+                    " test is running in the background. I can record the expected result while it runs.",
+                ),
+                7 | 17 => run(
+                    "keep_note",
+                    &[
+                        (
+                            "text",
+                            if step == 7 {
+                                "The cache fixture must expire before its value is read."
+                            } else {
+                                "The comparison now expires the value at its deadline."
+                            }
+                            .into(),
+                        ),
+                        ("replaces", 1.into()),
+                    ],
+                    "Changed note 1.",
+                ),
+                8 | 18 => {
+                    let branch = if step == 8 {
+                        "cache-check"
+                    } else {
+                        "fixture-check"
+                    };
+                    run(
+                        "shell",
+                        &[(
+                            "command",
+                            format!("git worktree add ../{branch} -b {branch}").into(),
+                        )],
+                        &format!(
+                            "exit code 0, 0.1 s\nPreparing worktree (new branch '{branch}')\nHEAD is now at abc1234 Keep cached values until expiry"
+                        ),
+                    );
+                }
+                9 => run(
+                    "read_file",
+                    &[("path", "src/cache.rs".into())],
+                    "1 | pub fn fresh(now: u64, expires: u64) -> bool {\n2 |     now <= expires\n3 | }",
+                ),
+                10 => think("The boundary is inclusive."),
+                11 => run(
+                    "read_file",
+                    &[("path", "src/cache_tests.rs".into())],
+                    "1 | #[test]\n2 | fn expires_at_the_deadline() {\n3 |     assert!(!fresh(10, 10));\n4 | }",
+                ),
+                12 => think("The test expects expiry at the deadline."),
+                13 => run(
+                    "read_file",
+                    &[("path", "src/clock.rs".into())],
+                    "1 | pub fn now() -> u64 {\n2 |     CLOCK.load(Ordering::Relaxed)\n3 | }",
+                ),
+                14 => think(
+                    "The clock and the cache use the same units, so this looks like a boundary error rather than a timing problem. I should change the comparison and leave the clock alone.\n\nThe test already names the exact deadline. Keeping that test small makes the intended behaviour easier to read. A second check just before the deadline will show that the cache still returns a value while it is fresh.\n\nI’ll make the comparison strict, ask a worker to check the fixture, and then read the result of the background run. If it fails for another reason, I’ll inspect that output before changing anything else.",
+                ),
+                15 => run(
+                    "edit_file",
+                    &[
+                        ("path", "src/cache.rs".into()),
+                        ("old_string", "now <= expires".into()),
+                        ("new_string", "now < expires".into()),
+                    ],
+                    "Edited src/cache.rs at line 2:\n1 | pub fn fresh(now: u64, expires: u64) -> bool {\n2 |     now < expires\n3 | }",
+                ),
+                16 => think("Now check the fixture independently."),
+                19 => feed.worker(
+                    "r3",
+                    "Check that the cache fixture uses the same deadline as the test.",
+                    WorkerChange::Started,
+                ),
+                20 => worker_event(
+                    &feed,
+                    "r3",
+                    AgentEvent::ReasoningChunk(
+                        "I’ll compare the fixture with the deadline assertion.".into(),
+                    ),
+                ),
+                21 => {
+                    let id = Uuid::new_v4();
+                    let parameters: HashMap<String, Value> =
+                        [("path".to_string(), "tests/fixtures/cache.json".into())].into();
+                    worker_event(
+                        &feed,
+                        "r3",
+                        AgentEvent::ToolCallFormatted {
+                            tool_call_id: id,
+                            tool_name: "read_file".into(),
+                            parameters,
+                        },
+                    );
+                    worker_event(
+                        &feed,
+                        "r3",
+                        AgentEvent::ToolResult {
+                            tool_call_id: id,
+                            tool_name: "read_file".into(),
+                            output: "1 | {\n2 |   \"now\": 10,\n3 |   \"expires\": 10\n4 | }"
+                                .into(),
+                            receipt: None,
+                        },
+                    );
+                }
+                22 => worker_event(
+                    &feed,
+                    "r3",
+                    AgentEvent::ReasoningChunk(
+                        "Both values are 10, exactly the boundary in the test.".into(),
+                    ),
+                ),
+                23 => worker_event(
+                    &feed,
+                    "r3",
+                    AgentEvent::AssistantResponseChunk(
+                        "The fixture and assertion both use the deadline 10.".into(),
+                    ),
+                ),
+                24 => feed.worker(
+                    "r3",
+                    "",
+                    WorkerChange::Finished {
+                        report: "The fixture and assertion both use the deadline 10.",
+                    },
+                ),
+                25 => run(
+                    "shell",
+                    &[("command", "cargo-locked test cache -- --excat".into())],
+                    "exit code 101, 1.0 s\nerror: Unrecognized option: 'excat'",
+                ),
+                26 => think("I misspelled the exact-test option."),
+                27 => think(" I should use the full test path instead of changing the test."),
+                28 => run(
+                    "shell",
+                    &[(
+                        "command",
+                        "cargo-locked test cache_tests::expires_at_the_deadline -- --exact".into(),
+                    )],
+                    "exit code 0, 0.2 s\nrunning 1 test\ntest cache_tests::expires_at_the_deadline ... ok\ntest result: ok. 1 passed; 0 failed",
+                ),
+                29 => think("The focused check passes."),
+                30 => feed.job_ended(job, JobState::Finished, None),
+                31 => think(
+                    " The worker agrees with the fixture, and the background run has finished. The reply can explain the boundary change in one sentence.",
+                ),
+                32 => say(
+                    &feed,
+                    "Changed the cache to expire at its deadline. The focused test passes, and the fixture uses the same deadline.",
+                ),
+                _ => {
+                    feed.reply(
+                        "Changed the cache to expire at its deadline. The focused test passes, and the fixture uses the same deadline.",
+                    );
+                    feed.turn_ended("48 s · $0.212", None);
+                }
+            }
+        }
         feed
     }
 
@@ -1876,9 +2098,9 @@ fn transcript_monitors_dark() {
     );
 }
 
-/// The Quiet view's group of calls, folded, while a monitor and a command
-/// that can move run. Its header names the command and offers Move to
-/// background.
+/// The Quiet view's rows of six calls, closed, while a monitor and a
+/// command that can move run. The reads are one row, and the monitor and
+/// the command each have one, which offer Stop and Move to background.
 fn group_window(mode: ThemeMode) -> Screenshot {
     use arko_studio::transcript::{AgentFilter, TranscriptView};
     use gpui_kit::AppContext as _;
@@ -1898,7 +2120,7 @@ fn group_window(mode: ThemeMode) -> Screenshot {
     // The command started 12 s ago.
     let shown_at = now + 12_000;
     let window = app
-        .open_window_with(size(px(520.), px(180.)), 1., |options, cx| {
+        .open_window_with(size(px(520.), px(220.)), 1., |options, cx| {
             gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| {
                     let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
@@ -1960,6 +2182,134 @@ fn transcript_working_light() {
 #[test]
 fn transcript_working_dark() {
     goldens().assert("transcript-working-dark", &working_window(ThemeMode::Dark));
+}
+
+/// The design's session ([`feed::design`]) at `step` in `view`, alone in a
+/// window 900 by `height`, with what `open` opens. It opens Quiet rows and
+/// counts by their first call's line, and calls and thoughts by their own.
+fn design_window(
+    mode: ThemeMode,
+    view: prefs::TranscriptView,
+    step: usize,
+    height: f32,
+    open: &[(&str, &str)],
+) -> Screenshot {
+    use arko_studio::transcript::{AgentFilter, TranscriptView};
+    use gpui_kit::AppContext as _;
+
+    let mut app = ScreenshotApp::with_assets(Assets).unwrap();
+    let mut settings = Prefs::default();
+    settings.appearance.theme_mode = mode;
+    settings.appearance.motion = Motion::Off;
+    settings.view = view;
+    let backend = Arc::new(FakeBackend::sample("/arko", SystemTime::now()));
+    let startup = Startup::for_tests(backend)
+        .with_prefs(settings)
+        .with_fonts(fonts::bundled());
+    app.update(|cx| arko_studio::init(startup, cx));
+    let feed = feed::design(step);
+    let items = feed.subscribe().0.items;
+    let find = |line: &str| {
+        items
+            .iter()
+            .find(|item| item.text.starts_with(line))
+            .map(|item| item.id)
+            .unwrap_or_else(|| panic!("no item {line}"))
+    };
+    let open: Vec<(&str, u64)> = open
+        .iter()
+        .map(|(what, line)| (*what, find(line)))
+        .collect();
+    // The worker ran 2 s.
+    let now = chrono::Utc::now().timestamp_millis() + 2_000;
+    let mut opened = None;
+    let window = app
+        .open_window_with(size(px(900.), px(height)), 1., |options, cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
+                    view.set_clock(move || now, cx);
+                    view
+                })
+            })
+            .map(|(window, view)| {
+                opened = Some(view);
+                window
+            })
+        })
+        .unwrap();
+    let view = opened.unwrap();
+    app.run_until_parked();
+    app.update_window(window, |_, _, cx| {
+        view.update(cx, |view, cx| {
+            for (what, id) in open {
+                match what {
+                    "row" => view.set_row_open(id, true, cx),
+                    "count" => view.set_count_open(id, true, cx),
+                    _ => view.set_expanded(id, true, cx),
+                }
+            }
+        })
+    })
+    .unwrap();
+    app.capture(window).unwrap()
+}
+
+/// A state of the design's session, by its name, the view, the step it's
+/// played to, the window's height and what is opened ([`design_window`]).
+type DesignState = (
+    &'static str,
+    prefs::TranscriptView,
+    usize,
+    f32,
+    &'static [(&'static str, &'static str)],
+);
+
+/// The states of the design's session, each in light and dark. They are
+/// Quiet closed, Quiet with the reads' row and two of its calls open, a
+/// thought that streams under the reads' row, Full, Messages, and Messages
+/// with the turn's count open.
+#[test]
+fn transcript_design() {
+    use prefs::TranscriptView::{Full, Messages, Quiet};
+    let states: [DesignState; 6] = [
+        ("quiet-closed", Quiet, 33, 820., &[]),
+        (
+            "quiet-open",
+            Quiet,
+            33,
+            1100.,
+            &[
+                ("row", "read src/cache.rs"),
+                ("call", "read src/cache.rs"),
+                ("call", "read src/cache_tests.rs"),
+            ],
+        ),
+        (
+            "live",
+            Quiet,
+            12,
+            520.,
+            &[("row", "read src/cache.rs"), ("call", "read src/cache.rs")],
+        ),
+        ("full", Full, 33, 820., &[]),
+        ("messages", Messages, 33, 420., &[]),
+        (
+            "messages-open",
+            Messages,
+            33,
+            820.,
+            &[("count", "$ rm -rf")],
+        ),
+    ];
+    for (name, view, step, height, open) in states {
+        for (mode, scheme) in [(ThemeMode::Light, "light"), (ThemeMode::Dark, "dark")] {
+            goldens().assert(
+                &format!("transcript-design-{name}-{scheme}"),
+                &design_window(mode, view, step, height, open),
+            );
+        }
+    }
 }
 
 /// The representative transcript alone in a window `width` wide, its

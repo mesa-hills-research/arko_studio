@@ -397,7 +397,8 @@ pub enum TranscriptView {
     /// Everything.
     #[default]
     Full,
-    /// Calls grouped, thinking folded.
+    /// Calls in a few words, those of a kind together, and each thought
+    /// as its first line.
     Quiet,
     /// Only the messages, questions and answers.
     Messages,

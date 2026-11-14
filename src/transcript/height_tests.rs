@@ -6,7 +6,7 @@ use arko::remote::{Delivery, Feed, Kind, Level, Source, WorkerChange};
 use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, px};
 
 use super::height::BlockFacts;
-use super::model::RowKey;
+use super::model::{Rail, RowKey};
 use super::tests::{call, event, item_ids, load_all, open, result, say, settle, start, think};
 use super::{AgentFilter, TranscriptView};
 use crate::prefs;
@@ -151,6 +151,15 @@ pub(super) fn every_kind(feed: &Feed) {
         &[("to", "r1".into()), ("message", words.repeat(2).into())],
     );
     result(feed, "main", id, "message_agent", "Sent to r1.");
+    // A message whose first paragraph is cut, which Show all opens.
+    let message = format!("{}\n\nA second paragraph.", words.repeat(8));
+    let id = call(
+        feed,
+        "main",
+        "message_agent",
+        &[("to", "r1".into()), ("message", message.into())],
+    );
+    result(feed, "main", id, "message_agent", "Sent to r1.");
     let id = call(
         feed,
         "main",
@@ -177,6 +186,8 @@ pub(super) fn every_kind(feed: &Feed) {
         ),
         None,
     );
+    // A thought that stays closed, on its line.
+    think(feed, "A short thought.");
     feed.notice(Level::Warn, "rate limited, retrying in 2 s (attempt 1)");
     feed.notice(Level::Info, &words.repeat(3));
     let mut reply = String::new();
@@ -281,11 +292,33 @@ fn height(view: &TranscriptView, ix: usize, cx: &gpui_kit::App) -> (RowKey, f32,
             .get(&id)
             .and_then(|ui| ui.doc.as_ref()?.blocks.get(block))
             .is_some_and(|block| !matches!(block.facts, BlockFacts::Code(_))),
-        // An open call whose line wraps.
+        // An open call whose line cut its words, which show whole under it
+        // and wrap, or a long command that wraps in its strip.
         RowKey::Call(id) => {
+            let room = super::row::room(width, row.rail != Rail::No, metrics.rem);
             view.ui.get(&id).and_then(|ui| ui.expanded) == Some(true)
                 && view.model.entry(id).is_some_and(|entry| {
-                    super::row::opens(entry) && super::row::shown_given(&entry.item).is_none()
+                    let item = &entry.item;
+                    match super::row::shown_given(item) {
+                        Some(super::row::Given::Detail(command))
+                            if super::row::strip_says_it(item) =>
+                        {
+                            command.chars().count() as f32 * metrics.mono.advance() > room
+                        }
+                        _ => view.call_cut(item, room, &metrics),
+                    }
+                })
+        }
+        RowKey::Group(first) => {
+            let room = super::row::room(width, false, metrics.rem);
+            view.group_open(first)
+                && view.quiet.get(&first).is_some_and(|row| {
+                    !row.merged
+                        && view.row_cut(row, room, &metrics)
+                        && view
+                            .model
+                            .entry(first)
+                            .is_some_and(|entry| !super::row::strip_says_it(&entry.item))
                 })
         }
         _ => false,
@@ -487,7 +520,8 @@ fn rows_are_estimated_at_the_height_they_measure(cx: &mut TestAppContext) {
     cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.render_markdown = false));
     settle(cx, window);
     assert_close(&heights(cx, window, &view), 800.);
-    // Calls in a group (Quiet) and counted (Messages).
+    // Calls in Quiet rows, closed and then open, with the calls of a row of
+    // several on its rail, and counted (Messages), closed and then open.
     cx.update(|cx| {
         prefs::update(cx, |prefs| {
             prefs.appearance.render_markdown = true;
@@ -498,10 +532,30 @@ fn rows_are_estimated_at_the_height_they_measure(cx: &mut TestAppContext) {
     let keys = super::tests::keys(&view, cx);
     assert!(keys.iter().any(|key| matches!(key, RowKey::Group(_))));
     assert_close(&heights(cx, window, &view), 800.);
+    view.update(cx, |view, cx| {
+        for key in keys {
+            if let RowKey::Group(first) = key {
+                view.set_row_open(first, true, cx);
+            }
+        }
+    });
+    settle(cx, window);
+    let rails = cx.read(|cx| {
+        let view = view.read(cx);
+        view.rows.iter().filter(|row| row.rail != Rail::No).count()
+    });
+    assert!(rails >= 2, "{rails} rows on rails");
+    assert_close(&heights(cx, window, &view), 800.);
     cx.update(|cx| prefs::update(cx, |prefs| prefs.view = prefs::TranscriptView::Messages));
     settle(cx, window);
     let keys = super::tests::keys(&view, cx);
-    assert!(keys.iter().any(|key| matches!(key, RowKey::Count(_))));
+    let Some(&RowKey::Count(first)) = keys.iter().find(|key| matches!(key, RowKey::Count(_)))
+    else {
+        panic!("no count in {keys:?}");
+    };
+    assert_close(&heights(cx, window, &view), 800.);
+    view.update(cx, |view, cx| view.set_count_open(first, true, cx));
+    settle(cx, window);
     assert_close(&heights(cx, window, &view), 800.);
 }
 

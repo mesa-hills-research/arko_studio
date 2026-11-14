@@ -509,46 +509,39 @@ fn the_source_of_a_long_reply_shows_where_the_reader_reads(cx: &mut TestAppConte
     assert_eq!(row_top(cx, window, block(25, true)), Some(top));
 }
 
+/// A Quiet row of one call that the reader opened keeps its form. The next
+/// call of its kind starts a row of its own, and the open row stays where
+/// the reader reads it.
 #[gpui_kit::test]
-fn a_live_quiet_run_keeps_the_call_the_reader_opened(cx: &mut TestAppContext) {
+fn a_row_of_one_call_the_reader_opened_keeps_its_form(cx: &mut TestAppContext) {
     start(cx);
     cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Quiet));
     let feed = Feed::new("main");
-    feed.user("Run the tests", Source::App, Delivery::Turn);
+    turns(&feed, 6, 1);
+    feed.user("Read the parser", Source::App, Delivery::Turn);
     feed.turn_started();
-    let output: String = (1..=60).map(|n| format!("line {n}\n")).collect();
-    for n in 0..3 {
-        let id = call(
-            &feed,
-            "main",
-            "shell",
-            &[("command", format!("cargo test -p c{n}").into())],
-        );
-        result(
-            &feed,
-            "main",
-            id,
-            "shell",
-            &format!("exit code 0, 1.0 s\n{output}"),
-        );
-    }
+    let lines: String = (1..=30).map(|n| format!("{n} | line {n}\n")).collect();
+    let first = call(&feed, "main", "read_file", &[("path", "src/a.rs".into())]);
+    result(&feed, "main", first, "read_file", &lines);
     let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
-    let calls: Vec<u64> = item_ids(&feed)
-        .into_iter()
-        .filter(|(_, kind)| *kind == Kind::Call)
-        .map(|(id, _)| id)
-        .collect();
-    let third = calls[2];
-    view.update(cx, |view, cx| view.toggle(third, false, cx));
+    let read = *ids_of(&feed, Kind::Call).last().unwrap();
+    view.update(cx, |view, cx| view.toggle_group(read, cx));
     settle(cx, window);
-    let top = scroll_to_key(cx, window, &view, RowKey::Call(third));
-    // A fourth call starts: the run folds into a group, which stays open
-    // on the call the reader reads.
-    call(&feed, "main", "shell", &[("command", "cargo build".into())]);
+    let top = scroll_to_key(cx, window, &view, RowKey::Group(read));
+    let second = call(&feed, "main", "read_file", &[("path", "src/b.rs".into())]);
+    result(&feed, "main", second, "read_file", "1 | fn b() {}\n");
     settle(cx, window);
+    let next = *ids_of(&feed, Kind::Call).last().unwrap();
     let rows = keys(&view, cx);
-    assert!(rows.contains(&RowKey::Group(calls[0])), "{rows:?}");
-    assert_eq!(row_top(cx, window, RowKey::Call(third)), Some(top));
+    assert!(rows.contains(&RowKey::Group(read)), "{rows:?}");
+    assert!(rows.contains(&RowKey::Group(next)), "{rows:?}");
+    assert_eq!(row_top(cx, window, RowKey::Group(read)), Some(top));
+    // A row the reader didn't open takes the next call of its kind.
+    let third = call(&feed, "main", "read_file", &[("path", "src/c.rs".into())]);
+    result(&feed, "main", third, "read_file", "1 | fn c() {}\n");
+    settle(cx, window);
+    let label = cx.read(|cx| view.read(cx).row_label(RowKey::Group(next)));
+    assert_eq!(label.as_ref(), "Read b.rs and c.rs");
 }
 
 #[gpui_kit::test]
@@ -1403,9 +1396,9 @@ fn turning(cx: &mut TestAppContext, window: AnyWindowHandle, id: u64) -> bool {
 }
 
 /// Every running indicator turns, as it paints: a call's and a worker
-/// card's together. Thinking that streams shimmers, a dozen times a second.
+/// card's together, and then a thought's as it streams.
 #[gpui_kit::test]
-fn running_indicators_turn_together_and_thinking_shimmers(cx: &mut TestAppContext) {
+fn running_indicators_turn_together(cx: &mut TestAppContext) {
     start(cx);
     cx.update(|cx| {
         prefs::update(cx, |prefs| prefs.appearance.motion = prefs::Motion::On);
@@ -1431,12 +1424,17 @@ fn running_indicators_turn_together_and_thinking_shimmers(cx: &mut TestAppContex
     feed.worker("r1", "", WorkerChange::Finished { report: "Done." });
     think(&feed, "hmm");
     settle(cx, window);
-    // Following the thinking scrolled the transcript, which shows the
-    // scrollbar. It fades away two seconds later, in half a second of frames
-    // of its own, and then thinking shimmers alone.
+    // The thought that streams is the live line, its spinner turning.
     frames_asked(cx, window, 3 * 60);
+    let thought = *ids_of(&feed, Kind::Thinking).last().unwrap();
+    let live = cx
+        .update_window(window, |_, window, _| {
+            window.try_find(("live", thought)).is_some()
+        })
+        .unwrap();
+    assert!(live);
     let draws = draws_in_a_second(cx, window, &view);
-    assert!((10..=16).contains(&draws), "{draws} draws");
+    assert!((58..=62).contains(&draws), "{draws} draws");
 }
 
 /// How many of `count` frames of a 60 Hz display, one every 1/60 second of
@@ -2359,8 +2357,8 @@ fn the_views_show_more_or_less_of_the_same_feed(cx: &mut TestAppContext) {
     let quiet = keys(&view, cx);
     assert!(quiet.contains(&RowKey::Group(first_call)));
     assert!(!quiet.iter().any(|key| matches!(key, RowKey::Call(_))));
-    // Opening the group shows its calls.
-    view.update(cx, |view, cx| view.toggle(first_call, false, cx));
+    // Opening the row shows its calls.
+    view.update(cx, |view, cx| view.toggle_group(first_call, cx));
     settle(cx, window);
     assert_eq!(
         keys(&view, cx)
@@ -2374,19 +2372,24 @@ fn the_views_show_more_or_less_of_the_same_feed(cx: &mut TestAppContext) {
     let messages = keys(&view, cx);
     assert!(messages.contains(&RowKey::Count(first_call)));
     assert!(!messages.iter().any(|key| matches!(key, RowKey::Turn(_))));
-    // Its count opens the full view at the calls.
-    view.update(cx, |view, cx| view.open_run(first_call, cx));
+    // Its count opens to the turn's work as Quiet shows it, under it.
+    view.update(cx, |view, cx| view.toggle_count(first_call, cx));
     settle(cx, window);
-    assert_eq!(cx.read(|cx| prefs::get(cx).view), View::Full);
-    assert_eq!(keys(&view, cx), full);
+    assert_eq!(cx.read(|cx| prefs::get(cx).view), View::Messages);
+    let open = keys(&view, cx);
+    let count = open
+        .iter()
+        .position(|key| *key == RowKey::Count(first_call))
+        .unwrap();
+    assert_eq!(open[count + 1], RowKey::Group(first_call));
 }
 
 #[gpui_kit::test]
-fn thinking_shimmers_while_it_streams_then_says_how_long(cx: &mut TestAppContext) {
+fn a_thought_streams_closed_and_expand_thinking_opens_it_in_full(cx: &mut TestAppContext) {
     start(cx);
     let feed = Feed::new("main");
     feed.turn_started();
-    think(&feed, "Weighing the options");
+    think(&feed, "Weighing the options.\n\nThe first wins.");
     let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
     let thinking = item_ids(&feed)[0].0;
     cx.read(|cx| {
@@ -2395,7 +2398,7 @@ fn thinking_shimmers_while_it_streams_then_says_how_long(cx: &mut TestAppContext
     });
     // Folded by default: one row. Opened: its text's blocks follow.
     assert_eq!(keys(&view, cx), [RowKey::Thinking(thinking)]);
-    view.update(cx, |view, cx| view.toggle(thinking, false, cx));
+    view.update(cx, |view, cx| view.toggle(thinking, cx));
     settle(cx, window);
     assert!(keys(&view, cx).iter().any(block(thinking, 0)));
     say(&feed, "main", "Done thinking.");
@@ -2464,7 +2467,7 @@ fn a_failed_call_says_why_and_its_details_open(cx: &mut TestAppContext) {
         window.click(("call-row", shell), cx);
     })
     .unwrap();
-    view.update(cx, |view, cx| view.toggle(edit_id, false, cx));
+    view.update(cx, |view, cx| view.toggle(edit_id, cx));
     settle(cx, window);
     cx.read(|cx| {
         let view = view.read(cx);
@@ -2544,7 +2547,7 @@ fn a_call_opens_to_its_content_once(cx: &mut TestAppContext) {
     cx.read(|cx| {
         let model = &view.read(cx).model;
         let entry = |at: usize| model.entry(calls[at]).unwrap();
-        let output = |at: usize| shown_output(entry(at)).map(|text| text.to_string());
+        let output = |at: usize| shown_output(entry(at), true).map(|text| text.to_string());
         assert!(shown_given(&entry(0).item).is_none());
         assert_eq!(
             output(0).as_deref(),
@@ -2645,16 +2648,16 @@ fn a_calls_line_and_its_content_say_each_thing_once(cx: &mut TestAppContext) {
     cx.read(|cx| {
         let model = &view.read(cx).model;
         let entry = |at: usize| model.entry(calls[at]).unwrap();
-        let output = |at: usize| shown_output(entry(at)).map(|text| text.to_string());
+        let output = |at: usize| shown_output(entry(at), true).map(|text| text.to_string());
         assert_eq!(call_line(&entry(0).item), "message r1");
         assert_eq!(output(0).as_deref(), Some("Use plan B"));
         assert_eq!(call_line(&entry(1).item), "create_issue (github)");
         assert!(output(1).unwrap().contains("Tokens split across chunks"));
         assert_eq!(output(2).as_deref(), Some("1  fn b() {}"));
-        assert!(!opens(entry(3)));
+        assert!(!opens(entry(3), true));
         assert!(shown_given(&entry(4).item).is_none());
         assert_eq!(output(4), None);
-        assert!(!opens(entry(4)));
+        assert!(!opens(entry(4), true));
         assert!(output(5).unwrap().contains("The tokenizer is in"));
     });
 }
@@ -3126,7 +3129,12 @@ fn quiet_shows_a_started_worker_as_its_card_alone(cx: &mut TestAppContext) {
         settle(cx, window);
         keys(&view, cx)
             .into_iter()
-            .filter(|key| matches!(key, RowKey::Call(_) | RowKey::Worker(_) | RowKey::Count(_)))
+            .filter(|key| {
+                matches!(
+                    key,
+                    RowKey::Call(_) | RowKey::Group(_) | RowKey::Worker(_) | RowKey::Count(_)
+                )
+            })
             .collect::<Vec<_>>()
     };
     // Only the first call named its worker.
@@ -3143,10 +3151,10 @@ fn quiet_shows_a_started_worker_as_its_card_alone(cx: &mut TestAppContext) {
         rows(cx, View::Quiet),
         [
             RowKey::Worker(card),
-            RowKey::Call(calls[1]),
+            RowKey::Group(calls[1]),
             RowKey::Worker(other),
-            RowKey::Call(calls[2]),
-            RowKey::Call(calls[3]),
+            RowKey::Group(calls[2]),
+            RowKey::Group(calls[3]),
         ]
     );
     assert_eq!(
@@ -3160,15 +3168,21 @@ fn quiet_shows_a_started_worker_as_its_card_alone(cx: &mut TestAppContext) {
             RowKey::Call(calls[3]),
         ]
     );
-    let messages = rows(cx, View::Messages);
-    assert_eq!(messages.len(), 5, "{messages:?}");
-    assert!(messages.contains(&RowKey::Worker(card)));
+    // One count for the turn's calls, where its first was.
+    assert_eq!(
+        rows(cx, View::Messages),
+        [
+            RowKey::Count(calls[0]),
+            RowKey::Worker(card),
+            RowKey::Worker(other),
+        ]
+    );
 }
 
-/// A start the Quiet view leaves out doesn't push a run of calls into a
-/// group.
+/// A start the Quiet view leaves out neither joins a Quiet row nor ends
+/// one, so the reads on either side of it are one row.
 #[gpui_kit::test]
-fn quiet_does_not_fold_a_hidden_start_into_a_group(cx: &mut TestAppContext) {
+fn quiet_does_not_end_a_row_at_a_hidden_start(cx: &mut TestAppContext) {
     start(cx);
     let feed = Feed::new("main");
     feed.user("Look around", Source::App, Delivery::Turn);
@@ -3197,32 +3211,19 @@ fn quiet_does_not_fold_a_hidden_start_into_a_group(cx: &mut TestAppContext) {
         .map(|(id, _)| id)
         .collect();
     assert_eq!(calls.len(), 4);
-    // Three calls show in a row. The fourth is the start.
     let quiet = keys(&view, cx);
-    assert!(
-        !quiet.iter().any(|key| matches!(key, RowKey::Group(_))),
-        "{quiet:?}"
-    );
     let shown: Vec<RowKey> = quiet
         .iter()
         .copied()
-        .filter(|key| matches!(key, RowKey::Call(_)))
+        .filter(|key| matches!(key, RowKey::Call(_) | RowKey::Group(_)))
         .collect();
-    assert_eq!(
-        shown,
-        [
-            RowKey::Call(calls[0]),
-            RowKey::Call(calls[1]),
-            RowKey::Call(calls[3])
-        ]
-    );
-    // One more call folds them, and the group counts the four it stands for.
+    assert_eq!(shown, [RowKey::Group(calls[0])]);
+    let label = cx.read(|cx| view.read(cx).row_label(RowKey::Group(calls[0])));
+    assert_eq!(label.as_ref(), "Read 3 files in src");
     read(&feed, "src/d.rs");
     settle(cx, window);
-    let quiet = keys(&view, cx);
-    assert!(quiet.contains(&RowKey::Group(calls[0])), "{quiet:?}");
     let label = cx.read(|cx| view.read(cx).row_label(RowKey::Group(calls[0])));
-    assert_eq!(label.as_ref(), "4 calls");
+    assert_eq!(label.as_ref(), "Read 4 files in src");
 }
 
 #[gpui_kit::test]
@@ -4525,12 +4526,11 @@ fn drawn_in(
     .unwrap()
 }
 
-/// A Quiet group of more than three calls folds them, and its header offers
-/// what the row of the call it names would: Move to background for the
-/// running call that can move, else Stop for the latest call whose job
-/// runs. Opening the group moves the buttons to the calls' rows.
+/// A Quiet row offers what its calls offer while they or their jobs run,
+/// Move to background and Stop, on its line, open or not. The calls' lines
+/// on its rail don't offer them again.
 #[gpui_kit::test]
-fn a_folded_groups_header_offers_move_and_stop(cx: &mut TestAppContext) {
+fn a_quiet_rows_line_offers_move_and_stop(cx: &mut TestAppContext) {
     use arko::remote::{JobKind, JobState, MAIN_AGENT};
 
     start(cx);
@@ -4538,8 +4538,6 @@ fn a_folded_groups_header_offers_move_and_stop(cx: &mut TestAppContext) {
     let feed = Feed::new("main");
     feed.user("Serve it, then build", Source::App, Delivery::Turn);
     feed.turn_started();
-    let read = call(&feed, "main", "read_file", &[("path", "src/a.rs".into())]);
-    result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
     let (served, job) = (
         call(
             &feed,
@@ -4549,35 +4547,38 @@ fn a_folded_groups_header_offers_move_and_stop(cx: &mut TestAppContext) {
         ),
         Uuid::new_v4(),
     );
+    feed.job_started(
+        arko::remote::JobStart::new(job, MAIN_AGENT, JobKind::Command, "npm run dev")
+            .made_by(served),
+    );
     result(
         &feed,
         "main",
         served,
         "terminal_start",
-        &format!("Started job {job}."),
+        &format!("{{\"job_id\":\"{job}\",\"state\":\"running\"}}"),
     );
-    feed.job_started(
-        arko::remote::JobStart::new(job, MAIN_AGENT, JobKind::Command, "npm run dev")
-            .made_by(served),
-    );
-    let read = call(&feed, "main", "read_file", &[("path", "src/b.rs".into())]);
-    result(&feed, "main", read, "read_file", "1 | fn b() {}\n");
     let building = call(&feed, "main", "shell", &[("command", "cargo build".into())]);
-    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
     let calls = ids_of(&feed, Kind::Call);
-    let (serving, building_item) = (calls[1], calls[3]);
+    let (serving, building_item) = (calls[0], calls[1]);
     view.update(cx, |view, cx| view.set_movable(&[building_item], cx));
     settle(cx, window);
-    let group = super::row::element_id(RowKey::Group(calls[0]));
-    let rows = keys(&view, cx);
-    assert!(rows.contains(&RowKey::Group(calls[0])), "{rows:?}");
-    assert!(!rows.contains(&RowKey::Call(building_item)), "{rows:?}");
-
-    // Folded, the header names the running command and offers to move it.
+    let row_of = |cx: &mut TestAppContext, call: u64| {
+        cx.read(|cx| {
+            let view = view.read(cx);
+            view.quiet
+                .iter()
+                .find(|(_, row)| row.members.contains(&call))
+                .map(|(first, _)| super::row::element_id(RowKey::Group(*first)))
+                .unwrap()
+        })
+    };
     let move_button = ("move-call", building_item);
     let stop_button = ("stop-job", serving);
-    assert!(drawn_in(cx, window, move_button, group.clone()));
-    assert!(!drawn(cx, window, stop_button), "one call at a time");
+    let (building_row, serving_row) = (row_of(cx, building_item), row_of(cx, serving));
+    assert!(drawn_in(cx, window, move_button, building_row));
+    assert!(drawn_in(cx, window, stop_button, serving_row));
     let (events, _subscription) = events_of(&view, cx);
     cx.update_window(window, |_, window, cx| window.click(move_button, cx))
         .unwrap();
@@ -4587,22 +4588,29 @@ fn a_folded_groups_header_offers_move_and_stop(cx: &mut TestAppContext) {
         [TranscriptEvent::MoveToBackground(building_item)]
     );
 
-    // Opened, the calls' rows offer both, and the header doesn't.
-    view.update(cx, |view, cx| view.toggle_group(calls[0], cx));
+    // Open, the line still offers them, and the calls' lines don't.
+    let first = cx.read(|cx| {
+        let view = view.read(cx);
+        view.quiet
+            .iter()
+            .find(|(_, row)| row.members.contains(&serving))
+            .map(|(first, _)| *first)
+            .unwrap()
+    });
+    view.update(cx, |view, cx| view.toggle_group(first, cx));
     settle(cx, window);
-    for (button, call) in [(stop_button, serving), (move_button, building_item)] {
+    let serving_row = row_of(cx, serving);
+    assert!(drawn_in(cx, window, stop_button, serving_row));
+    for call in [serving, building_item] {
         let row = super::row::element_id(RowKey::Call(call));
-        assert!(drawn_in(cx, window, button, row), "{button:?}");
-        assert!(!drawn_in(cx, window, button, group.clone()), "{button:?}");
+        assert!(!drawn_in(cx, window, stop_button, row.clone()));
+        assert!(!drawn_in(cx, window, move_button, row));
     }
 
-    // Folded again, with the command done, the header names the job's call
-    // and offers to stop it.
-    view.update(cx, |view, cx| view.toggle_group(calls[0], cx));
+    // The command ends, and then the job, and nothing is offered.
     result(&feed, "main", building, "shell", "exit code 0, 1.0 s\n");
     view.update(cx, |view, cx| view.set_movable(&[], cx));
     settle(cx, window);
-    assert!(drawn_in(cx, window, stop_button, group.clone()));
     assert!(!drawn(cx, window, move_button));
     events.borrow_mut().clear();
     cx.update_window(window, |_, window, cx| window.click(stop_button, cx))
@@ -4612,8 +4620,6 @@ fn a_folded_groups_header_offers_move_and_stop(cx: &mut TestAppContext) {
         *events.borrow(),
         [TranscriptEvent::StopJob(job.to_string().into())]
     );
-
-    // The job ends: nothing to offer.
     feed.job_ended(job, JobState::Stopped, None);
     settle(cx, window);
     assert!(!drawn(cx, window, stop_button));

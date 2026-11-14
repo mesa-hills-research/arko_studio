@@ -1,0 +1,681 @@
+//! What a line of work says and opens to, what the find reads of it, and
+//! how an open thought, an open count and Messages' live line behave.
+
+use arko::remote::{Delivery, Feed, Kind, Source};
+use arko_agents::AgentEvent;
+use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
+
+use super::find::Place;
+use super::model::RowKey;
+use super::tests::{call, event, item_ids, keys, open, result, say, settle, start, think};
+use super::{AgentFilter, TranscriptView};
+use crate::prefs::{self, TranscriptView as View};
+
+fn ids_of(feed: &Feed, kind: Kind) -> Vec<u64> {
+    item_ids(feed)
+        .into_iter()
+        .filter(|(_, found)| *found == kind)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+fn set_view(cx: &mut TestAppContext, view: View) {
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = view));
+}
+
+/// Fails the call `id` of `tool` with `reason`, as a session does.
+fn fail(feed: &Feed, id: uuid::Uuid, tool: &str, reason: &str) {
+    feed.event(
+        &event(
+            "main",
+            AgentEvent::ErrorEncountered {
+                error_message: format!("Tool '{tool}' execution failed: {reason}"),
+                requires_approval_to_retry: false,
+                tool_call_id: Some(id),
+                error_kind: None,
+            },
+        ),
+        None,
+    );
+}
+
+/// An edit of `src/a.rs`.
+fn edit(feed: &Feed) -> uuid::Uuid {
+    call(
+        feed,
+        "main",
+        "edit_file",
+        &[
+            ("path", "src/a.rs".into()),
+            ("old_string", "fn a() {}".into()),
+            ("new_string", "fn a() -> u8 { 1 }".into()),
+        ],
+    )
+}
+
+fn drawn(cx: &mut TestAppContext, window: AnyWindowHandle, id: (&'static str, u64)) -> bool {
+    cx.update_window(window, |_, window, _| window.try_find(id).is_some())
+        .unwrap()
+}
+
+fn height(cx: &mut TestAppContext, window: AnyWindowHandle, key: RowKey) -> f32 {
+    cx.update_window(window, |_, window, _| {
+        f32::from(
+            window
+                .find(super::row::element_id(key))
+                .bounds()
+                .size
+                .height,
+        )
+    })
+    .unwrap()
+}
+
+/// A Quiet row says only that its call failed, so it opens to why, even
+/// where the reason is short enough for Full's line to say it whole: a
+/// file that isn't there, an edit whose text isn't found.
+#[gpui_kit::test]
+fn a_failed_quiet_row_opens_to_why_it_failed(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Fix it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let read = call(
+        &feed,
+        "main",
+        "read_file",
+        &[("path", "src/stream.rs".into())],
+    );
+    fail(&feed, read, "read_file", "src/stream.rs doesn't exist.");
+    say(&feed, "main", "Not there. The edit, then.");
+    let edited = edit(&feed);
+    fail(
+        &feed,
+        edited,
+        "edit_file",
+        "old_string was not found in src/a.rs.",
+    );
+    feed.reply("Neither worked.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    for id in ids_of(&feed, Kind::Call) {
+        assert!(cx.read(|cx| view.read(cx).group_opens(id)), "{id}");
+        view.update(cx, |view, cx| view.set_row_open(id, true, cx));
+        settle(cx, window);
+        assert!(
+            drawn(cx, window, ("call-output", id)),
+            "{id} shows why it failed"
+        );
+    }
+}
+
+/// A Full line whose outcome is cut at the reader's width opens to the
+/// outcome whole.
+#[gpui_kit::test]
+fn a_full_line_that_cuts_its_outcome_opens_to_it(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Read it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let read = call(
+        &feed,
+        "main",
+        "read_file",
+        &[("path", "src/stream.rs".into())],
+    );
+    fail(
+        &feed,
+        read,
+        "read_file",
+        "src/stream.rs doesn't exist, and the tokenizer reads no stream.",
+    );
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    cx.simulate_window_resize(
+        window,
+        gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(600.)),
+    );
+    settle(cx, window);
+    let id = ids_of(&feed, Kind::Call)[0];
+    assert!(cx.read(|cx| view.read(cx).call_opens(id, false)));
+    view.update(cx, |view, cx| view.set_expanded(id, true, cx));
+    settle(cx, window);
+    assert!(drawn(cx, window, ("call-output", id)));
+}
+
+/// The thoughts a reader meets, one line each, cut at word ends to lengths
+/// around what fits the column. Drawn in the app's fonts, each whose line
+/// is cut opens, and so again once the zoom changes.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_thought_whose_line_is_cut_opens() {
+    use super::height_tests::real;
+    use gpui_kit::component::ActiveTheme as _;
+    use gpui_kit::{FontStyle, HeadlessAppContext, TextRun, font};
+
+    const THOUGHTS: [&str; 4] = [
+        "The user wants the stale cache test fixed, so I should read the test first and then look at how the cache decides that a value has expired before changing anything else in the module.",
+        "Now WAIT for the build, then run cargo test --locked --lib transcript:: and look at which of the FOUR goldens changed, since the MAIN one should stay as it was before this.",
+        "Wow, the migration will add MANY NEW COLUMNS: OWNER, GROUP, MODE, MTIME and CTIME, which the old rows lack, so a default must come from somewhere, and NULL is the honest one.",
+        "Reading the README again to confirm the install command and the minimum supported version before I write the docs page, since the changelog and the README disagree about it today.",
+    ];
+    let mut cx = real::app();
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.view = View::Quiet));
+    let feed = Feed::new("main");
+    feed.user("Go", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let mut texts = Vec::new();
+    for thought in THOUGHTS {
+        let ends = thought
+            .char_indices()
+            .filter(|(at, c)| *c == ' ' && (70..=150).contains(at))
+            .map(|(at, _)| at);
+        for end in ends {
+            think(&feed, &thought[..end]);
+            say(&feed, "main", "ok");
+            texts.push(thought[..end].to_string());
+        }
+    }
+    let width = 800.;
+    let (window, view) = real::open(&mut cx, &feed, (width, 600.), true);
+    real::settle(&mut cx, window);
+    let thoughts = ids_of(&feed, Kind::Thinking);
+    // How many lines are cut, each drawn so its width is known.
+    let cut = |cx: &mut HeadlessAppContext| {
+        let mut cut = 0;
+        for (id, text) in thoughts.iter().zip(&texts) {
+            cx.update(|cx| {
+                view.update(cx, |view, cx| {
+                    let ix = view
+                        .rows
+                        .iter()
+                        .position(|row| row.key == RowKey::Thinking(*id))
+                        .unwrap();
+                    view.list.scroll_to(ix, gpui_kit::px(0.));
+                    cx.notify();
+                })
+            });
+            real::settle(cx, window);
+            let (opens, room, shaped) = cx
+                .update_window(window, |_, window, cx| {
+                    let view = view.read(cx);
+                    let m = view.metrics.clone().unwrap();
+                    let mut italic = font(cx.theme().font_family.clone());
+                    italic.style = FontStyle::Italic;
+                    let run = TextRun {
+                        len: text.len(),
+                        font: italic,
+                        color: gpui_kit::Hsla::default(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let size = gpui_kit::px(m.rem * super::row::THOUGHT_SIZE);
+                    let shaped = window.text_system().layout_line(text, size, &[run], None);
+                    (
+                        view.thought_opens(*id, false),
+                        super::row::room(width, false, m.rem),
+                        f32::from(shaped.width),
+                    )
+                })
+                .unwrap();
+            if shaped > room {
+                cut += 1;
+                assert!(opens, "{text:?} is cut ({shaped} px in {room}) and opens");
+            }
+        }
+        cut
+    };
+    let before = cut(&mut cx);
+    assert!(before > 0);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.zoom = 1.5));
+    real::settle(&mut cx, window);
+    assert!(cut(&mut cx) > before);
+}
+
+/// Quiet. The find reads a Quiet row's words, as the row draws them, and
+/// marks the word there without opening the row.
+#[gpui_kit::test]
+fn the_find_marks_a_quiet_rows_own_words(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let read = call(
+        &feed,
+        "main",
+        "read_file",
+        &[("path", "src/zebra.rs".into())],
+    );
+    result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let id = ids_of(&feed, Kind::Call)[0];
+    let status = view.update(cx, |view, cx| view.find("zebra", cx));
+    settle(cx, window);
+    assert_eq!(status.total, 1);
+    cx.read(|cx| {
+        let view = view.read(cx);
+        assert_eq!(view.match_ranges(id, Place::Row).len(), 1);
+        assert!(!view.group_open(id), "the row's own line shows the match");
+    });
+}
+
+/// Quiet. The find lands on a word in the reason an edit failed and opens
+/// its row, which shows what the reader's own click shows, the diff too.
+#[gpui_kit::test]
+fn the_find_opens_an_edits_row_as_the_reader_does(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Fix it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let edited = edit(&feed);
+    fail(
+        &feed,
+        edited,
+        "edit_file",
+        "old_string was not found anywhere in quagga.",
+    );
+    feed.reply("It didn't apply.");
+    feed.turn_ended("1 s", None);
+    let id = ids_of(&feed, Kind::Call)[0];
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let status = view.update(cx, |view, cx| view.find("anywhere", cx));
+    settle(cx, window);
+    assert_eq!(status.total, 1);
+    assert!(cx.read(|cx| view.read(cx).group_open(id)));
+    let by_find = height(cx, window, RowKey::Group(id));
+    let (other, reader) = open(cx, &feed, AgentFilter::Main, 600.);
+    reader.update(cx, |view, cx| view.set_row_open(id, true, cx));
+    settle(cx, other);
+    assert_eq!(by_find, height(cx, other, RowKey::Group(id)));
+}
+
+/// A turn whose count is open, with a thought and a read that say the
+/// word looked for.
+fn open_count(cx: &mut TestAppContext) -> (Feed, AnyWindowHandle, Entity<TranscriptView>) {
+    start(cx);
+    set_view(cx, View::Messages);
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    think(&feed, "The zebra module first.");
+    let read = call(
+        &feed,
+        "main",
+        "read_file",
+        &[("path", "src/zebra.rs".into())],
+    );
+    result(&feed, "main", read, "read_file", "1 | fn stripes() {}\n");
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let first = ids_of(&feed, Kind::Call)[0];
+    view.update(cx, |view, cx| view.set_count_open(first, true, cx));
+    settle(cx, window);
+    (feed, window, view)
+}
+
+/// Messages. The find covers what a count the reader opened shows, its
+/// thought and its rows.
+#[gpui_kit::test]
+fn the_find_covers_what_an_open_count_shows(cx: &mut TestAppContext) {
+    let (feed, window, view) = open_count(cx);
+    let thought = ids_of(&feed, Kind::Thinking)[0];
+    assert!(keys(&view, cx).contains(&RowKey::Thinking(thought)));
+    let status = view.update(cx, |view, cx| view.find("zebra", cx));
+    settle(cx, window);
+    assert_eq!(status.total, 2, "the thought and the row's words");
+}
+
+/// Messages. An open count shows its turn's work as Quiet does, and the
+/// turn's footer, which Messages leaves out, stays out.
+#[gpui_kit::test]
+fn an_open_count_leaves_the_footer_to_messages(cx: &mut TestAppContext) {
+    let (_, _, view) = open_count(cx);
+    let rows = keys(&view, cx);
+    assert!(
+        !rows.iter().any(|key| matches!(key, RowKey::Turn(_))),
+        "{rows:?}"
+    );
+}
+
+/// The reader scrolled up, a thought's line is the first row on screen,
+/// and they open it. Its first paragraph stays where its line was.
+#[gpui_kit::test]
+fn the_thought_opened_at_the_top_of_the_screen_stays_there(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    for turn in 0..20 {
+        feed.user(&format!("Question {turn}"), Source::App, Delivery::Turn);
+        feed.turn_started();
+        think(
+            &feed,
+            &format!("Turn {turn}, the first paragraph.\n\nThe second.\n\nThe third.\n\nThe last."),
+        );
+        let read = call(&feed, "main", "read_file", &[("path", "src/a.rs".into())]);
+        result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
+        feed.reply("Answer.\n\nMore of it.");
+        feed.turn_ended("1 s", None);
+    }
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
+    super::tests::load_all(cx, window, &view);
+    let thought = ids_of(&feed, Kind::Thinking)[10];
+    let ix = keys(&view, cx)
+        .iter()
+        .position(|key| *key == RowKey::Thinking(thought))
+        .unwrap();
+    view.update(cx, |view, cx| {
+        view.list.scroll_to(ix, gpui_kit::px(0.));
+        cx.notify();
+    });
+    settle(cx, window);
+    cx.update_window(window, |_, window, cx| {
+        window.click(("thinking-toggle", thought), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    let first = keys(&view, cx)
+        .iter()
+        .position(|key| matches!(key, RowKey::Block { id, block: 0, .. } if *id == thought))
+        .unwrap();
+    assert_eq!(cx.read(|cx| view.read(cx).list.top().item_ix), first);
+}
+
+/// An open thought with a long code block, and the thought's rows.
+fn open_thought(
+    cx: &mut TestAppContext,
+    text: &str,
+) -> (u64, AnyWindowHandle, Entity<TranscriptView>) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    think(&feed, text);
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 1600.);
+    let thought = ids_of(&feed, Kind::Thinking)[0];
+    cx.update_window(window, |_, window, cx| {
+        window.click(("thinking-toggle", thought), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    (thought, window, view)
+}
+
+fn is_open(cx: &mut TestAppContext, view: &Entity<TranscriptView>, thought: u64) -> bool {
+    keys(view, cx)
+        .iter()
+        .any(|key| matches!(key, RowKey::Block { id, .. } if *id == thought))
+}
+
+/// Show all, under a long code block of an open thought, shows the code
+/// whole and leaves the thought open.
+#[gpui_kit::test]
+fn show_all_in_an_open_thought_keeps_it_open(cx: &mut TestAppContext) {
+    let code: String = (1..=60).map(|n| format!("line {n}\n")).collect();
+    let (thought, window, view) =
+        open_thought(cx, &format!("The listing I mean.\n\n```text\n{code}```\n"));
+    assert!(is_open(cx, &view, thought));
+    cx.update_window(window, |_, window, cx| window.click("show-all", cx))
+        .unwrap();
+    settle(cx, window);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    let uncapped = cx.read(|cx| {
+        view.read(cx)
+            .ui
+            .get(&thought)
+            .is_some_and(|ui| !ui.uncapped.is_empty())
+    });
+    assert!(uncapped);
+    assert!(is_open(cx, &view, thought));
+}
+
+/// A double-click on an open thought, as a reader makes one to select a
+/// word, leaves it open. A single click closes it.
+#[gpui_kit::test]
+fn a_double_click_on_an_open_thought_leaves_it_open(cx: &mut TestAppContext) {
+    let (thought, window, view) = open_thought(
+        cx,
+        "First, the parser and how it takes its input.\n\nThen its tests, one at a time.",
+    );
+    let block = super::row::element_id(RowKey::Block {
+        id: thought,
+        generation: 0,
+        block: 0,
+        source: false,
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.click(block.clone(), cx);
+        window.double_click(block.clone(), cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    assert!(is_open(cx, &view, thought));
+    cx.update_window(window, |_, window, cx| window.click(block.clone(), cx))
+        .unwrap();
+    settle(cx, window);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    assert!(!is_open(cx, &view, thought));
+}
+
+/// Messages, while a call runs after what the agent said in the same turn.
+/// The end of the transcript says what the call does, with the spinner.
+#[gpui_kit::test]
+fn messages_says_at_its_end_what_a_running_call_does(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Messages);
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| prefs.appearance.motion = prefs::Motion::On);
+        cx.set_reduce_motion(false);
+    });
+    let feed = Feed::new("main");
+    feed.user("Build it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let read = call(&feed, "main", "read_file", &[("path", "src/a.rs".into())]);
+    result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
+    say(
+        &feed,
+        "main",
+        "The file is fine. I'll build the release now.",
+    );
+    call(
+        &feed,
+        "main",
+        "shell",
+        &[("command", "cargo build --release".into())],
+    );
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let build = ids_of(&feed, Kind::Call)[1];
+    assert_eq!(keys(&view, cx).last(), Some(&RowKey::Working(build)));
+    let words = cx.read(|cx| view.read(cx).working_words(build));
+    assert_eq!(words, "Running cargo build --release…");
+    assert!(drawn(cx, window, ("working-spinner", build)));
+}
+
+/// Text that streams into a paragraph leaves the rows as they are, so a
+/// long session doesn't make them again for each frame. A new paragraph
+/// makes them again.
+#[gpui_kit::test]
+fn streamed_text_makes_the_rows_again_only_for_new_blocks(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Go", Source::App, Delivery::Turn);
+    feed.turn_started();
+    say(&feed, "main", "The parser ");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let made = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).rows_made);
+    let before = made(cx);
+    for word in [
+        "keeps ", "the ", "open ", "block ", "while ", "text ", "streams.",
+    ] {
+        say(&feed, "main", word);
+        settle(cx, window);
+    }
+    assert_eq!(made(cx), before);
+    say(&feed, "main", "\n\nA second paragraph.");
+    settle(cx, window);
+    assert!(made(cx) > before);
+}
+
+/// What the reader opens as a view opens, before its history comes, stays
+/// open once it comes: a Quiet row, and a call's details.
+#[gpui_kit::test]
+fn what_is_opened_before_the_history_comes_stays_open(cx: &mut TestAppContext) {
+    use gpui_kit::{Bounds, Point, WindowBounds, WindowOptions, px, size};
+
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let read = call(&feed, "main", "read_file", &[("path", "src/a.rs".into())]);
+    result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
+    let first = ids_of(&feed, Kind::Call)[0];
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: Point::default(),
+            size: size(px(800.), px(600.)),
+        })),
+        ..Default::default()
+    };
+    let (window, view) = cx
+        .update(|cx| {
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
+                    view.set_row_open(first, true, cx);
+                    view
+                })
+            })
+        })
+        .unwrap();
+    settle(cx, window);
+    assert!(cx.read(|cx| view.read(cx).group_open(first)));
+}
+
+fn expand_thinking(cx: &mut TestAppContext) {
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.expand_thinking = true));
+}
+
+/// A turn that thinks `thought`, reads a file and ends.
+fn thought_then_read(thought: &str) -> Feed {
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    think(&feed, thought);
+    let read = call(&feed, "main", "read_file", &[("path", "src/a.rs".into())]);
+    result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    feed
+}
+
+/// Full with Expand thinking on, a session there before its view opens. A
+/// thought of one paragraph longer than the column shows whole from the
+/// start.
+#[gpui_kit::test]
+fn expand_thinking_shows_a_long_thought_whole_from_the_start(cx: &mut TestAppContext) {
+    start(cx);
+    expand_thinking(cx);
+    let feed = thought_then_read(
+        "The user wants the stale cache test fixed, so I should read the test first and then look at how the cache decides that a value has expired before changing anything else in the module, and only then decide whether the clock or the comparison is at fault.",
+    );
+    let (_, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let thought = ids_of(&feed, Kind::Thinking)[0];
+    assert!(is_open(cx, &view, thought));
+}
+
+/// Full with Expand thinking on. A thought of one line that fits is that
+/// line, and shows whole once a narrower window cuts it.
+#[gpui_kit::test]
+fn a_thought_shows_whole_once_a_narrower_window_cuts_its_line(cx: &mut TestAppContext) {
+    start(cx);
+    expand_thinking(cx);
+    let feed = thought_then_read(
+        "The cache test reads the clock once, so the boundary is the only thing to check.",
+    );
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let thought = ids_of(&feed, Kind::Thinking)[0];
+    assert!(!is_open(cx, &view, thought));
+    cx.simulate_window_resize(
+        window,
+        gpui_kit::size(gpui_kit::px(360.), gpui_kit::px(600.)),
+    );
+    settle(cx, window);
+    assert!(is_open(cx, &view, thought));
+}
+
+/// Full with Expand thinking on. The find lands on a word of a thought
+/// that is its one line, opens it and marks the word in its text.
+#[gpui_kit::test]
+fn the_find_opens_a_thought_shown_as_its_line(cx: &mut TestAppContext) {
+    start(cx);
+    expand_thinking(cx);
+    let feed = thought_then_read("The zebra module first.");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let thought = ids_of(&feed, Kind::Thinking)[0];
+    assert!(!is_open(cx, &view, thought));
+    let status = view.update(cx, |view, cx| view.find("zebra", cx));
+    settle(cx, window);
+    assert_eq!(status.total, 1);
+    assert!(is_open(cx, &view, thought));
+    let marked = cx.read(|cx| view.read(cx).match_ranges(thought, Place::Block(0)));
+    assert_eq!(marked.len(), 1, "{marked:?}");
+}
+
+/// Two open thoughts, a click on each within the wait for a double-click.
+/// Both close.
+#[gpui_kit::test]
+fn each_open_thought_clicked_closes(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    think(&feed, "First, the parser.\n\nThen its tests.");
+    say(&feed, "main", "ok");
+    think(&feed, "Second, the lexer.\n\nThen its tests.");
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let thoughts = ids_of(&feed, Kind::Thinking);
+    for id in &thoughts {
+        cx.update_window(window, |_, window, cx| {
+            window.click(("thinking-toggle", *id), cx)
+        })
+        .unwrap();
+        settle(cx, window);
+    }
+    assert!(thoughts.iter().all(|id| is_open(cx, &view, *id)));
+    for id in &thoughts {
+        let block = super::row::element_id(RowKey::Block {
+            id: *id,
+            generation: 0,
+            block: 0,
+            source: false,
+        });
+        cx.update_window(window, |_, window, cx| window.click(block, cx))
+            .unwrap();
+        settle(cx, window);
+    }
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    assert!(thoughts.iter().all(|id| !is_open(cx, &view, *id)));
+}

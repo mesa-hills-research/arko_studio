@@ -44,7 +44,7 @@ sudo apt install build-essential pkg-config cmake libfontconfig-dev libwayland-d
 Dictation uses ALSA for the microphone on Linux. Build with `--no-default-features` to leave
 dictation out, which also drops the need for `libasound2-dev`.
 
-Clone the repository and build it. Cargo fetches Arko, its framework, GPUI Kit (the
+Clone the repository and build it. Cargo fetches Arko, Arko Framework, GPUI Kit (the
 `mhr-gpui-kit` crates) and GPUI (the `mhr-gpui` crates) from crates.io.
 
 ```sh

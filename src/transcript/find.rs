@@ -1,8 +1,8 @@
 //! Find in the transcript (Mod+F): where the reader's words are in what the
 //! rows show, collapsed rows included, highlighted, and moving between
-//! them. Landing on a match opens what hides it (a thinking, a call's
-//! details, a group of calls, a long code block), and closes it again when
-//! the find moves on.
+//! them. Landing on a match opens what hides it (a thought, a call's
+//! details, a Quiet row, a long code block), and closes it again when the
+//! find moves on.
 //!
 //! The find ignores case and how accents are written ([`super::fold`]). It
 //! keeps each entry's matches apart, and each entry's texts folded for as
@@ -33,6 +33,8 @@ const FOLD_IN_BACKGROUND: usize = 256 * 1024;
 /// Where in an entry a match is, in the order the entry shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum Place {
+    /// The words of the Quiet row a call starts, as the row says them.
+    Row,
     /// The entry's plain text: a message of the user's, a notice, an
     /// output, a call's line, a turn's footer, a worker card's title.
     Text,
@@ -643,11 +645,22 @@ impl TranscriptView {
         find.search_kept(id);
     }
 
-    /// Whether the find covers `entry`: what the view shows of it.
+    /// Whether the find covers `entry`: what the view shows of it, in
+    /// Messages also under a count the reader opened.
     fn finds_in(&self, entry: &Entry) -> bool {
         let filter = self.model.filter();
-        model::show(filter, self.settings.view, &entry.item) == Show::Item
-            && !model::is_refresh(&entry.item)
+        let view = if self.seen_quiet.contains(&entry.item.id) {
+            View::Quiet
+        } else {
+            self.settings.view
+        };
+        model::show(filter, view, &entry.item) == Show::Item && !model::is_refresh(&entry.item)
+    }
+
+    /// Whether the line drawn for the call `id` says its outcome: a Full
+    /// line does, and a Quiet row of one call doesn't.
+    fn says_outcome(&self, id: u64) -> bool {
+        self.quiet.get(&id).is_none_or(|row| row.merged)
     }
 
     /// Starts folding the texts of the entries not searched yet off the
@@ -800,16 +813,27 @@ impl TranscriptView {
                     .collect()
             }
             Kind::Call => {
-                let mut texts = vec![(Place::Text, row::call_line(item))];
-                if item.status == Some(arko::remote::CallStatus::Failed)
-                    && let Some(outcome) = &item.outcome
-                {
-                    texts.push((Place::Outcome, outcome.clone()));
+                // What the rows draw of it. A Quiet row says its words on the
+                // line of its first call, and a row of one call draws no Full
+                // line for it, nor its outcome, so it shows why it failed in
+                // its details.
+                let mut texts = Vec::new();
+                if let Some(row) = self.quiet.get(&item.id) {
+                    texts.push((Place::Row, row.words.text.clone()));
+                }
+                let says_outcome = self.says_outcome(item.id);
+                if says_outcome {
+                    texts.push((Place::Text, row::call_line(item)));
+                    if item.status == Some(arko::remote::CallStatus::Failed)
+                        && let Some(outcome) = &item.outcome
+                    {
+                        texts.push((Place::Outcome, outcome.clone()));
+                    }
                 }
                 if let Some(parameters) = row::shown_given(item).map(|given| given.text().clone()) {
                     texts.push((Place::Parameters, parameters.to_string()));
                 }
-                if let Some(output) = row::shown_output(entry) {
+                if let Some(output) = row::shown_output(entry, says_outcome) {
                     texts.push((Place::Output, output.to_string()));
                 }
                 texts
@@ -833,7 +857,7 @@ impl TranscriptView {
         let entry = self.model.entry(found.entry)?;
         match found.place {
             Place::Parameters => row::shown_given(&entry.item).map(|given| given.text().clone()),
-            Place::Output => row::shown_output(entry),
+            Place::Output => row::shown_output(entry, self.says_outcome(found.entry)),
             _ => None,
         }
     }
@@ -1004,18 +1028,12 @@ impl TranscriptView {
             return Vec::new();
         };
         let mut needs = Vec::new();
-        // A folded group of calls (Quiet) opens first.
-        if self.settings.view == View::Quiet {
-            let position = self.model.position(found.entry).ok();
-            let group = self.rows.iter().find_map(|row| match row.key {
-                RowKey::Group(first) => model::run_of(&self.model, first, View::Quiet)
-                    .contains(&position?)
-                    .then_some(first),
-                _ => None,
-            });
-            if let Some(first) = group {
-                needs.push(Opening::Group(first));
-            }
+        // A Quiet row that holds it opens first, unless its own line shows
+        // the match.
+        if found.place != Place::Row
+            && let Some(&first) = self.quiet_of.get(&found.entry)
+        {
+            needs.push(Opening::Group(first));
         }
         match (entry.item.kind, found.place) {
             (Kind::Thinking, _) | (Kind::Call, Place::Parameters | Place::Output) => {
@@ -1076,21 +1094,21 @@ impl TranscriptView {
                 if self.group_open(first) {
                     return None;
                 }
+                // It shows what the reader's own click shows, an edit's diff
+                // too.
+                if self.quiet.get(&first).is_some_and(|row| !row.merged) {
+                    self.ensure_diff(first, cx);
+                }
                 let before = self.ui.get(&first).and_then(|ui| ui.group_open);
                 self.ui.entry(first).or_default().group_open = Some(true);
                 self.refresh_rows_after_opening(cx);
                 Some(Opened { what, before })
             }
             Opening::Entry(id) => {
-                let before = self.ui.get(&id).and_then(|ui| ui.expanded);
-                let default = self
-                    .model
-                    .entry(id)
-                    .is_some_and(|entry| entry.item.kind == Kind::Thinking)
-                    && self.thinking_open_by_default();
-                if before.unwrap_or(default) {
+                if self.shown_open(id) {
                     return None;
                 }
+                let before = self.ui.get(&id).and_then(|ui| ui.expanded);
                 self.set_expanded(id, true, cx);
                 Some(Opened { what, before })
             }
@@ -1399,7 +1417,7 @@ impl TranscriptView {
                     Place::Parameters => {
                         row::shown_given(&item.item).map(|given| given.text().clone())
                     }
-                    _ => row::shown_output(item),
+                    _ => row::shown_output(item, self.says_outcome(entry)),
                 })
                 .map_or(0, |text| shown_prefix(&text)),
             _ => usize::MAX,

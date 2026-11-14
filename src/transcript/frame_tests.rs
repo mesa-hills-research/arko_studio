@@ -444,7 +444,7 @@ fn every_running_indicator_turns_without_drawing_the_transcript(cx: &mut TestApp
             .rows
             .iter()
             .filter_map(|row| match row.key {
-                RowKey::Worker(id) | RowKey::Call(id) => Some(id),
+                RowKey::Worker(id) | RowKey::Call(id) | RowKey::Group(id) => Some(id),
                 _ => None,
             })
             .collect()

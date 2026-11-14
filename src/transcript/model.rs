@@ -5,14 +5,20 @@
 //! The app shows one conversation at a time: a conversation marker (`/new`,
 //! `/resume`) starts the transcript over. A call's result block goes under
 //! its call rather than in a row of its own.
+//!
+//! Quiet's rows are Arko's ([`quiet::rows`]), the same as the terminal's and
+//! the web page's. Neighbouring calls of a kind, or the reads and changes of
+//! one file, are one row that says what they did, and a thought between two
+//! calls of a row goes inside it. Every other thought is a line of its own,
+//! where it happened.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use arko::remote::{
     Activity, CallStatus, Delivery, ENDED_JOBS, Item, JobSummary, Kind, Level, Snapshot, Update,
-    WorkerState, WorkerSummary,
+    WorkerState, WorkerSummary, quiet,
 };
 use gpui_kit::SharedString;
 
@@ -565,17 +571,31 @@ impl Model {
         }
     }
 
-    /// How long the thinking at `ix` took, in milliseconds: until its
-    /// agent's next item. `None` while it goes on, under a second, or when
-    /// unknown (items restored from a saved session all carry the time they
-    /// were restored).
-    pub fn thought_for(&self, ix: usize) -> Option<i64> {
-        let entry = &self.entries[ix];
-        let next = self.entries[ix + 1..]
+    /// The thought of the agent shown that streams, its latest output while
+    /// it works.
+    pub fn live_thought(&self) -> Option<u64> {
+        let ix = self
+            .entries
             .iter()
-            .find(|later| later.item.agent == entry.item.agent && !is_aside(&later.item))?;
-        let took = next.item.at - entry.item.at;
-        (took >= 1000).then_some(took)
+            .rposition(|entry| self.filter.owns(&entry.item) && !is_aside(&entry.item))?;
+        let item = &self.entries[ix].item;
+        (item.kind == Kind::Thinking && self.is_streaming(ix)).then_some(item.id)
+    }
+
+    /// The call of the agent shown that runs, in its latest turn.
+    pub fn running_call(&self) -> Option<u64> {
+        for entry in self.entries.iter().rev() {
+            let item = &entry.item;
+            if !self.filter.owns(item) || is_aside(item) {
+                continue;
+            }
+            match item.kind {
+                Kind::Call if item.status == Some(CallStatus::Running) => return Some(item.id),
+                Kind::User | Kind::Turn | Kind::Conversation => return None,
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Whether the agent shown waits on the model with no row saying it's
@@ -743,11 +763,13 @@ pub(crate) enum RowKey {
     },
     /// The hover actions under a reply.
     Actions(u64),
+    /// A thought's first line, while it's closed. Open, its blocks show.
     Thinking(u64),
+    /// A call's line as Full writes it, and its details when it's open.
     Call(u64),
-    /// Consecutive calls folded into one row (Quiet), by the first entry.
+    /// A Quiet row of calls ([`QuietRow`]), by its first call.
     Group(u64),
-    /// A run of calls counted in one line (Messages), by its first call.
+    /// A turn's calls counted in one line (Messages), by its first call.
     Count(u64),
     Notice(u64),
     Output(u64),
@@ -839,20 +861,37 @@ pub(crate) fn row_changes(old: &[Row], new: &[Row]) -> (Vec<RowChange>, Vec<(usi
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Gap {
     None,
-    /// Between calls of a run.
-    Tight,
-    /// Under a disclosure, before reply actions or the turn's footer.
+    /// Between two closed lines of work, and between a row's line and the
+    /// first of what it holds on its rail.
+    Stack,
+    /// Between the paragraphs of an open thought, before reply actions or
+    /// the turn's footer.
     Small,
-    /// Between paragraphs, and between prose and activity.
+    /// Between what is said and the work, and on both sides of anything
+    /// open.
+    Apart,
+    /// Between the paragraphs of what is said.
     Section,
     /// Before a message of the user's: a new turn.
     Turn,
+}
+
+/// Whether a row stands on the rail of the open Quiet row above it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rail {
+    No,
+    /// The first thing on the rail, which starts under the gap above it.
+    First,
+    /// What follows another thing on the rail, which runs through the gap
+    /// above it.
+    Next,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Row {
     pub key: RowKey,
     pub gap: Gap,
+    pub rail: Rail,
 }
 
 /// What kind of row a row is, for the spacing.
@@ -860,10 +899,19 @@ pub(crate) struct Row {
 enum Class {
     Separator,
     User,
-    Prose,
-    /// The text of an expanded thinking.
-    Thought,
-    Activity,
+    /// What is said, the agent's text, a question, an output.
+    Said,
+    /// A worker's card.
+    Card,
+    /// A closed line of work, a call's, a Quiet row's or a thought's, a
+    /// notice, "Working…".
+    Work,
+    /// A line of work that is open, with what it holds.
+    Open,
+    /// A block of an open thought, its first or one after it.
+    Thought {
+        first: bool,
+    },
     Actions,
     Footer,
 }
@@ -873,33 +921,90 @@ fn gap(previous: Option<Class>, next: Class) -> Gap {
         return Gap::None;
     };
     match (previous, next) {
-        (_, Class::Actions) => Gap::Small,
-        (_, Class::Footer) => Gap::Small,
+        (_, Class::Actions | Class::Footer) => Gap::Small,
         (Class::Separator, Class::User) => Gap::Section,
         // After a user's message's actions, as after a reply's.
         (Class::User, _) => Gap::Small,
         (_, Class::User) => Gap::Turn,
-        (Class::Activity, Class::Activity) => Gap::Tight,
-        (Class::Activity, Class::Thought) | (Class::Thought, Class::Activity) => Gap::Small,
         (Class::Actions, _) => Gap::Small,
-        _ => Gap::Section,
+        (Class::Thought { .. }, Class::Thought { first: false }) => Gap::Small,
+        (Class::Work, Class::Work) => Gap::Stack,
+        (Class::Said, Class::Said) => Gap::Section,
+        // What is said and the work stand apart, and so does anything open.
+        _ => Gap::Apart,
     }
+}
+
+/// What a Quiet row shows ([`quiet::rows`]), by its first call.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct QuietRow {
+    pub words: quiet::Words,
+    /// Its calls and the thinking between them, by entry, in order.
+    pub members: Vec<u64>,
+    /// It holds several calls, each of which shows as its Full line on the
+    /// row's rail when the row is open. A row of one call shows the call's
+    /// detail and content there.
+    pub merged: bool,
+    /// It has more to show than its words.
+    pub opens: bool,
+}
+
+/// A turn's calls, counted in one line (Messages).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Count {
+    pub calls: usize,
+    pub failed: usize,
+    pub running: usize,
+}
+
+/// The rows a view shows, and what its Quiet rows and counts say.
+#[derive(Debug, Default)]
+pub(crate) struct Laid {
+    pub rows: Vec<Row>,
+    /// Each Quiet row, by its first call.
+    pub quiet: HashMap<u64, QuietRow>,
+    /// Each count of a turn's calls (Messages), by its first call.
+    pub counts: HashMap<u64, Count>,
+    /// The entries Messages shows as Quiet does, the work of the turns
+    /// whose counts the reader opened.
+    pub seen_quiet: HashSet<u64>,
+    /// The thoughts open by default that show as their line, which holds
+    /// all of each ([`shows_whole`]).
+    pub thought_lines: HashSet<u64>,
+}
+
+/// Whether a thought shows whole rather than as its line. That is as the
+/// reader chose, else as thinking shows by `default` (open with Expand
+/// thinking, in Full), but on its line where that holds all of it.
+pub(crate) fn shows_whole(chosen: Option<bool>, default: bool, on_its_line: bool) -> bool {
+    chosen.unwrap_or(default && !on_its_line)
 }
 
 /// What the rows depend on besides the entries.
 pub(crate) struct Layout<'a> {
     pub view: View,
-    /// Thinking shows expanded unless the reader folds it (Full only).
+    /// Thinking shows open unless the reader closes it (Full only).
     pub expand_thinking: bool,
     /// The number of Markdown blocks of an entry's text so far, and the
     /// generation of its document.
     pub blocks: &'a dyn Fn(u64) -> (usize, u32),
-    /// The reader's choice for an entry's thinking or a group, if any.
+    /// The reader's choice for an entry's thinking or a call's details, if
+    /// any.
     pub expanded: &'a dyn Fn(u64) -> Option<bool>,
-    /// The reader's choice for a group of calls, by the run's first entry.
+    /// The reader's choice for a Quiet row, by its first call.
     pub group_open: &'a dyn Fn(u64) -> Option<bool>,
+    /// The calls of Quiet rows of one call that the reader opened, and the
+    /// thoughts the reader opened on lines of their own, which keep their
+    /// form ([`quiet::Call::sealed`], [`quiet::Step::Other`]).
+    pub sealed: &'a dyn Fn(u64) -> bool,
+    /// Whether the reader opened a turn's count (Messages), by its first
+    /// call. The turn's work shows under it from there, as Quiet shows it.
+    pub count_open: &'a dyn Fn(u64) -> bool,
     /// Whether an entry's text shows as its source.
     pub source: &'a dyn Fn(u64) -> bool,
+    /// Whether a thought's line holds all of it, where the rows are drawn
+    /// now. `false` until the list's width and the fonts are known.
+    pub thought_fits: &'a dyn Fn(u64) -> bool,
     /// The oldest entry ready to show, when older ones are still being made
     /// ready: the rows start there.
     pub first: Option<u64>,
@@ -911,15 +1016,28 @@ pub(crate) struct Layout<'a> {
 struct Rows<'a> {
     out: Vec<Row>,
     previous: Option<Class>,
+    /// While the rows go on the rail of an open Quiet row, whether anything
+    /// stands on it yet.
+    rail: Option<bool>,
     layout: &'a Layout<'a>,
+    quiet: HashMap<u64, QuietRow>,
+    /// The thought of the agent shown that streams.
+    live: Option<u64>,
+    thought_lines: HashSet<u64>,
 }
 
 impl Rows<'_> {
     fn push(&mut self, key: RowKey, class: Class) {
-        self.out.push(Row {
-            key,
-            gap: gap(self.previous, class),
-        });
+        let (gap, rail) = match self.rail {
+            None => (gap(self.previous, class), Rail::No),
+            // What a row holds stacks under its line.
+            Some(false) => (Gap::Stack, Rail::First),
+            Some(true) => (gap(self.previous, class), Rail::Next),
+        };
+        if let Some(started) = &mut self.rail {
+            *started = true;
+        }
+        self.out.push(Row { key, gap, rail });
         self.previous = Some(class);
     }
 
@@ -939,7 +1057,50 @@ impl Rows<'_> {
         }
     }
 
-    /// The rows of one entry.
+    /// A thought's rows, its line or, open, its text.
+    fn thinking(&mut self, id: u64, view: View) {
+        let default = self.layout.expand_thinking && view == View::Full;
+        let chosen = (self.layout.expanded)(id);
+        let (count, generation) = (self.layout.blocks)(id);
+        // A thought that opens by itself stands apart from the moment it
+        // shows, while it streams, so its line doesn't move when its text
+        // comes. One that ended on its line has nothing to open, so it's a
+        // line of work like a closed one.
+        let on_its_line =
+            chosen.is_none() && default && self.live != Some(id) && (self.layout.thought_fits)(id);
+        if on_its_line {
+            self.thought_lines.insert(id);
+        }
+        if !shows_whole(chosen, default, on_its_line) {
+            self.push(RowKey::Thinking(id), Class::Work);
+            return;
+        }
+        if count == 0 {
+            self.push(RowKey::Thinking(id), Class::Thought { first: true });
+            return;
+        }
+        let source = (self.layout.source)(id);
+        for block in 0..count {
+            self.push(
+                RowKey::Block {
+                    id,
+                    generation,
+                    block,
+                    source,
+                },
+                Class::Thought { first: block == 0 },
+            );
+        }
+    }
+
+    /// A call's line as Full writes it, with its details when it's open.
+    fn call(&mut self, id: u64) {
+        let open = (self.layout.expanded)(id) == Some(true);
+        let class = if open { Class::Open } else { Class::Work };
+        self.push(RowKey::Call(id), class);
+    }
+
+    /// The rows of one entry, as `view` shows it.
     fn entry(&mut self, entry: &Entry, view: View) {
         let item = &entry.item;
         let id = item.id;
@@ -947,30 +1108,62 @@ impl Rows<'_> {
             Kind::Conversation => self.push(RowKey::Separator(id), Class::Separator),
             Kind::User => self.push(RowKey::User(id), Class::User),
             // A card of the agent's questions, with each one's state.
-            Kind::Question if has_questions(item) => self.push(RowKey::Question(id), Class::Prose),
-            Kind::Text | Kind::Message | Kind::Question => self.blocks(id, Class::Prose),
+            Kind::Question if has_questions(item) => self.push(RowKey::Question(id), Class::Said),
+            Kind::Text | Kind::Message | Kind::Question => self.blocks(id, Class::Said),
             Kind::Reply => {
-                self.blocks(id, Class::Prose);
+                self.blocks(id, Class::Said);
                 if (self.layout.blocks)(id).0 > 0 {
                     self.push(RowKey::Actions(id), Class::Actions);
                 }
             }
-            Kind::Thinking => {
-                self.push(RowKey::Thinking(id), Class::Activity);
-                let default = self.layout.expand_thinking && view == View::Full;
-                if (self.layout.expanded)(id).unwrap_or(default) {
-                    self.blocks(id, Class::Thought);
-                }
-            }
-            Kind::Call => self.push(RowKey::Call(id), Class::Activity),
-            Kind::Notice => self.push(RowKey::Notice(id), Class::Activity),
-            Kind::Output => self.push(RowKey::Output(id), Class::Prose),
+            Kind::Thinking => self.thinking(id, view),
+            Kind::Call => self.call(id),
+            Kind::Notice => self.push(RowKey::Notice(id), Class::Work),
+            Kind::Output => self.push(RowKey::Output(id), Class::Said),
             Kind::Turn => self.push(RowKey::Turn(id), Class::Footer),
-            Kind::WorkerLine => self.push(RowKey::Worker(id), Class::Activity),
+            Kind::WorkerLine => self.push(RowKey::Worker(id), Class::Card),
             // A result shows in its call's row. A kind a later arko adds
             // has no rows.
             _ => {}
         }
+    }
+
+    /// A Quiet row of the entries `members` (indexes of `entries`), and
+    /// open, what its calls and thinking show on its rail when it holds
+    /// several.
+    fn quiet_row(&mut self, row: quiet::Row, members: Vec<usize>, entries: &[Entry]) {
+        let Some(&first) = members.first() else {
+            return;
+        };
+        let first = entries[first].item.id;
+        let open = (self.layout.group_open)(first) == Some(true);
+        self.push(
+            RowKey::Group(first),
+            if open { Class::Open } else { Class::Work },
+        );
+        if open && row.merged {
+            self.rail = Some(false);
+            for ix in &members {
+                let item = &entries[*ix].item;
+                match item.kind {
+                    Kind::Thinking => self.thinking(item.id, View::Quiet),
+                    _ => self.call(item.id),
+                }
+            }
+            // What follows stands apart from the open row.
+            if self.rail.take() == Some(true) {
+                self.previous = Some(Class::Open);
+            }
+        }
+        self.quiet.insert(
+            first,
+            QuietRow {
+                words: row.words,
+                members: members.iter().map(|ix| entries[*ix].item.id).collect(),
+                merged: row.merged,
+                opens: row.opens,
+            },
+        );
     }
 }
 
@@ -982,39 +1175,12 @@ pub(crate) fn has_questions(item: &Item) -> bool {
         .is_some_and(|questions| !questions.is_empty())
 }
 
-/// Calls in a row past this many fold into one row in the Quiet view.
-pub(crate) const GROUP_AFTER: usize = 3;
-
-/// Whether `item` belongs in a run of the shown agent's tool activity: its
-/// calls and its thinking between them. A call the Quiet view leaves out
-/// ([`is_start`]) isn't in it, so it neither counts toward a group nor shows
-/// when one opens.
+/// Whether `item` belongs in a run of the shown agent's work, which Quiet's
+/// rows merge, its calls and its thinking between them. A call the Quiet
+/// view leaves out ([`is_start`]) isn't in it, so it neither joins a row
+/// nor ends one.
 fn in_run(filter: &AgentFilter, item: &Item) -> bool {
     filter.owns(item) && matches!(item.kind, Kind::Call | Kind::Thinking) && !is_start(item)
-}
-
-/// The entries of the run of activity starting at `start`, as indexes, and
-/// the index after it. Entries the view hides don't break a run.
-fn run(
-    entries: &[Entry],
-    start: usize,
-    filter: &AgentFilter,
-    view: View,
-    member: impl Fn(&Item) -> bool,
-) -> (Vec<usize>, usize) {
-    let mut members = Vec::new();
-    let mut ix = start;
-    while ix < entries.len() {
-        let item = &entries[ix].item;
-        if member(item) {
-            members.push(ix);
-        } else if show(filter, view, item) != Show::Hidden && !item.pending {
-            // (A note waiting below doesn't break the run it came in.)
-            break;
-        }
-        ix += 1;
-    }
-    (members, ix)
 }
 
 /// Whether `item` is a message that only kept the prompt cache warm.
@@ -1048,17 +1214,122 @@ fn after_refresh(entries: &[Entry], ix: usize) -> usize {
     next
 }
 
+/// What a view shows, in order, before Quiet's rows take its work.
+#[derive(Debug, Clone, Copy)]
+enum Unit {
+    /// An entry's rows, by its index.
+    Entry(usize),
+    /// A call or a thinking that Quiet's rows take, by its index.
+    Work(usize),
+    /// A cache refresh and its answer, by the refresh's index.
+    Refresh(usize),
+    /// A turn's count of calls (Messages), by its first call.
+    Count(u64),
+}
+
+/// Where each turn's count of calls (Messages) stands, and what it counts,
+/// as Arko places them for every client ([`quiet::counts`]).
+#[derive(Default)]
+struct Counted {
+    /// Each count's first call, by the item its line stands at. That is its
+    /// turn's first call, or the thought of that turn that led to it with
+    /// nothing shown between them, so open it shows the turn's work from
+    /// its first thought.
+    anchors: HashMap<u64, u64>,
+    /// Each turn's count, by its first call.
+    turns: HashMap<Option<u64>, u64>,
+    counts: HashMap<u64, Count>,
+}
+
+impl Counted {
+    /// The count of the turn `item` is of.
+    fn count_of(&self, item: &Item) -> Option<u64> {
+        self.turns.get(&item.turn).copied()
+    }
+}
+
+/// Counts each turn's calls (Messages), from the entry at `start` on.
+fn counted(model: &Model, start: usize) -> Counted {
+    let filter = model.filter();
+    let entries = model.entries();
+    let mut seen = Vec::with_capacity(entries.len().saturating_sub(start));
+    let mut ix = start;
+    while ix < entries.len() {
+        let item = &entries[ix].item;
+        if item.pending {
+            ix += 1;
+            continue;
+        }
+        if is_refresh(item) {
+            seen.push(quiet::Seen::Shown);
+            ix = after_refresh(entries, ix);
+            continue;
+        }
+        seen.push(match show(filter, View::Messages, item) {
+            Show::Count => quiet::Seen::Call {
+                id: item.id,
+                turn: item.turn,
+                status: item.status,
+            },
+            Show::Item => quiet::Seen::Shown,
+            Show::Hidden if filter.owns(item) && item.kind == Kind::Thinking => {
+                quiet::Seen::Thinking {
+                    id: item.id,
+                    turn: item.turn,
+                }
+            }
+            Show::Hidden => quiet::Seen::Hidden,
+        });
+        ix += 1;
+    }
+    let mut counted = Counted::default();
+    for count in quiet::counts(seen) {
+        counted.anchors.insert(count.at, count.first);
+        counted.turns.insert(count.turn, count.first);
+        counted.counts.insert(
+            count.first,
+            Count {
+                calls: count.calls,
+                failed: count.failed,
+                running: count.running,
+            },
+        );
+    }
+    counted
+}
+
+/// A call or a thinking, as Quiet's rows read it.
+fn step<'a>(entry: &'a Entry, layout: &Layout) -> quiet::Step<'a> {
+    let item = &entry.item;
+    if item.kind == Kind::Call {
+        return quiet::Step::Call(quiet::Call {
+            id: item.id,
+            act: item.act.as_ref(),
+            status: item.status,
+            outcome: item.outcome.as_deref(),
+            job: item.job.is_some(),
+            turn: item.turn,
+            // (A Quiet row says no outcome, so it opens to why a call
+            // failed.)
+            content: super::row::opens(entry, false),
+            ended: item.ended,
+            sealed: (layout.sealed)(item.id),
+        });
+    }
+    // A thought the reader opened on a line of its own stays there.
+    if (layout.sealed)(item.id) {
+        quiet::Step::Other(item.id)
+    } else {
+        quiet::Step::Thinking
+    }
+}
+
 /// The rows `view` shows of `model`.
-pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
+pub(crate) fn rows(model: &Model, layout: &Layout) -> Laid {
     let filter = model.filter();
     let view = layout.view;
     let entries = model.entries();
-    let mut rows = Rows {
-        out: Vec::with_capacity(entries.len()),
-        previous: None,
-        layout,
-    };
-    let mut ix = layout
+    let start = layout
         .first
         .map_or(0, |first| model.position(first).unwrap_or_else(|ix| ix));
     // Notes the agent hasn't read wait at the end, below what it goes on
@@ -1068,83 +1339,136 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Vec<Row> {
         let item = &entries[at].item;
         item.pending && show(filter, view, item) != Show::Hidden
     };
-    let mut waiting: Vec<usize> = (0..ix).filter(|at| waits(*at)).collect();
+    let mut waiting: Vec<usize> = (0..start).filter(|at| waits(*at)).collect();
+    let counted = (view == View::Messages).then(|| counted(model, start));
+    // The counts the reader opened so far, whose turns show from there as
+    // Quiet shows them.
+    let mut opened: HashSet<u64> = HashSet::new();
+    let mut seen_quiet = HashSet::new();
+    let mut units = Vec::with_capacity(entries.len().saturating_sub(start));
+    let mut ix = start;
     while ix < entries.len() {
-        let entry = &entries[ix];
-        if entry.item.pending {
+        let item = &entries[ix].item;
+        if item.pending {
             if waits(ix) {
                 waiting.push(ix);
             }
             ix += 1;
             continue;
         }
-        if is_refresh(&entry.item) {
-            rows.push(RowKey::Refresh(entry.item.id), Class::Activity);
+        if is_refresh(item) {
+            units.push(Unit::Refresh(ix));
             ix = after_refresh(entries, ix);
             continue;
         }
-        match show(filter, view, &entry.item) {
-            Show::Hidden => ix += 1,
-            Show::Count => {
-                let (members, next) = run(entries, ix, filter, view, |item| {
-                    filter.owns(item) && item.kind == Kind::Call
-                });
-                let first = members.first().map_or(ix, |first| *first);
-                rows.push(RowKey::Count(entries[first].item.id), Class::Activity);
-                // The notes the run went past wait below with the others.
-                waiting.extend((ix..next).filter(|at| waits(*at)));
-                ix = next.max(ix + 1);
-            }
-            Show::Item if view == View::Quiet && in_run(filter, &entry.item) => {
-                let (members, next) = run(entries, ix, filter, view, |item| in_run(filter, item));
-                let calls = members
-                    .iter()
-                    .filter(|member| entries[**member].item.kind == Kind::Call)
-                    .count();
-                let id = entry.item.id;
-                let folded = calls > GROUP_AFTER;
-                if folded {
-                    rows.push(RowKey::Group(id), Class::Activity);
+        let mut seen = view;
+        if let Some(counted) = &counted {
+            if let Some(&first) = counted.anchors.get(&item.id) {
+                units.push(Unit::Count(first));
+                if (layout.count_open)(first) {
+                    opened.insert(first);
                 }
-                // A group shows its calls when the reader opened it, or opened
-                // one of them: a run folding as it grows keeps that one in
-                // sight.
-                let member_open = members
-                    .iter()
-                    .any(|member| (layout.expanded)(entries[*member].item.id) == Some(true));
-                if !folded || (layout.group_open)(id).unwrap_or(member_open) {
-                    for member in members {
-                        rows.entry(&entries[member], view);
-                    }
-                }
-                waiting.extend((ix..next).filter(|at| waits(*at)));
-                ix = next.max(ix + 1);
             }
-            Show::Item => {
-                rows.entry(entry, view);
-                ix += 1;
+            // Under an open count the turn's work shows as Quiet shows it.
+            // The rest, its footer too, keeps to Messages.
+            let work = matches!(item.kind, Kind::Call | Kind::Thinking | Kind::Notice);
+            if work
+                && counted
+                    .count_of(item)
+                    .is_some_and(|first| opened.contains(&first))
+            {
+                seen = View::Quiet;
+                seen_quiet.insert(item.id);
+            }
+        }
+        match show(filter, seen, item) {
+            Show::Item if seen == View::Quiet && in_run(filter, item) => units.push(Unit::Work(ix)),
+            Show::Item => units.push(Unit::Entry(ix)),
+            Show::Hidden | Show::Count => {}
+        }
+        ix += 1;
+    }
+    // Quiet's rows take each run of work, the calls and the thinking
+    // between two other things shown.
+    let pieces = if units.iter().any(|unit| matches!(unit, Unit::Work(_))) {
+        let steps: Vec<quiet::Step> = units
+            .iter()
+            .map(|unit| match *unit {
+                Unit::Work(at) => step(&entries[at], layout),
+                Unit::Entry(at) | Unit::Refresh(at) => quiet::Step::Other(entries[at].item.id),
+                Unit::Count(first) => quiet::Step::Other(first),
+            })
+            .collect();
+        quiet::rows(&steps)
+    } else {
+        (0..units.len()).map(quiet::Piece::Step).collect()
+    };
+    let mut rows = Rows {
+        out: Vec::with_capacity(units.len()),
+        previous: None,
+        rail: None,
+        layout,
+        quiet: HashMap::new(),
+        live: model.live_thought(),
+        thought_lines: HashSet::new(),
+    };
+    for piece in pieces {
+        match piece {
+            quiet::Piece::Step(at) => match units[at] {
+                Unit::Entry(ix) => rows.entry(&entries[ix], view),
+                Unit::Work(ix) => rows.entry(&entries[ix], View::Quiet),
+                Unit::Refresh(ix) => {
+                    rows.push(RowKey::Refresh(entries[ix].item.id), Class::Work);
+                }
+                Unit::Count(first) => rows.push(RowKey::Count(first), Class::Work),
+            },
+            quiet::Piece::Row(row) => {
+                let members = row
+                    .members
+                    .iter()
+                    .filter_map(|at| match units[*at] {
+                        Unit::Work(ix) => Some(ix),
+                        _ => None,
+                    })
+                    .collect();
+                rows.quiet_row(row, members, entries);
             }
         }
     }
     // What the agent goes on with, above the notes it hasn't read, unless
-    // its thinking's row says it.
+    // its thought, the live line, says it.
     if let Some(after) = layout.working {
         let thinking = model
             .entry(after)
             .is_some_and(|entry| entry.item.kind == Kind::Thinking)
-            && rows
-                .out
-                .iter()
-                .rev()
-                .any(|row| row.key == RowKey::Thinking(after));
+            && rows.out.iter().rev().any(|row| {
+                matches!(row.key, RowKey::Thinking(id) | RowKey::Block { id, .. } if id == after)
+            });
         if !thinking {
-            rows.push(RowKey::Working(after), Class::Activity);
+            rows.push(RowKey::Working(after), Class::Work);
         }
+    } else if view == View::Messages
+        && let Some(running) = model.running_call()
+        && !rows.out.iter().any(|row| row.key == RowKey::Call(running))
+        && !rows
+            .quiet
+            .values()
+            .any(|row| row.members.contains(&running))
+    {
+        // Messages counts the call that runs, so the live line at the end
+        // says what it does, unless an open count shows its row.
+        rows.push(RowKey::Working(running), Class::Work);
     }
     for ix in waiting {
         rows.entry(&entries[ix], view);
     }
-    rows.out
+    Laid {
+        rows: rows.out,
+        quiet: rows.quiet,
+        counts: counted.map(|counted| counted.counts).unwrap_or_default(),
+        seen_quiet,
+        thought_lines: rows.thought_lines,
+    }
 }
 
 /// Whether `rows` show "Working…". Only the notes the agent hasn't read
@@ -1154,25 +1478,6 @@ pub(crate) fn shows_working(rows: &[Row]) -> bool {
         .rev()
         .take_while(|row| matches!(row.key, RowKey::User(_) | RowKey::Working(_)))
         .any(|row| matches!(row.key, RowKey::Working(_)))
-}
-
-/// The entries a group or count row stands for: the run starting at the
-/// entry `first`.
-pub(crate) fn run_of(model: &Model, first: u64, view: View) -> Vec<usize> {
-    let Ok(start) = model.position(first) else {
-        return Vec::new();
-    };
-    let entries = model.entries();
-    let filter = model.filter();
-    match view {
-        View::Messages => {
-            run(entries, start, filter, view, |item| {
-                filter.owns(item) && item.kind == Kind::Call
-            })
-            .0
-        }
-        _ => run(entries, start, filter, view, |item| in_run(filter, item)).0,
-    }
 }
 
 #[cfg(test)]
@@ -1252,17 +1557,41 @@ mod tests {
             blocks: &|_| (1, 0),
             expanded: &|_| None,
             group_open: &|_| None,
+            sealed: &|_| false,
+            count_open: &|_| false,
             source: &|_| false,
+            thought_fits: &|_| false,
             first: None,
             working: None,
         }
     }
 
+    /// A read of `path` that ended, in turn 1, as the feed has it.
+    fn read(id: u64, path: &str) -> Item {
+        let mut call = item(id, Kind::Call, "main", &format!("read {path}"));
+        call.status = Some(CallStatus::Ok);
+        call.turn = Some(1);
+        call.act = Some(arko::remote::Act {
+            kind: arko::remote::ActKind::Read,
+            target: path.into(),
+            ..arko::remote::Act::default()
+        });
+        call
+    }
+
+    /// A thought of turn 1.
+    fn thought(id: u64, text: &str) -> Item {
+        let mut thought = item(id, Kind::Thinking, "main", text);
+        thought.turn = Some(1);
+        thought
+    }
+
+    fn keys_of(model: &Model, layout: &Layout) -> Vec<RowKey> {
+        rows(model, layout).rows.iter().map(|row| row.key).collect()
+    }
+
     fn keys(model: &Model, view: View) -> Vec<RowKey> {
-        rows(model, &layout(view))
-            .into_iter()
-            .map(|row| row.key)
-            .collect()
+        keys_of(model, &layout(view))
     }
 
     fn block(id: u64) -> RowKey {
@@ -1542,64 +1871,321 @@ mod tests {
         );
     }
 
+    /// Quiet's rows merge the calls of a kind that follow one another, and
+    /// a thought between two calls of a row goes inside it. Messages counts
+    /// a turn's calls in one line, where its first call is.
     #[test]
-    fn quiet_folds_more_than_three_calls_and_messages_counts_them() {
-        let calls = |from: u64, count: u64| {
-            (from..from + count)
-                .map(|id| item(id, Kind::Call, "main", "read a.rs"))
-                .collect::<Vec<_>>()
-        };
-        let mut items = vec![item(1, Kind::User, "main", "go")];
-        items.extend(calls(2, 3));
-        items.push(item(5, Kind::Text, "main", "now the rest"));
-        items.extend(calls(6, 2));
-        items.push(item(8, Kind::Thinking, "main", "hmm"));
-        items.extend(calls(9, 2));
-        items.push(item(11, Kind::Notice, "main", "retrying").level(Level::Warn));
-        let model = model(items);
+    fn quiet_merges_calls_of_a_kind_and_messages_counts_a_turn() {
+        let mut text = item(5, Kind::Text, "main", "now the rest");
+        text.turn = Some(1);
+        let model = model(vec![
+            item(1, Kind::User, "main", "go"),
+            read(2, "src/a.rs"),
+            read(3, "src/b.rs"),
+            read(4, "src/c.rs"),
+            text,
+            read(6, "src/d.rs"),
+            read(7, "src/e.rs"),
+            thought(8, "hmm"),
+            read(9, "src/f.rs"),
+            read(10, "src/g.rs"),
+            item(11, Kind::Notice, "main", "retrying").level(Level::Warn),
+        ]);
+        let laid = rows(&model, &layout(View::Quiet));
+        let shown: Vec<RowKey> = laid.rows.iter().map(|row| row.key).collect();
         assert_eq!(
-            keys(&model, View::Quiet),
+            shown,
             [
                 RowKey::User(1),
-                RowKey::Call(2),
-                RowKey::Call(3),
-                RowKey::Call(4),
+                RowKey::Group(2),
                 block(5),
                 RowKey::Group(6),
                 RowKey::Notice(11),
             ]
         );
-        assert_eq!(run_of(&model, 6, View::Quiet), [5, 6, 7, 8, 9]);
-        let expanded = Layout {
+        assert_eq!(laid.quiet[&2].words.text, "Read 3 files in src");
+        assert_eq!(laid.quiet[&2].members, [2, 3, 4]);
+        assert_eq!(laid.quiet[&6].words.text, "Read 4 files in src");
+        assert_eq!(laid.quiet[&6].members, [6, 7, 8, 9, 10]);
+        // Open, a row of several shows its calls and the thought between
+        // them on its rail.
+        let open = Layout {
             group_open: &|id| (id == 6).then_some(true),
             ..layout(View::Quiet)
         };
-        let rows: Vec<RowKey> = rows(&model, &expanded).iter().map(|r| r.key).collect();
+        let laid = rows(&model, &open);
+        let shown: Vec<(RowKey, Rail)> = laid.rows[3..]
+            .iter()
+            .map(|row| (row.key, row.rail))
+            .collect();
         assert_eq!(
-            rows[5..],
+            shown,
             [
-                RowKey::Group(6),
-                RowKey::Call(6),
-                RowKey::Call(7),
-                RowKey::Thinking(8),
-                RowKey::Call(9),
-                RowKey::Call(10),
-                RowKey::Notice(11),
+                (RowKey::Group(6), Rail::No),
+                (RowKey::Call(6), Rail::First),
+                (RowKey::Call(7), Rail::Next),
+                (RowKey::Thinking(8), Rail::Next),
+                (RowKey::Call(9), Rail::Next),
+                (RowKey::Call(10), Rail::Next),
+                (RowKey::Notice(11), Rail::No),
             ]
         );
+        let laid = rows(&model, &layout(View::Messages));
+        let shown: Vec<RowKey> = laid.rows.iter().map(|row| row.key).collect();
         assert_eq!(
-            keys(&model, View::Messages),
+            shown,
             [
                 RowKey::User(1),
                 RowKey::Count(2),
                 block(5),
-                RowKey::Count(6),
-                RowKey::Notice(11),
+                RowKey::Notice(11)
             ]
         );
-        assert_eq!(run_of(&model, 6, View::Messages), [5, 6, 8, 9]);
-        // Full shows every call and the thinking, folded.
+        assert_eq!(laid.counts[&2].calls, 7);
+        // Full shows every call and the thought.
         assert_eq!(keys(&model, View::Full).len(), 11);
+    }
+
+    /// A thought before a row's first call, or after its last, is a line of
+    /// its own, where it happened. One the reader opened there stays there
+    /// when the next call comes, which starts a row of its own.
+    #[test]
+    fn a_thought_goes_in_a_row_only_between_its_calls() {
+        let model = model(vec![
+            item(1, Kind::User, "main", "go"),
+            thought(2, "first, read"),
+            read(3, "src/a.rs"),
+            thought(4, "then the next"),
+            read(5, "src/b.rs"),
+            thought(6, "now edit"),
+        ]);
+        assert_eq!(
+            keys(&model, View::Quiet),
+            [
+                RowKey::User(1),
+                RowKey::Thinking(2),
+                RowKey::Group(3),
+                RowKey::Thinking(6)
+            ]
+        );
+        let opened = model_with(&model, read(7, "src/c.rs"));
+        let sealed = Layout {
+            sealed: &|id| id == 6,
+            ..layout(View::Quiet)
+        };
+        assert_eq!(
+            keys_of(&opened, &sealed),
+            [
+                RowKey::User(1),
+                RowKey::Thinking(2),
+                RowKey::Group(3),
+                RowKey::Thinking(6),
+                RowKey::Group(7),
+            ]
+        );
+        // Not opened, it goes in the row the next call joins.
+        assert_eq!(
+            keys(&opened, View::Quiet),
+            [RowKey::User(1), RowKey::Thinking(2), RowKey::Group(3)]
+        );
+    }
+
+    /// A thought leads only to a call of its own turn. A turn that ended in
+    /// a thought, and one Arko started for news that calls at once, keep
+    /// their count where the call is.
+    #[test]
+    fn a_count_stands_at_a_thought_of_its_own_turn_only() {
+        let mut news = read(3, "src/a.rs");
+        news.turn = Some(2);
+        let model = model(vec![
+            item(1, Kind::User, "main", "go"),
+            thought(2, "nothing to do"),
+            news,
+        ]);
+        assert_eq!(
+            keys(&model, View::Messages),
+            [RowKey::User(1), RowKey::Count(3)]
+        );
+        let open = Layout {
+            count_open: &|id| id == 3,
+            ..layout(View::Messages)
+        };
+        assert_eq!(
+            keys_of(&model, &open),
+            [RowKey::User(1), RowKey::Count(3), RowKey::Group(3)]
+        );
+    }
+
+    /// A thought that opens by itself (Full, with Expand thinking on)
+    /// stands apart from the moment it shows, while it streams and before
+    /// its text has blocks, so its line doesn't move when they come. Once
+    /// it ends with nothing more than its line, the gap goes.
+    #[test]
+    fn a_thought_that_opens_by_itself_keeps_its_place() {
+        let mut model = model(vec![
+            item(1, Kind::User, "main", "go"),
+            read(2, "src/a.rs"),
+            thought(3, "Weighing the options"),
+        ]);
+        model.set_activity(
+            Activity {
+                working: true,
+                ..Activity::default()
+            },
+            &mut Changes::default(),
+        );
+        let expand = Layout {
+            expand_thinking: true,
+            blocks: &|id| if id == 3 { (0, 0) } else { (1, 0) },
+            thought_fits: &|_| true,
+            ..layout(View::Full)
+        };
+        let gap_of = |model: &Model, layout: &Layout, key: RowKey| {
+            rows(model, layout)
+                .rows
+                .iter()
+                .find(|row| row.key == key)
+                .map(|row| row.gap)
+        };
+        assert_eq!(
+            gap_of(&model, &expand, RowKey::Thinking(3)),
+            Some(Gap::Apart)
+        );
+        let mut changes = Changes::default();
+        model.apply(Update::Item(read(4, "src/b.rs")), &mut changes);
+        let ended = Layout {
+            blocks: &|_| (1, 0),
+            ..expand
+        };
+        assert_eq!(
+            gap_of(&model, &ended, RowKey::Thinking(3)),
+            Some(Gap::Stack)
+        );
+        // One its line doesn't hold, or isn't known to yet, shows whole.
+        let more = Layout {
+            thought_fits: &|_| false,
+            ..ended
+        };
+        assert_eq!(gap_of(&model, &more, block(3)), Some(Gap::Apart));
+    }
+
+    /// How long the rows of a long session take to make in each view, and
+    /// how the time grows with one long run of calls with a thought before
+    /// each, which grows as the run does. A measurement, so run it in
+    /// release:
+    ///
+    /// ```sh
+    /// cargo test --release --lib the_rows_of_a_long_session -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement: run it in release"]
+    fn the_rows_of_a_long_session_take_time_in_proportion() {
+        use std::time::Instant;
+
+        let time = |model: &Model, view: View, count_open: bool| {
+            let layout = Layout {
+                count_open: &|_| count_open,
+                ..layout(view)
+            };
+            (0..5)
+                .map(|_| {
+                    let start = Instant::now();
+                    rows(model, &layout);
+                    start.elapsed().as_secs_f64() * 1000.
+                })
+                .fold(f64::MAX, f64::min)
+        };
+        for turns in [1000, 2000] {
+            let mut items = Vec::new();
+            for turn in 0..turns {
+                let id = turn * 10;
+                let at = |n: u64, kind: Kind, text: &str| {
+                    let mut item = item(id + n, kind, "main", text);
+                    item.turn = Some(turn);
+                    item
+                };
+                let read = |n: u64, path: &str| {
+                    let mut call = read(id + n, path);
+                    call.turn = Some(turn);
+                    call
+                };
+                items.extend([
+                    at(1, Kind::User, "go"),
+                    at(2, Kind::Thinking, "first, read"),
+                    read(3, "src/a.rs"),
+                    at(4, Kind::Thinking, "then the next"),
+                    read(5, "src/b.rs"),
+                    at(6, Kind::Text, "It reads."),
+                    at(7, Kind::Reply, "Done."),
+                    at(8, Kind::Turn, "1 s"),
+                ]);
+            }
+            let model = model(items);
+            println!(
+                "{} entries: Full {:.2} ms, Quiet {:.2} ms, Messages {:.2} ms, every count open {:.2} ms",
+                model.entries().len(),
+                time(&model, View::Full, false),
+                time(&model, View::Quiet, false),
+                time(&model, View::Messages, false),
+                time(&model, View::Messages, true),
+            );
+        }
+        let run = |calls: u64| {
+            let mut items = vec![item(1, Kind::User, "main", "go")];
+            for n in 0..calls {
+                items.push(thought(2 + 2 * n, "next"));
+                items.push(read(3 + 2 * n, &format!("src/{n}.rs")));
+            }
+            let model = model(items);
+            let quiet = time(&model, View::Quiet, false);
+            println!("one run of {calls} reads with thoughts between: Quiet {quiet:.2} ms");
+            quiet
+        };
+        let (short, long) = (run(1000), run(4000));
+        assert!(
+            long < short * 8.,
+            "{short:.2} ms, then {long:.2} ms for four times as many"
+        );
+    }
+
+    /// `model`'s entries and `item` after them.
+    fn model_with(model: &Model, item: Item) -> Model {
+        let mut items: Vec<Item> = model
+            .entries()
+            .iter()
+            .map(|entry| entry.item.clone())
+            .collect();
+        items.push(item);
+        self::model(items)
+    }
+
+    /// An open count shows its turn's work as Quiet shows it, from the
+    /// thought that led to its first call.
+    #[test]
+    fn an_open_count_shows_its_turn_from_its_first_thought() {
+        let model = model(vec![
+            item(1, Kind::User, "main", "go"),
+            thought(2, "first, read"),
+            read(3, "src/a.rs"),
+            read(4, "src/b.rs"),
+        ]);
+        assert_eq!(
+            keys(&model, View::Messages),
+            [RowKey::User(1), RowKey::Count(3)]
+        );
+        let open = Layout {
+            count_open: &|id| id == 3,
+            ..layout(View::Messages)
+        };
+        assert_eq!(
+            keys_of(&model, &open),
+            [
+                RowKey::User(1),
+                RowKey::Count(3),
+                RowKey::Thinking(2),
+                RowKey::Group(3)
+            ]
+        );
     }
 
     /// A `start_agent` call as the feed has it: it names its worker once it
@@ -1657,13 +2243,15 @@ mod tests {
                 RowKey::Call(7),
             ]
         );
+        // One count for the turn's calls, where its first is, and at the end
+        // the live line of the call that runs, which the count counts.
         assert_eq!(
             keys(&main, View::Messages),
             [
                 RowKey::User(1),
                 RowKey::Count(2),
                 RowKey::Worker(3),
-                RowKey::Count(4),
+                RowKey::Working(6)
             ]
         );
         // The call is hidden for the find and the reader's keys too.
@@ -1736,7 +2324,6 @@ mod tests {
                 block(3),
                 RowKey::Count(4),
                 RowKey::Worker(7),
-                RowKey::Count(8),
                 RowKey::Notice(11),
                 block(12),
                 block(13),
@@ -1780,81 +2367,34 @@ mod tests {
         assert_eq!(keys(&own, View::Messages), [block(2), block(3), block(4)]);
     }
 
-    /// A hidden start doesn't count toward the calls a run folds past, and
-    /// an opened group doesn't show it.
+    /// A start the Quiet view leaves out neither joins a row nor ends one,
+    /// and starts alone leave their workers' cards.
     #[test]
-    fn a_hidden_start_is_not_folded_into_a_group() {
-        let call = |id| item(id, Kind::Call, "main", "read a.rs");
+    fn a_hidden_start_is_not_in_a_quiet_row() {
         let start = start_call(4, "main", CallStatus::Ok, Some("r1"));
-        // Three calls and a start: no group, and the start leaves no row.
-        let three = model(vec![
+        let model = model(vec![
             item(1, Kind::User, "main", "go"),
-            call(2),
-            call(3),
+            read(2, "src/a.rs"),
+            read(3, "src/b.rs"),
             start.clone(),
-            call(5),
+            read(5, "src/c.rs"),
         ]);
-        assert_eq!(
-            keys(&three, View::Quiet),
-            [
-                RowKey::User(1),
-                RowKey::Call(2),
-                RowKey::Call(3),
-                RowKey::Call(5)
-            ]
-        );
-        assert_eq!(keys(&three, View::Full).len(), 5);
-        // A fourth call folds the run, without the start among its members.
-        let four = model(vec![
-            item(1, Kind::User, "main", "go"),
-            call(2),
-            call(3),
-            start.clone(),
-            call(5),
-            call(6),
-        ]);
-        assert_eq!(
-            keys(&four, View::Quiet),
-            [RowKey::User(1), RowKey::Group(2)]
-        );
-        assert_eq!(run_of(&four, 2, View::Quiet), [1, 2, 4, 5]);
-        let expanded = Layout {
-            group_open: &|id| (id == 2).then_some(true),
-            ..layout(View::Quiet)
-        };
-        let rows: Vec<RowKey> = rows(&four, &expanded).iter().map(|r| r.key).collect();
-        assert_eq!(
-            rows,
-            [
-                RowKey::User(1),
-                RowKey::Group(2),
-                RowKey::Call(2),
-                RowKey::Call(3),
-                RowKey::Call(5),
-                RowKey::Call(6),
-            ]
-        );
-        // Starts alone make no group at all, with their cards between.
-        let starts = model(vec![
+        let laid = rows(&model, &layout(View::Quiet));
+        let shown: Vec<RowKey> = laid.rows.iter().map(|row| row.key).collect();
+        assert_eq!(shown, [RowKey::User(1), RowKey::Group(2)]);
+        assert_eq!(laid.quiet[&2].members, [2, 3, 5]);
+        assert_eq!(keys(&model, View::Full).len(), 5);
+        // Starts alone make no row at all, with their cards between.
+        let starts = self::model(vec![
             item(1, Kind::User, "main", "go"),
             start_call(2, "main", CallStatus::Ok, Some("r1")),
             worker_card(3, "main", "r1"),
             start_call(4, "main", CallStatus::Ok, Some("r2")),
             worker_card(5, "main", "r2"),
-            start_call(6, "main", CallStatus::Ok, Some("r3")),
-            worker_card(7, "main", "r3"),
-            start_call(8, "main", CallStatus::Ok, Some("r4")),
-            worker_card(9, "main", "r4"),
         ]);
         assert_eq!(
             keys(&starts, View::Quiet),
-            [
-                RowKey::User(1),
-                RowKey::Worker(3),
-                RowKey::Worker(5),
-                RowKey::Worker(7),
-                RowKey::Worker(9),
-            ]
+            [RowKey::User(1), RowKey::Worker(3), RowKey::Worker(5)]
         );
     }
 
@@ -1869,7 +2409,7 @@ mod tests {
             first: Some(2),
             ..layout(View::Full)
         };
-        let keys: Vec<RowKey> = rows(&model, &from_two).iter().map(|r| r.key).collect();
+        let keys = keys_of(&model, &from_two);
         assert_eq!(keys, [RowKey::User(2), RowKey::User(3)]);
     }
 
@@ -1883,13 +2423,9 @@ mod tests {
             expand_thinking: true,
             ..layout(View::Full)
         };
-        let keys_of = |layout: &Layout| -> Vec<RowKey> {
-            rows(&model, layout).iter().map(|r| r.key).collect()
-        };
-        assert_eq!(
-            keys_of(&expand),
-            [RowKey::Thinking(1), block(1), block(2), RowKey::Actions(2)]
-        );
+        let keys_of = |layout: &Layout| keys_of(&model, layout);
+        // Open, a thought is its text.
+        assert_eq!(keys_of(&expand), [block(1), block(2), RowKey::Actions(2)]);
         let quiet = Layout {
             expand_thinking: true,
             ..layout(View::Quiet)
@@ -1916,7 +2452,7 @@ mod tests {
         let mut note = item(3, Kind::User, "main", "Keep the old name.");
         note.delivery = Some(Delivery::Note);
         note.pending = true;
-        let calls = (4..9).map(|id| item(id, Kind::Call, "main", "read a.rs"));
+        let calls = (4..9).map(|id| read(id, &format!("src/{id}.rs")));
         let mut model = model(
             [
                 item(1, Kind::User, "main", "go"),
@@ -2031,6 +2567,7 @@ mod tests {
             item(6, Kind::User, "main", "again"),
         ]);
         let gaps: Vec<Gap> = rows(&model, &layout(View::Full))
+            .rows
             .iter()
             .map(|row| row.gap)
             .collect();
@@ -2039,13 +2576,21 @@ mod tests {
             [
                 Gap::None,
                 Gap::Small,
-                Gap::Tight,
-                Gap::Section,
+                Gap::Stack,
+                Gap::Apart,
                 Gap::Small,
                 Gap::Small,
                 Gap::Turn
             ]
         );
+        // Anything open stands apart from its neighbours.
+        let open = Layout {
+            expanded: &|id| (id == 2).then_some(true),
+            ..layout(View::Full)
+        };
+        let gaps: Vec<Gap> = rows(&model, &open).rows.iter().map(|row| row.gap).collect();
+        // (The user's message keeps its actions' gap.)
+        assert_eq!(gaps[1..4], [Gap::Small, Gap::Apart, Gap::Apart]);
     }
 
     #[test]
@@ -2120,12 +2665,11 @@ mod tests {
         );
         assert!(changes.activity);
         assert!(model.is_streaming(0));
-        assert_eq!(model.thought_for(0), None);
-        let mut text = item(2, Kind::Text, "main", "so");
-        text.at = model.entries()[0].item.at + 12_000;
-        model.apply(Update::Item(text), &mut changes);
+        model.apply(
+            Update::Item(item(2, Kind::Text, "main", "so")),
+            &mut changes,
+        );
         assert!(!model.is_streaming(0));
-        assert_eq!(model.thought_for(0), Some(12_000));
     }
 
     /// What the user typed while the agent thinks, a worker's card and
@@ -2153,7 +2697,6 @@ mod tests {
             &mut changes,
         );
         assert!(model.is_streaming(0));
-        assert_eq!(model.thought_for(0), None);
     }
 
     fn working(model: &mut Model) {
@@ -2272,11 +2815,12 @@ mod tests {
                 working: Some(6),
                 ..layout(view)
             };
-            let rows = rows(&model, &layout);
+            let rows = rows(&model, &layout).rows;
             (shows_working(&rows), rows.last().map(|row| row.key))
         };
+        // The thought that streams is the live line where it shows.
         assert_eq!(shown(View::Full), (false, Some(RowKey::Thinking(6))));
-        assert_eq!(shown(View::Quiet), (true, Some(RowKey::Working(6))));
+        assert_eq!(shown(View::Quiet), (false, Some(RowKey::Thinking(6))));
         assert_eq!(shown(View::Messages), (true, Some(RowKey::Working(6))));
     }
 
@@ -2296,10 +2840,7 @@ mod tests {
             working: Some(2),
             ..layout(View::Full)
         };
-        let keys: Vec<RowKey> = rows(&model, &layout)
-            .into_iter()
-            .map(|row| row.key)
-            .collect();
+        let keys = keys_of(&model, &layout);
         assert_eq!(
             keys,
             [
@@ -2494,63 +3035,40 @@ mod tests {
         assert_eq!(model.last_reply(), None);
     }
 
+    /// A Quiet row opens as the reader chose for it, apart from its calls:
+    /// a call the reader opened inside it doesn't open it.
     #[test]
-    fn thinking_under_a_second_has_no_time() {
-        let mut thinking = item(1, Kind::Thinking, "main", "hmm");
-        thinking.at = 1_000;
-        let mut text = item(2, Kind::Text, "main", "so");
-        text.at = 1_001;
-        let model = model(vec![thinking, text]);
-        assert_eq!(model.thought_for(0), None);
-    }
-
-    #[test]
-    fn a_groups_open_state_is_its_own() {
-        let mut items = vec![
+    fn a_rows_open_state_is_its_own() {
+        let model = model(vec![
             item(1, Kind::User, "main", "go"),
-            item(2, Kind::Thinking, "main", "first, read"),
-        ];
-        items.extend((3..7).map(|id| item(id, Kind::Call, "main", "read a.rs")));
-        let model = model(items);
-        // The group open: its calls show, and its first entry (a thinking)
-        // stays folded.
-        let open = Layout {
-            group_open: &|id| (id == 2).then_some(true),
+            read(2, "src/a.rs"),
+            read(3, "src/b.rs"),
+        ]);
+        let call_open = Layout {
+            expanded: &|id| (id == 3).then_some(true),
             ..layout(View::Quiet)
-        };
-        let keys_of = |layout: &Layout| -> Vec<RowKey> {
-            rows(&model, layout).iter().map(|r| r.key).collect()
         };
         assert_eq!(
-            keys_of(&open),
-            [
-                RowKey::User(1),
-                RowKey::Group(2),
-                RowKey::Thinking(2),
-                RowKey::Call(3),
-                RowKey::Call(4),
-                RowKey::Call(5),
-                RowKey::Call(6),
-            ]
+            keys_of(&model, &call_open),
+            [RowKey::User(1), RowKey::Group(2)]
         );
-        // The thinking folded by the reader leaves the group open.
-        let folded_thinking = Layout {
-            expanded: &|id| (id == 2).then_some(false),
-            ..open
-        };
-        assert_eq!(keys_of(&folded_thinking).len(), 7);
-        // A call the reader opened keeps the group open as the run grows.
-        let call_open = Layout {
-            expanded: &|id| (id == 5).then_some(true),
-            ..layout(View::Quiet)
-        };
-        assert!(keys_of(&call_open).contains(&RowKey::Call(5)));
-        // And the reader can still fold the group.
-        let folded = Layout {
-            group_open: &|id| (id == 2).then_some(false),
+        let open = Layout {
+            group_open: &|id| (id == 2).then_some(true),
             ..call_open
         };
-        assert_eq!(keys_of(&folded), [RowKey::User(1), RowKey::Group(2)]);
+        let laid = rows(&model, &open);
+        let gaps: Vec<(RowKey, Gap)> = laid.rows.iter().map(|row| (row.key, row.gap)).collect();
+        // The rail never starts with a gap, and what is open on it stands
+        // apart.
+        assert_eq!(
+            gaps,
+            [
+                (RowKey::User(1), Gap::None),
+                (RowKey::Group(2), Gap::Small),
+                (RowKey::Call(2), Gap::Stack),
+                (RowKey::Call(3), Gap::Apart),
+            ]
+        );
     }
 
     #[test]
@@ -2558,6 +3076,7 @@ mod tests {
         let row = |key| Row {
             key,
             gap: Gap::None,
+            rail: Rail::No,
         };
         let old = [
             row(RowKey::User(1)),
@@ -2588,6 +3107,7 @@ mod tests {
         let row = |key| Row {
             key,
             gap: Gap::None,
+            rail: Rail::No,
         };
         let old = [
             row(RowKey::User(1)),
