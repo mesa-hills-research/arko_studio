@@ -50,8 +50,12 @@ impl TranscriptView {
     /// What assistive technology says of row `key`: whose it is or what,
     /// and the start of its text.
     pub(super) fn row_label(&self, key: RowKey) -> SharedString {
-        if let RowKey::Working(_) = key {
-            return "Working".into();
+        if let RowKey::Working(id) = key {
+            return self
+                .working_words(id)
+                .trim_end_matches('…')
+                .to_string()
+                .into();
         }
         let Some(item) = self.model.entry(key.entry()).map(|entry| &entry.item) else {
             return SharedString::default();

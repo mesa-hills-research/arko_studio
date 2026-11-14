@@ -465,3 +465,37 @@ fn a_double_click_on_an_open_thought_leaves_it_open(cx: &mut TestAppContext) {
     settle(cx, window);
     assert!(!is_open(cx, &view, thought));
 }
+
+/// Messages, while a call runs after what the agent said in the same turn.
+/// The end of the transcript says what the call does, with the spinner.
+#[gpui_kit::test]
+fn messages_says_at_its_end_what_a_running_call_does(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Messages);
+    cx.update(|cx| {
+        prefs::update(cx, |prefs| prefs.appearance.motion = prefs::Motion::On);
+        cx.set_reduce_motion(false);
+    });
+    let feed = Feed::new("main");
+    feed.user("Build it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let read = call(&feed, "main", "read_file", &[("path", "src/a.rs".into())]);
+    result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
+    say(
+        &feed,
+        "main",
+        "The file is fine. I'll build the release now.",
+    );
+    call(
+        &feed,
+        "main",
+        "shell",
+        &[("command", "cargo build --release".into())],
+    );
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let build = ids_of(&feed, Kind::Call)[1];
+    assert_eq!(keys(&view, cx).last(), Some(&RowKey::Working(build)));
+    let words = cx.read(|cx| view.read(cx).working_words(build));
+    assert_eq!(words, "Running cargo build --release…");
+    assert!(drawn(cx, window, ("working-spinner", build)));
+}

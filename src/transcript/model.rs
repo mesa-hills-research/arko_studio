@@ -571,6 +571,22 @@ impl Model {
         }
     }
 
+    /// The call of the agent shown that runs, in its latest turn.
+    pub fn running_call(&self) -> Option<u64> {
+        for entry in self.entries.iter().rev() {
+            let item = &entry.item;
+            if !self.filter.owns(item) || is_aside(item) {
+                continue;
+            }
+            match item.kind {
+                Kind::Call if item.status == Some(CallStatus::Running) => return Some(item.id),
+                Kind::User | Kind::Turn | Kind::Conversation => return None,
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Whether the agent shown waits on the model with no row saying it's
     /// busy, by its latest output.
     pub fn waiting(&self) -> Waiting {
@@ -1389,6 +1405,17 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Laid {
         if !thinking {
             rows.push(RowKey::Working(after), Class::Work);
         }
+    } else if view == View::Messages
+        && let Some(running) = model.running_call()
+        && !rows.out.iter().any(|row| row.key == RowKey::Call(running))
+        && !rows
+            .quiet
+            .values()
+            .any(|row| row.members.contains(&running))
+    {
+        // Messages counts the call that runs, so the live line at the end
+        // says what it does, unless an open count shows its row.
+        rows.push(RowKey::Working(running), Class::Work);
     }
     for ix in waiting {
         rows.entry(&entries[ix], view);
@@ -2040,10 +2067,16 @@ mod tests {
                 RowKey::Call(7),
             ]
         );
-        // (One count for the turn's calls, where its first is.)
+        // One count for the turn's calls, where its first is, and at the end
+        // the live line of the call that runs, which the count counts.
         assert_eq!(
             keys(&main, View::Messages),
-            [RowKey::User(1), RowKey::Count(2), RowKey::Worker(3)]
+            [
+                RowKey::User(1),
+                RowKey::Count(2),
+                RowKey::Worker(3),
+                RowKey::Working(6)
+            ]
         );
         // The call is hidden for the find and the reader's keys too.
         let filter = AgentFilter::Main;

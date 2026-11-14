@@ -2046,10 +2046,23 @@ impl TranscriptView {
             .into_any_element()
     }
 
+    /// What the live line at the end says: what the call `id` does while
+    /// it runs (Messages counts it), else "Working…".
+    pub(super) fn working_words(&self, id: u64) -> String {
+        self.item(id)
+            .filter(|item| item.kind == Kind::Call && item.status == Some(CallStatus::Running))
+            .and_then(|item| item.act.as_ref())
+            .map_or_else(
+                || WORKING.to_string(),
+                |act| format!("{}…", arko::remote::quiet::doing(act)),
+            )
+    }
+
     /// "Working…" while the agent waits on the model and no other row says
-    /// it's busy. The spinner stands in the markers' column and the words
-    /// where a thought's start, so the thought that takes its place starts
-    /// where it stood. The spinner alone moves.
+    /// it's busy, or in Messages what the call that runs does. The spinner
+    /// stands in the markers' column and the words where a thought's start,
+    /// so the thought that takes its place starts where it stood. The
+    /// spinner alone moves.
     fn working(&self, id: u64, cx: &App) -> AnyElement {
         let theme = cx.theme();
         h_flex()
@@ -2060,7 +2073,7 @@ impl TranscriptView {
             .line_height(rems(LINE))
             .text_color(theme.muted_foreground)
             .child(self.marker(("working-spinner", id), Marker::Live, cx))
-            .child(WORKING)
+            .child(div().min_w_0().truncate().child(self.working_words(id)))
             .into_any_element()
     }
 
