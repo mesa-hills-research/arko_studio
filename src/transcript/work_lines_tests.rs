@@ -638,3 +638,44 @@ fn the_find_opens_a_thought_shown_as_its_line(cx: &mut TestAppContext) {
     let marked = cx.read(|cx| view.read(cx).match_ranges(thought, Place::Block(0)));
     assert_eq!(marked.len(), 1, "{marked:?}");
 }
+
+/// Two open thoughts, a click on each within the wait for a double-click.
+/// Both close.
+#[gpui_kit::test]
+fn each_open_thought_clicked_closes(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    think(&feed, "First, the parser.\n\nThen its tests.");
+    say(&feed, "main", "ok");
+    think(&feed, "Second, the lexer.\n\nThen its tests.");
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let thoughts = ids_of(&feed, Kind::Thinking);
+    for id in &thoughts {
+        cx.update_window(window, |_, window, cx| {
+            window.click(("thinking-toggle", *id), cx)
+        })
+        .unwrap();
+        settle(cx, window);
+    }
+    assert!(thoughts.iter().all(|id| is_open(cx, &view, *id)));
+    for id in &thoughts {
+        let block = super::row::element_id(RowKey::Block {
+            id: *id,
+            generation: 0,
+            block: 0,
+            source: false,
+        });
+        cx.update_window(window, |_, window, cx| window.click(block, cx))
+            .unwrap();
+        settle(cx, window);
+    }
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    assert!(thoughts.iter().all(|id| !is_open(cx, &view, *id)));
+}

@@ -452,9 +452,9 @@ pub struct TranscriptView {
     hovered_row: Option<RowKey>,
     /// Hides the hover actions a moment after the pointer left their entry.
     hover_grace: Option<Task<()>>,
-    /// Closes the open thought a click was on, unless a second click makes
-    /// it a double-click.
-    closing: Option<Task<()>>,
+    /// The close of each open thought a click was on, by thought. A second
+    /// click on it, making a double-click, takes its close away.
+    closing: HashMap<u64, Task<()>>,
     /// Entries that came while the reader was scrolled up.
     new_while_away: usize,
     /// How many of the rows come before "Working…" and the notes waiting at
@@ -615,7 +615,7 @@ impl TranscriptView {
             hovered: None,
             hovered_row: None,
             hover_grace: None,
-            closing: None,
+            closing: HashMap::new(),
             new_while_away: 0,
             core_rows: 0,
             loaded_from: None,
@@ -1149,7 +1149,7 @@ impl TranscriptView {
         *hovered = None;
         *hovered_row = None;
         *cursor = None;
-        *closing = None;
+        closing.clear();
         thought_lines.clear();
         *new_while_away = 0;
         *core_rows = 0;
@@ -1990,16 +1990,17 @@ impl TranscriptView {
     /// double-click interval later, so a double-click selects a word in it
     /// and leaves it open.
     fn close_soon(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.closing = Some(cx.spawn(async move |this, cx| {
+        let close = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(DOUBLE_CLICK).await;
             this.update(cx, |this, cx| {
-                this.closing = None;
+                this.closing.remove(&id);
                 if this.shown_open(id) {
                     this.toggle(id, cx);
                 }
             })
             .ok();
-        }));
+        });
+        self.closing.insert(id, close);
     }
 
     /// Opens or closes a Quiet row. Its line stays where it is on screen,

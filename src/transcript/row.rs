@@ -1908,7 +1908,9 @@ impl TranscriptView {
                 .child(div().flex_1().min_w_0().child(body))
                 .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                     if event.click_count > 1 {
-                        down_view.update(cx, |this, _| this.closing = None).ok();
+                        down_view
+                            .update(cx, |this, _| this.closing.remove(&id))
+                            .ok();
                     }
                 })
                 .on_click(move |event, _, cx| {
