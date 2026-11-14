@@ -130,11 +130,12 @@ struct Editing {
 /// "1 image is no longer kept": what an edit or a resend says of the
 /// message's images the session dropped.
 fn images_not_kept(count: usize) -> Option<String> {
-    match count {
-        0 => None,
-        1 => Some("1 image is no longer kept".to_string()),
-        count => Some(format!("{count} images are no longer kept")),
-    }
+    (count > 0).then(|| {
+        format!(
+            "{} no longer kept",
+            crate::figures::plural(count, "image is", "images are")
+        )
+    })
 }
 
 /// How many sessions' transcripts the window keeps ready: switching back to
@@ -4865,8 +4866,7 @@ fn find_status_text(status: FindStatus, has_words: bool) -> String {
         (Some(current), total) => format!("{} of {total}", current + 1),
         // Matches, none of them on show (words that matched nothing
         // before).
-        (None, 1) => "1 match".to_string(),
-        (None, total) => format!("{total} matches"),
+        (None, total) => crate::figures::plural(total, "match", "matches"),
     }
 }
 
@@ -4975,6 +4975,7 @@ mod tests {
         };
         assert_eq!(find_status_text(status(Some(2), 12), true), "3 of 12");
         assert_eq!(find_status_text(status(None, 12), true), "12 matches");
+        assert_eq!(find_status_text(status(None, 2), true), "2 matches");
         assert_eq!(find_status_text(status(None, 1), true), "1 match");
         assert_eq!(find_status_text(status(None, 0), true), "No matches");
         assert_eq!(find_status_text(status(None, 12), false), "");
@@ -4986,6 +4987,10 @@ mod tests {
         assert_eq!(
             images_not_kept(1).as_deref(),
             Some("1 image is no longer kept")
+        );
+        assert_eq!(
+            images_not_kept(2).as_deref(),
+            Some("2 images are no longer kept")
         );
         assert_eq!(
             images_not_kept(3).as_deref(),

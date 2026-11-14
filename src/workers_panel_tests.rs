@@ -703,10 +703,25 @@ fn a_restored_worker_shows_its_saved_tool_calls(cx: &mut TestAppContext) {
         90_000,
         12,
     );
+    for (id, calls) in [("r5", 1), ("r6", 2)] {
+        panel.feed.worker_restored(
+            id,
+            "Port the lexer",
+            Finished,
+            Some("Ported."),
+            None,
+            now - 60_000,
+            90_000,
+            calls,
+        );
+    }
     let workers = panel.feed.subscribe().0.workers;
     panel.show(cx, workers);
-    let facts = cx.read(|cx| panel.panel.read(cx).facts("r4", now));
-    assert!(facts.contains("12 calls"), "{facts}");
+    let facts = |id| cx.read(|cx| panel.panel.read(cx).facts(id, now));
+    assert!(facts("r4").contains("12 calls"), "{}", facts("r4"));
+    assert!(facts("r5").contains(" 1 call"), "{}", facts("r5"));
+    assert!(!facts("r5").contains("calls"), "{}", facts("r5"));
+    assert!(facts("r6").contains(" 2 calls"), "{}", facts("r6"));
 }
 
 /// A row is two lines, whatever it says. It gives the worker's cost beside

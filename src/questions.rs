@@ -51,10 +51,7 @@ pub fn asks_text(questions: &[AgentQuestion]) -> String {
 
 /// "2 open questions": the quiet chip of questions not attached.
 pub fn open_text(count: usize) -> String {
-    match count {
-        1 => "1 open question".to_string(),
-        count => format!("{count} open questions"),
-    }
+    crate::figures::plural(count, "open question", "open questions")
 }
 
 /// "Replying to 2 questions": the chip of the questions attached to the
@@ -739,7 +736,9 @@ mod tests {
             asks_text(&[question.clone(), question]),
             "Arko asks 2 questions"
         );
+        assert_eq!(open_text(0), "0 open questions");
         assert_eq!(open_text(1), "1 open question");
+        assert_eq!(open_text(2), "2 open questions");
         assert_eq!(open_text(3), "3 open questions");
         assert_eq!(replying_text(1), "Replying to a question");
         assert_eq!(replying_text(2), "Replying to 2 questions");

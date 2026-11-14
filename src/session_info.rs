@@ -1505,10 +1505,9 @@ pub fn mcp_lines(mcp: &McpFacts) -> Vec<(String, Option<String>)> {
                 ),
                 (_, Ok(tools)) => (
                     format!(
-                        "{}, {} tool{}",
+                        "{}, {}",
                         server.name,
-                        tools.len(),
-                        if tools.len() == 1 { "" } else { "s" }
+                        crate::figures::plural(tools.len(), "tool", "tools")
                     ),
                     (!tools.is_empty()).then(|| tools.join(", ")),
                 ),
@@ -1782,6 +1781,7 @@ mod tests {
                     McpState::Running,
                     Ok(vec!["read".into(), "write".into()]),
                 ),
+                server("empty", McpState::Running, Ok(Vec::new())),
                 server(
                     "web",
                     McpState::Failed("its program wasn't found".into()),
@@ -1797,6 +1797,7 @@ mod tests {
             mcp_lines(&mcp),
             [
                 ("files, 2 tools".into(), Some("read, write".into())),
+                ("empty, 0 tools".into(), None),
                 ("web, didn’t start (its program wasn’t found)".into(), None),
                 ("figma, stopped by the agent".into(), None),
                 ("github, starting".into(), None),

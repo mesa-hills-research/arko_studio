@@ -154,8 +154,7 @@ pub fn billed_per_token(worker: &WorkerSummary, models: &arko::remote::Models) -
 pub fn narrowed_words(worker: &WorkerSummary) -> Vec<String> {
     let count = |names: &[String], one: &str, many: &str, none: &str| match names.len() {
         0 => none.to_string(),
-        1 => format!("1 {one}"),
-        count => format!("{count} {many}"),
+        count => crate::figures::plural(count, one, many),
     };
     let mut words = Vec::new();
     if let Some(skills) = &worker.skills {
@@ -308,10 +307,9 @@ pub fn running_text(running: &[(String, Option<String>)]) -> String {
             (id, None) => id.clone(),
         })
         .collect();
-    let count = names.len();
     format!(
-        "{count} {} ({})",
-        if count == 1 { "worker" } else { "workers" },
+        "{} ({})",
+        crate::figures::plural(names.len(), "worker", "workers"),
         names.join(", ")
     )
 }
@@ -590,6 +588,7 @@ mod tests {
         );
         // A worker whose starter isn't running still says whose it is.
         assert_eq!(list(&[("r5", Some("r2"))]), "1 worker (r5 under r2)");
+        assert_eq!(list(&[("r1", None), ("r2", None)]), "2 workers (r1, r2)");
     }
 
     /// The message copies setting says what it does with it on or off, in
