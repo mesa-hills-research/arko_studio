@@ -2389,7 +2389,7 @@ fn a_thought_streams_closed_and_expand_thinking_opens_it_in_full(cx: &mut TestAp
     start(cx);
     let feed = Feed::new("main");
     feed.turn_started();
-    think(&feed, "Weighing the options");
+    think(&feed, "Weighing the options.\n\nThe first wins.");
     let (window, view) = open(cx, &feed, AgentFilter::Main, 720.);
     let thinking = item_ids(&feed)[0].0;
     cx.read(|cx| {

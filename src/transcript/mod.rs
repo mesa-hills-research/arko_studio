@@ -1578,6 +1578,7 @@ impl TranscriptView {
         let group_open = |id: u64| ui.get(&id).and_then(|ui| ui.group_open);
         let sealed = |id: u64| self.sealed.contains(&id);
         let count_open = |id: u64| self.counts_open.contains(&id);
+        let thought_opens = |id: u64| self.thought_opens(id, false);
         let source =
             |id: u64| !render_markdown || (ui.get(&id).is_some_and(|ui| ui.flipped) != show_source);
         let laid = model::rows(
@@ -1591,6 +1592,7 @@ impl TranscriptView {
                 sealed: &sealed,
                 count_open: &count_open,
                 source: &source,
+                thought_opens: &thought_opens,
                 first: self.loaded_from,
                 working: self.working,
             },

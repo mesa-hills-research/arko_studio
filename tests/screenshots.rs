@@ -1572,7 +1572,8 @@ parse of the whole text.";
         feed.turn_started();
         feed.event(
             &event(AgentEvent::ReasoningChunk(
-                "The parser keeps the open block, and `Parser::feed` returns the rest.".into(),
+                "The parser keeps the open block, and `Parser::feed` returns the rest.\n\nThe reply says so."
+                    .into(),
             )),
             None,
         );

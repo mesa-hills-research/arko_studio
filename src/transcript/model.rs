@@ -571,6 +571,17 @@ impl Model {
         }
     }
 
+    /// The thought of the agent shown that streams, its latest output while
+    /// it works.
+    pub fn live_thought(&self) -> Option<u64> {
+        let ix = self
+            .entries
+            .iter()
+            .rposition(|entry| self.filter.owns(&entry.item) && !is_aside(&entry.item))?;
+        let item = &self.entries[ix].item;
+        (item.kind == Kind::Thinking && self.is_streaming(ix)).then_some(item.id)
+    }
+
     /// The call of the agent shown that runs, in its latest turn.
     pub fn running_call(&self) -> Option<u64> {
         for entry in self.entries.iter().rev() {
@@ -981,6 +992,9 @@ pub(crate) struct Layout<'a> {
     pub count_open: &'a dyn Fn(u64) -> bool,
     /// Whether an entry's text shows as its source.
     pub source: &'a dyn Fn(u64) -> bool,
+    /// Whether a thought says more than its line shows, where the rows are
+    /// drawn now.
+    pub thought_opens: &'a dyn Fn(u64) -> bool,
     /// The oldest entry ready to show, when older ones are still being made
     /// ready: the rows start there.
     pub first: Option<u64>,
@@ -997,6 +1011,8 @@ struct Rows<'a> {
     rail: Option<bool>,
     layout: &'a Layout<'a>,
     quiet: HashMap<u64, QuietRow>,
+    /// The thought of the agent shown that streams.
+    live: Option<u64>,
 }
 
 impl Rows<'_> {
@@ -1033,10 +1049,21 @@ impl Rows<'_> {
     /// A thought's rows, its line or, open, its text.
     fn thinking(&mut self, id: u64, view: View) {
         let default = self.layout.expand_thinking && view == View::Full;
-        let open = (self.layout.expanded)(id).unwrap_or(default);
+        let chosen = (self.layout.expanded)(id);
+        let open = chosen.unwrap_or(default);
         let (count, generation) = (self.layout.blocks)(id);
-        if !open || count == 0 {
+        // A thought that opens by itself stands apart from the moment it
+        // shows, while it streams, so its line doesn't move when its text
+        // comes. One that ended on its line has nothing to open, so it's a
+        // line of work like a closed one.
+        let by_itself = open && chosen.is_none();
+        let live = self.live == Some(id);
+        if !open || (by_itself && !live && !(self.layout.thought_opens)(id)) {
             self.push(RowKey::Thinking(id), Class::Work);
+            return;
+        }
+        if count == 0 {
+            self.push(RowKey::Thinking(id), Class::Thought { first: true });
             return;
         }
         let source = (self.layout.source)(id);
@@ -1369,6 +1396,7 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Laid {
         rail: None,
         layout,
         quiet: HashMap::new(),
+        live: model.live_thought(),
     };
     for piece in pieces {
         match piece {
@@ -1517,6 +1545,7 @@ mod tests {
             sealed: &|_| false,
             count_open: &|_| false,
             source: &|_| false,
+            thought_opens: &|_| true,
             first: None,
             working: None,
         }
@@ -1970,6 +1999,59 @@ mod tests {
             keys_of(&model, &open),
             [RowKey::User(1), RowKey::Count(3), RowKey::Group(3)]
         );
+    }
+
+    /// A thought that opens by itself (Full, with Expand thinking on)
+    /// stands apart from the moment it shows, while it streams and before
+    /// its text has blocks, so its line doesn't move when they come. Once
+    /// it ends with nothing more than its line, the gap goes.
+    #[test]
+    fn a_thought_that_opens_by_itself_keeps_its_place() {
+        let mut model = model(vec![
+            item(1, Kind::User, "main", "go"),
+            read(2, "src/a.rs"),
+            thought(3, "Weighing the options"),
+        ]);
+        model.set_activity(
+            Activity {
+                working: true,
+                ..Activity::default()
+            },
+            &mut Changes::default(),
+        );
+        let expand = Layout {
+            expand_thinking: true,
+            blocks: &|id| if id == 3 { (0, 0) } else { (1, 0) },
+            thought_opens: &|_| false,
+            ..layout(View::Full)
+        };
+        let gap_of = |model: &Model, layout: &Layout, key: RowKey| {
+            rows(model, layout)
+                .rows
+                .iter()
+                .find(|row| row.key == key)
+                .map(|row| row.gap)
+        };
+        assert_eq!(
+            gap_of(&model, &expand, RowKey::Thinking(3)),
+            Some(Gap::Apart)
+        );
+        let mut changes = Changes::default();
+        model.apply(Update::Item(read(4, "src/b.rs")), &mut changes);
+        let ended = Layout {
+            blocks: &|_| (1, 0),
+            ..expand
+        };
+        assert_eq!(
+            gap_of(&model, &ended, RowKey::Thinking(3)),
+            Some(Gap::Stack)
+        );
+        // One that says more is open.
+        let more = Layout {
+            thought_opens: &|_| true,
+            ..ended
+        };
+        assert_eq!(gap_of(&model, &more, block(3)), Some(Gap::Apart));
     }
 
     /// `model`'s entries and `item` after them.
