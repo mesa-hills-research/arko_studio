@@ -1945,14 +1945,16 @@ impl TranscriptView {
         }
     }
 
-    /// Keeps the line at row `ix`, which the reader opened or closed, on its
-    /// device pixel row, though the space above it changed from `gap`. What
-    /// is above moves by as much, and the marker's count takes the row's new
-    /// height as no news.
-    fn keep_in_place(&mut self, ix: usize, gap: model::Gap) {
-        let Some(row) = self.rows.get(ix) else {
+    /// Keeps the line of the row `key`, which the reader opened or closed,
+    /// on its device pixel row, though the space above it changed from `gap`.
+    /// The row is where [`Self::place_of`] finds the key in the rows made
+    /// again. What is above moves by as much, and the marker's count takes
+    /// the row's new height as no news.
+    fn keep_in_place(&mut self, key: RowKey, gap: model::Gap) {
+        let Some((ix, _)) = self.place_of(key, px(0.)) else {
             return;
         };
+        let row = self.rows[ix];
         let rem = self.metrics.as_ref().map_or(16., |m| m.rem);
         let grew = (row::gap_rems(row.gap) - row::gap_rems(gap)) * rem;
         self.list.keep_top(ix, px(-grew));
@@ -2007,8 +2009,8 @@ impl TranscriptView {
             self.list.remeasure_row(ix);
         }
         self.refresh_rows_after_opening(cx);
-        if let (Some(ix), Some(before)) = (row, before) {
-            self.keep_in_place(ix, before.gap);
+        if let Some(before) = before {
+            self.keep_in_place(before.key, before.gap);
         }
         cx.notify();
     }
@@ -2058,8 +2060,8 @@ impl TranscriptView {
             self.list.remeasure_row(ix);
         }
         self.refresh_rows_after_opening(cx);
-        if let (Some(ix), Some(gap)) = (row, before) {
-            self.keep_in_place(ix, gap);
+        if let Some(gap) = before {
+            self.keep_in_place(RowKey::Group(first), gap);
         }
         cx.notify();
     }
@@ -2076,8 +2078,8 @@ impl TranscriptView {
             self.counts_open.insert(first);
         }
         self.refresh_rows_after_opening(cx);
-        if let (Some(ix), Some(gap)) = (row, before) {
-            self.keep_in_place(ix, gap);
+        if let Some(gap) = before {
+            self.keep_in_place(RowKey::Count(first), gap);
         }
         // The find covers what the count shows, or no longer does.
         self.quiet_changed.clear();
@@ -2107,11 +2109,10 @@ impl TranscriptView {
     }
 
     fn toggle_source(&mut self, id: u64, cx: &mut Context<Self>) {
-        let row = self.row_of(id);
         let ui = self.ui.entry(id).or_default();
         ui.flipped = !ui.flipped;
         self.refresh_rows(cx);
-        if let Some(ix) = row {
+        if let Some(ix) = self.row_of(id) {
             self.list.keep_top(ix, px(0.));
         }
         self.find_changed(&[], [id], cx);
