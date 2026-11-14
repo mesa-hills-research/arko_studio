@@ -4817,6 +4817,10 @@ fn a_monitors_call_follows_the_monitor(cx: &mut TestAppContext) {
         monitoring(1, Some(59_000)),
         "Monitoring · 1 alert · ends in less than a minute"
     );
+    assert_eq!(
+        monitoring(2, Some(59_000)),
+        "Monitoring · 2 alerts · ends in less than a minute"
+    );
     assert_eq!(super::row::monitoring_changes_in(59_000), None);
     // A rearm moves its end.
     feed.job_changed(jobs[1], 0, ends_at + 10 * 60_000);
@@ -4835,6 +4839,7 @@ fn a_monitors_call_follows_the_monitor(cx: &mut TestAppContext) {
     // They end: one after its time, one stopped, one whose command failed,
     // and one that Arko's end stopped.
     feed.job_changed(jobs[0], 4, ends_at);
+    feed.job_changed(jobs[1], 1, ends_at + 10 * 60_000);
     feed.job_ended(jobs[0], JobState::Expired, None);
     feed.job_ended(jobs[1], JobState::Stopped, None);
     feed.job_ended(jobs[2], JobState::Failed, Some("exit 1".into()));
@@ -4842,7 +4847,7 @@ fn a_monitors_call_follows_the_monitor(cx: &mut TestAppContext) {
     settle(cx, window);
     let ended = [
         ("Ended after 30 min · 4 alerts", false),
-        ("Stopped", false),
+        ("Stopped · 1 alert", false),
         ("Command exited (exit 1)", true),
         ("Interrupted", true),
     ];

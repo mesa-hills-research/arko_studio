@@ -100,10 +100,7 @@ impl TranscriptView {
             }
             RowKey::Count(first) => {
                 let calls = self.counts.get(&first).map_or(0, |count| count.calls);
-                match calls {
-                    1 => "1 tool call".to_string(),
-                    calls => format!("{calls} tool calls"),
-                }
+                crate::figures::plural(calls, "tool call", "tool calls")
             }
             RowKey::Actions(_) => "Actions".to_string(),
             RowKey::Refresh(_) => super::row::CACHE_REFRESHED.to_string(),

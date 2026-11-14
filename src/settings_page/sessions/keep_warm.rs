@@ -45,8 +45,7 @@ fn reload_sessions(cx: &mut App) {
 fn hours_label(hours: u32) -> SharedString {
     match hours {
         0 => "Off".into(),
-        1 => "1 hour".into(),
-        hours => format!("{hours} hours").into(),
+        hours => crate::figures::plural(hours, "hour", "hours").into(),
     }
 }
 
@@ -254,7 +253,14 @@ impl SessionsPage {
 
 #[cfg(test)]
 mod tests {
-    use super::{steps, with_dollars, with_hours};
+    use super::{hours_label, steps, with_dollars, with_hours};
+
+    #[test]
+    fn the_menu_counts_hours_one_or_many() {
+        assert_eq!(hours_label(0), "Off");
+        assert_eq!(hours_label(1), "1 hour");
+        assert_eq!(hours_label(2), "2 hours");
+    }
 
     /// Hours keep the dollars, and off drops both. Dollars need hours, and
     /// none clears them.
