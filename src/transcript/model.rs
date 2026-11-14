@@ -923,13 +923,11 @@ pub(crate) struct QuietRow {
 }
 
 /// A turn's calls, counted in one line (Messages).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Count {
     pub calls: usize,
     pub failed: usize,
     pub running: usize,
-    /// Its calls, by entry, in order.
-    pub members: Vec<u64>,
 }
 
 /// The rows a view shows, and what its Quiet rows and counts say.
@@ -1170,29 +1168,24 @@ enum Unit {
     Count(u64),
 }
 
-/// Where each turn's count of calls (Messages) stands, and what it counts.
+/// Where each turn's count of calls (Messages) stands, and what it counts,
+/// as Arko places them for every client ([`quiet::counts`]).
 #[derive(Default)]
 struct Counted {
-    /// Where each count stands, by an entry's index. That is its turn's
-    /// first call, or the thinking that led to that call with nothing shown
-    /// between them, so open it shows the turn's work from its first
-    /// thought.
-    anchors: HashMap<usize, u64>,
-    /// The count of each turn, by its first call.
-    turns: HashMap<u64, u64>,
-    /// The count of each call from before calls had turns, which counts the
-    /// calls between two things shown.
-    loose: HashMap<usize, u64>,
+    /// Each count's first call, by the item its line stands at. That is its
+    /// turn's first call, or the thought of that turn that led to it with
+    /// nothing shown between them, so open it shows the turn's work from
+    /// its first thought.
+    anchors: HashMap<u64, u64>,
+    /// Each turn's count, by its first call.
+    turns: HashMap<Option<u64>, u64>,
     counts: HashMap<u64, Count>,
 }
 
 impl Counted {
-    /// The count the entry `item` at `ix` belongs to.
-    fn count_of(&self, ix: usize, item: &Item) -> Option<u64> {
-        match item.turn {
-            Some(turn) => self.turns.get(&turn).copied(),
-            None => self.loose.get(&ix).copied(),
-        }
+    /// The count of the turn `item` is of.
+    fn count_of(&self, item: &Item) -> Option<u64> {
+        self.turns.get(&item.turn).copied()
     }
 }
 
@@ -1200,9 +1193,7 @@ impl Counted {
 fn counted(model: &Model, start: usize) -> Counted {
     let filter = model.filter();
     let entries = model.entries();
-    let mut counted = Counted::default();
-    let mut loose: Option<u64> = None;
-    let mut thought: Option<usize> = None;
+    let mut seen = Vec::with_capacity(entries.len().saturating_sub(start));
     let mut ix = start;
     while ix < entries.len() {
         let item = &entries[ix].item;
@@ -1211,47 +1202,39 @@ fn counted(model: &Model, start: usize) -> Counted {
             continue;
         }
         if is_refresh(item) {
-            (thought, loose) = (None, None);
+            seen.push(quiet::Seen::Shown);
             ix = after_refresh(entries, ix);
             continue;
         }
-        match show(filter, View::Messages, item) {
-            Show::Count => {
-                let known = match item.turn {
-                    Some(turn) => counted.turns.get(&turn).copied(),
-                    None => loose,
-                };
-                let first = known.unwrap_or(item.id);
-                if known.is_none() {
-                    counted.anchors.insert(thought.unwrap_or(ix), first);
-                    match item.turn {
-                        Some(turn) => {
-                            counted.turns.insert(turn, first);
-                        }
-                        None => loose = Some(first),
-                    }
-                }
-                if item.turn.is_none() {
-                    counted.loose.insert(ix, first);
-                }
-                let count = counted.counts.entry(first).or_default();
-                count.calls += 1;
-                match item.status {
-                    Some(CallStatus::Failed) => count.failed += 1,
-                    Some(CallStatus::Running) => count.running += 1,
-                    _ => {}
-                }
-                count.members.push(item.id);
-                thought = None;
-            }
-            Show::Item => (thought, loose) = (None, None),
-            Show::Hidden => {
-                if filter.owns(item) && item.kind == Kind::Thinking {
-                    thought.get_or_insert(ix);
+        seen.push(match show(filter, View::Messages, item) {
+            Show::Count => quiet::Seen::Call {
+                id: item.id,
+                turn: item.turn,
+                status: item.status,
+            },
+            Show::Item => quiet::Seen::Shown,
+            Show::Hidden if filter.owns(item) && item.kind == Kind::Thinking => {
+                quiet::Seen::Thinking {
+                    id: item.id,
+                    turn: item.turn,
                 }
             }
-        }
+            Show::Hidden => quiet::Seen::Hidden,
+        });
         ix += 1;
+    }
+    let mut counted = Counted::default();
+    for count in quiet::counts(seen) {
+        counted.anchors.insert(count.at, count.first);
+        counted.turns.insert(count.turn, count.first);
+        counted.counts.insert(
+            count.first,
+            Count {
+                calls: count.calls,
+                failed: count.failed,
+                running: count.running,
+            },
+        );
     }
     counted
 }
@@ -1318,14 +1301,14 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Laid {
         }
         let mut seen = view;
         if let Some(counted) = &counted {
-            if let Some(&first) = counted.anchors.get(&ix) {
+            if let Some(&first) = counted.anchors.get(&item.id) {
                 units.push(Unit::Count(first));
                 if (layout.count_open)(first) {
                     opened.insert(first);
                 }
             }
             if counted
-                .count_of(ix, item)
+                .count_of(item)
                 .is_some_and(|first| opened.contains(&first))
             {
                 seen = View::Quiet;
@@ -1924,6 +1907,32 @@ mod tests {
         );
     }
 
+    /// A thought leads only to a call of its own turn. A turn that ended in
+    /// a thought, and one Arko started for news that calls at once, keep
+    /// their count where the call is.
+    #[test]
+    fn a_count_stands_at_a_thought_of_its_own_turn_only() {
+        let mut news = read(3, "src/a.rs");
+        news.turn = Some(2);
+        let model = model(vec![
+            item(1, Kind::User, "main", "go"),
+            thought(2, "nothing to do"),
+            news,
+        ]);
+        assert_eq!(
+            keys(&model, View::Messages),
+            [RowKey::User(1), RowKey::Count(3)]
+        );
+        let open = Layout {
+            count_open: &|id| id == 3,
+            ..layout(View::Messages)
+        };
+        assert_eq!(
+            keys_of(&model, &open),
+            [RowKey::User(1), RowKey::Count(3), RowKey::Group(3)]
+        );
+    }
+
     /// `model`'s entries and `item` after them.
     fn model_with(model: &Model, item: Item) -> Model {
         let mut items: Vec<Item> = model
@@ -2019,14 +2028,10 @@ mod tests {
                 RowKey::Call(7),
             ]
         );
+        // (One count for the turn's calls, where its first is.)
         assert_eq!(
             keys(&main, View::Messages),
-            [
-                RowKey::User(1),
-                RowKey::Count(2),
-                RowKey::Worker(3),
-                RowKey::Count(4),
-            ]
+            [RowKey::User(1), RowKey::Count(2), RowKey::Worker(3)]
         );
         // The call is hidden for the find and the reader's keys too.
         let filter = AgentFilter::Main;
@@ -2098,7 +2103,6 @@ mod tests {
                 block(3),
                 RowKey::Count(4),
                 RowKey::Worker(7),
-                RowKey::Count(8),
                 RowKey::Notice(11),
                 block(12),
                 block(13),
