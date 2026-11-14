@@ -116,6 +116,10 @@ const PAGE: f32 = 0.9;
 /// How long the hover actions stay after the pointer left their entry.
 const HOVER_GRACE: Duration = Duration::from_millis(150);
 
+/// How long a second click may take to make a double-click, at most, on
+/// the platforms the app runs on.
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
 /// Code blocks show this many lines until the reader asks for all of them.
 pub const CODE_LINES: usize = 40;
 
@@ -431,6 +435,9 @@ pub struct TranscriptView {
     hovered_row: Option<RowKey>,
     /// Hides the hover actions a moment after the pointer left their entry.
     hover_grace: Option<Task<()>>,
+    /// Closes the open thought a click was on, unless a second click makes
+    /// it a double-click.
+    closing: Option<Task<()>>,
     /// Entries that came while the reader was scrolled up.
     new_while_away: usize,
     /// How many of the rows come before "Working…" and the notes waiting at
@@ -579,6 +586,7 @@ impl TranscriptView {
             hovered: None,
             hovered_row: None,
             hover_grace: None,
+            closing: None,
             new_while_away: 0,
             core_rows: 0,
             loaded_from: None,
@@ -1771,6 +1779,27 @@ impl TranscriptView {
     /// the reader chose.
     fn group_open(&self, first: u64) -> bool {
         self.ui.get(&first).and_then(|ui| ui.group_open) == Some(true)
+    }
+
+    /// Closes the open thought `id` once a click on it proves single, the
+    /// double-click interval later, so a double-click selects a word in it
+    /// and leaves it open.
+    fn close_soon(&mut self, id: u64, open_by_default: bool, cx: &mut Context<Self>) {
+        self.closing = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(DOUBLE_CLICK).await;
+            this.update(cx, |this, cx| {
+                this.closing = None;
+                let open = this
+                    .ui
+                    .get(&id)
+                    .and_then(|ui| ui.expanded)
+                    .unwrap_or(open_by_default);
+                if open {
+                    this.toggle(id, open_by_default, cx);
+                }
+            })
+            .ok();
+        }));
     }
 
     /// Opens or closes a Quiet row. Its line stays where it is on screen,

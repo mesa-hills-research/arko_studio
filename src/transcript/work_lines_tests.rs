@@ -3,11 +3,11 @@
 
 use arko::remote::{Delivery, Feed, Kind, Source};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AppContext as _, TestAppContext};
+use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
 
-use super::AgentFilter;
 use super::model::RowKey;
 use super::tests::{call, item_ids, keys, open, result, say, settle, start, think};
+use super::{AgentFilter, TranscriptView};
 use crate::prefs::{self, TranscriptView as View};
 
 fn ids_of(feed: &Feed, kind: Kind) -> Vec<u64> {
@@ -146,4 +146,90 @@ fn the_thought_opened_at_the_top_of_the_screen_stays_there(cx: &mut TestAppConte
         .position(|key| matches!(key, RowKey::Block { id, block: 0, .. } if *id == thought))
         .unwrap();
     assert_eq!(cx.read(|cx| view.read(cx).list.top().item_ix), first);
+}
+
+/// An open thought with a long code block, and the thought's rows.
+fn open_thought(
+    cx: &mut TestAppContext,
+    text: &str,
+) -> (u64, AnyWindowHandle, Entity<TranscriptView>) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    think(&feed, text);
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 1600.);
+    let thought = ids_of(&feed, Kind::Thinking)[0];
+    cx.update_window(window, |_, window, cx| {
+        window.click(("thinking-toggle", thought), cx)
+    })
+    .unwrap();
+    settle(cx, window);
+    (thought, window, view)
+}
+
+fn is_open(cx: &mut TestAppContext, view: &Entity<TranscriptView>, thought: u64) -> bool {
+    keys(view, cx)
+        .iter()
+        .any(|key| matches!(key, RowKey::Block { id, .. } if *id == thought))
+}
+
+/// Show all, under a long code block of an open thought, shows the code
+/// whole and leaves the thought open.
+#[gpui_kit::test]
+fn show_all_in_an_open_thought_keeps_it_open(cx: &mut TestAppContext) {
+    let code: String = (1..=60).map(|n| format!("line {n}\n")).collect();
+    let (thought, window, view) =
+        open_thought(cx, &format!("The listing I mean.\n\n```text\n{code}```\n"));
+    assert!(is_open(cx, &view, thought));
+    cx.update_window(window, |_, window, cx| window.click("show-all", cx))
+        .unwrap();
+    settle(cx, window);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    let uncapped = cx.read(|cx| {
+        view.read(cx)
+            .ui
+            .get(&thought)
+            .is_some_and(|ui| !ui.uncapped.is_empty())
+    });
+    assert!(uncapped);
+    assert!(is_open(cx, &view, thought));
+}
+
+/// A double-click on an open thought, as a reader makes one to select a
+/// word, leaves it open. A single click closes it.
+#[gpui_kit::test]
+fn a_double_click_on_an_open_thought_leaves_it_open(cx: &mut TestAppContext) {
+    let (thought, window, view) = open_thought(
+        cx,
+        "First, the parser and how it takes its input.\n\nThen its tests, one at a time.",
+    );
+    let block = super::row::element_id(RowKey::Block {
+        id: thought,
+        generation: 0,
+        block: 0,
+        source: false,
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.click(block.clone(), cx);
+        window.double_click(block.clone(), cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    assert!(is_open(cx, &view, thought));
+    cx.update_window(window, |_, window, cx| window.click(block.clone(), cx))
+        .unwrap();
+    settle(cx, window);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    assert!(!is_open(cx, &view, thought));
 }

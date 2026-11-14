@@ -1827,7 +1827,11 @@ impl TranscriptView {
                 .code_block_actions(|code, _, cx| {
                     let theme = cx.theme();
                     let copy = code.code();
+                    // (A click on them is theirs, not the open thought's
+                    // around them.)
                     h_flex()
+                        .id("code-actions")
+                        .on_click(|_, _, cx| cx.stop_propagation())
                         .gap_1()
                         .pl_1()
                         .text_xs()
@@ -1847,6 +1851,8 @@ impl TranscriptView {
                         format!("Show all {lines} lines")
                     })
                     .on_click(move |_, _, cx| {
+                        // (Its click is its own, not the open thought's.)
+                        cx.stop_propagation();
                         view.update(cx, |this, cx| this.toggle_code(id, block, cx))
                             .ok();
                     })
@@ -1864,7 +1870,8 @@ impl TranscriptView {
         if thinking {
             // An open thought, muted and italic in the words' column, with
             // the spinner beside its first block while it streams. A click
-            // on it closes it, and a drag selects its words.
+            // on it closes it once no second click follows, so a
+            // double-click selects a word and a drag selects its words.
             let live = block == 0
                 && self
                     .model
@@ -1872,6 +1879,7 @@ impl TranscriptView {
                     .is_ok_and(|ix| self.model.is_streaming(ix));
             let default = self.thinking_open_by_default();
             let view = view.downgrade();
+            let down_view = view.clone();
             return h_flex()
                 .id(("thought-text", block_number(id, 0, block, false)))
                 .w_full()
@@ -1888,16 +1896,23 @@ impl TranscriptView {
                     cx,
                 )))
                 .child(div().flex_1().min_w_0().child(body))
-                .on_click(move |event, _, cx| {
-                    if let ClickEvent::Mouse(click) = event {
-                        let moved = click.up.position - click.down.position;
-                        let far = f32::from(moved.x).abs() > 3. || f32::from(moved.y).abs() > 3.;
-                        if far || click.down.click_count > 1 {
-                            return;
-                        }
+                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                    if event.click_count > 1 {
+                        down_view.update(cx, |this, _| this.closing = None).ok();
                     }
-                    view.update(cx, |this, cx| this.toggle(id, default, cx))
-                        .ok();
+                })
+                .on_click(move |event, _, cx| {
+                    let ClickEvent::Mouse(click) = event else {
+                        view.update(cx, |this, cx| this.toggle(id, default, cx))
+                            .ok();
+                        return;
+                    };
+                    let moved = click.up.position - click.down.position;
+                    let far = f32::from(moved.x).abs() > 3. || f32::from(moved.y).abs() > 3.;
+                    if !far && click.down.click_count == 1 {
+                        view.update(cx, |this, cx| this.close_soon(id, default, cx))
+                            .ok();
+                    }
                 })
                 .into_any_element();
         }
