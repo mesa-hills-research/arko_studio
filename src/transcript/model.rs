@@ -2054,6 +2054,85 @@ mod tests {
         assert_eq!(gap_of(&model, &more, block(3)), Some(Gap::Apart));
     }
 
+    /// How long the rows of a long session take to make in each view, and
+    /// how the time grows with one long run of calls with a thought before
+    /// each, which grows as the run does. A measurement, so run it in
+    /// release:
+    ///
+    /// ```sh
+    /// cargo test --release --lib the_rows_of_a_long_session -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement: run it in release"]
+    fn the_rows_of_a_long_session_take_time_in_proportion() {
+        use std::time::Instant;
+
+        let time = |model: &Model, view: View, count_open: bool| {
+            let layout = Layout {
+                count_open: &|_| count_open,
+                ..layout(view)
+            };
+            (0..5)
+                .map(|_| {
+                    let start = Instant::now();
+                    rows(model, &layout);
+                    start.elapsed().as_secs_f64() * 1000.
+                })
+                .fold(f64::MAX, f64::min)
+        };
+        for turns in [1000, 2000] {
+            let mut items = Vec::new();
+            for turn in 0..turns {
+                let id = turn * 10;
+                let at = |n: u64, kind: Kind, text: &str| {
+                    let mut item = item(id + n, kind, "main", text);
+                    item.turn = Some(turn);
+                    item
+                };
+                let read = |n: u64, path: &str| {
+                    let mut call = read(id + n, path);
+                    call.turn = Some(turn);
+                    call
+                };
+                items.extend([
+                    at(1, Kind::User, "go"),
+                    at(2, Kind::Thinking, "first, read"),
+                    read(3, "src/a.rs"),
+                    at(4, Kind::Thinking, "then the next"),
+                    read(5, "src/b.rs"),
+                    at(6, Kind::Text, "It reads."),
+                    at(7, Kind::Reply, "Done."),
+                    at(8, Kind::Turn, "1 s"),
+                ]);
+            }
+            let model = model(items);
+            println!(
+                "{} entries: Full {:.2} ms, Quiet {:.2} ms, Messages {:.2} ms, every count open {:.2} ms",
+                model.entries().len(),
+                time(&model, View::Full, false),
+                time(&model, View::Quiet, false),
+                time(&model, View::Messages, false),
+                time(&model, View::Messages, true),
+            );
+        }
+        let run = |calls: u64| {
+            let mut items = vec![item(1, Kind::User, "main", "go")];
+            for n in 0..calls {
+                items.push(thought(2 + 2 * n, "next"));
+                items.push(read(3 + 2 * n, &format!("src/{n}.rs")));
+            }
+            let model = model(items);
+            let quiet = time(&model, View::Quiet, false);
+            println!("one run of {calls} reads with thoughts between: Quiet {quiet:.2} ms");
+            quiet
+        };
+        let (short, long) = (run(1000), run(4000));
+        assert!(
+            long < short * 8.,
+            "{short:.2} ms, then {long:.2} ms for four times as many"
+        );
+    }
+
     /// `model`'s entries and `item` after them.
     fn model_with(model: &Model, item: Item) -> Model {
         let mut items: Vec<Item> = model
