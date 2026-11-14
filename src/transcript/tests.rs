@@ -2547,7 +2547,7 @@ fn a_call_opens_to_its_content_once(cx: &mut TestAppContext) {
     cx.read(|cx| {
         let model = &view.read(cx).model;
         let entry = |at: usize| model.entry(calls[at]).unwrap();
-        let output = |at: usize| shown_output(entry(at)).map(|text| text.to_string());
+        let output = |at: usize| shown_output(entry(at), true).map(|text| text.to_string());
         assert!(shown_given(&entry(0).item).is_none());
         assert_eq!(
             output(0).as_deref(),
@@ -2648,16 +2648,16 @@ fn a_calls_line_and_its_content_say_each_thing_once(cx: &mut TestAppContext) {
     cx.read(|cx| {
         let model = &view.read(cx).model;
         let entry = |at: usize| model.entry(calls[at]).unwrap();
-        let output = |at: usize| shown_output(entry(at)).map(|text| text.to_string());
+        let output = |at: usize| shown_output(entry(at), true).map(|text| text.to_string());
         assert_eq!(call_line(&entry(0).item), "message r1");
         assert_eq!(output(0).as_deref(), Some("Use plan B"));
         assert_eq!(call_line(&entry(1).item), "create_issue (github)");
         assert!(output(1).unwrap().contains("Tokens split across chunks"));
         assert_eq!(output(2).as_deref(), Some("1  fn b() {}"));
-        assert!(!opens(entry(3)));
+        assert!(!opens(entry(3), true));
         assert!(shown_given(&entry(4).item).is_none());
         assert_eq!(output(4), None);
-        assert!(!opens(entry(4)));
+        assert!(!opens(entry(4), true));
         assert!(output(5).unwrap().contains("The tokenizer is in"));
     });
 }

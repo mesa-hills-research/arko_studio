@@ -808,7 +808,7 @@ impl TranscriptView {
                 if let Some(parameters) = row::shown_given(item).map(|given| given.text().clone()) {
                     texts.push((Place::Parameters, parameters.to_string()));
                 }
-                if let Some(output) = row::shown_output(entry) {
+                if let Some(output) = row::shown_output(entry, true) {
                     texts.push((Place::Output, output.to_string()));
                 }
                 texts
@@ -832,7 +832,7 @@ impl TranscriptView {
         let entry = self.model.entry(found.entry)?;
         match found.place {
             Place::Parameters => row::shown_given(&entry.item).map(|given| given.text().clone()),
-            Place::Output => row::shown_output(entry),
+            Place::Output => row::shown_output(entry, true),
             _ => None,
         }
     }
@@ -1393,7 +1393,7 @@ impl TranscriptView {
                     Place::Parameters => {
                         row::shown_given(&item.item).map(|given| given.text().clone())
                     }
-                    _ => row::shown_output(item),
+                    _ => row::shown_output(item, true),
                 })
                 .map_or(0, |text| shown_prefix(&text)),
             _ => usize::MAX,

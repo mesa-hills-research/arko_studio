@@ -2,11 +2,12 @@
 //! how an open thought, an open count and Messages' live line behave.
 
 use arko::remote::{Delivery, Feed, Kind, Source};
+use arko_agents::AgentEvent;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
 
 use super::model::RowKey;
-use super::tests::{call, item_ids, keys, open, result, say, settle, start, think};
+use super::tests::{call, event, item_ids, keys, open, result, say, settle, start, think};
 use super::{AgentFilter, TranscriptView};
 use crate::prefs::{self, TranscriptView as View};
 
@@ -20,6 +21,113 @@ fn ids_of(feed: &Feed, kind: Kind) -> Vec<u64> {
 
 fn set_view(cx: &mut TestAppContext, view: View) {
     cx.update(|cx| prefs::update(cx, |prefs| prefs.view = view));
+}
+
+/// Fails the call `id` of `tool` with `reason`, as a session does.
+fn fail(feed: &Feed, id: uuid::Uuid, tool: &str, reason: &str) {
+    feed.event(
+        &event(
+            "main",
+            AgentEvent::ErrorEncountered {
+                error_message: format!("Tool '{tool}' execution failed: {reason}"),
+                requires_approval_to_retry: false,
+                tool_call_id: Some(id),
+                error_kind: None,
+            },
+        ),
+        None,
+    );
+}
+
+/// An edit of `src/a.rs`.
+fn edit(feed: &Feed) -> uuid::Uuid {
+    call(
+        feed,
+        "main",
+        "edit_file",
+        &[
+            ("path", "src/a.rs".into()),
+            ("old_string", "fn a() {}".into()),
+            ("new_string", "fn a() -> u8 { 1 }".into()),
+        ],
+    )
+}
+
+fn drawn(cx: &mut TestAppContext, window: AnyWindowHandle, id: (&'static str, u64)) -> bool {
+    cx.update_window(window, |_, window, _| window.try_find(id).is_some())
+        .unwrap()
+}
+
+/// A Quiet row says only that its call failed, so it opens to why, even
+/// where the reason is short enough for Full's line to say it whole: a
+/// file that isn't there, an edit whose text isn't found.
+#[gpui_kit::test]
+fn a_failed_quiet_row_opens_to_why_it_failed(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Fix it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let read = call(
+        &feed,
+        "main",
+        "read_file",
+        &[("path", "src/stream.rs".into())],
+    );
+    fail(&feed, read, "read_file", "src/stream.rs doesn't exist.");
+    say(&feed, "main", "Not there. The edit, then.");
+    let edited = edit(&feed);
+    fail(
+        &feed,
+        edited,
+        "edit_file",
+        "old_string was not found in src/a.rs.",
+    );
+    feed.reply("Neither worked.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    for id in ids_of(&feed, Kind::Call) {
+        assert!(cx.read(|cx| view.read(cx).group_opens(id)), "{id}");
+        view.update(cx, |view, cx| view.set_row_open(id, true, cx));
+        settle(cx, window);
+        assert!(
+            drawn(cx, window, ("call-output", id)),
+            "{id} shows why it failed"
+        );
+    }
+}
+
+/// A Full line whose outcome is cut at the reader's width opens to the
+/// outcome whole.
+#[gpui_kit::test]
+fn a_full_line_that_cuts_its_outcome_opens_to_it(cx: &mut TestAppContext) {
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Read it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let read = call(
+        &feed,
+        "main",
+        "read_file",
+        &[("path", "src/stream.rs".into())],
+    );
+    fail(
+        &feed,
+        read,
+        "read_file",
+        "src/stream.rs doesn't exist, and the tokenizer reads no stream.",
+    );
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    cx.simulate_window_resize(
+        window,
+        gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(600.)),
+    );
+    settle(cx, window);
+    let id = ids_of(&feed, Kind::Call)[0];
+    assert!(cx.read(|cx| view.read(cx).call_opens(id, false)));
+    view.update(cx, |view, cx| view.set_expanded(id, true, cx));
+    settle(cx, window);
+    assert!(drawn(cx, window, ("call-output", id)));
 }
 
 /// The thoughts a reader meets, one line each, cut at word ends to lengths

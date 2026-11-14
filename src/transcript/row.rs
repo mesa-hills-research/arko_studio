@@ -491,9 +491,11 @@ fn shown_parameters(item: &Item) -> Option<Arc<str>> {
 
 /// What a call's details show came back: its content (the lines it read
 /// or wrote, its output, its message, its result), or from a session
-/// without one, its tool's result. An edit's diff stands for its content,
-/// and a failure whose words its line says whole has none.
-pub(super) fn shown_output(entry: &super::model::Entry) -> Option<Arc<str>> {
+/// without one, its tool's result. An edit's diff stands for its content.
+/// A failure has none where the line shown says its words whole
+/// (`says_outcome`), as a Full line does at a width that keeps its outcome
+/// whole. A Quiet row says only that the call failed, so it shows why.
+pub(super) fn shown_output(entry: &super::model::Entry, says_outcome: bool) -> Option<Arc<str>> {
     let item = &entry.item;
     if shows_diff(entry) && item.status == Some(CallStatus::Ok) {
         return None;
@@ -502,7 +504,8 @@ pub(super) fn shown_output(entry: &super::model::Entry) -> Option<Arc<str>> {
         (Some(result), _) => {
             let text = content_text(result);
             let said = item.outcome.as_deref().unwrap_or_default().trim();
-            (!(item.status == Some(CallStatus::Failed) && text.trim() == said)).then_some(text)
+            let failed = item.status == Some(CallStatus::Failed);
+            (!(says_outcome && failed && text.trim() == said)).then_some(text)
         }
         // (From a session saved before contents. A call with a content and
         // none to show, such as a monitor's, shows its detail alone.)
@@ -590,9 +593,12 @@ pub(super) fn strip_says_it(item: &Item) -> bool {
 }
 
 /// Whether a call opens to anything: what its line cut, its content, its
-/// diff. One that has none of them doesn't open.
-pub(super) fn opens(entry: &super::model::Entry) -> bool {
-    shown_given(&entry.item).is_some() || shown_output(entry).is_some() || shows_diff(entry)
+/// diff. One that has none of them doesn't open. A line that doesn't say
+/// its outcome whole (`says_outcome`) opens to a failure's words.
+pub(super) fn opens(entry: &super::model::Entry, says_outcome: bool) -> bool {
+    shown_given(&entry.item).is_some()
+        || shown_output(entry, says_outcome).is_some()
+        || shows_diff(entry)
 }
 
 /// The patch an `apply_diff` call applied (sessions saved before
@@ -901,11 +907,13 @@ impl TranscriptView {
         if let Some(entry) = self.model.entry(id)
             && ui.expanded == Some(true)
         {
-            let cut = self.call_cut(&entry.item, room(width, inner, rem), m);
-            if opens(entry) || cut {
+            let room = room(width, inner, rem);
+            let cut = self.call_cut(&entry.item, room, m);
+            let says = !self.outcome_cut(&entry.item, room, m);
+            if opens(entry, says) || cut {
                 let whole = cut && !strip_says_it(&entry.item);
                 let whole = whole.then(|| entry.item.text.trim());
-                height += self.details_height(entry, whole, inside, m, cx);
+                height += self.details_height(entry, says, whole, inside, m, cx);
             }
         }
         height
@@ -941,22 +949,24 @@ impl TranscriptView {
         {
             let whole = cut && !strip_says_it(&entry.item);
             let whole = whole.then(|| entry.item.text.trim());
-            height += self.details_height(entry, whole, inside, m, cx);
+            height += self.details_height(entry, false, whole, inside, m, cx);
         }
         height
     }
 
     /// The height of a call's details, as [`Self::call_details`] lays them
     /// out in `width`.
+    #[allow(clippy::too_many_arguments)]
     fn details_height(
         &self,
         entry: &super::model::Entry,
+        says_outcome: bool,
         whole: Option<&str>,
         width: f32,
         m: &Metrics,
         cx: &App,
     ) -> f32 {
-        if !opens(entry) && whole.is_none() {
+        if !opens(entry, says_outcome) && whole.is_none() {
             return 0.;
         }
         let rem = m.rem;
@@ -966,7 +976,7 @@ impl TranscriptView {
         };
         let door = |text: &str| preview(text).1.then_some(1.25 * rem);
         let given = shown_given(item);
-        let output = shown_output(entry);
+        let output = shown_output(entry, says_outcome);
         let mut parts = Vec::new();
         parts.extend(whole.map(|whole| mono(whole, width)));
         if let Some(Given::Parameters(parameters)) = &given {
@@ -2305,14 +2315,24 @@ impl TranscriptView {
         words + after.min(after_room(room, m)) + actions + 2. * GAP * m.rem > room
     }
 
+    /// Whether a call's Full line cuts its outcome in `room` pixels, where
+    /// the words before it have given way as far as they do.
+    pub(super) fn outcome_cut(&self, item: &Item, room: f32, m: &Metrics) -> bool {
+        let job = self.job_line(item);
+        self.call_after_chars(item, job.as_ref()) as f32 * m.mono.advance() > after_room(room, m)
+    }
+
     /// Whether the call `id`'s line opens, on a rail (`inner`) or not,
     /// because it holds something or cuts its words.
     pub(super) fn call_opens(&self, id: u64, inner: bool) -> bool {
         self.model.entry(id).is_some_and(|entry| {
-            opens(entry)
-                || self
-                    .line_room(inner)
-                    .is_some_and(|(room, m)| self.call_cut(&entry.item, room, m))
+            let (cut, says) = self.line_room(inner).map_or((false, true), |(room, m)| {
+                (
+                    self.call_cut(&entry.item, room, m),
+                    !self.outcome_cut(&entry.item, room, m),
+                )
+            });
+            opens(entry, says) || cut
         })
     }
 
@@ -2345,10 +2365,13 @@ impl TranscriptView {
         let action = (!inner)
             .then(|| self.call_action(item, job.as_ref(), view))
             .flatten();
-        let cut = self
-            .line_room(inner)
-            .is_some_and(|(room, m)| self.call_cut(item, room, m));
-        let opens = opens(entry) || cut;
+        let (cut, says) = self.line_room(inner).map_or((false, true), |(room, m)| {
+            (
+                self.call_cut(item, room, m),
+                !self.outcome_cut(item, room, m),
+            )
+        });
+        let opens = opens(entry, says) || cut;
         let open = opens && self.ui.get(&id).and_then(|ui| ui.expanded) == Some(true);
         let color = if inner {
             theme.muted_foreground
@@ -2405,7 +2428,7 @@ impl TranscriptView {
                     .map(|thumbnails| div().pl(rems(WORDS)).pt_1().child(thumbnails)),
             )
             .when(open, |this| {
-                let held = self.call_details(id, whole, cx);
+                let held = self.call_details(id, says, whole, cx);
                 this.child(if inner {
                     div().pl(rems(WORDS)).pt_1().child(held)
                 } else {
@@ -2474,7 +2497,13 @@ impl TranscriptView {
     /// session shows its parameters and its result under captions. Where
     /// the line cut its words and nothing else says them, `whole` says them
     /// first, muted.
-    fn call_details(&self, id: u64, whole: Option<String>, cx: &App) -> AnyElement {
+    fn call_details(
+        &self,
+        id: u64,
+        says_outcome: bool,
+        whole: Option<String>,
+        cx: &App,
+    ) -> AnyElement {
         use super::find::Place;
         let theme = cx.theme();
         let Some(entry) = self.model.entry(id) else {
@@ -2483,7 +2512,7 @@ impl TranscriptView {
         let item = &entry.item;
         let line = item.text.trim().to_string();
         let given = shown_given(item);
-        let output = shown_output(entry);
+        let output = shown_output(entry, says_outcome);
         let diff = self.ui.get(&id).and_then(|ui| ui.diff.clone());
         let details = v_flex().w_full().gap_1().children(whole.map(|whole| {
             div()
@@ -2589,16 +2618,23 @@ impl TranscriptView {
                 .when_some(output.clone(), |this, output| {
                     let (shown, _) = preview(&output);
                     let gutters = numbered_gutters(&shown, numbers);
-                    this.child(div().w_full().text_color(ink).child(self.marked_with(
-                        ("output", id),
-                        id,
-                        Place::Output,
-                        shown,
-                        Ink::on(ink, editor),
-                        gutters,
-                        theme.muted_foreground,
-                        cx,
-                    )))
+                    this.child(
+                        div()
+                            .id(("call-output", id))
+                            .test_support()
+                            .w_full()
+                            .text_color(ink)
+                            .child(self.marked_with(
+                                ("output", id),
+                                id,
+                                Place::Output,
+                                shown,
+                                Ink::on(ink, editor),
+                                gutters,
+                                theme.muted_foreground,
+                                cx,
+                            )),
+                    )
                 })
         });
         let has_body = body.is_some();
@@ -2913,7 +2949,7 @@ impl TranscriptView {
             let whole = item
                 .filter(|item| cut && !strip_says_it(item))
                 .map(|item| item.text.trim().to_string());
-            on_rail(self.call_details(first, whole, cx), theme)
+            on_rail(self.call_details(first, false, whole, cx), theme)
         });
         v_flex()
             .w_full()

@@ -1250,7 +1250,9 @@ fn step<'a>(entry: &'a Entry, layout: &Layout) -> quiet::Step<'a> {
             outcome: item.outcome.as_deref(),
             job: item.job.is_some(),
             turn: item.turn,
-            content: super::row::opens(entry),
+            // (A Quiet row says no outcome, so it opens to why a call
+            // failed.)
+            content: super::row::opens(entry, false),
             ended: item.ended,
             sealed: (layout.sealed)(item.id),
         });
