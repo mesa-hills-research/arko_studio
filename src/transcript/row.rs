@@ -2790,7 +2790,6 @@ impl TranscriptView {
         running: Option<&Item>,
         cx: &App,
     ) -> (Vec<AnyElement>, usize) {
-        let theme = cx.theme();
         let mut parts = Vec::new();
         let mut chars = 0;
         let words = &row.words;
@@ -2825,7 +2824,6 @@ impl TranscriptView {
                     .into_any_element(),
             );
         }
-        let _ = theme;
         (parts, chars)
     }
 

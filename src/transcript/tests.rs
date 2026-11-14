@@ -2385,7 +2385,7 @@ fn the_views_show_more_or_less_of_the_same_feed(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn thinking_shimmers_while_it_streams_then_says_how_long(cx: &mut TestAppContext) {
+fn a_thought_streams_closed_and_expand_thinking_opens_it_in_full(cx: &mut TestAppContext) {
     start(cx);
     let feed = Feed::new("main");
     feed.turn_started();

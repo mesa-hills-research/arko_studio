@@ -768,6 +768,7 @@ impl TranscriptView {
     }
 
     /// Opens or closes the Quiet row that starts with the call `item`.
+    #[doc(hidden)]
     pub fn set_row_open(&mut self, item: u64, open: bool, cx: &mut Context<Self>) {
         if self.group_open(item) != open {
             self.toggle_group(item, cx);
@@ -776,6 +777,7 @@ impl TranscriptView {
 
     /// Opens or closes the count (Messages) of the turn whose first call is
     /// `item`.
+    #[doc(hidden)]
     pub fn set_count_open(&mut self, item: u64, open: bool, cx: &mut Context<Self>) {
         if self.counts_open.contains(&item) != open {
             self.toggle_count(item, cx);
