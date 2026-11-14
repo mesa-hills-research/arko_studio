@@ -388,3 +388,32 @@ fn the_words_give_way_before_the_outcome(cx: &mut TestAppContext) {
         .unwrap();
     assert!(outcome > row * 0.6, "{outcome} of {row}");
 }
+
+/// Full keeps its thoughts' open state apart from the other views, so a
+/// thought the reader opened on its own line in Quiet is still open there
+/// after a look at Full.
+#[gpui_kit::test]
+fn full_keeps_its_thoughts_open_state_apart(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    think(&feed, "First, the parser.\n\nThen its tests.");
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let thought = ids_of(&feed, Kind::Thinking)[0];
+    let open = |cx: &mut TestAppContext| !keys(&view, cx).contains(&RowKey::Thinking(thought));
+    view.update(cx, |view, cx| view.set_expanded(thought, true, cx));
+    settle(cx, window);
+    assert!(open(cx));
+    set_view(cx, View::Full);
+    settle(cx, window);
+    assert!(!open(cx));
+    set_view(cx, View::Messages);
+    settle(cx, window);
+    set_view(cx, View::Quiet);
+    settle(cx, window);
+    assert!(open(cx));
+}

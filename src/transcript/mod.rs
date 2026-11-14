@@ -274,6 +274,9 @@ struct EntryUi {
     /// A call's details or a thinking's text, opened or closed by the
     /// reader. `None` follows the defaults.
     expanded: Option<bool>,
+    /// A thought's open state in the views of the other kind, Full or the
+    /// rest, which keep theirs apart.
+    expanded_elsewhere: Option<bool>,
     /// The Quiet row this call starts, opened or closed by the reader,
     /// apart from the call's own details.
     group_open: Option<bool>,
@@ -527,6 +530,10 @@ impl TranscriptView {
                 // which a font's change makes wrong.
                 if settings.fonts != this.settings.fonts {
                     this.list.remeasure();
+                }
+                let full = |view| view == prefs::TranscriptView::Full;
+                if full(settings.view) != full(this.settings.view) {
+                    this.swap_thoughts_open();
                 }
                 this.settings = settings;
                 if rows_change {
@@ -1665,6 +1672,22 @@ impl TranscriptView {
         let away = self.new_while_away;
         self.refresh_rows(cx);
         self.new_while_away = away;
+    }
+
+    /// The view changed from Full or to it: each thought takes the open
+    /// state the reader left it in there. Full keeps its own, as the
+    /// terminal and the web page do, so a thought opened in Quiet stays
+    /// open there, sealed on its line, whatever Full showed meanwhile.
+    fn swap_thoughts_open(&mut self) {
+        for (id, ui) in self.ui.iter_mut() {
+            if self
+                .model
+                .entry(*id)
+                .is_some_and(|entry| entry.item.kind == Kind::Thinking)
+            {
+                std::mem::swap(&mut ui.expanded, &mut ui.expanded_elsewhere);
+            }
+        }
     }
 
     /// Makes the diff a call's details show, the first time they open.
