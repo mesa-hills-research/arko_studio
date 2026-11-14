@@ -343,3 +343,48 @@ fn a_cut_row_opens_to_the_call_as_written(cx: &mut TestAppContext) {
         assert!(!whole(cx, calls[1]), "{shown:?}");
     }
 }
+
+/// A call's outcome stays whole where it can: the words give way first,
+/// down to about 8 characters, and only then the outcome.
+#[gpui_kit::test]
+fn the_words_give_way_before_the_outcome(cx: &mut TestAppContext) {
+    use arko_agents::AgentEvent;
+
+    start(cx);
+    let feed = Feed::new("main");
+    feed.user("Read it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let path = "src/a/very/long/path/to/the/stream/module/stream.rs";
+    let read = call(&feed, "main", "read_file", &[("path", path.into())]);
+    feed.event(
+        &super::tests::event(
+            "main",
+            AgentEvent::ErrorEncountered {
+                error_message: format!(
+                    "Tool 'read_file' execution failed: {path} doesn't exist, and nor does its folder."
+                ),
+                requires_approval_to_retry: false,
+                tool_call_id: Some(read),
+                error_kind: None,
+            },
+        ),
+        None,
+    );
+    let (window, _view) = open(cx, &feed, AgentFilter::Main, 400.);
+    cx.simulate_window_resize(
+        window,
+        gpui_kit::size(gpui_kit::px(480.), gpui_kit::px(400.)),
+    );
+    settle(cx, window);
+    let id = ids_of(&feed, Kind::Call)[0];
+    let (outcome, row) = cx
+        .update_window(window, |_, window, _| {
+            let width = |bounds: gpui_kit::Bounds<gpui_kit::Pixels>| f32::from(bounds.size.width);
+            (
+                width(window.find(("outcome", id)).bounds()),
+                width(window.find(("call-row", id)).bounds()),
+            )
+        })
+        .unwrap();
+    assert!(outcome > row * 0.6, "{outcome} of {row}");
+}

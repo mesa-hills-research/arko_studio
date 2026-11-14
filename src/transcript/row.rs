@@ -198,6 +198,12 @@ pub(super) fn room(width: f32, inner: bool, rem: f32) -> f32 {
     column - if inner { 2. * WORDS } else { WORDS } * rem
 }
 
+/// The widest that what follows a line's words may be in `room` pixels.
+/// The words give way first, down to about 8 characters.
+pub(super) fn after_room(room: f32, m: &Metrics) -> f32 {
+    (room - 8. * m.mono.advance() - 2. * GAP * m.rem).max(0.)
+}
+
 /// The first line of a thought with words in it, without Markdown's bold
 /// marks, and whether lines with words follow it.
 pub(super) fn first_line(text: &str) -> (String, bool) {
@@ -2104,18 +2110,35 @@ impl TranscriptView {
         (width > 0.).then(|| (room(width, inner, m.rem), m))
     }
 
+    /// The widest that what follows a line's words may be where they show
+    /// now, on a rail (`inner`) or not, in pixels. The words give way first,
+    /// down to about 8 characters, and only then what follows them.
+    fn widest_after(&self, inner: bool) -> Option<Pixels> {
+        self.line_room(inner)
+            .map(|(room, m)| px(after_room(room, m)))
+    }
+
     /// What a call's Full line says after its words, how it went. That is ✓
     /// or ✗ and its outcome, or its job's state, or while it runs its time
     /// and the spinner. Its parts, and how many characters they take.
-    fn call_after(&self, item: &Item, job: Option<&JobLine>, cx: &App) -> (Vec<AnyElement>, usize) {
+    fn call_after(
+        &self,
+        item: &Item,
+        job: Option<&JobLine>,
+        inner: bool,
+        cx: &App,
+    ) -> (Vec<AnyElement>, usize) {
         let theme = cx.theme();
         let id = item.id;
         let muted = theme.muted_foreground;
+        let widest = self.widest_after(inner);
         let part = |mark: Option<(&'static str, Hsla)>, words: AnyElement| {
             h_flex()
+                .id(("outcome", id))
+                .test_support()
                 .flex_none()
                 .min_w_0()
-                .max_w(relative(0.48))
+                .when_some(widest, |this, widest| this.max_w(widest))
                 .gap(rems(GAP))
                 .text_color(muted)
                 .child(div().flex_none().child("·"))
@@ -2213,7 +2236,7 @@ impl TranscriptView {
         let after = self.call_after_chars(item, job.as_ref()) as f32 * advance;
         let words = (call_line(item).chars().count() + who_chars(item)) as f32 * advance;
         let actions = self.action_width(item, job.as_ref(), m);
-        words + after.min(0.48 * room) + actions + 2. * GAP * m.rem > room
+        words + after.min(after_room(room, m)) + actions + 2. * GAP * m.rem > room
     }
 
     /// Whether the call `id`'s line opens, on a rail (`inner`) or not,
@@ -2251,7 +2274,7 @@ impl TranscriptView {
         let item = &entry.item;
         let line = call_line(item);
         let job = self.job_line(item);
-        let (after, _) = self.call_after(item, job.as_ref(), cx);
+        let (after, _) = self.call_after(item, job.as_ref(), inner, cx);
         // (A row's line says what its calls offer.)
         let action = (!inner)
             .then(|| self.call_action(item, job.as_ref(), view))
@@ -2672,7 +2695,7 @@ impl TranscriptView {
                 div()
                     .flex_none()
                     .min_w_0()
-                    .max_w(relative(0.48))
+                    .when_some(self.widest_after(false), |this, widest| this.max_w(widest))
                     .truncate()
                     .child(note)
                     .into_any_element(),
@@ -2718,7 +2741,7 @@ impl TranscriptView {
             note += duration((self.clock)() - running.at).chars().count() + 3;
         }
         if note > 0 {
-            after += (note as f32 * advance).min(0.48 * room) + GAP * m.rem;
+            after += (note as f32 * advance).min(after_room(room, m)) + GAP * m.rem;
         }
         if running.is_some() && words.running {
             after += 0.75 * m.rem + GAP * m.rem;
