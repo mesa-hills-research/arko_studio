@@ -500,6 +500,28 @@ fn another_view_keeps_the_readers_block_and_a_follower_follows() {
     });
 }
 
+/// Row 18: another text size wraps the rows again with a follower's end on
+/// the bottom edge, and the blank below it closes.
+#[test]
+fn another_text_size_brings_a_followers_end_to_the_bottom_edge() {
+    each_scale(|scale| {
+        let mut meter = Meter::default();
+        let mut run = Run::with_history(0, (SIZE, scale), 6, &mut meter);
+        run.feed.user("Please w9801", Source::App, Delivery::Turn);
+        run.feed.turn_started();
+        run.reply_of(2);
+        run.blank_by_fold();
+        assert!(run.blank() > 0, "at {scale}");
+        run.cx
+            .update(|cx| prefs::update(cx, |prefs| prefs.appearance.zoom = 0.75));
+        run.calm();
+        assert!(run.following(), "at {scale}");
+        // (Within the device pixel the paddings above and below the rows
+        // round to at this text size.)
+        assert!(run.blank() <= 1, "at {scale}: {} blank", run.blank());
+    });
+}
+
 /// Draws the marker over a full last line, with output below the screen
 /// ("↓ 6 new lines") and with none ("↓ end"), at pixel ratios 1 and 2, into
 /// `MARKER_SHOTS` (by default `marker-shots`), for its rendering.

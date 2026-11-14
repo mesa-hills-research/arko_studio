@@ -939,6 +939,11 @@ impl TranscriptView {
             this.update(cx, |this, cx| {
                 this.metrics = Some(metrics);
                 this.measuring = None;
+                // Another text size wraps the rows again, and a follower's end
+                // comes to the bottom edge.
+                if this.list.followed() {
+                    this.list.scroll_to_end();
+                }
                 cx.notify();
             })
             .ok();
@@ -2331,6 +2336,11 @@ impl Render for TranscriptView {
             && self.rows_for.as_ref() != Some(&now)
         {
             self.refresh_rows_after_opening(cx);
+            // (At another width or text size a follower's end comes to the
+            // bottom edge.)
+            if self.list.followed() {
+                self.list.scroll_to_end();
+            }
         }
         // (The list holds the estimates for this frame only.)
         let estimate_view = cx.entity();
