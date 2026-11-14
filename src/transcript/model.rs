@@ -968,6 +968,16 @@ pub(crate) struct Laid {
     /// The entries Messages shows as Quiet does, the work of the turns
     /// whose counts the reader opened.
     pub seen_quiet: HashSet<u64>,
+    /// The thoughts open by default that show as their line, which holds
+    /// all of each ([`shows_whole`]).
+    pub thought_lines: HashSet<u64>,
+}
+
+/// Whether a thought shows whole rather than as its line. That is as the
+/// reader chose, else as thinking shows by `default` (open with Expand
+/// thinking, in Full), but on its line where that holds all of it.
+pub(crate) fn shows_whole(chosen: Option<bool>, default: bool, on_its_line: bool) -> bool {
+    chosen.unwrap_or(default && !on_its_line)
 }
 
 /// What the rows depend on besides the entries.
@@ -992,9 +1002,9 @@ pub(crate) struct Layout<'a> {
     pub count_open: &'a dyn Fn(u64) -> bool,
     /// Whether an entry's text shows as its source.
     pub source: &'a dyn Fn(u64) -> bool,
-    /// Whether a thought says more than its line shows, where the rows are
-    /// drawn now.
-    pub thought_opens: &'a dyn Fn(u64) -> bool,
+    /// Whether a thought's line holds all of it, where the rows are drawn
+    /// now. `false` until the list's width and the fonts are known.
+    pub thought_fits: &'a dyn Fn(u64) -> bool,
     /// The oldest entry ready to show, when older ones are still being made
     /// ready: the rows start there.
     pub first: Option<u64>,
@@ -1013,6 +1023,7 @@ struct Rows<'a> {
     quiet: HashMap<u64, QuietRow>,
     /// The thought of the agent shown that streams.
     live: Option<u64>,
+    thought_lines: HashSet<u64>,
 }
 
 impl Rows<'_> {
@@ -1050,15 +1061,17 @@ impl Rows<'_> {
     fn thinking(&mut self, id: u64, view: View) {
         let default = self.layout.expand_thinking && view == View::Full;
         let chosen = (self.layout.expanded)(id);
-        let open = chosen.unwrap_or(default);
         let (count, generation) = (self.layout.blocks)(id);
         // A thought that opens by itself stands apart from the moment it
         // shows, while it streams, so its line doesn't move when its text
         // comes. One that ended on its line has nothing to open, so it's a
         // line of work like a closed one.
-        let by_itself = open && chosen.is_none();
-        let live = self.live == Some(id);
-        if !open || (by_itself && !live && !(self.layout.thought_opens)(id)) {
+        let on_its_line =
+            chosen.is_none() && default && self.live != Some(id) && (self.layout.thought_fits)(id);
+        if on_its_line {
+            self.thought_lines.insert(id);
+        }
+        if !shows_whole(chosen, default, on_its_line) {
             self.push(RowKey::Thinking(id), Class::Work);
             return;
         }
@@ -1397,6 +1410,7 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Laid {
         layout,
         quiet: HashMap::new(),
         live: model.live_thought(),
+        thought_lines: HashSet::new(),
     };
     for piece in pieces {
         match piece {
@@ -1453,6 +1467,7 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Laid {
         quiet: rows.quiet,
         counts: counted.map(|counted| counted.counts).unwrap_or_default(),
         seen_quiet,
+        thought_lines: rows.thought_lines,
     }
 }
 
@@ -1545,7 +1560,7 @@ mod tests {
             sealed: &|_| false,
             count_open: &|_| false,
             source: &|_| false,
-            thought_opens: &|_| true,
+            thought_fits: &|_| false,
             first: None,
             working: None,
         }
@@ -2022,7 +2037,7 @@ mod tests {
         let expand = Layout {
             expand_thinking: true,
             blocks: &|id| if id == 3 { (0, 0) } else { (1, 0) },
-            thought_opens: &|_| false,
+            thought_fits: &|_| true,
             ..layout(View::Full)
         };
         let gap_of = |model: &Model, layout: &Layout, key: RowKey| {
@@ -2046,9 +2061,9 @@ mod tests {
             gap_of(&model, &ended, RowKey::Thinking(3)),
             Some(Gap::Stack)
         );
-        // One that says more is open.
+        // One its line doesn't hold, or isn't known to yet, shows whole.
         let more = Layout {
-            thought_opens: &|_| true,
+            thought_fits: &|_| false,
             ..ended
         };
         assert_eq!(gap_of(&model, &more, block(3)), Some(Gap::Apart));

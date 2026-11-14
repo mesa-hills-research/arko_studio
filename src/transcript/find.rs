@@ -1105,15 +1105,10 @@ impl TranscriptView {
                 Some(Opened { what, before })
             }
             Opening::Entry(id) => {
-                let before = self.ui.get(&id).and_then(|ui| ui.expanded);
-                let default = self
-                    .model
-                    .entry(id)
-                    .is_some_and(|entry| entry.item.kind == Kind::Thinking)
-                    && self.thinking_open_by_default();
-                if before.unwrap_or(default) {
+                if self.shown_open(id) {
                     return None;
                 }
+                let before = self.ui.get(&id).and_then(|ui| ui.expanded);
                 self.set_expanded(id, true, cx);
                 Some(Opened { what, before })
             }

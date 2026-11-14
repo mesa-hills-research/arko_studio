@@ -1,5 +1,6 @@
 //! How each row of the transcript draws.
 
+use std::cell::OnceCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1887,7 +1888,6 @@ impl TranscriptView {
                     .model
                     .position(id)
                     .is_ok_and(|ix| self.model.is_streaming(ix));
-            let default = self.thinking_open_by_default();
             let view = view.downgrade();
             let down_view = view.clone();
             return h_flex()
@@ -1913,15 +1913,13 @@ impl TranscriptView {
                 })
                 .on_click(move |event, _, cx| {
                     let ClickEvent::Mouse(click) = event else {
-                        view.update(cx, |this, cx| this.toggle(id, default, cx))
-                            .ok();
+                        view.update(cx, |this, cx| this.toggle(id, cx)).ok();
                         return;
                     };
                     let moved = click.up.position - click.down.position;
                     let far = f32::from(moved.x).abs() > 3. || f32::from(moved.y).abs() > 3.;
                     if !far && click.down.click_count == 1 {
-                        view.update(cx, |this, cx| this.close_soon(id, default, cx))
-                            .ok();
+                        view.update(cx, |this, cx| this.close_soon(id, cx)).ok();
                     }
                 })
                 .into_any_element();
@@ -2106,19 +2104,29 @@ impl TranscriptView {
     }
 
     /// Measures the first line of the thought `id` as its line draws it,
-    /// in italic at a thought's size, for [`Self::thought_opens`].
+    /// for [`Self::thought_opens`].
     fn measure_thought(&self, id: u64, window: &mut Window, cx: &App) {
-        let Some(item) = self.item(id) else {
-            return;
-        };
-        let (first, _) = first_line(&item.text);
-        if self
-            .thought_widths
-            .borrow()
-            .get(&id)
-            .is_some_and(|(measured, _)| *measured == first)
+        if let Some(item) = self.item(id) {
+            let (first, _) = first_line(&item.text);
+            self.thought_width(id, &first, window.text_system(), window.rem_size(), cx);
+        }
+    }
+
+    /// The width of `first`, the first line of the thought `id`, as its
+    /// line draws it, in italic at a thought's size. It's laid out once for
+    /// each text, and again when the fonts change ([`Self::measure_heights`]).
+    fn thought_width(
+        &self,
+        id: u64,
+        first: &str,
+        text_system: &WindowTextSystem,
+        rem: Pixels,
+        cx: &App,
+    ) -> f32 {
+        if let Some((measured, width)) = self.thought_widths.borrow().get(&id)
+            && measured == first
         {
-            return;
+            return *width;
         }
         let theme = cx.theme();
         let font = Font {
@@ -2133,14 +2141,42 @@ impl TranscriptView {
             underline: None,
             strikethrough: None,
         };
-        let size = window.rem_size() * THOUGHT_SIZE;
         let width = f32::from(
-            window
-                .text_system()
-                .layout_line(&first, size, &[run], None)
+            text_system
+                .layout_line(first, rem * THOUGHT_SIZE, &[run], None)
                 .width,
         );
-        self.thought_widths.borrow_mut().insert(id, (first, width));
+        self.thought_widths
+            .borrow_mut()
+            .insert(id, (first.to_string(), width));
+        width
+    }
+
+    /// Whether the thought `id` ends on its first line and the line holds
+    /// it, in the list's column as it is now (`false` before the column's
+    /// width and the fonts are known). `text_system` lays the line out if it
+    /// wasn't yet.
+    pub(super) fn thought_fits(
+        &self,
+        id: u64,
+        text_system: &OnceCell<WindowTextSystem>,
+        cx: &App,
+    ) -> bool {
+        let Some(item) = self.item(id) else {
+            return false;
+        };
+        let (first, more) = first_line(&item.text);
+        let Some((room, m)) = self.line_room(false).filter(|_| !more) else {
+            return false;
+        };
+        // Prose draws within about a third of its estimate, so a line
+        // estimated at twice the room shows whole without being laid out.
+        if first.chars().count() as f32 * m.body.advance_at(THOUGHT_SIZE * m.rem) > 2. * room {
+            return false;
+        }
+        let text_system =
+            text_system.get_or_init(|| WindowTextSystem::new(cx.text_system().clone()));
+        self.thought_width(id, &first, text_system, px(m.rem), cx) <= room
     }
 
     /// A thought's line, its first line muted and italic in the words'
@@ -2171,7 +2207,6 @@ impl TranscriptView {
             .text_color(theme.muted_foreground)
             .child(self.marker(("live", id), Marker::live(live), cx))
             .child(div().flex_1().min_w_0().truncate().child(words.clone()));
-        let default = self.thinking_open_by_default();
         let view = view.downgrade();
         div()
             .id(("thinking-row", id))
@@ -2183,8 +2218,7 @@ impl TranscriptView {
                 inert: !self.thought_opens(id, inner),
                 content: line.into_any_element(),
                 on_toggle: Rc::new(move |_, cx| {
-                    view.update(cx, |this, cx| this.toggle(id, default, cx))
-                        .ok();
+                    view.update(cx, |this, cx| this.toggle(id, cx)).ok();
                 }),
             })
             .into_any_element()
@@ -2417,9 +2451,7 @@ impl TranscriptView {
             inert: !opens,
             content,
             on_toggle: Rc::new(move |_, cx| {
-                header_view
-                    .update(cx, |this, cx| this.toggle(id, false, cx))
-                    .ok();
+                header_view.update(cx, |this, cx| this.toggle(id, cx)).ok();
             }),
         };
         // What the line cut shows first, unless the command's strip says it.

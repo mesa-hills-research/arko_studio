@@ -2398,7 +2398,7 @@ fn a_thought_streams_closed_and_expand_thinking_opens_it_in_full(cx: &mut TestAp
     });
     // Folded by default: one row. Opened: its text's blocks follow.
     assert_eq!(keys(&view, cx), [RowKey::Thinking(thinking)]);
-    view.update(cx, |view, cx| view.toggle(thinking, false, cx));
+    view.update(cx, |view, cx| view.toggle(thinking, cx));
     settle(cx, window);
     assert!(keys(&view, cx).iter().any(block(thinking, 0)));
     say(&feed, "main", "Done thinking.");
@@ -2467,7 +2467,7 @@ fn a_failed_call_says_why_and_its_details_open(cx: &mut TestAppContext) {
         window.click(("call-row", shell), cx);
     })
     .unwrap();
-    view.update(cx, |view, cx| view.toggle(edit_id, false, cx));
+    view.update(cx, |view, cx| view.toggle(edit_id, cx));
     settle(cx, window);
     cx.read(|cx| {
         let view = view.read(cx);

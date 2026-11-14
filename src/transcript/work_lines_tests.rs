@@ -568,3 +568,73 @@ fn what_is_opened_before_the_history_comes_stays_open(cx: &mut TestAppContext) {
     settle(cx, window);
     assert!(cx.read(|cx| view.read(cx).group_open(first)));
 }
+
+fn expand_thinking(cx: &mut TestAppContext) {
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.expand_thinking = true));
+}
+
+/// A turn that thinks `thought`, reads a file and ends.
+fn thought_then_read(thought: &str) -> Feed {
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    think(&feed, thought);
+    let read = call(&feed, "main", "read_file", &[("path", "src/a.rs".into())]);
+    result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    feed
+}
+
+/// Full with Expand thinking on, a session there before its view opens. A
+/// thought of one paragraph longer than the column shows whole from the
+/// start.
+#[gpui_kit::test]
+fn expand_thinking_shows_a_long_thought_whole_from_the_start(cx: &mut TestAppContext) {
+    start(cx);
+    expand_thinking(cx);
+    let feed = thought_then_read(
+        "The user wants the stale cache test fixed, so I should read the test first and then look at how the cache decides that a value has expired before changing anything else in the module, and only then decide whether the clock or the comparison is at fault.",
+    );
+    let (_, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let thought = ids_of(&feed, Kind::Thinking)[0];
+    assert!(is_open(cx, &view, thought));
+}
+
+/// Full with Expand thinking on. A thought of one line that fits is that
+/// line, and shows whole once a narrower window cuts it.
+#[gpui_kit::test]
+fn a_thought_shows_whole_once_a_narrower_window_cuts_its_line(cx: &mut TestAppContext) {
+    start(cx);
+    expand_thinking(cx);
+    let feed = thought_then_read(
+        "The cache test reads the clock once, so the boundary is the only thing to check.",
+    );
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let thought = ids_of(&feed, Kind::Thinking)[0];
+    assert!(!is_open(cx, &view, thought));
+    cx.simulate_window_resize(
+        window,
+        gpui_kit::size(gpui_kit::px(360.), gpui_kit::px(600.)),
+    );
+    settle(cx, window);
+    assert!(is_open(cx, &view, thought));
+}
+
+/// Full with Expand thinking on. The find lands on a word of a thought
+/// that is its one line, opens it and marks the word in its text.
+#[gpui_kit::test]
+fn the_find_opens_a_thought_shown_as_its_line(cx: &mut TestAppContext) {
+    start(cx);
+    expand_thinking(cx);
+    let feed = thought_then_read("The zebra module first.");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let thought = ids_of(&feed, Kind::Thinking)[0];
+    assert!(!is_open(cx, &view, thought));
+    let status = view.update(cx, |view, cx| view.find("zebra", cx));
+    settle(cx, window);
+    assert_eq!(status.total, 1);
+    assert!(is_open(cx, &view, thought));
+    let marked = cx.read(|cx| view.read(cx).match_ranges(thought, Place::Block(0)));
+    assert_eq!(marked.len(), 1, "{marked:?}");
+}

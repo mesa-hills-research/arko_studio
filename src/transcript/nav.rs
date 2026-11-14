@@ -259,8 +259,7 @@ impl TranscriptView {
             .is_some_and(|row| row.rail != super::model::Rail::No);
         match key {
             RowKey::Thinking(id) if self.thought_opens(id, inner) => {
-                let default = self.thinking_open_by_default();
-                self.toggle(id, default, cx);
+                self.toggle(id, cx);
                 // The keyboard stays on the thought, on its text.
                 self.cursor = self
                     .rows
@@ -269,7 +268,7 @@ impl TranscriptView {
                     .map(|row| row.key)
                     .or(self.cursor);
             }
-            RowKey::Call(id) if self.call_opens(id, inner) => self.toggle(id, false, cx),
+            RowKey::Call(id) if self.call_opens(id, inner) => self.toggle(id, cx),
             RowKey::Group(first) if self.group_opens(first) => self.toggle_group(first, cx),
             RowKey::Count(first) => self.toggle_count(first, cx),
             // The line of a card with questions open opens the answer panel.
@@ -305,8 +304,7 @@ impl TranscriptView {
                     .is_some_and(|row| matches!(row.content, TextBlockContent::CodeBlock(_)));
                 if thinking {
                     // The thought closes to its line.
-                    let default = self.thinking_open_by_default();
-                    self.toggle(id, default, cx);
+                    self.toggle(id, cx);
                     self.cursor = Some(RowKey::Thinking(id));
                 } else if code {
                     self.toggle_code(id, block, cx);

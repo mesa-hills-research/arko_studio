@@ -181,6 +181,11 @@ impl Metrics {
         self.key == *key
     }
 
+    /// What the sizes were measured for.
+    pub fn key(&self) -> &Key {
+        &self.key
+    }
+
     /// Resolving a new font weight can take a frame, so measure off the UI thread.
     pub fn measure(key: Key, window: &Window, cx: &App) -> Task<Self> {
         let rem = f32::from(key.rem);
