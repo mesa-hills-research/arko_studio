@@ -403,8 +403,16 @@ pub struct TranscriptView {
     /// What each Quiet row says and holds, by its first call, as the rows
     /// were made.
     quiet: HashMap<u64, QuietRow>,
+    /// The Quiet row each call is in, by its first call.
+    quiet_of: HashMap<u64, u64>,
+    /// The Quiet rows whose words or calls changed since the find last read
+    /// them, by their first calls.
+    quiet_changed: Vec<u64>,
     /// What each turn's count (Messages) counts, by its first call.
     counts: HashMap<u64, Count>,
+    /// The entries Messages shows as Quiet does, under counts the reader
+    /// opened.
+    seen_quiet: HashSet<u64>,
     /// The calls of Quiet rows of one call that the reader opened, and the
     /// thoughts the reader opened on lines of their own, which keep their
     /// form as calls come.
@@ -572,7 +580,10 @@ impl TranscriptView {
             chosen: HashMap::new(),
             rows: Vec::new(),
             quiet: HashMap::new(),
+            quiet_of: HashMap::new(),
+            quiet_changed: Vec::new(),
             counts: HashMap::new(),
+            seen_quiet: HashSet::new(),
             sealed: HashSet::new(),
             counts_open: HashSet::new(),
             list: list::RowList::new(),
@@ -996,12 +1007,14 @@ impl TranscriptView {
         if changes.reset {
             self.find_changed_all(cx);
         } else {
+            let quiet = std::mem::take(&mut self.quiet_changed);
             let changed = changes
                 .added
                 .iter()
                 .chain(&changes.text)
                 .chain(&changes.changed)
-                .copied();
+                .copied()
+                .chain(quiet);
             self.find_changed(&changes.removed, changed, cx);
         }
     }
@@ -1456,8 +1469,26 @@ impl TranscriptView {
                 working: self.working,
             },
         );
-        self.quiet = laid.quiet;
+        // The rows whose words or calls changed, which the find reads again.
+        let old = std::mem::replace(&mut self.quiet, laid.quiet);
+        self.quiet_changed.extend(
+            self.quiet
+                .iter()
+                .filter(|(first, row)| old.get(first) != Some(row))
+                .map(|(first, _)| *first)
+                .chain(
+                    old.keys()
+                        .filter(|first| !self.quiet.contains_key(first))
+                        .copied(),
+                ),
+        );
+        self.quiet_of = self
+            .quiet
+            .iter()
+            .flat_map(|(first, row)| row.members.iter().map(|member| (*member, *first)))
+            .collect();
         self.counts = laid.counts;
+        self.seen_quiet = laid.seen_quiet;
         let rows = laid.rows;
         // The reader's place, unless they follow the latest row.
         let scrolled_up = self.list.is_scrolled_up();
@@ -1847,6 +1878,9 @@ impl TranscriptView {
             self.counts_open.insert(first);
         }
         self.refresh_rows_after_opening(cx);
+        // The find covers what the count shows, or no longer does.
+        self.quiet_changed.clear();
+        self.find_changed_all(cx);
         cx.notify();
     }
 

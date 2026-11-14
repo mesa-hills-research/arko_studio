@@ -419,9 +419,11 @@ fn the_next_match_keeps_its_quiet_group_open(cx: &mut TestAppContext) {
     }
     feed.turn_ended("1 s", None);
     let (window, view) = open_feed(cx, &feed, View::Quiet, 900.);
-    view.update(cx, |view, cx| view.find("needle", cx));
+    // The row's words ("Ran 5 commands (needle)") and each command's line.
+    let status = view.update(cx, |view, cx| view.find("needle", cx));
     settle(cx, window);
-    for _ in 0..5 {
+    assert_eq!(status.total, 6);
+    for _ in 0..4 {
         view.update(cx, |view, cx| view.find_next(false, cx));
         settle(cx, window);
         let calls = cx.read(|cx| {

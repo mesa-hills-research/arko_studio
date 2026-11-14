@@ -938,6 +938,9 @@ pub(crate) struct Laid {
     pub quiet: HashMap<u64, QuietRow>,
     /// Each count of a turn's calls (Messages), by its first call.
     pub counts: HashMap<u64, Count>,
+    /// The entries Messages shows as Quiet does, the work of the turns
+    /// whose counts the reader opened.
+    pub seen_quiet: HashSet<u64>,
 }
 
 /// What the rows depend on besides the entries.
@@ -1285,6 +1288,7 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Laid {
     // The counts the reader opened so far, whose turns show from there as
     // Quiet shows them.
     let mut opened: HashSet<u64> = HashSet::new();
+    let mut seen_quiet = HashSet::new();
     let mut units = Vec::with_capacity(entries.len().saturating_sub(start));
     let mut ix = start;
     while ix < entries.len() {
@@ -1309,11 +1313,16 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Laid {
                     opened.insert(first);
                 }
             }
-            if counted
-                .count_of(item)
-                .is_some_and(|first| opened.contains(&first))
+            // Under an open count the turn's work shows as Quiet shows it.
+            // The rest, its footer too, keeps to Messages.
+            let work = matches!(item.kind, Kind::Call | Kind::Thinking | Kind::Notice);
+            if work
+                && counted
+                    .count_of(item)
+                    .is_some_and(|first| opened.contains(&first))
             {
                 seen = View::Quiet;
+                seen_quiet.insert(item.id);
             }
         }
         match show(filter, seen, item) {
@@ -1388,6 +1397,7 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Laid {
         rows: rows.out,
         quiet: rows.quiet,
         counts: counted.map(|counted| counted.counts).unwrap_or_default(),
+        seen_quiet,
     }
 }
 

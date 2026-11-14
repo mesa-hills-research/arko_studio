@@ -6,6 +6,7 @@ use arko_agents::AgentEvent;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};
 
+use super::find::Place;
 use super::model::RowKey;
 use super::tests::{call, event, item_ids, keys, open, result, say, settle, start, think};
 use super::{AgentFilter, TranscriptView};
@@ -56,6 +57,19 @@ fn edit(feed: &Feed) -> uuid::Uuid {
 fn drawn(cx: &mut TestAppContext, window: AnyWindowHandle, id: (&'static str, u64)) -> bool {
     cx.update_window(window, |_, window, _| window.try_find(id).is_some())
         .unwrap()
+}
+
+fn height(cx: &mut TestAppContext, window: AnyWindowHandle, key: RowKey) -> f32 {
+    cx.update_window(window, |_, window, _| {
+        f32::from(
+            window
+                .find(super::row::element_id(key))
+                .bounds()
+                .size
+                .height,
+        )
+    })
+    .unwrap()
 }
 
 /// A Quiet row says only that its call failed, so it opens to why, even
@@ -211,6 +225,116 @@ fn a_thought_whose_line_is_cut_opens() {
         }
     }
     assert!(cut > 0);
+}
+
+/// Quiet. The find reads a Quiet row's words, as the row draws them, and
+/// marks the word there without opening the row.
+#[gpui_kit::test]
+fn the_find_marks_a_quiet_rows_own_words(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let read = call(
+        &feed,
+        "main",
+        "read_file",
+        &[("path", "src/zebra.rs".into())],
+    );
+    result(&feed, "main", read, "read_file", "1 | fn a() {}\n");
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let id = ids_of(&feed, Kind::Call)[0];
+    let status = view.update(cx, |view, cx| view.find("zebra", cx));
+    settle(cx, window);
+    assert_eq!(status.total, 1);
+    cx.read(|cx| {
+        let view = view.read(cx);
+        assert_eq!(view.match_ranges(id, Place::Row).len(), 1);
+        assert!(!view.group_open(id), "the row's own line shows the match");
+    });
+}
+
+/// Quiet. The find lands on a word in the reason an edit failed and opens
+/// its row, which shows what the reader's own click shows, the diff too.
+#[gpui_kit::test]
+fn the_find_opens_an_edits_row_as_the_reader_does(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Fix it", Source::App, Delivery::Turn);
+    feed.turn_started();
+    let edited = edit(&feed);
+    fail(
+        &feed,
+        edited,
+        "edit_file",
+        "old_string was not found anywhere in quagga.",
+    );
+    feed.reply("It didn't apply.");
+    feed.turn_ended("1 s", None);
+    let id = ids_of(&feed, Kind::Call)[0];
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let status = view.update(cx, |view, cx| view.find("anywhere", cx));
+    settle(cx, window);
+    assert_eq!(status.total, 1);
+    assert!(cx.read(|cx| view.read(cx).group_open(id)));
+    let by_find = height(cx, window, RowKey::Group(id));
+    let (other, reader) = open(cx, &feed, AgentFilter::Main, 600.);
+    reader.update(cx, |view, cx| view.set_row_open(id, true, cx));
+    settle(cx, other);
+    assert_eq!(by_find, height(cx, other, RowKey::Group(id)));
+}
+
+/// A turn whose count is open, with a thought and a read that say the
+/// word looked for.
+fn open_count(cx: &mut TestAppContext) -> (Feed, AnyWindowHandle, Entity<TranscriptView>) {
+    start(cx);
+    set_view(cx, View::Messages);
+    let feed = Feed::new("main");
+    feed.user("Look", Source::App, Delivery::Turn);
+    feed.turn_started();
+    think(&feed, "The zebra module first.");
+    let read = call(
+        &feed,
+        "main",
+        "read_file",
+        &[("path", "src/zebra.rs".into())],
+    );
+    result(&feed, "main", read, "read_file", "1 | fn stripes() {}\n");
+    feed.reply("Done.");
+    feed.turn_ended("1 s", None);
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let first = ids_of(&feed, Kind::Call)[0];
+    view.update(cx, |view, cx| view.set_count_open(first, true, cx));
+    settle(cx, window);
+    (feed, window, view)
+}
+
+/// Messages. The find covers what a count the reader opened shows, its
+/// thought and its rows.
+#[gpui_kit::test]
+fn the_find_covers_what_an_open_count_shows(cx: &mut TestAppContext) {
+    let (feed, window, view) = open_count(cx);
+    let thought = ids_of(&feed, Kind::Thinking)[0];
+    assert!(keys(&view, cx).contains(&RowKey::Thinking(thought)));
+    let status = view.update(cx, |view, cx| view.find("zebra", cx));
+    settle(cx, window);
+    assert_eq!(status.total, 2, "the thought and the row's words");
+}
+
+/// Messages. An open count shows its turn's work as Quiet does, and the
+/// turn's footer, which Messages leaves out, stays out.
+#[gpui_kit::test]
+fn an_open_count_leaves_the_footer_to_messages(cx: &mut TestAppContext) {
+    let (_, _, view) = open_count(cx);
+    let rows = keys(&view, cx);
+    assert!(
+        !rows.iter().any(|key| matches!(key, RowKey::Turn(_))),
+        "{rows:?}"
+    );
 }
 
 /// The reader scrolled up, a thought's line is the first row on screen,

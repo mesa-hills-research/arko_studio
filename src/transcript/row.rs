@@ -2899,7 +2899,13 @@ impl TranscriptView {
             None,
             div()
                 .text_color(color)
-                .child(words.text.clone())
+                .child(self.marked_plain(
+                    first,
+                    Place::Row,
+                    words.text.clone(),
+                    call_line_ink(color, theme),
+                    cx,
+                ))
                 .into_any_element(),
             after,
             failed,
