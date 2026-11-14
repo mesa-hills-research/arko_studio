@@ -19,7 +19,7 @@ use gpui_kit::*;
 /// Rows laid out past the screen's edges, for smooth scrolling.
 const OVERDRAW: Pixels = px(400.);
 /// The space, in rem, above the first row and below the last.
-const PADDING: f32 = 0.5;
+pub(super) const PADDING: f32 = 0.5;
 const JUMP_BUTTON_TRANSITION: Duration = Duration::from_millis(200);
 
 /// The list's state: which rows, their measured heights, and where the

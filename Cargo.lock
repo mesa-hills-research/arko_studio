@@ -4831,8 +4831,7 @@ dependencies = [
 [[package]]
 name = "mhr-collections"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "635b7c7317ffca591dc6ceaddeff85e8f6c825da31fd35899097074ff19269d4"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "indexmap",
  "mhr-gpui-util",
@@ -4842,8 +4841,7 @@ dependencies = [
 [[package]]
 name = "mhr-derive-refineable"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a97431ba6111782d2f2c32ab22d9cd7037cbac418d83b499ea1a9ab47122e76"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4853,8 +4851,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee968ab59568c3a9ef8a140f2de22baa1ac8afb29b21e0f3b949a367cd899f95"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -4926,8 +4923,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-apple"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "970bf8983ac6756f743e38f15e25f3e1590d6c01b3493621ec763e9cfcf401f4"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "anyhow",
  "async-task",
@@ -5156,8 +5152,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-linux"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f064a5efeb848af402aab75d81e3cdf254ba4b16f04e7e3f05b43f62c21b1ac8"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -5201,8 +5196,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-macos"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f7320651cd8ead2da0eb5e5cb2264fc195a0bc44fd14127947b6d8b969d4aa8"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -5247,8 +5241,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-macros"
 version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0dfee8d0ff198d482cf1fa1c1cb3d3d51cf9d577a110d9ca752eb7a317436fd"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "heck 0.5.0",
  "proc-macro-crate",
@@ -5260,8 +5253,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-platform"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b62586920621737673aed290fdae0db01bfc9cec99b3121b83600ad06c97e88c"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -5276,8 +5268,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-screenshot"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4436694ecfaf5adab657b7d17b713310a2bd31cee5ab1f5282a1888023be7c0c"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5291,8 +5282,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-shared-string"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe2baf2b7918ddb223433bbce34269f8b206b0252b6efa96b73ab37b556d6959"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "schemars",
  "serde",
@@ -5302,8 +5292,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-util"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "297f6aa44f24444cd08ec4c8585900fc45664f9461096af8e644cd1c98e25fda"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "anyhow",
  "log",
@@ -5313,8 +5302,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-web"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6fc60454f357ae10d10f2c64b5cb2287fc223a93ba10f0e2faaafa375c3e5b2"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -5342,8 +5330,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-wgpu"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdce9d4ab39aced9a84f598234a75ddf8a8cf5c0e580e4ae67da23792b58c0b6"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5370,8 +5357,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-windows"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b6f66f3e4305664449c0a922d922e6bf0a2455215a9e811d1a844d06d3308da"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -5400,8 +5386,7 @@ dependencies = [
 [[package]]
 name = "mhr-http-client"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3575c6f08ea5d4159831b372449e26efec258c61a7a44d0ce7aa525fc1e28328"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -5421,8 +5406,7 @@ dependencies = [
 [[package]]
 name = "mhr-perf"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acf42063dd7fdf1c2b3638355800ab764328876e82526d3af329b6073dce3d97"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "mhr-collections",
  "serde",
@@ -5432,8 +5416,7 @@ dependencies = [
 [[package]]
 name = "mhr-refineable"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "871261d149dc697ebd73fe596721df2e437afcb137e5513c157fe37b646d7fa9"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "mhr-derive-refineable",
 ]
@@ -5441,8 +5424,7 @@ dependencies = [
 [[package]]
 name = "mhr-scheduler"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97d70a910ec7c7e9088e8c36b1a8d1172dd80820a799369d58d11e61d10309a8"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "async-task",
  "backtrace",
@@ -5458,8 +5440,7 @@ dependencies = [
 [[package]]
 name = "mhr-sum-tree"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "918f783b98e5cbf3e5f306ead213ee623ebeb8e59b82958d8cea6914b255ed46"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "heapless",
  "log",
@@ -5471,8 +5452,7 @@ dependencies = [
 [[package]]
 name = "mhr-util-macros"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2627e5a84e8b2b60824624a241f736c3ecfe82fdf332e85b9133da77c9dc512b"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "mhr-perf",
  "quote",
@@ -5482,8 +5462,7 @@ dependencies = [
 [[package]]
 name = "mhr-zlog"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e0dc51ec53a486203b8b58cb718b8c81f006cebe1d1e4de95d0fc5b8176a95b"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5494,8 +5473,7 @@ dependencies = [
 [[package]]
 name = "mhr-ztracing"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff78833cd23b5ede2399314d92cabf0197f8da28290bc7657be713c07cd7fefa"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 dependencies = [
  "mhr-zlog",
  "mhr-ztracing-macro",
@@ -5506,8 +5484,7 @@ dependencies = [
 [[package]]
 name = "mhr-ztracing-macro"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4338b89a5c6dcac4640fa904bfd6e07b13e1707dacdffc196228bdea9c718e09"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
 
 [[package]]
 name = "mime"

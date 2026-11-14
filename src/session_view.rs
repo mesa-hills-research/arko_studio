@@ -1105,11 +1105,17 @@ impl SessionView {
         let Some(session) = self.session.clone() else {
             return;
         };
-        let (opening, link) = {
+        // (The feed is the link's, or in tests one the session follows with
+        // no engine.)
+        let (opening, feed, images) = {
             let session = session.read(cx);
-            (session.opening(), session.link().cloned())
+            (
+                session.opening(),
+                session.feed().cloned(),
+                session.link().map(|link| link.images.clone()),
+            )
         };
-        let Some(link) = link else {
+        let Some(feed) = feed else {
             return;
         };
         let found = self
@@ -1122,9 +1128,11 @@ impl SessionView {
                 self.transcripts
                     .retain(|kept| kept.session != session.entity_id());
                 let view = cx.new(|cx| {
-                    let mut view = TranscriptView::new(&link.feed, AgentFilter::Main, window, cx);
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
                     // The thumbnails of the session's images.
-                    view.set_images(link.images.clone(), cx);
+                    if let Some(images) = images {
+                        view.set_images(images, cx);
+                    }
                     view
                 });
                 let events = cx.subscribe_in(&view, window, Self::on_transcript_event);

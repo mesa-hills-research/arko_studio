@@ -102,3 +102,29 @@ taffy = { opt-level = 3 }
 # The speech engine is far too slow to dictate with unoptimized.
 telmo = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
+
+# mhr-gpui from its release branch by commit, for `Window::painted_text`, which the transcript's
+# shift meter reads. This section goes when the release is on crates.io.
+[patch.crates-io]
+mhr-collections = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-derive-refineable = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-gpui = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-gpui-apple = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-gpui-linux = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-gpui-macos = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-gpui-macros = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-gpui-platform = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-gpui-screenshot = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-gpui-shared-string = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-gpui-util = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-gpui-web = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-gpui-wgpu = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-gpui-windows = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-http-client = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-refineable = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-scheduler = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-sum-tree = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-util-macros = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-zlog = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-ztracing = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
+mhr-ztracing-macro = { git = "https://github.com/mesa-hills-research/gpui", rev = "177d43329209ec488c83e43bcfbf6848459665df" }
