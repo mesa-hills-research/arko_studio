@@ -679,6 +679,9 @@ pub(super) fn render(
     let Some(row) = this.rows.get(ix).copied() else {
         return div().into_any_element();
     };
+    if let RowKey::Thinking(id) = row.key {
+        this.measure_thought(id, window, cx);
+    }
     this.drawing_row.set(ix);
     let content = this.row(row, &view, cx);
     let run_texts = this.drawn_runs.take();
@@ -2050,8 +2053,56 @@ impl TranscriptView {
         };
         let (first, more) = first_line(&item.text);
         more || self.line_room(inner).is_some_and(|(room, m)| {
-            first.chars().count() as f32 * m.body.advance_at(THOUGHT_SIZE * m.rem) > room
+            // As drawn, else from the font's average advance.
+            let width = self
+                .thought_widths
+                .borrow()
+                .get(&id)
+                .filter(|(measured, _)| *measured == first)
+                .map(|(_, width)| *width)
+                .unwrap_or_else(|| {
+                    first.chars().count() as f32 * m.body.advance_at(THOUGHT_SIZE * m.rem)
+                });
+            width > room
         })
+    }
+
+    /// Measures the first line of the thought `id` as its line draws it,
+    /// in italic at a thought's size, for [`Self::thought_opens`].
+    fn measure_thought(&self, id: u64, window: &mut Window, cx: &App) {
+        let Some(item) = self.item(id) else {
+            return;
+        };
+        let (first, _) = first_line(&item.text);
+        if self
+            .thought_widths
+            .borrow()
+            .get(&id)
+            .is_some_and(|(measured, _)| *measured == first)
+        {
+            return;
+        }
+        let theme = cx.theme();
+        let font = Font {
+            style: FontStyle::Italic,
+            ..font(theme.font_family.clone())
+        };
+        let run = TextRun {
+            len: first.len(),
+            font,
+            color: theme.muted_foreground,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let size = window.rem_size() * THOUGHT_SIZE;
+        let width = f32::from(
+            window
+                .text_system()
+                .layout_line(&first, size, &[run], None)
+                .width,
+        );
+        self.thought_widths.borrow_mut().insert(id, (first, width));
     }
 
     /// A thought's line, its first line muted and italic in the words'

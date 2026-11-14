@@ -28,6 +28,8 @@ mod menu;
 mod model;
 mod nav;
 mod row;
+#[cfg(test)]
+mod work_lines_tests;
 pub(crate) use row::SHIMMER_FPS;
 #[cfg(test)]
 mod scrollbar_tests;
@@ -483,6 +485,8 @@ pub struct TranscriptView {
     metrics: Option<height::Metrics>,
     /// The list's width, as laid out in this frame before its rows.
     list_width: Rc<Cell<f32>>,
+    /// The first line of each thought drawn, and its width as drawn.
+    thought_widths: RefCell<HashMap<u64, (String, f32)>>,
     measuring: Option<(height::Key, Task<()>)>,
     /// Blocks whose text grew since the last frame, by entry and index. The
     /// list counts their new height before it draws them again.
@@ -598,6 +602,7 @@ impl TranscriptView {
             drawn_runs: RefCell::default(),
             metrics: None,
             list_width: Rc::default(),
+            thought_widths: RefCell::default(),
             measuring: None,
             grown: Vec::new(),
             streaming: HashSet::new(),
