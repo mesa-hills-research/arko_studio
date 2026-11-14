@@ -514,6 +514,9 @@ pub struct TranscriptView {
     /// The rows of each frame drawn, in order.
     #[cfg(test)]
     frames: Vec<usize>,
+    /// How many times the rows were made.
+    #[cfg(test)]
+    rows_made: usize,
     _prefs: Subscription,
     _show_source: Subscription,
     _theme: Subscription,
@@ -628,6 +631,8 @@ impl TranscriptView {
             estimates: true,
             #[cfg(test)]
             frames: Vec::new(),
+            #[cfg(test)]
+            rows_made: 0,
             _prefs: observe_prefs,
             _show_source: observe_show_source,
             _theme: observe_theme,
@@ -996,7 +1001,21 @@ impl TranscriptView {
                 self.sync_text(*id, cx);
             }
         }
-        self.refresh_rows(cx);
+        // Text that only grows leaves the rows as they are. New blocks come
+        // with its document's parse, and a thought's line and a row's words
+        // draw from the entries, so a long session doesn't make its rows
+        // again for each frame of streamed text.
+        let rows_change = changes.reset
+            || !changes.added.is_empty()
+            || !changes.changed.is_empty()
+            || !changes.removed.is_empty()
+            || changes.workers
+            || changes.jobs
+            || changes.activity
+            || self.working_after(cx) != self.working;
+        if rows_change {
+            self.refresh_rows(cx);
+        }
         if !changes.reset {
             for id in changes.text.iter().chain(&changes.changed) {
                 self.remeasure_entry(*id);
@@ -1439,6 +1458,10 @@ impl TranscriptView {
     /// row stays where it is. Where it went (folded into a group, shown as
     /// source), the row that took its entry's place does.
     fn refresh_rows(&mut self, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        {
+            self.rows_made += 1;
+        }
         self.working = self.working_after(cx);
         let render_markdown = self.settings.render_markdown;
         let show_source = self.show_source;

@@ -499,3 +499,29 @@ fn messages_says_at_its_end_what_a_running_call_does(cx: &mut TestAppContext) {
     assert_eq!(words, "Running cargo build --release…");
     assert!(drawn(cx, window, ("working-spinner", build)));
 }
+
+/// Text that streams into a paragraph leaves the rows as they are, so a
+/// long session doesn't make them again for each frame. A new paragraph
+/// makes them again.
+#[gpui_kit::test]
+fn streamed_text_makes_the_rows_again_only_for_new_blocks(cx: &mut TestAppContext) {
+    start(cx);
+    set_view(cx, View::Quiet);
+    let feed = Feed::new("main");
+    feed.user("Go", Source::App, Delivery::Turn);
+    feed.turn_started();
+    say(&feed, "main", "The parser ");
+    let (window, view) = open(cx, &feed, AgentFilter::Main, 600.);
+    let made = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).rows_made);
+    let before = made(cx);
+    for word in [
+        "keeps ", "the ", "open ", "block ", "while ", "text ", "streams.",
+    ] {
+        say(&feed, "main", word);
+        settle(cx, window);
+    }
+    assert_eq!(made(cx), before);
+    say(&feed, "main", "\n\nA second paragraph.");
+    settle(cx, window);
+    assert!(made(cx) > before);
+}
