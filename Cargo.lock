@@ -239,9 +239,9 @@ dependencies = [
 
 [[package]]
 name = "arko-tui"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aff0ece33ee542735cbbd6aaaa43cb22ebb1fce93f4f4e29e5a43b04bd4ca01"
+checksum = "ae0b821e4a4432532d39e25ee3da1a336e317577d57ff0a948736e999fdc779b"
 dependencies = [
  "arko_agents",
  "arko_ai",
@@ -4271,9 +4271,9 @@ dependencies = [
 
 [[package]]
 name = "mesquite"
-version = "0.26.0"
+version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc5fa6d732e0dede6ede9f4ab71b4b50106e895fe843f0bcd76c8e585a3a3124"
+checksum = "d6da86bc7372d865cd2cb2711e490bfa7c4de38e6aefa494adf9b79ee0909f05"
 dependencies = [
  "mesquite_language",
  "regex",
