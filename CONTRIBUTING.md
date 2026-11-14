@@ -130,7 +130,7 @@ transcript goldens too.
 | `src/paths.rs` | Data and log folders |
 | `themes/` | Color themes bundled into the binary |
 | `packaging/linux/` | The desktop entry and the icon sizes for Linux |
-| `assets/`, `build.rs` | The icon artwork, its generated files and the Windows resources |
+| `assets/`, `build.rs` | The icon artwork, the files generated from it and the Windows resources |
 
 ## Platform windows
 
