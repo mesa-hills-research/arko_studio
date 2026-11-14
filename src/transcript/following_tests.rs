@@ -500,6 +500,35 @@ fn another_view_keeps_the_readers_block_and_a_follower_follows() {
     });
 }
 
+/// Rule 6: a follower's scroll down in the frame that output grows the end
+/// keeps the end on the bottom edge, and the view follows on.
+#[test]
+fn a_followers_scroll_down_as_output_comes_keeps_following() {
+    each_scale(|scale| {
+        let mut meter = Meter::default();
+        let mut run = Run::with_history(0, (SIZE, scale), 4, &mut meter);
+        run.feed.user("Please w9901", Source::App, Delivery::Turn);
+        run.feed.turn_started();
+        run.reply_of(2);
+        assert!(run.following(), "at {scale}");
+        for _ in 0..3 {
+            let command = format!("cargo test {}", run.words(1));
+            call(&run.feed, "main", "shell", &[("command", command.into())]);
+        }
+        // (A device pixel down, less than the calls grow the end by, as Page
+        // Down gives it. The wheel at the end goes past the list.)
+        let transcript = run.transcript().unwrap();
+        run.cx
+            .update(|cx| transcript.read(cx).list.scroll_by(px(1. / scale)));
+        run.calm();
+        let followed = run.cx.update(|cx| transcript.read(cx).list.followed());
+        assert!(run.following(), "at {scale}");
+        assert!(followed, "at {scale}");
+        assert_eq!(run.blank(), 0, "at {scale}");
+        assert_eq!(run.marker(), None, "at {scale}");
+    });
+}
+
 /// Row 18: another text size wraps the rows again with a follower's end on
 /// the bottom edge, and the blank below it closes.
 #[test]

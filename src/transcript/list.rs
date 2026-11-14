@@ -9,7 +9,7 @@
 //! up that moves the lines reads, a scroll down that leaves the end in sight
 //! follows, and End, Esc, the marker and sending follow again.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
@@ -17,7 +17,7 @@ use std::time::Duration;
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::scroll::{ScrollableElement as _, ScrollableMask};
 use gpui_kit::component::{
-    ActiveTheme as _, IconName,
+    ActiveTheme as _, Disableable as _, IconName,
     button::{Button, ButtonVariants as _},
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -38,8 +38,6 @@ pub(super) struct Following {
     follow: bool,
     /// The left button is down in the transcript.
     hold: Option<Hold>,
-    /// Following starts again from a reader who wasn't, in the next frame.
-    again: bool,
     /// Whether the last frame followed.
     followed: bool,
     /// The reader scrolled, or asked for the end or the start, since the
@@ -61,20 +59,21 @@ impl Following {
         Self {
             follow: true,
             hold: None,
-            again: false,
             followed: true,
             reader_moved: false,
         }
     }
 
-    /// What a frame does with the end, from what its moves did. A scroll up
-    /// that moved the lines by a device pixel or more reads, and so do Home
-    /// and a row revealed that moved them down. A scroll down or the thumb
-    /// leaving the end in sight follows, also when nothing moved, and so
-    /// does the end asked for. The moves act in order, so the last that sets
-    /// the choice wins. A frame follows when the choice is follow, nothing
-    /// holds the view and the end shows, after the frame's moves where it has
-    /// any, else as the last frame left it.
+    /// What a frame does with the end, from what its moves did. A scroll or
+    /// a thumb's drag that moved the lines down a device pixel or more reads,
+    /// and so do Home and a row revealed that moved them down. A scroll down
+    /// that leaves the end in sight follows, also when nothing moved, and so
+    /// do the thumb at the bottom of its track and the end asked for. The
+    /// moves act in order, so the last that sets the choice wins. A frame
+    /// follows when the choice is follow, nothing holds the view and the end
+    /// shows. Where no move moved the lines down or put them somewhere, an
+    /// end that showed in the last frame still shows, though output grew it
+    /// in this one.
     fn decide(&mut self, frame: &ListFrame<'_>) -> Follow {
         let was = self.follow;
         for effect in frame.moves {
@@ -95,11 +94,19 @@ impl Following {
                         self.follow = true;
                     }
                 }
-                ListMove::Thumb { .. } => {
+                // (Only a drag to the bottom of the track follows, since with
+                // blank below the end the thumb rests there while the reader
+                // reads.)
+                ListMove::Thumb { to: None } => {
                     if effect.moved > 0 {
                         self.follow = false;
                     } else if effect.end_shows {
                         self.follow = true;
+                    }
+                }
+                ListMove::Thumb { .. } => {
+                    if effect.moved > 0 {
+                        self.follow = false;
                     }
                 }
                 ListMove::ToEnd => self.follow = true,
@@ -112,12 +119,24 @@ impl Following {
                 _ => {}
             }
         }
-        let shows = if frame.moves.is_empty() {
-            frame.end_showed
-        } else {
+        let placed = frame.moves.iter().any(|effect| {
+            effect.moved > 0
+                || matches!(
+                    effect.what,
+                    ListMove::KeepTop { .. }
+                        | ListMove::To(_)
+                        | ListMove::ToStart
+                        | ListMove::Reveal(_)
+                )
+        });
+        let shows = if placed {
             frame.end_shows
+        } else {
+            frame.end_showed || frame.end_shows
         };
-        let again = std::mem::take(&mut self.again) || (self.follow && !was);
+        // (Following that starts again by a move, a scroll down to the end or
+        // End, gives nothing back that earlier shorter views took.)
+        let again = self.follow && !was;
         self.followed = self.follow && self.hold.is_none() && shows;
         match () {
             _ if !self.followed => Follow::No,
@@ -133,6 +152,8 @@ impl Following {
 pub(super) struct RowList {
     state: ListState,
     following: Rc<RefCell<Following>>,
+    /// The marker last drawn, whose words stay while it fades.
+    shown_marker: Cell<Option<Marker>>,
 }
 
 impl RowList {
@@ -142,6 +163,7 @@ impl RowList {
         Self {
             state,
             following: Rc::new(RefCell::new(Following::new())),
+            shown_marker: Cell::new(None),
         }
     }
 
@@ -243,14 +265,10 @@ impl RowList {
 
     /// Follows from where the reader is where the end shows, and at the end
     /// where it doesn't, as Esc asks. It never closes the blank below the
-    /// end.
+    /// end, and what a taller view gives back stays (rule 7).
     pub fn follow_here(&self) {
         if self.end_shows() {
-            let mut following = self.following.borrow_mut();
-            if !following.follow {
-                following.follow = true;
-                following.again = true;
-            }
+            self.following.borrow_mut().follow = true;
         } else {
             self.scroll_to_end();
         }
@@ -435,8 +453,13 @@ pub(super) fn render(
         None => rows,
     };
     let rows = rows.size_full().min_h_0().py(rems(PADDING));
-    // (The words stay while the marker fades.)
-    let words = marker.map(Marker::words);
+    // (The words stay while the marker fades, and a click on it then does
+    // nothing.)
+    if marker.is_some() {
+        list.shown_marker.set(marker);
+    }
+    let words = marker.or(list.shown_marker.get()).map(Marker::words);
+    let fading = marker.is_none();
     div()
         .id(id)
         .relative()
@@ -484,6 +507,7 @@ pub(super) fn render(
                                     .border_color(border)
                                     .bg(background)
                                     .text_color(foreground)
+                                    .disabled(fading)
                                     .on_click(move |_, _, cx| {
                                         jump.queue_move(ListMove::ToEnd);
                                         cx.notify(view);
