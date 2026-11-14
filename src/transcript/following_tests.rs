@@ -522,6 +522,33 @@ fn another_text_size_brings_a_followers_end_to_the_bottom_edge() {
     });
 }
 
+/// Rule 9: the block another view keeps is the one on the top row as the
+/// reader left it. One an earlier switch kept ends with the reader's scroll,
+/// also a scroll drawn in the one frame before the next switch.
+#[test]
+fn another_view_keeps_the_block_on_the_top_row_now() {
+    each_scale(|scale| {
+        let mut meter = Meter::default();
+        let mut run = Run::with_history(0, (SIZE, scale), 10, &mut meter);
+        run.wheel_device(600.);
+        assert!(!run.following(), "at {scale}");
+        let trip = |run: &mut Run| {
+            for view in [View::Quiet, View::Full] {
+                run.cx
+                    .update(|cx| prefs::update(cx, |prefs| prefs.view = view));
+                run.calm();
+            }
+        };
+        trip(&mut run);
+        run.wheel(50. / scale);
+        run.draw();
+        run.last = Some(run.shot());
+        let before = rows(&run);
+        trip(&mut run);
+        assert_eq!(rows(&run), before, "at {scale}");
+    });
+}
+
 /// Draws the marker over a full last line, with output below the screen
 /// ("↓ 6 new lines") and with none ("↓ end"), at pixel ratios 1 and 2, into
 /// `MARKER_SHOTS` (by default `marker-shots`), for its rendering.

@@ -42,6 +42,9 @@ pub(super) struct Following {
     again: bool,
     /// Whether the last frame followed.
     followed: bool,
+    /// The reader scrolled, or asked for the end or the start, since the
+    /// transcript last asked.
+    reader_moved: bool,
 }
 
 /// A press in the transcript, until its release.
@@ -60,6 +63,7 @@ impl Following {
             hold: None,
             again: false,
             followed: true,
+            reader_moved: false,
         }
     }
 
@@ -74,6 +78,15 @@ impl Following {
     fn decide(&mut self, frame: &ListFrame<'_>) -> Follow {
         let was = self.follow;
         for effect in frame.moves {
+            if matches!(
+                effect.what,
+                ListMove::Scroll { .. }
+                    | ListMove::Thumb { .. }
+                    | ListMove::ToEnd
+                    | ListMove::ToStart
+            ) {
+                self.reader_moved = true;
+            }
             match effect.what {
                 ListMove::Scroll { delta, .. } => {
                     if effect.moved > 0 {
@@ -145,6 +158,17 @@ impl RowList {
     /// Whether the last frame followed the end.
     pub fn followed(&self) -> bool {
         self.following.borrow().followed
+    }
+
+    /// Whether the reader scrolled, or asked for the end or the start, since
+    /// the last time this was asked.
+    pub fn take_reader_moved(&self) -> bool {
+        std::mem::take(&mut self.following.borrow_mut().reader_moved)
+    }
+
+    /// Whether moves wait for the next frame.
+    pub fn moves_waiting(&self) -> bool {
+        self.state.moves_waiting()
     }
 
     /// Whether the end showed in the last frame, with no device pixel row of

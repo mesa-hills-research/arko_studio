@@ -727,6 +727,8 @@ struct Shot {
     /// one row joined.
     lines: Vec<Line>,
     following: bool,
+    /// The frame followed the end.
+    followed: bool,
     /// Blank space below the end, in device pixels.
     blank: i32,
     /// The transcript's start shows at its top.
@@ -1023,6 +1025,7 @@ impl<'m> Run<'m> {
             return Shot {
                 lines: Vec::new(),
                 following: true,
+                followed: true,
                 blank: 0,
                 start: true,
                 end: i32::MAX,
@@ -1091,6 +1094,7 @@ impl<'m> Run<'m> {
             Shot {
                 lines,
                 following: view.is_following(cx),
+                followed: view.list.followed(),
                 blank,
                 start,
                 end,
@@ -1423,9 +1427,14 @@ impl<'m> Run<'m> {
         } else {
             self.frames(close);
         }
-        // (The chip comes with the agent's questions, which are output, and
-        // another view closes a follower's blank, as End does.)
-        let closes = kind == 5 && before.as_ref().is_some_and(|b| b.following && b.blank > 0);
+        // (The chip comes with the agent's questions, which are output.
+        // Another view closes a follower's blank, as End does, and one that
+        // shows the end of a follower whose end a fold took off the screen
+        // follows there, so the way back is at the end.)
+        let closes = kind == 5
+            && before
+                .as_ref()
+                .is_some_and(|b| b.following && (b.blank > 0 || !b.followed));
         if !output
             && kind != 1
             && !closes

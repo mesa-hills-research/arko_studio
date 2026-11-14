@@ -460,10 +460,9 @@ pub struct TranscriptView {
     /// What the last frame that followed the end showed, from which the
     /// marker counts what came since.
     baseline: Option<Baseline>,
-    /// The block a view switch kept on the top row, kept for the next view
-    /// switch until the reader scrolls (so views changed and changed back
-    /// come back to it), and the place in it.
-    view_anchor: Option<(RowKey, Pixels)>,
+    /// The block a view switch kept on the top row, for the next switch, so
+    /// views changed and changed back come back to it.
+    view_anchor: Option<ViewAnchor>,
     /// The row whose height a fold the reader toggled changed, which the
     /// marker's baseline takes again.
     rebase: Option<RowKey>,
@@ -588,16 +587,23 @@ impl TranscriptView {
                 let switched = settings.view != this.settings.view;
                 this.settings = settings;
                 // Another view keeps the block the reader left on the top row,
-                // the same block across switches until the reader scrolls
-                // (rule 9).
+                // the same block across switches while the lines stay where
+                // the last switch put them (rule 9).
                 // (A follower whose end a fold took off the screen reads here.)
                 let following = this.list.followed();
-                if switched && !following && this.view_anchor.is_none() {
-                    let top = this.list.top();
-                    this.view_anchor = this
-                        .rows
-                        .get(top.item_ix)
-                        .map(|row| (row.key, top.offset_in_item));
+                if switched {
+                    this.check_view_anchor();
+                    if following {
+                        this.view_anchor = None;
+                    } else if let Some(anchor) = &mut this.view_anchor {
+                        anchor.left = None;
+                    } else {
+                        this.view_anchor = this.top_row().map(|(key, offset)| ViewAnchor {
+                            key,
+                            offset,
+                            left: None,
+                        });
+                    }
                 }
                 if rows_change {
                     this.refresh_rows(cx);
@@ -609,8 +615,8 @@ impl TranscriptView {
                         // Following, the new view follows at its end.
                         this.list.scroll_to_end();
                     } else {
-                        if let Some((key, offset)) = this.view_anchor
-                            && let Some((ix, offset)) = this.place_of(key, offset)
+                        if let Some(anchor) = this.view_anchor
+                            && let Some((ix, offset)) = this.place_of(anchor.key, anchor.offset)
                         {
                             this.list.scroll_to(ix, offset);
                         }
@@ -1757,6 +1763,36 @@ impl TranscriptView {
         self.remeasure_grown();
     }
 
+    /// The row on the top row of the screen as the last frame drew it, and
+    /// how far into it the top edge is.
+    fn top_row(&self) -> Option<(RowKey, Pixels)> {
+        let top = self.list.top();
+        self.rows
+            .get(top.item_ix)
+            .map(|row| (row.key, top.offset_in_item))
+    }
+
+    /// Ends the block a view switch kept where the reader scrolled since, or
+    /// the lines moved from where the switch put them, as they do while the
+    /// view follows. The place a switch put them is the first one drawn
+    /// with no moves left to make.
+    fn check_view_anchor(&mut self) {
+        if self.list.take_reader_moved() {
+            self.view_anchor = None;
+        }
+        if self.list.moves_waiting() {
+            return;
+        }
+        let top = self.top_row();
+        if let Some(anchor) = &mut self.view_anchor {
+            match anchor.left {
+                None => anchor.left = top,
+                Some(left) if Some(left) != top => self.view_anchor = None,
+                Some(_) => {}
+            }
+        }
+    }
+
     /// Where the row `key` is now, `offset` into it. That is the row
     /// itself, the same block of its text shown another way, the first row
     /// of its entry, or else the row that stands for its entry now (a Quiet
@@ -2290,19 +2326,7 @@ impl Render for TranscriptView {
         // The rows of the last frame, before what came since. Where that frame
         // followed the end, the reader has seen them.
         self.take_baseline();
-        // The reader's own scroll ends the block another view kept.
-        let report = self.list.handle().report();
-        if report.moves.iter().any(|effect| {
-            matches!(
-                effect.what,
-                ListMove::Scroll { .. }
-                    | ListMove::Thumb { .. }
-                    | ListMove::ToEnd
-                    | ListMove::ToStart
-            )
-        }) {
-            self.view_anchor = None;
-        }
+        self.check_view_anchor();
         self.apply_pending(cx);
         if self.load_older(cx) {
             // The rows of older entries go above the reader: nothing moves.
@@ -2463,6 +2487,18 @@ impl Render for TranscriptView {
                 ),
         )
     }
+}
+
+/// The block a view switch kept on the top row (rule 9).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewAnchor {
+    /// The row on the top row as the reader left it.
+    key: RowKey,
+    /// How far into the row the top edge was.
+    offset: Pixels,
+    /// The top row and the place in it where the last switch put the lines,
+    /// once drawn. The block holds while they stay there.
+    left: Option<(RowKey, Pixels)>,
 }
 
 /// What the last frame that followed the end showed, which the reader has
