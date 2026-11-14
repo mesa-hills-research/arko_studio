@@ -146,13 +146,13 @@ fn a_full_line_that_cuts_its_outcome_opens_to_it(cx: &mut TestAppContext) {
 
 /// The thoughts a reader meets, one line each, cut at word ends to lengths
 /// around what fits the column. Drawn in the app's fonts, each whose line
-/// is cut opens.
+/// is cut opens, and so again once the zoom changes.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_thought_whose_line_is_cut_opens() {
     use super::height_tests::real;
     use gpui_kit::component::ActiveTheme as _;
-    use gpui_kit::{FontStyle, TextRun, font};
+    use gpui_kit::{FontStyle, HeadlessAppContext, TextRun, font};
 
     const THOUGHTS: [&str; 4] = [
         "The user wants the stale cache test fixed, so I should read the test first and then look at how the cache decides that a value has expired before changing anything else in the module.",
@@ -181,50 +181,57 @@ fn a_thought_whose_line_is_cut_opens() {
     let (window, view) = real::open(&mut cx, &feed, (width, 600.), true);
     real::settle(&mut cx, window);
     let thoughts = ids_of(&feed, Kind::Thinking);
-    let mut cut = 0;
-    for (id, text) in thoughts.iter().zip(&texts) {
-        // Each line drawn, so its width is known.
-        cx.update(|cx| {
-            view.update(cx, |view, cx| {
-                let ix = view
-                    .rows
-                    .iter()
-                    .position(|row| row.key == RowKey::Thinking(*id))
-                    .unwrap();
-                view.list.scroll_to(ix, gpui_kit::px(0.));
-                cx.notify();
-            })
-        });
-        real::settle(&mut cx, window);
-        let (opens, room, shaped) = cx
-            .update_window(window, |_, window, cx| {
-                let view = view.read(cx);
-                let m = view.metrics.clone().unwrap();
-                let mut italic = font(cx.theme().font_family.clone());
-                italic.style = FontStyle::Italic;
-                let run = TextRun {
-                    len: text.len(),
-                    font: italic,
-                    color: gpui_kit::Hsla::default(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let size = gpui_kit::px(m.rem * super::row::THOUGHT_SIZE);
-                let shaped = window.text_system().layout_line(text, size, &[run], None);
-                (
-                    view.thought_opens(*id, false),
-                    super::row::room(width, false, m.rem),
-                    f32::from(shaped.width),
-                )
-            })
-            .unwrap();
-        if shaped > room {
-            cut += 1;
-            assert!(opens, "{text:?} is cut ({shaped} px in {room}) and opens");
+    // How many lines are cut, each drawn so its width is known.
+    let cut = |cx: &mut HeadlessAppContext| {
+        let mut cut = 0;
+        for (id, text) in thoughts.iter().zip(&texts) {
+            cx.update(|cx| {
+                view.update(cx, |view, cx| {
+                    let ix = view
+                        .rows
+                        .iter()
+                        .position(|row| row.key == RowKey::Thinking(*id))
+                        .unwrap();
+                    view.list.scroll_to(ix, gpui_kit::px(0.));
+                    cx.notify();
+                })
+            });
+            real::settle(cx, window);
+            let (opens, room, shaped) = cx
+                .update_window(window, |_, window, cx| {
+                    let view = view.read(cx);
+                    let m = view.metrics.clone().unwrap();
+                    let mut italic = font(cx.theme().font_family.clone());
+                    italic.style = FontStyle::Italic;
+                    let run = TextRun {
+                        len: text.len(),
+                        font: italic,
+                        color: gpui_kit::Hsla::default(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let size = gpui_kit::px(m.rem * super::row::THOUGHT_SIZE);
+                    let shaped = window.text_system().layout_line(text, size, &[run], None);
+                    (
+                        view.thought_opens(*id, false),
+                        super::row::room(width, false, m.rem),
+                        f32::from(shaped.width),
+                    )
+                })
+                .unwrap();
+            if shaped > room {
+                cut += 1;
+                assert!(opens, "{text:?} is cut ({shaped} px in {room}) and opens");
+            }
         }
-    }
-    assert!(cut > 0);
+        cut
+    };
+    let before = cut(&mut cx);
+    assert!(before > 0);
+    cx.update(|cx| prefs::update(cx, |prefs| prefs.appearance.zoom = 1.5));
+    real::settle(&mut cx, window);
+    assert!(cut(&mut cx) > before);
 }
 
 /// Quiet. The find reads a Quiet row's words, as the row draws them, and

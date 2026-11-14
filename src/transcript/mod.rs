@@ -870,6 +870,8 @@ impl TranscriptView {
             return;
         }
         self.metrics = None;
+        // The thoughts' lines are laid out again in the new fonts.
+        self.thought_widths.get_mut().clear();
         let measured = height::Metrics::measure(key.clone(), window, cx);
         let task = cx.spawn(async move |this, cx| {
             let metrics = measured.await;
