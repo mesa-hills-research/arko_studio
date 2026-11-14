@@ -32,8 +32,8 @@ use arko::remote::{Delivery, Feed, Level, Reading, Source};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, ElementId, Entity, HeadlessAppContext,
-    InputEvent as _, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, ScrollDelta, ScrollWheelEvent, WindowBounds, WindowOptions, point, px, size,
+    InputEvent as _, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, ScrollDelta, ScrollWheelEvent, WindowBounds, WindowOptions, point, px, size,
 };
 
 use super::TranscriptView;
@@ -371,7 +371,10 @@ impl Meter {
 
     fn size_table(&self) -> String {
         let mut out = String::new();
-        let _ = writeln!(out, "| Window | Pixel ratio | View | Following | Scrolled up |");
+        let _ = writeln!(
+            out,
+            "| Window | Pixel ratio | View | Following | Scrolled up |"
+        );
         let _ = writeln!(out, "|---|---|---|---|---|");
         let mut sizes: Vec<WindowSize> = self.sizes.keys().map(|(size, ..)| *size).collect();
         sizes.dedup();
@@ -428,8 +431,11 @@ impl Meter {
         let mut out = String::new();
         let _ = writeln!(out, "| Move | Step | full | quiet | messages |");
         let _ = writeln!(out, "|---|---|---|---|---|");
-        let mut keys: Vec<(Allowed, Step)> =
-            self.allowed.keys().map(|(kind, step, _)| (*kind, *step)).collect();
+        let mut keys: Vec<(Allowed, Step)> = self
+            .allowed
+            .keys()
+            .map(|(kind, step, _)| (*kind, *step))
+            .collect();
         keys.dedup();
         for (kind, step) in keys {
             let cells: Vec<String> = (0..VIEWS.len())
@@ -596,8 +602,8 @@ fn ids(lines: &[Line]) -> HashMap<String, usize> {
 /// How the lines of a frame moved from the frame before.
 #[derive(Default)]
 struct Moved {
-    /// The most device pixels a line moved that no rule allows: down while
-    /// following, at all while reading.
+    /// The most device pixels a line moved that no rule allows, down while
+    /// following and at all while reading.
     px: u32,
     /// The line that moved most, from where to where.
     line: Option<(String, i32, i32)>,
@@ -615,12 +621,14 @@ struct Moved {
 }
 
 /// The device row in `before` from which the lines are below what changed
-/// in `after`: the first line that went or says something else, or the
-/// first line that came, at the line above it.
+/// in `after`. That is the first line that went or says something else, or
+/// the first line that came, at the line above it.
 fn changed_from(before: &[Line], after: &[Line]) -> i32 {
     let (was, now) = (ids(before), ids(after));
     let id_of = |ids: &HashMap<String, usize>, at: usize| {
-        ids.iter().find(|(_, ix)| **ix == at).map(|(id, _)| id.clone())
+        ids.iter()
+            .find(|(_, ix)| **ix == at)
+            .map(|(id, _)| id.clone())
     };
     let mut from = i32::MAX;
     for (at, line) in before.iter().enumerate() {
@@ -964,7 +972,10 @@ impl<'m> Run<'m> {
         })
     }
 
-    fn with_transcript(&mut self, f: impl FnOnce(&mut TranscriptView, &mut gpui_kit::Context<TranscriptView>)) {
+    fn with_transcript(
+        &mut self,
+        f: impl FnOnce(&mut TranscriptView, &mut gpui_kit::Context<TranscriptView>),
+    ) {
         if let Some(transcript) = self.transcript() {
             self.cx.update(|cx| transcript.update(cx, f));
         }
@@ -1000,7 +1011,12 @@ impl<'m> Run<'m> {
                     .into_iter()
                     .filter_map(|id| window.try_find(id).map(|found| found.bounds()))
                     .collect();
-                (window.painted_text(), window.scale_factor(), over, window.rem_size())
+                (
+                    window.painted_text(),
+                    window.scale_factor(),
+                    over,
+                    window.rem_size(),
+                )
             })
             .unwrap();
         let Some(transcript) = transcript else {
@@ -1144,13 +1160,10 @@ impl<'m> Run<'m> {
                 .add(moved.room);
         }
         let mut px = moved.px;
-        // The reader's own toggle: the clicked line stays, and the lines
+        // The reader's own toggle keeps the clicked line still, and the lines
         // above it move by at most a line.
         if let Some((row, line)) = below {
-            let clicked = moved
-                .line
-                .as_ref()
-                .is_some_and(|(_, from, _)| *from == row);
+            let clicked = moved.line.as_ref().is_some_and(|(_, from, _)| *from == row);
             let clicked_moved = {
                 let (was, now) = (ids(&last.lines), ids(&shot.lines));
                 was.iter()
@@ -1325,10 +1338,10 @@ impl<'m> Run<'m> {
         }
     }
 
-    /// Now and then, what may come at any time: a notice, a job's end, a
+    /// Now and then, what may come at any time (a notice, a job's end, a
     /// message the user sends meanwhile, the reader toggling a fold, a panel
     /// or the composer or the menu that opens and closes, or the window
-    /// getting shorter and taller again. Returns whether a notice came, after
+    /// getting shorter and taller again). Returns whether a notice came, after
     /// which the agent's text goes on in an item of its own.
     fn meanwhile(&mut self) -> bool {
         let notice = self.rng.chance(6);
@@ -1521,11 +1534,7 @@ impl<'m> Run<'m> {
                     .update(|cx| prefs::update(cx, |prefs| prefs.view = view));
             }
             _ => {
-                let height = if on {
-                    self.size.1 - 120.
-                } else {
-                    self.size.1
-                };
+                let height = if on { self.size.1 - 120. } else { self.size.1 };
                 let width = self.size.0;
                 self.cx
                     .update_window(window, |_, window, _| {
@@ -1618,8 +1627,8 @@ impl<'m> Run<'m> {
         })
     }
 
-    /// Where to click the toggle `id`, if it shows wholly inside the
-    /// transcript: on its first line.
+    /// Where to click the toggle `id`, on its first line, if it shows wholly
+    /// inside the transcript.
     fn toggle_at(&mut self, id: &ElementId) -> Option<Point<Pixels>> {
         let last = self.last.clone()?;
         let id = id.clone();
@@ -1700,7 +1709,10 @@ impl<'m> Run<'m> {
         let mut shot = shot;
         let mut row = Some((row, line));
         for _ in 0..4 {
-            let same = self.last.as_ref().is_some_and(|last| last.lines == shot.lines);
+            let same = self
+                .last
+                .as_ref()
+                .is_some_and(|last| last.lines == shot.lines);
             self.measure(step, &shot, row);
             row = row.and_then(|(clicked, line)| {
                 let was = ids(&self.last.as_ref()?.lines);
@@ -1801,13 +1813,8 @@ impl<'m> Run<'m> {
         if tool == "terminal_start" && self.job.is_none() {
             let job = uuid::Uuid::new_v4();
             self.feed.job_started(
-                arko::remote::JobStart::new(
-                    job,
-                    "main",
-                    arko::remote::JobKind::Command,
-                    "npm run",
-                )
-                .made_by(id),
+                arko::remote::JobStart::new(job, "main", arko::remote::JobKind::Command, "npm run")
+                    .made_by(id),
             );
             self.job = Some(job);
         }
@@ -1952,14 +1959,8 @@ fn measure(seeds: Option<u64>) -> Meter {
                             + u64::from(thinking) * 2
                             + u64::from(scrolled);
                         let scale = SCALES[(at + view + seed as usize) % SCALES.len()];
-                        let mut run = Run::new(
-                            seed,
-                            view,
-                            (*size, scale),
-                            scrolled,
-                            thinking,
-                            &mut meter,
-                        );
+                        let mut run =
+                            Run::new(seed, view, (*size, scale), scrolled, thinking, &mut meter);
                         for _ in 0..turns {
                             run.turn();
                         }

@@ -457,8 +457,19 @@ pub struct TranscriptView {
     /// The close of each open thought a click was on, by thought. A second
     /// click on it, making a double-click, takes its close away.
     closing: HashMap<u64, Task<()>>,
-    /// Entries that came while the reader was scrolled up.
-    new_while_away: usize,
+    /// What the last frame that followed the end showed, from which the
+    /// marker counts what came since.
+    baseline: Option<Baseline>,
+    /// The block a view switch kept on the top row, kept for the next view
+    /// switch until the reader scrolls (so views changed and changed back
+    /// come back to it), and the place in it.
+    view_anchor: Option<(RowKey, Pixels)>,
+    /// The row whose height a fold the reader toggled changed, which the
+    /// marker's baseline takes again.
+    rebase: Option<RowKey>,
+    /// Whether the marker drawn is for an end off the screen, which the
+    /// frame checks once the list is laid out.
+    marker_drawn: bool,
     /// How many of the rows come before "Working…" and the notes waiting at
     /// the end: the rows that arrive go in at its end.
     core_rows: usize,
@@ -574,11 +585,39 @@ impl TranscriptView {
                 if full(settings.view) != full(this.settings.view) {
                     this.swap_thoughts_open();
                 }
+                let switched = settings.view != this.settings.view;
                 this.settings = settings;
+                // Another view keeps the block the reader left on the top row,
+                // the same block across switches until the reader scrolls
+                // (rule 9).
+                // (A follower whose end a fold took off the screen reads here.)
+                let following = this.list.followed();
+                if switched && !following && this.view_anchor.is_none() {
+                    let top = this.list.top();
+                    this.view_anchor = this
+                        .rows
+                        .get(top.item_ix)
+                        .map(|row| (row.key, top.offset_in_item));
+                }
                 if rows_change {
                     this.refresh_rows(cx);
                     // A find covers what the rows show now.
                     this.find_changed_all(cx);
+                }
+                if switched {
+                    if following {
+                        // Following, the new view follows at its end.
+                        this.list.scroll_to_end();
+                    } else {
+                        if let Some((key, offset)) = this.view_anchor
+                            && let Some((ix, offset)) = this.place_of(key, offset)
+                        {
+                            this.list.scroll_to(ix, offset);
+                        }
+                        // Where the end would then stand above the bottom edge
+                        // with lines hidden above, it comes to the bottom edge.
+                        this.list.close_blank();
+                    }
                 }
                 cx.notify();
             }
@@ -593,6 +632,14 @@ impl TranscriptView {
                 this.show_source_changed(show, cx);
             }
         });
+        // A press whose release can't come, as the window loses the focus,
+        // ends its hold.
+        cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() && this.list.release() {
+                cx.notify();
+            }
+        })
+        .detach();
         let this = Self {
             model: Model::new(filter),
             inbox,
@@ -618,7 +665,10 @@ impl TranscriptView {
             hovered_row: None,
             hover_grace: None,
             closing: HashMap::new(),
-            new_while_away: 0,
+            baseline: None,
+            view_anchor: None,
+            rebase: None,
+            marker_drawn: false,
             core_rows: 0,
             loaded_from: None,
             clock: Rc::new(|| chrono::Utc::now().timestamp_millis()),
@@ -680,7 +730,14 @@ impl TranscriptView {
 
     /// Whether the transcript follows the latest row.
     pub fn is_following(&self, _: &App) -> bool {
-        !self.list.is_scrolled_up()
+        self.list.is_following()
+    }
+
+    /// Esc where nothing else takes it. The reader follows from where they
+    /// are where the end shows, and at the end where it doesn't.
+    pub fn follow_here(&mut self, cx: &mut Context<Self>) {
+        self.list.follow_here();
+        cx.notify();
     }
 
     /// The number of rows (for tests and diagnostics).
@@ -1080,7 +1137,10 @@ impl TranscriptView {
             hovered_row,
             hover_grace: _,
             closing,
-            new_while_away,
+            baseline,
+            view_anchor,
+            rebase,
+            marker_drawn: _,
             core_rows,
             loaded_from: _,
             clock: _,
@@ -1153,7 +1213,9 @@ impl TranscriptView {
         *cursor = None;
         closing.clear();
         thought_lines.clear();
-        *new_while_away = 0;
+        *baseline = None;
+        *view_anchor = None;
+        *rebase = None;
         *core_rows = 0;
     }
 
@@ -1640,8 +1702,7 @@ impl TranscriptView {
         self.thought_lines = laid.thought_lines;
         self.rows_for = self.laid_out_for();
         let rows = laid.rows;
-        // The reader's place, unless they follow the latest row.
-        let scrolled_up = self.list.is_scrolled_up();
+        // The reader's place, unless they follow the end.
         let anchor = (!self.list.is_following())
             .then(|| {
                 let top = self.list.top();
@@ -1662,9 +1723,8 @@ impl TranscriptView {
                 self.list.remeasure_row(new_ix);
             }
         }
-        // What came after the rows the reader has, while they were away. It
-        // goes in before "Working…" and the notes waiting at the end, which
-        // aren't what came ("Working…" gives way to it).
+        // "Working…" and the notes waiting at the end aren't output, which
+        // the marker counts.
         let working = |row: &Row| matches!(row.key, RowKey::Working(_));
         let aside = |row: &Row| {
             working(row)
@@ -1675,30 +1735,6 @@ impl TranscriptView {
             .iter()
             .rposition(|row| !aside(row))
             .map_or(0, |ix| ix + 1);
-        if scrolled_up && self.core_rows > 0 {
-            let mut entries: Vec<u64> = Vec::new();
-            let mut inserted = 0;
-            for (range, count) in &changes {
-                // The rows before it in the new list: those kept, and what
-                // the changes before it put in.
-                let from = kept
-                    .iter()
-                    .take_while(|(old, _)| *old < range.start)
-                    .count()
-                    + inserted;
-                inserted += count;
-                if range.start >= self.core_rows {
-                    entries.extend(
-                        rows[from..from + count]
-                            .iter()
-                            .filter(|row| !working(row))
-                            .map(|row| row.key.entry()),
-                    );
-                }
-            }
-            entries.dedup();
-            self.new_while_away += entries.len();
-        }
         self.core_rows = core_rows;
         self.rows = rows;
         // A row gone from under the pointer never says that the pointer
@@ -1869,9 +1905,7 @@ impl TranscriptView {
     /// their find did, or a thought shows another way in a new width. The
     /// rows that go in show what was there, so they don't count as new.
     fn refresh_rows_after_opening(&mut self, cx: &mut Context<Self>) {
-        let away = self.new_while_away;
         self.refresh_rows(cx);
-        self.new_while_away = away;
     }
 
     /// The view changed from Full or to it: each thought takes the open
@@ -1911,18 +1945,18 @@ impl TranscriptView {
         }
     }
 
-    /// Keeps the line at row `ix`, which the reader opened or closed, where
-    /// it is on screen, though the space above it changed from `gap`. What
-    /// is above moves instead.
+    /// Keeps the line at row `ix`, which the reader opened or closed, on its
+    /// device pixel row, though the space above it changed from `gap`. What
+    /// is above moves by as much, and the marker's count takes the row's new
+    /// height as no news.
     fn keep_in_place(&mut self, ix: usize, gap: model::Gap) {
         let Some(row) = self.rows.get(ix) else {
             return;
         };
         let rem = self.metrics.as_ref().map_or(16., |m| m.rem);
         let grew = (row::gap_rems(row.gap) - row::gap_rems(gap)) * rem;
-        if grew != 0. && self.list.top().item_ix < ix {
-            self.list.scroll_by(px(grew));
-        }
+        self.list.keep_top(ix, px(-grew));
+        self.rebase = Some(row.key);
     }
 
     /// Whether the entry `id` shows open, a call's details or a thought
@@ -1954,9 +1988,6 @@ impl TranscriptView {
                 | RowKey::Block { id: entry, .. } if entry == id)
         });
         let before = row.map(|ix| self.rows[ix]);
-        if let Some(ix) = row {
-            self.list.hold_place(ix);
-        }
         let opening = !self.shown_open(id);
         self.ui.entry(id).or_default().expanded = Some(opening);
         // A thought the reader opened on a line of its own stays there as
@@ -2015,9 +2046,6 @@ impl TranscriptView {
             .iter()
             .position(|row| row.key == RowKey::Group(first));
         let before = row.map(|ix| self.rows[ix].gap);
-        if let Some(ix) = row {
-            self.list.hold_place(ix);
-        }
         let single = self.quiet.get(&first).is_some_and(|row| !row.merged);
         if single {
             self.ensure_diff(first, cx);
@@ -2039,17 +2067,18 @@ impl TranscriptView {
     /// Opens or closes a turn's count (Messages). Open, the turn's work
     /// shows under it as Quiet shows it.
     fn toggle_count(&mut self, first: u64, cx: &mut Context<Self>) {
-        if let Some(ix) = self
+        let row = self
             .rows
             .iter()
-            .position(|row| row.key == RowKey::Count(first))
-        {
-            self.list.hold_place(ix);
-        }
+            .position(|row| row.key == RowKey::Count(first));
+        let before = row.map(|ix| self.rows[ix].gap);
         if !self.counts_open.remove(&first) {
             self.counts_open.insert(first);
         }
         self.refresh_rows_after_opening(cx);
+        if let (Some(ix), Some(gap)) = (row, before) {
+            self.keep_in_place(ix, gap);
+        }
         // The find covers what the count shows, or no longer does.
         self.quiet_changed.clear();
         self.find_changed_all(cx);
@@ -2078,12 +2107,13 @@ impl TranscriptView {
     }
 
     fn toggle_source(&mut self, id: u64, cx: &mut Context<Self>) {
-        if let Some(ix) = self.row_of(id) {
-            self.list.hold_place(ix);
-        }
+        let row = self.row_of(id);
         let ui = self.ui.entry(id).or_default();
         ui.flipped = !ui.flipped;
         self.refresh_rows(cx);
+        if let Some(ix) = row {
+            self.list.keep_top(ix, px(0.));
+        }
         self.find_changed(&[], [id], cx);
         cx.notify();
     }
@@ -2097,8 +2127,8 @@ impl TranscriptView {
             matches!(row.key, RowKey::Block { id: row_id, block: row_block, .. }
                 if row_id == id && row_block == block)
         }) {
-            self.list.hold_place(ix);
             self.list.remeasure_row(ix);
+            self.list.keep_top(ix, px(0.));
         }
         cx.notify();
     }
@@ -2251,6 +2281,22 @@ fn warm_up_languages(cx: &mut App) {
 impl Render for TranscriptView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders += 1;
+        // The rows of the last frame, before what came since. Where that frame
+        // followed the end, the reader has seen them.
+        self.take_baseline();
+        // The reader's own scroll ends the block another view kept.
+        let report = self.list.handle().report();
+        if report.moves.iter().any(|effect| {
+            matches!(
+                effect.what,
+                ListMove::Scroll { .. }
+                    | ListMove::Thumb { .. }
+                    | ListMove::ToEnd
+                    | ListMove::ToStart
+            )
+        }) {
+            self.view_anchor = None;
+        }
         self.apply_pending(cx);
         if self.load_older(cx) {
             // The rows of older entries go above the reader: nothing moves.
@@ -2264,10 +2310,9 @@ impl Render for TranscriptView {
         if self.runs_made >= RELEASE_EVERY {
             self.release_runs(cx);
         }
-        if !self.list.is_scrolled_up() {
-            self.new_while_away = 0;
-        }
-        let new = self.new_while_away;
+        self.measure_new();
+        let marker = self.new_below();
+        self.marker_drawn = marker.is_some();
         // Reached by Tab, the transcript shows that it has the focus, with a
         // ring laid over its edge (a border would move the rows). A row the
         // keyboard is on shows its own ring instead.
@@ -2292,7 +2337,7 @@ impl Render for TranscriptView {
         let rows = list::render(
             "transcript-rows",
             &self.list,
-            new,
+            marker,
             move |ix, window, cx| row::render(&view, ix, window, cx),
             (self.estimates && self.metrics.is_some()).then_some(
                 move |ix, width, window: &mut Window, cx: &mut App| {
@@ -2323,17 +2368,40 @@ impl Render for TranscriptView {
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &ScrollToStart, _, cx| {
-                    this.list.scroll_to(0, px(0.));
+                    this.list.scroll_to_start();
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &ScrollToLatest, _, cx| {
                     this.scroll_to_end(cx);
                 }))
+                // A press holds the view until its release, wherever that is.
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
+                    cx.listener(|this, event: &MouseDownEvent, window, cx| {
                         if !this.focus_handle.contains_focused(window, cx) {
                             this.focus_handle.focus(window, cx);
+                        }
+                        this.list.press(event.position);
+                    }),
+                )
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, _| {
+                    if event.pressed_button == Some(MouseButton::Left) {
+                        this.list.drag(event.position);
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        if this.list.release() {
+                            cx.notify();
+                        }
+                    }),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        if this.list.release() {
+                            cx.notify();
                         }
                     }),
                 )
@@ -2359,6 +2427,26 @@ impl Render for TranscriptView {
                     .size_full()
                 })
                 .child(rows)
+                // Once the list is laid out, a marker drawn for the end where it
+                // now shows, or none where it doesn't, draws again.
+                .child({
+                    let view = cx.entity().downgrade();
+                    let list = self.list.handle();
+                    let drawn = self.marker_drawn;
+                    canvas(
+                        move |_, window, cx| {
+                            let off = !list.report().end_shows && list.item_count() > 0;
+                            if off != drawn {
+                                window.defer(cx, move |_, cx| {
+                                    view.update(cx, |_, cx| cx.notify()).ok();
+                                });
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_0()
+                })
                 .children(
                     ring.map(|ring| div().absolute().inset_0().border_1().border_color(ring)),
                 ),
@@ -2366,7 +2454,140 @@ impl Render for TranscriptView {
     }
 }
 
+/// What the last frame that followed the end showed, which the reader has
+/// seen. The marker counts what came since.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Baseline {
+    /// The newest entry its rows showed, but for "Working…" and the notes
+    /// waiting at the end.
+    newest: u64,
+    /// Its last row of output, by its key, and that row's height then.
+    last: Option<(RowKey, Pixels)>,
+}
+
 impl TranscriptView {
+    /// Takes the rows of the last frame as what the reader has seen, where
+    /// that frame followed the end (or none was drawn yet). A fold the reader
+    /// toggled in the last row of the one kept changes its height, which is
+    /// no news.
+    fn take_baseline(&mut self) {
+        let core = self.core_rows.min(self.rows.len());
+        let last = core.checked_sub(1).and_then(|ix| {
+            self.list
+                .height(ix)
+                .map(|height| (self.rows[ix].key, height))
+        });
+        if self.list.followed() || self.baseline.is_none() {
+            // (Every entry there was, also those a row stands for, such as
+            // the calls of a Quiet row, which show when it opens.)
+            let newest = self
+                .model
+                .entries()
+                .iter()
+                .map(|entry| entry.item.id)
+                .max()
+                .unwrap_or(0);
+            self.baseline = Some(Baseline { newest, last });
+            self.rebase = None;
+            return;
+        }
+        // (Once the row is measured at its new height.)
+        if let Some(key) = self.rebase
+            && let Some(baseline) = self.baseline.as_mut()
+            && let Some(ix) = self.rows.iter().position(|row| row.key == key)
+            && let Some(height) = self.list.height(ix)
+        {
+            match baseline.last {
+                Some((last, was)) if last == key => {
+                    if height != was {
+                        baseline.last = Some((key, height));
+                        self.rebase = None;
+                    }
+                }
+                _ => self.rebase = None,
+            }
+        }
+    }
+
+    /// Whether row `ix` came after `baseline`, as a row of a newer entry or a
+    /// block of the text its last row was a block of, past that block.
+    /// "Working…" is no output.
+    fn came_after(&self, ix: usize, baseline: &Baseline) -> bool {
+        let key = self.rows[ix].key;
+        if matches!(key, RowKey::Working(_)) {
+            return false;
+        }
+        match (key, baseline.last) {
+            (
+                RowKey::Block { id, block, .. },
+                Some((
+                    RowKey::Block {
+                        id: last,
+                        block: was,
+                        ..
+                    },
+                    _,
+                )),
+            ) if id == last => block > was,
+            _ => key.entry() > baseline.newest,
+        }
+    }
+
+    /// Has the rows that came since the last frame that followed measured in
+    /// the next frame, wherever they are, so the marker counts them from
+    /// their heights and not from estimates.
+    fn measure_new(&self) {
+        let Some(baseline) = self.baseline else {
+            return;
+        };
+        if self.list.followed() {
+            return;
+        }
+        if let Some(first) = (0..self.rows.len()).find(|&ix| self.came_after(ix, &baseline)) {
+            self.list.measure(first..self.rows.len());
+        }
+    }
+
+    /// What the marker says while the end is off the screen, the lines of
+    /// output below the bottom edge that came since the last frame that
+    /// followed, rounded up, from the rows measured as they came.
+    fn new_below(&self) -> Option<list::Marker> {
+        if self.rows.is_empty() || self.list.end_shows() {
+            return None;
+        }
+        let baseline = self.baseline?;
+        let mut came = px(0.);
+        for ix in 0..self.rows.len() {
+            if self.came_after(ix, &baseline) {
+                came += self.list.height(ix).unwrap_or_default();
+            }
+        }
+        if let Some((key, height)) = baseline.last
+            && let Some(ix) = self.rows.iter().position(|row| row.key == key)
+            && let Some(now) = self.list.height(ix)
+        {
+            came += (now - height).max(px(0.));
+        }
+        let line = self.metrics.as_ref().map_or(24., |metrics| metrics.line);
+        let new = came.min(self.list.below().max(px(0.)));
+        let lines = (f32::from(new) / line).ceil() as usize;
+        Some(if lines > 0 {
+            list::Marker::New(lines)
+        } else {
+            list::Marker::End
+        })
+    }
+
+    /// The lines the marker counts, with none where it shows "end" or
+    /// doesn't show (tests).
+    #[cfg(test)]
+    pub(crate) fn new_lines(&self) -> usize {
+        match self.new_below() {
+            Some(list::Marker::New(lines)) => lines,
+            _ => 0,
+        }
+    }
+
     /// The plain text of the part `place` of the entry `entry`, in a row,
     /// in the window's selection with the rest of the transcript's text. It
     /// stays in a selection while its row isn't drawn.

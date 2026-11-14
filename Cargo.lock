@@ -4831,7 +4831,7 @@ dependencies = [
 [[package]]
 name = "mhr-collections"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "indexmap",
  "mhr-gpui-util",
@@ -4841,7 +4841,7 @@ dependencies = [
 [[package]]
 name = "mhr-derive-refineable"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4850,8 +4850,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui"
-version = "0.1.9"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+version = "0.1.10"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -4922,8 +4922,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-apple"
-version = "0.1.9"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+version = "0.1.10"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "anyhow",
  "async-task",
@@ -4951,9 +4951,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit"
-version = "0.7.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1236fa6974ef559a708daea8e851fa12be6f2147e15712737d09d18d86cbd4f7"
+version = "0.7.18"
+source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=26241201dc7af9f636a7105378391829da8bb73d#26241201dc7af9f636a7105378391829da8bb73d"
 dependencies = [
  "mhr-gpui",
  "mhr-gpui-kit-assets",
@@ -4966,9 +4965,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-assets"
-version = "0.7.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec283215a9e20d8546e0fdb6609917c1c68aa10a6a2cd153b8d4bfe345d1b536"
+version = "0.7.18"
+source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=26241201dc7af9f636a7105378391829da8bb73d#26241201dc7af9f636a7105378391829da8bb73d"
 dependencies = [
  "anyhow",
  "gpui-pre-reqwest",
@@ -4981,9 +4979,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-base"
-version = "0.7.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc332bfa5bcc4eeb3065f89dec7c03e01d01db859715549ba6c2b6593f0c4031"
+version = "0.7.18"
+source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=26241201dc7af9f636a7105378391829da8bb73d#26241201dc7af9f636a7105378391829da8bb73d"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -5024,9 +5021,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-component"
-version = "0.7.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fdd63f657ba6b8e7607721ab09fe1086e15878b5f50e1df7ac2cdf97f82f142"
+version = "0.7.18"
+source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=26241201dc7af9f636a7105378391829da8bb73d#26241201dc7af9f636a7105378391829da8bb73d"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -5125,9 +5121,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-component-macros"
-version = "0.7.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95fc0b3c5a65ebe8a34bc32d6116768e9cf6e6fa877dcaa4a936fa54100b592b"
+version = "0.7.18"
+source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=26241201dc7af9f636a7105378391829da8bb73d#26241201dc7af9f636a7105378391829da8bb73d"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -5137,9 +5132,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-kit-writing"
-version = "0.7.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29cf522297ddcc62844e11805229a22b7f45521a3cb60857dc7ecc83bd89b56a"
+version = "0.7.18"
+source = "git+https://github.com/mesa-hills-research/gpui_kit?rev=26241201dc7af9f636a7105378391829da8bb73d#26241201dc7af9f636a7105378391829da8bb73d"
 dependencies = [
  "anyhow",
  "log",
@@ -5151,8 +5145,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-linux"
-version = "0.1.9"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+version = "0.1.10"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -5195,8 +5189,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-macos"
-version = "0.1.9"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+version = "0.1.10"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -5241,7 +5235,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-macros"
 version = "0.1.8"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "heck 0.5.0",
  "proc-macro-crate",
@@ -5252,8 +5246,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-platform"
-version = "0.1.9"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+version = "0.1.10"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -5267,8 +5261,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-screenshot"
-version = "0.1.9"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+version = "0.1.10"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5282,7 +5276,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-shared-string"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "schemars",
  "serde",
@@ -5292,7 +5286,7 @@ dependencies = [
 [[package]]
 name = "mhr-gpui-util"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "anyhow",
  "log",
@@ -5301,8 +5295,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-web"
-version = "0.1.9"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+version = "0.1.10"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -5329,8 +5323,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-wgpu"
-version = "0.1.9"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+version = "0.1.10"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5356,8 +5350,8 @@ dependencies = [
 
 [[package]]
 name = "mhr-gpui-windows"
-version = "0.1.9"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+version = "0.1.10"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -5386,7 +5380,7 @@ dependencies = [
 [[package]]
 name = "mhr-http-client"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -5406,7 +5400,7 @@ dependencies = [
 [[package]]
 name = "mhr-perf"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "mhr-collections",
  "serde",
@@ -5416,7 +5410,7 @@ dependencies = [
 [[package]]
 name = "mhr-refineable"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "mhr-derive-refineable",
 ]
@@ -5424,7 +5418,7 @@ dependencies = [
 [[package]]
 name = "mhr-scheduler"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "async-task",
  "backtrace",
@@ -5440,7 +5434,7 @@ dependencies = [
 [[package]]
 name = "mhr-sum-tree"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "heapless",
  "log",
@@ -5452,7 +5446,7 @@ dependencies = [
 [[package]]
 name = "mhr-util-macros"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "mhr-perf",
  "quote",
@@ -5462,7 +5456,7 @@ dependencies = [
 [[package]]
 name = "mhr-zlog"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5473,7 +5467,7 @@ dependencies = [
 [[package]]
 name = "mhr-ztracing"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 dependencies = [
  "mhr-zlog",
  "mhr-ztracing-macro",
@@ -5484,7 +5478,7 @@ dependencies = [
 [[package]]
 name = "mhr-ztracing-macro"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/gpui?rev=177d43329209ec488c83e43bcfbf6848459665df#177d43329209ec488c83e43bcfbf6848459665df"
+source = "git+https://github.com/mesa-hills-research/gpui?rev=871c505dbf42c444b37ec754096bfb6ea54ecb2f#871c505dbf42c444b37ec754096bfb6ea54ecb2f"
 
 [[package]]
 name = "mime"

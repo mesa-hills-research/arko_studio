@@ -687,6 +687,10 @@ fn a_zoom_counts_the_rows_not_drawn_at_their_new_size(cx: &mut TestAppContext) {
         });
         settle(cx, window);
     }
+    // (Back at the end, which closes the blank the last rows at the top left
+    // below it, which the scroll range keeps.)
+    view.update(cx, |view, cx| view.scroll_to_end(cx));
+    settle(cx, window);
     let drawn = range(cx, &view);
     assert!(zoomed > before * 1.15, "{before} then {zoomed}");
     assert!(

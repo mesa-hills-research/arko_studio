@@ -1783,6 +1783,11 @@ impl SessionView {
             ComposerEvent::Submit(outgoing) => self.send(outgoing.clone(), window, cx),
             ComposerEvent::Stop => self.stop(window, cx),
             ComposerEvent::Cancel => self.cancel(window, cx),
+            ComposerEvent::Follow => {
+                if let Some(transcript) = self.transcript(cx).cloned() {
+                    transcript.update(cx, |transcript, cx| transcript.follow_here(cx));
+                }
+            }
             ComposerEvent::EditLast => {
                 if let Some(last) = self
                     .transcript(cx)
@@ -2713,6 +2718,10 @@ impl SessionView {
                     .update(cx, |composer, cx| composer.sent(&text, window, cx));
                 self.keep_draft(Some(&Outgoing { text, images }), cx);
                 self.composer_empty = true;
+                // The message goes to the end, and the transcript follows it.
+                if let Some(transcript) = self.transcript(cx).cloned() {
+                    transcript.update(cx, |transcript, cx| transcript.scroll_to_end(cx));
+                }
                 if let Some((session, sent)) = sent {
                     self.follow(session, sent, Given::Message(unsent), window, cx);
                 }

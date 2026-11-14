@@ -452,7 +452,7 @@ fn a_find_opening_the_last_group_while_scrolled_up_is_not_new(cx: &mut TestAppCo
         command(&feed, &format!("ls {number}"), output);
     }
     let (window, view) = open_feed(cx, &feed, View::Quiet, 300.);
-    view.update(cx, |view, _| view.list.scroll_to(24, px(0.)));
+    view.update(cx, |view, _| view.list.read_at(24, px(0.)));
     settle(cx, window);
     assert!(cx.read(|cx| view.read(cx).list.is_scrolled_up()));
     let calls = |cx: &mut TestAppContext| {
@@ -466,7 +466,7 @@ fn a_find_opening_the_last_group_while_scrolled_up_is_not_new(cx: &mut TestAppCo
     assert_eq!(calls(cx), 5, "the group opened");
     // The first call is in sight, and the reader still isn't at the end.
     assert!(cx.read(|cx| view.read(cx).list.is_scrolled_up()));
-    assert_eq!(cx.read(|cx| view.read(cx).new_while_away), 0);
+    assert_eq!(cx.read(|cx| view.read(cx).new_lines()), 0);
 }
 
 #[gpui_kit::test]

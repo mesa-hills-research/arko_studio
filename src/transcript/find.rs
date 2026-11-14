@@ -965,7 +965,6 @@ impl TranscriptView {
             // Plain text scrolls to the line the match is laid out on,
             // once its row draws (see `FoundText`).
             _ => {
-                self.list.hold_place(ix);
                 if !self.list.on_screen().contains(&ix) {
                     self.list.reveal(ix);
                 }

@@ -157,6 +157,9 @@ pub enum ComposerEvent {
     /// Esc while the composer is in a mode Esc ends (editing a message,
     /// writing to a worker).
     Cancel,
+    /// Esc with nothing else to end or stop, after which the transcript
+    /// follows its end.
+    Follow,
     /// Alt+↑ in the empty composer while the latest message can be edited.
     EditLast,
     /// The text changed.
@@ -1349,6 +1352,10 @@ impl Composer {
         if self.working && !vim && textarea.suggestions().is_empty() {
             cx.emit(ComposerEvent::Stop);
             cx.stop_propagation();
+            return;
+        }
+        if !vim && textarea.suggestions().is_empty() {
+            cx.emit(ComposerEvent::Follow);
         }
     }
 
