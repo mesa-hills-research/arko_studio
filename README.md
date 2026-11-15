@@ -1,6 +1,9 @@
-<img src="assets/icon.svg" alt="" width="96" align="right">
-
-# Arko Studio
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mesa-hills-research/arko_studio/main/assets/readme-header-dark.svg">
+    <img src="https://raw.githubusercontent.com/mesa-hills-research/arko_studio/main/assets/readme-header-light.svg" alt="Arko Studio" width="482">
+  </picture>
+</h1>
 
 Arko Studio is a desktop app for [Arko](https://github.com/mesa-hills-research/arko), an AI agent
 harness. It shares sessions with Arko in the terminal and runs on macOS, Windows and Linux.
