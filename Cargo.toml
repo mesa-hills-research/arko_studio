@@ -25,9 +25,9 @@ dictation = ["arko/dictation", "gpui-kit/speech"]
 # GPUI Kit, Mesa Hills Research's fork, published as the `mhr-gpui-kit` crates. It pins the
 # matching mhr-gpui release and re-exports it, so GPUI is `gpui_kit::*` and needs no entry of
 # its own.
-gpui-kit = { package = "mhr-gpui-kit", version = "=0.7.17", features = ["fonts", "tree-sitter-languages", "writing"] }
+gpui-kit = { package = "mhr-gpui-kit", version = "=0.8.0", features = ["fonts", "tree-sitter-languages", "writing"] }
 # Arko's engine, as a library: no terminal crates, the web page's server kept.
-arko = { package = "arko-tui", version = "0.21.0", default-features = false, features = ["remote"] }
+arko = { package = "arko-tui", version = "0.22.0", default-features = false, features = ["remote"] }
 anyhow = "1.0"
 # arko's Prompter trait is an async trait.
 async-trait = "0.1"
@@ -61,8 +61,8 @@ uuid = "1"
 [dev-dependencies]
 # The same GPUI Kit with GPUI's test harness, for tests that click and type
 # into real windows on a fake clock.
-gpui-kit = { package = "mhr-gpui-kit", version = "=0.7.17", features = ["test-support"] }
-arko = { package = "arko-tui", version = "0.21.0", default-features = false, features = ["remote", "testing"] }
+gpui-kit = { package = "mhr-gpui-kit", version = "=0.8.0", features = ["test-support"] }
+arko = { package = "arko-tui", version = "0.22.0", default-features = false, features = ["remote", "testing"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # The feed's events as arko gets them from the framework, for tests that
 # drive a feed the way a session does.
@@ -76,9 +76,9 @@ jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 # The golden-screenshot harness, at the kit's mhr-gpui release. Its goldens are drawn by Mesa's
 # software Vulkan driver, on Linux.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-gpui-screenshot = { package = "mhr-gpui-screenshot", version = "=0.1.10" }
+gpui-screenshot = { package = "mhr-gpui-screenshot", version = "=0.2.0" }
 # Linux's text system with the system's fonts, for measuring Settings as it opens.
-gpui-wgpu = { package = "mhr-gpui-wgpu", version = "=0.1.10" }
+gpui-wgpu = { package = "mhr-gpui-wgpu", version = "=0.2.0" }
 
 [build-dependencies]
 winresource = "0.1"
@@ -102,35 +102,3 @@ taffy = { opt-level = 3 }
 # The speech engine is far too slow to dictate with unoptimized.
 telmo = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
-
-# GPUI Kit and mhr-gpui 0.1.10 from their release branches, by commit, until they are on
-# crates.io. This section goes when they are published.
-[patch.crates-io]
-mhr-collections = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-derive-refineable = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui-apple = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui-linux = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui-macos = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui-macros = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui-platform = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui-screenshot = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui-shared-string = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui-util = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui-web = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui-wgpu = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui-windows = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-http-client = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-refineable = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-scheduler = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-sum-tree = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-util-macros = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-zlog = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-ztracing = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-ztracing-macro = { git = "https://github.com/mesa-hills-research/gpui", rev = "0172a551237551952e6cff2f004614e5ae6fab8a" }
-mhr-gpui-kit = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "afc9251e07cc19b01aab9e65f47c3ed189da64f3" }
-mhr-gpui-kit-assets = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "afc9251e07cc19b01aab9e65f47c3ed189da64f3" }
-mhr-gpui-kit-base = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "afc9251e07cc19b01aab9e65f47c3ed189da64f3" }
-mhr-gpui-kit-component = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "afc9251e07cc19b01aab9e65f47c3ed189da64f3" }
-mhr-gpui-kit-component-macros = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "afc9251e07cc19b01aab9e65f47c3ed189da64f3" }
-mhr-gpui-kit-writing = { git = "https://github.com/mesa-hills-research/gpui_kit", rev = "afc9251e07cc19b01aab9e65f47c3ed189da64f3" }
