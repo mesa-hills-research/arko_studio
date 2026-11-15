@@ -388,9 +388,8 @@ fn sending_a_message_goes_to_the_end() {
 }
 
 /// Row 12 and PX10: a fold the reader opens or closes keeps its clicked line
-/// on its device pixel row, following with blank below the end, following
-/// with the end on the bottom edge, and reading, and the lines above it move
-/// by a line at most.
+/// and every line above it on their device pixel rows, following with blank
+/// below the end, following with the end on the bottom edge, and reading.
 #[test]
 fn a_fold_keeps_its_clicked_line_on_its_row() {
     each_scale(|scale| {
@@ -431,14 +430,11 @@ fn a_fold_keeps_its_clicked_line_on_its_row() {
                 Some(&clicked.1),
                 "at {scale}, state {state}: the clicked line moved"
             );
-            let line = (32. * scale) as i32;
             for (id, from, to) in moved(&before, &after) {
-                if from < clicked.1 {
-                    assert!(
-                        (to - from).abs() <= line,
-                        "at {scale}, state {state}: {id} {from} → {to}"
-                    );
-                }
+                assert!(
+                    from > clicked.1,
+                    "at {scale}, state {state}: {id} {from} → {to}"
+                );
             }
             assert_eq!(run.following(), state < 2, "at {scale}, state {state}");
         }

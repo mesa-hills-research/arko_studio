@@ -11,13 +11,12 @@
 //! number), so each line of text on the screen is found again in the next
 //! frame by its first such word, on the device pixel row its glyphs stand on
 //! ([`gpui_kit::Window::painted_text`]). Following, a line may move up and
-//! never down. Scrolled up, no line moves. Three moves are allowed. The
-//! lines above a fold the reader toggles move by at most a line, as the
-//! space around an open item comes or goes, and the clicked line stays.
-//! "Working…" and the notes waiting at the end go down as what comes above
-//! them takes their place, into the blank space below the end. A taller
-//! view moves the lines down by what a shorter one moved them up. The
-//! reader's own moves (a scroll, another view) aren't counted.
+//! never down. Scrolled up, no line moves. A fold the reader opens or
+//! closes moves neither its line nor any line above it, up or down. Two
+//! moves are allowed. "Working…" and the notes waiting at the end go down
+//! as what comes above them takes their place, into the blank space below
+//! the end. A taller view moves the lines down by what a shorter one moved
+//! them up. The reader's own moves (a scroll, another view) aren't counted.
 //!
 //! `SHIFT_METER_SEEDS` plays that many sessions at more sizes, and
 //! `SHIFT_METER_OUT` names a file for the tables of every step and view.
@@ -249,8 +248,8 @@ enum Reader {
 /// How a frame moved its lines, which sorts the moves by cause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum How {
-    /// The reader toggled a fold, and the clicked line moved, or a line
-    /// above it moved by more than a line.
+    /// The reader toggled a fold, and the clicked line or a line above it
+    /// moved.
     Toggled,
     /// Following, every line on the screen moved down (the end came down
     /// to the bottom).
@@ -286,9 +285,6 @@ type WindowSize = (u32, u32, u32);
 /// A move the meter allows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Allowed {
-    /// The reader toggled a fold, and the lines above it moved by at most
-    /// a line.
-    Toggle,
     /// "Working…" or a note waiting at the end went down into the blank
     /// space below the end, as what came above them took their place.
     Room,
@@ -445,7 +441,6 @@ impl Meter {
                 })
                 .collect();
             let kind = match kind {
-                Allowed::Toggle => "the reader's toggle",
                 Allowed::Room => "the end makes room",
                 Allowed::GiveBack => "a taller view gives back",
             };
@@ -659,11 +654,13 @@ fn changed_from(before: &[Line], after: &[Line]) -> i32 {
     from
 }
 
-/// How the lines of `before` that `after` shows again moved. Lines of
-/// `before` below the row `below` are left out (the fold a click toggled
-/// there moves them). `blank` is the blank space below the end before, and
-/// from the rows `ends` on (before, after) the frames show "Working…" and
-/// the notes waiting.
+/// How the lines of `before` that `after` shows again moved, where a line
+/// going up counts only when `following` is false. Lines of `before` below
+/// the row `below` are left out (the fold a click toggled there moves
+/// them), and the clicked line and those above it count that move at all.
+/// `blank` is the blank space below the end before, and from the rows
+/// `ends` on (before, after) the frames show "Working…" and the notes
+/// waiting.
 fn moves(
     before: &[Line],
     after: &[Line],
@@ -704,7 +701,10 @@ fn moves(
         // blank, and while the reader reads, past the bottom edge. "Working…"
         // and the notes waiting ride on the end.)
         let rides = (to >= ends.1 && to > from) || (from >= ends.0 && !following);
-        if px > 0 && (rides || (from >= change && (!following || px as i32 <= blank + 1))) {
+        if px > 0
+            && below.is_none()
+            && (rides || (from >= change && (!following || px as i32 <= blank + 1)))
+        {
             moved.room = moved.room.max(px);
             continue;
         }
@@ -1107,8 +1107,8 @@ impl<'m> Run<'m> {
     /// Draws the frames a change makes, until they stop changing, and
     /// counts each under `step`. Lines below the row `below` of the frame
     /// before aren't counted in the first (a fold toggled on that row moves
-    /// them), and no line above it may move by more than `toggle`.
-    fn frames_below(&mut self, step: Step, below: Option<(i32, i32)>) {
+    /// them).
+    fn frames_below(&mut self, step: Step, below: Option<i32>) {
         let mut below = below;
         for _ in 0..4 {
             self.draw();
@@ -1130,8 +1130,10 @@ impl<'m> Run<'m> {
         self.frames_below(step, None);
     }
 
-    /// Counts how the lines of `shot` moved from the last frame's.
-    fn measure(&mut self, step: Step, shot: &Shot, below: Option<(i32, i32)>) {
+    /// Counts how the lines of `shot` moved from the last frame's. Lines
+    /// below the row `below` of the last frame aren't counted, and a line
+    /// above it counts that moves up as well as down.
+    fn measure(&mut self, step: Step, shot: &Shot, below: Option<i32>) {
         let Some(last) = &self.last else {
             return;
         };
@@ -1148,11 +1150,13 @@ impl<'m> Run<'m> {
             );
         }
         let following = shot.following && last.following;
+        // (Following, a line may go up as what comes at the end pushes it,
+        // but not in the frame of a toggle.)
         let moved = moves(
             &last.lines,
             &shot.lines,
-            following,
-            below.map(|(row, _)| row),
+            following && below.is_none(),
+            below,
             last.blank,
             (last.end, shot.end),
         );
@@ -1164,27 +1168,6 @@ impl<'m> Run<'m> {
                 .add(moved.room);
         }
         let mut px = moved.px;
-        // The reader's own toggle keeps the clicked line still, and the lines
-        // above it move by at most a line.
-        if let Some((row, line)) = below {
-            let clicked = moved.line.as_ref().is_some_and(|(_, from, _)| *from == row);
-            let clicked_moved = {
-                let (was, now) = (ids(&last.lines), ids(&shot.lines));
-                was.iter()
-                    .filter(|(_, ix)| last.lines[**ix].row == row)
-                    .any(|(id, _)| now.get(id).is_some_and(|to| shot.lines[*to].row != row))
-            };
-            if !clicked && !clicked_moved && moved.px as i32 <= line {
-                if moved.px > 0 {
-                    self.meter
-                        .allowed
-                        .entry((Allowed::Toggle, step, self.view))
-                        .or_default()
-                        .add(moved.px);
-                }
-                px = 0;
-            }
-        }
         // A line whose text stays keeps its column.
         let side = moved.side;
         // A shorter view takes, and a taller one gives back what shorter ones
@@ -1713,22 +1696,22 @@ impl<'m> Run<'m> {
         if opened {
             self.opened = Some((key, id));
         }
-        // The frames the toggle makes keep the clicked line on its row, and
-        // the lines above it move by a line at most in all.
+        // The frames the toggle makes keep the clicked line and every line
+        // above it on their rows.
         let mut shot = shot;
-        let mut row = Some((row, line));
+        let mut row = Some(row);
         for _ in 0..4 {
             let same = self
                 .last
                 .as_ref()
                 .is_some_and(|last| last.lines == shot.lines);
             self.measure(step, &shot, row);
-            row = row.and_then(|(clicked, line)| {
+            row = row.and_then(|clicked| {
                 let was = ids(&self.last.as_ref()?.lines);
                 let now = ids(&shot.lines);
                 let last = &self.last.as_ref()?.lines;
                 let id = was.iter().find(|(_, at)| last[**at].row == clicked)?.0;
-                Some((shot.lines[*now.get(id)?].row, line))
+                Some(shot.lines[*now.get(id)?].row)
             });
             self.last = Some(shot);
             if same {
@@ -2010,7 +1993,7 @@ fn no_line_moves_down_as_an_agent_works() {
         meter.side_table()
     );
     let table = format!(
-        "{table}\nThe moves the test allows. The reader's toggle moves the lines above the fold by at most a line, as the space around an open item comes or goes. \"Working…\" and a note waiting at the end go down into the blank space below the end as what comes above them takes their place. A taller view gives back what a shorter one took. Each cell is frames · the most device px / all device px.\n\n{}",
+        "{table}\nThe moves the test allows. \"Working…\" and a note waiting at the end go down into the blank space below the end as what comes above them takes their place. A taller view gives back what a shorter one took. Each cell is frames · the most device px / all device px.\n\n{}",
         meter.allowed_table()
     );
     if let Ok(path) = std::env::var("SHIFT_METER_OUT") {
