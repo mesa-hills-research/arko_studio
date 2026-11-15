@@ -7,7 +7,10 @@ harness. It shares sessions with Arko in the terminal and runs on macOS, Windows
 The native interface is written in Rust with [GPUI](https://www.gpui.rs) and
 [GPUI Kit](https://github.com/mesa-hills-research/gpui_kit).
 
-![Arko Studio showing a conversation and tool calls in a dark theme](tests/screenshots/transcript-wide-dark.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mesa-hills-research/arko_studio/main/docs/images/studio-dark.png">
+  <img src="https://raw.githubusercontent.com/mesa-hills-research/arko_studio/main/docs/images/studio-light.png" alt="Arko Studio with an agent session that edited a parser, ran its tests until they passed and answered, beside a sidebar of sessions." width="830">
+</picture>
 
 - Chat with a model, or work in a folder with tools and background workers.
 - Run workers on models of their own, with profiles that set a model, an effort and instructions,
