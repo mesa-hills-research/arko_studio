@@ -652,7 +652,7 @@ mod tests {
             .iter()
             .map(|skill| skill.name.as_str())
             .collect();
-        assert_eq!(names, ["prose", "ponytail", "arko-taste"]);
+        assert_eq!(names, ["prose", "ponytail", "ui-taste"]);
         assert!(!found.builtin[0].description.is_empty());
         // prose is always in the agents' instructions, and the others load
         // when a task calls for them.
