@@ -867,8 +867,7 @@ pub(crate) enum Gap {
     /// Between the paragraphs of an open thought, before reply actions or
     /// the turn's footer.
     Small,
-    /// Between what is said and the work, and on both sides of anything
-    /// open.
+    /// Between what is said and the work, and below anything open.
     Apart,
     /// Between the paragraphs of what is said.
     Section,
@@ -920,6 +919,13 @@ fn gap(previous: Option<Class>, next: Class) -> Gap {
     let Some(previous) = previous else {
         return Gap::None;
     };
+    // An open item has the gap above it that it has closed, so opening or
+    // closing it moves nothing above it. Its gap below comes from it as the
+    // row before.
+    let next = match next {
+        Class::Open | Class::Thought { first: true } => Class::Work,
+        next => next,
+    };
     match (previous, next) {
         (_, Class::Actions | Class::Footer) => Gap::Small,
         (Class::Separator, Class::User) => Gap::Section,
@@ -930,7 +936,8 @@ fn gap(previous: Option<Class>, next: Class) -> Gap {
         (Class::Thought { .. }, Class::Thought { first: false }) => Gap::Small,
         (Class::Work, Class::Work) => Gap::Stack,
         (Class::Said, Class::Said) => Gap::Section,
-        // What is said and the work stand apart, and so does anything open.
+        // What is said and the work stand apart, and what follows anything
+        // open stands apart from it.
         _ => Gap::Apart,
     }
 }
@@ -1062,10 +1069,9 @@ impl Rows<'_> {
         let default = self.layout.expand_thinking && view == View::Full;
         let chosen = (self.layout.expanded)(id);
         let (count, generation) = (self.layout.blocks)(id);
-        // A thought that opens by itself stands apart from the moment it
-        // shows, while it streams, so its line doesn't move when its text
-        // comes. One that ended on its line has nothing to open, so it's a
-        // line of work like a closed one.
+        // A thought that opens by itself shows whole while it streams. One
+        // that ended on its line has nothing to open, so it's a line of work
+        // like a closed one.
         let on_its_line =
             chosen.is_none() && default && self.live != Some(id) && (self.layout.thought_fits)(id);
         if on_its_line {
@@ -2016,10 +2022,10 @@ mod tests {
         );
     }
 
-    /// A thought that opens by itself (Full, with Expand thinking on)
-    /// stands apart from the moment it shows, while it streams and before
-    /// its text has blocks, so its line doesn't move when they come. Once
-    /// it ends with nothing more than its line, the gap goes.
+    /// A thought that opens by itself (Full, with Expand thinking on) has
+    /// a closed line's gap above it while it streams, before its text has
+    /// blocks, once it ends on its line and shown whole, so its line never
+    /// moves. What follows it shown whole stands apart from it.
     #[test]
     fn a_thought_that_opens_by_itself_keeps_its_place() {
         let mut model = model(vec![
@@ -2049,7 +2055,7 @@ mod tests {
         };
         assert_eq!(
             gap_of(&model, &expand, RowKey::Thinking(3)),
-            Some(Gap::Apart)
+            Some(Gap::Stack)
         );
         let mut changes = Changes::default();
         model.apply(Update::Item(read(4, "src/b.rs")), &mut changes);
@@ -2066,7 +2072,9 @@ mod tests {
             thought_fits: &|_| false,
             ..ended
         };
-        assert_eq!(gap_of(&model, &more, block(3)), Some(Gap::Apart));
+        assert_eq!(gap_of(&model, &more, block(3)), Some(Gap::Stack));
+        assert_eq!(gap_of(&model, &ended, RowKey::Call(4)), Some(Gap::Stack));
+        assert_eq!(gap_of(&model, &more, RowKey::Call(4)), Some(Gap::Apart));
     }
 
     /// How long the rows of a long session take to make in each view, and
@@ -2583,14 +2591,13 @@ mod tests {
                 Gap::Turn
             ]
         );
-        // Anything open stands apart from its neighbours.
+        // Anything open has its gap below it, and the one above it stays.
         let open = Layout {
-            expanded: &|id| (id == 2).then_some(true),
+            expanded: &|id| (id == 3).then_some(true),
             ..layout(View::Full)
         };
         let gaps: Vec<Gap> = rows(&model, &open).rows.iter().map(|row| row.gap).collect();
-        // (The user's message keeps its actions' gap.)
-        assert_eq!(gaps[1..4], [Gap::Small, Gap::Apart, Gap::Apart]);
+        assert_eq!(gaps[1..4], [Gap::Small, Gap::Stack, Gap::Apart]);
     }
 
     #[test]
@@ -3058,15 +3065,15 @@ mod tests {
         };
         let laid = rows(&model, &open);
         let gaps: Vec<(RowKey, Gap)> = laid.rows.iter().map(|row| (row.key, row.gap)).collect();
-        // The rail never starts with a gap, and what is open on it stands
-        // apart.
+        // The rail never starts with a gap, and what is open on it has its
+        // gap below it.
         assert_eq!(
             gaps,
             [
                 (RowKey::User(1), Gap::None),
                 (RowKey::Group(2), Gap::Small),
                 (RowKey::Call(2), Gap::Stack),
-                (RowKey::Call(3), Gap::Apart),
+                (RowKey::Call(3), Gap::Stack),
             ]
         );
     }

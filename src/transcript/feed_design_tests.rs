@@ -79,7 +79,8 @@ fn a_thought_is_its_first_line_and_opens_when_it_says_more(cx: &mut TestAppConte
     .unwrap();
     settle(cx, window);
     assert!(keys(&view, cx).contains(&RowKey::Thinking(short)));
-    // A click on the long one opens it, apart from what is around it.
+    // A click on the long one opens it, with a closed line's gap above it
+    // and its own gap below it.
     cx.update_window(window, |_, window, cx| {
         window.click(("thinking-toggle", long), cx)
     })
@@ -99,7 +100,7 @@ fn a_thought_is_its_first_line_and_opens_when_it_says_more(cx: &mut TestAppConte
         block: 1,
         source: false,
     };
-    assert_eq!(row_of(&view, cx, first).gap, Gap::Apart);
+    assert_eq!(row_of(&view, cx, first).gap, Gap::Stack);
     assert_eq!(row_of(&view, cx, second).gap, Gap::Small);
     let after = rows.iter().position(|key| *key == second).unwrap() + 1;
     let next = cx.read(|cx| view.read(cx).rows[after]);
@@ -237,8 +238,8 @@ fn a_quiet_row_that_cuts_its_words_opens_to_them(cx: &mut TestAppContext) {
     assert!(height(cx) > closed);
 }
 
-/// Opening a row among closed ones keeps its line where it is on screen:
-/// what is above moves up to make the gap above it.
+/// Opening a row among closed ones keeps its line and every line above it
+/// where they are on screen, as its gap comes below it.
 #[gpui_kit::test]
 fn an_opened_row_keeps_its_line_in_place(cx: &mut TestAppContext) {
     start(cx);
@@ -257,27 +258,24 @@ fn an_opened_row_keeps_its_line_in_place(cx: &mut TestAppContext) {
     let (window, view) = open(cx, &feed, AgentFilter::Main, 400.);
     let calls = ids_of(&feed, Kind::Call);
     let ls = calls[calls.len() - 1];
-    let top = |cx: &mut TestAppContext| {
+    let above = cx.read(|cx| {
+        let rows = &view.read(cx).rows;
+        let ix = rows.iter().position(|row| row.key == RowKey::Group(ls));
+        rows[ix.unwrap() - 1].key
+    });
+    let top = |cx: &mut TestAppContext, key: RowKey| {
         cx.update_window(window, |_, window, _| {
-            f32::from(
-                window
-                    .find(super::row::element_id(RowKey::Group(ls)))
-                    .bounds()
-                    .origin
-                    .y,
-            )
+            f32::from(window.find(super::row::element_id(key)).bounds().origin.y)
         })
         .unwrap()
     };
-    let before = top(cx);
+    let before = (top(cx, RowKey::Group(ls)), top(cx, above));
     let row = row_of(&view, cx, RowKey::Group(ls));
     assert_eq!((row.gap, row.rail), (Gap::Stack, Rail::No));
     view.update(cx, |view, cx| view.toggle_group(ls, cx));
     settle(cx, window);
-    assert_eq!(row_of(&view, cx, RowKey::Group(ls)).gap, Gap::Apart);
-    // (The row's own top includes the gap above it.)
-    let gap = cx.read(|cx| view.read(cx).metrics.as_ref().unwrap().rem) * 0.5;
-    assert_eq!(top(cx), before - gap);
+    assert_eq!(row_of(&view, cx, RowKey::Group(ls)).gap, Gap::Stack);
+    assert_eq!((top(cx, RowKey::Group(ls)), top(cx, above)), before);
 }
 
 /// A row of one call that cuts its words at the reader's width opens to the
