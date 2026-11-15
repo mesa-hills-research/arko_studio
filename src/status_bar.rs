@@ -400,7 +400,7 @@ impl StatusBar {
 
     fn render_workers(&self, running: &[String]) -> AnyElement {
         let count = running.len();
-        let label = format!("{count} worker{}", if count == 1 { "" } else { "s" });
+        let label = figures::plural(count, "worker", "workers");
         let tooltip = format!("{} running · show the workers", names(running));
         Button::new("status-workers")
             .ghost()
@@ -703,10 +703,7 @@ impl Render for StatusBar {
 /// The count of the notifications not seen yet, which opens the
 /// notifications panel.
 fn unread_button(unread: usize) -> AnyElement {
-    let label = match unread {
-        1 => "1 unread notification".to_string(),
-        count => format!("{count} unread notifications"),
-    };
+    let label = figures::plural(unread, "unread notification", "unread notifications");
     Button::new("status-notifications")
         .ghost()
         .xsmall()

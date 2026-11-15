@@ -55,6 +55,23 @@ pub fn exact(count: usize) -> String {
     out
 }
 
+/// `count` and its noun, such as "0 calls", "1 call" and "3 calls".
+pub fn plural<N>(count: N, one: &str, many: &str) -> String
+where
+    N: Copy + std::fmt::Display + PartialEq + From<u8>,
+{
+    format!("{count} {}", noun(count, one, many))
+}
+
+/// The noun that goes with `count`, which is `one` for 1 and `many` for any
+/// other count, for a count shown apart from it.
+pub fn noun<'a, N>(count: N, one: &'a str, many: &'a str) -> &'a str
+where
+    N: PartialEq + From<u8>,
+{
+    if count == N::from(1) { one } else { many }
+}
+
 /// A length of time on a clock: "0:05", "1:23", "12:00", "1:02:03".
 pub fn clock(ms: i64) -> String {
     let seconds = ms.max(0) / 1000;
@@ -417,6 +434,18 @@ mod tests {
         assert_eq!(exact(142_318), "142,318");
         assert_eq!(exact(1_000_000), "1,000,000");
         assert_eq!(exact(999), "999");
+    }
+
+    #[test]
+    fn one_takes_the_singular_and_every_other_count_the_plural() {
+        assert_eq!(plural(0_usize, "call", "calls"), "0 calls");
+        assert_eq!(plural(1_usize, "call", "calls"), "1 call");
+        assert_eq!(plural(2_usize, "call", "calls"), "2 calls");
+        assert_eq!(plural(1_u32, "match", "matches"), "1 match");
+        assert_eq!(plural(2_u64, "match", "matches"), "2 matches");
+        assert_eq!(noun(0_usize, "call", "calls"), "calls");
+        assert_eq!(noun(1_usize, "call", "calls"), "call");
+        assert_eq!(noun(2_usize, "call", "calls"), "calls");
     }
 
     #[test]

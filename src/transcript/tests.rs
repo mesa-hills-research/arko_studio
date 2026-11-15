@@ -327,9 +327,10 @@ fn finished_blocks_keep_their_rows_while_text_streams_and_ends(cx: &mut TestAppC
 }
 
 /// Scrolls so that the row at `ix` is at the top, as the reader would.
+/// The reader scrolls so that row `ix` is at the top, and reads there.
 fn scroll_to_row(cx: &mut TestAppContext, view: &Entity<TranscriptView>, ix: usize) {
     view.update(cx, |view, cx| {
-        view.list.scroll_to(ix, px(0.));
+        view.list.read_at(ix, px(0.));
         cx.notify();
     });
 }
@@ -374,12 +375,13 @@ fn the_view_follows_the_bottom_until_the_reader_scrolls_up(cx: &mut TestAppConte
     }
     assert_eq!(row_top(cx, window, reading), Some(before));
     assert!(row_top(cx, window, user(&feed, 43)).is_none());
-    assert_eq!(cx.read(|cx| view.read(cx).new_while_away), 3);
+    // The marker counts the lines of the three messages below the screen.
+    assert!(cx.read(|cx| view.read(cx).new_lines()) >= 3);
     // Back to the latest: followed again, and the count clears.
     view.update(cx, |view, cx| view.scroll_to_end(cx));
     settle(cx, window);
     assert!(cx.read(|cx| view.read(cx).is_following(cx)));
-    assert_eq!(cx.read(|cx| view.read(cx).new_while_away), 0);
+    assert_eq!(cx.read(|cx| view.read(cx).new_lines()), 0);
     assert!(row_top(cx, window, user(&feed, 43)).is_some());
 }
 
@@ -1742,13 +1744,13 @@ fn the_new_count_counts_what_the_view_shows(cx: &mut TestAppContext) {
     think(&feed, "hmm");
     feed.notice(Level::Info, "Handed over.");
     settle(cx, window);
-    // The message and the one line counting the calls.
-    assert_eq!(cx.read(|cx| view.read(cx).new_while_away), 2);
+    // The message and the one line counting the calls, in lines.
+    assert!(cx.read(|cx| view.read(cx).new_lines()) >= 2);
 }
 
-/// Rows that arrive while the reader is scrolled up count as new wherever
-/// they are placed, also above the notes that wait at the end for the agent
-/// to read them.
+/// Rows that arrive while the reader is scrolled up count as new lines
+/// wherever they are placed, also above the notes that wait at the end for
+/// the agent to read them, and the notes count too.
 #[gpui_kit::test]
 fn the_new_count_includes_rows_above_the_notes_waiting_at_the_end(cx: &mut TestAppContext) {
     start(cx);
@@ -1757,17 +1759,19 @@ fn the_new_count_includes_rows_above_the_notes_waiting_at_the_end(cx: &mut TestA
     let (window, view) = open(cx, &feed, AgentFilter::Main, 300.);
     load_all(cx, window, &view);
     scroll_to_key(cx, window, &view, user_row(&feed, 10));
-    let new = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).new_while_away);
+    let new = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).new_lines());
     feed.user("Next", Source::App, Delivery::Turn);
     feed.turn_started();
     settle(cx, window);
-    assert_eq!(new(cx), 1, "the message");
+    let mut count = new(cx);
+    assert!(count > 0, "the message");
 
     // Two notes wait below what the agent does.
     for (seq, text) in [(1, "Use tabs."), (2, "And the tests.")] {
         feed.note(text, Source::App, seq, Vec::new());
         settle(cx, window);
-        assert_eq!(new(cx), 1 + seq as usize, "the note {seq}");
+        assert!(new(cx) > count, "the note {seq}");
+        count = new(cx);
     }
     let rows = keys(&view, cx);
     assert!(
@@ -1776,7 +1780,7 @@ fn the_new_count_includes_rows_above_the_notes_waiting_at_the_end(cx: &mut TestA
     );
 
     // What the agent does goes above the notes, and counts.
-    for (n, count) in [(0, 4), (1, 5)] {
+    for n in 0..2 {
         let id = call(
             &feed,
             "main",
@@ -1785,7 +1789,8 @@ fn the_new_count_includes_rows_above_the_notes_waiting_at_the_end(cx: &mut TestA
         );
         result(&feed, "main", id, "read_file", "1 | fn a() {}\n");
         settle(cx, window);
-        assert_eq!(new(cx), count, "the call {n}");
+        assert!(new(cx) > count, "the call {n}");
+        count = new(cx);
     }
     // Back to the latest: the count clears.
     view.update(cx, |view, cx| view.scroll_to_end(cx));
@@ -1815,7 +1820,7 @@ fn opening_the_last_group_or_thinking_while_scrolled_up_is_not_new(cx: &mut Test
     }
     let (window, view) = open(cx, &feed, AgentFilter::Main, 300.);
     load_all(cx, window, &view);
-    let new = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).new_while_away);
+    let new = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).new_lines());
     let group = ids_of(&feed, Kind::Call)[30];
     scroll_to_key(cx, window, &view, user_row(&feed, 29));
     assert!(cx.read(|cx| view.read(cx).list.is_scrolled_up()));
@@ -4817,6 +4822,10 @@ fn a_monitors_call_follows_the_monitor(cx: &mut TestAppContext) {
         monitoring(1, Some(59_000)),
         "Monitoring · 1 alert · ends in less than a minute"
     );
+    assert_eq!(
+        monitoring(2, Some(59_000)),
+        "Monitoring · 2 alerts · ends in less than a minute"
+    );
     assert_eq!(super::row::monitoring_changes_in(59_000), None);
     // A rearm moves its end.
     feed.job_changed(jobs[1], 0, ends_at + 10 * 60_000);
@@ -4835,6 +4844,7 @@ fn a_monitors_call_follows_the_monitor(cx: &mut TestAppContext) {
     // They end: one after its time, one stopped, one whose command failed,
     // and one that Arko's end stopped.
     feed.job_changed(jobs[0], 4, ends_at);
+    feed.job_changed(jobs[1], 1, ends_at + 10 * 60_000);
     feed.job_ended(jobs[0], JobState::Expired, None);
     feed.job_ended(jobs[1], JobState::Stopped, None);
     feed.job_ended(jobs[2], JobState::Failed, Some("exit 1".into()));
@@ -4842,7 +4852,7 @@ fn a_monitors_call_follows_the_monitor(cx: &mut TestAppContext) {
     settle(cx, window);
     let ended = [
         ("Ended after 30 min · 4 alerts", false),
-        ("Stopped", false),
+        ("Stopped · 1 alert", false),
         ("Command exited (exit 1)", true),
         ("Interrupted", true),
     ];

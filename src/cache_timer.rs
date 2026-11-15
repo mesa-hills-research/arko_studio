@@ -88,8 +88,10 @@ pub fn keep_warm_state(cache: &CacheStatus, now: i64, times: &Times) -> String {
     };
     match (kept.ends_at, kept.left) {
         (Some(at), _) => format!("On until {}", when(at.div_euclid(1000), now, times)),
-        (None, Some(1)) => "On for 1 more refresh".to_string(),
-        (None, Some(left)) => format!("On for {left} more refreshes"),
+        (None, Some(left)) => format!(
+            "On for {}",
+            crate::figures::plural(left, "more refresh", "more refreshes")
+        ),
         (None, None) => "On".to_string(),
     }
 }
@@ -329,6 +331,15 @@ mod tests {
             keep_warm_state(&cache, now, &times),
             "On for 9 more refreshes"
         );
+        for (left, said) in [
+            (0, "On for 0 more refreshes"),
+            (1, "On for 1 more refresh"),
+            (2, "On for 2 more refreshes"),
+        ] {
+            kept.left = Some(left);
+            cache.keep_warm = Some(kept);
+            assert_eq!(keep_warm_state(&cache, now, &times), said);
+        }
         cache.keep_warm = None;
         assert_eq!(keep_warm_state(&cache, now, &times), "Off");
 

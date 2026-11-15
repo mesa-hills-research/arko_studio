@@ -29,6 +29,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::figures;
 use crate::live::LiveSession;
 use crate::menus;
 use crate::transcript::{AgentFilter, TranscriptEvent, TranscriptView};
@@ -1029,10 +1030,7 @@ impl WorkersPanel {
             if let Some(total) = workers::run_time_ms(worker, now) {
                 facts.push(workers::elapsed_label(total));
             }
-            facts.push(match worker.tool_calls {
-                1 => "1 call".to_string(),
-                calls => format!("{calls} calls"),
-            });
+            facts.push(figures::plural(worker.tool_calls, "call", "calls"));
         }
         facts.extend(self.context_label(id));
         facts.extend(worker.and_then(workers::costs_label));
@@ -1419,7 +1417,7 @@ fn calls(count: u32, window: &Window) -> Div {
         .font_features(tabular_figures())
         .child(cell(count.to_string(), figures_width("999", window), true))
         .child(cell(
-            if count == 1 { "call" } else { "calls" },
+            figures::noun(count, "call", "calls"),
             figures_width("calls", window),
             false,
         ))

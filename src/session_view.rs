@@ -130,11 +130,12 @@ struct Editing {
 /// "1 image is no longer kept": what an edit or a resend says of the
 /// message's images the session dropped.
 fn images_not_kept(count: usize) -> Option<String> {
-    match count {
-        0 => None,
-        1 => Some("1 image is no longer kept".to_string()),
-        count => Some(format!("{count} images are no longer kept")),
-    }
+    (count > 0).then(|| {
+        format!(
+            "{} no longer kept",
+            crate::figures::plural(count, "image is", "images are")
+        )
+    })
 }
 
 /// How many sessions' transcripts the window keeps ready: switching back to
@@ -1104,11 +1105,17 @@ impl SessionView {
         let Some(session) = self.session.clone() else {
             return;
         };
-        let (opening, link) = {
+        // (The feed is the link's, or in tests one the session follows with
+        // no engine.)
+        let (opening, feed, images) = {
             let session = session.read(cx);
-            (session.opening(), session.link().cloned())
+            (
+                session.opening(),
+                session.feed().cloned(),
+                session.link().map(|link| link.images.clone()),
+            )
         };
-        let Some(link) = link else {
+        let Some(feed) = feed else {
             return;
         };
         let found = self
@@ -1121,9 +1128,11 @@ impl SessionView {
                 self.transcripts
                     .retain(|kept| kept.session != session.entity_id());
                 let view = cx.new(|cx| {
-                    let mut view = TranscriptView::new(&link.feed, AgentFilter::Main, window, cx);
+                    let mut view = TranscriptView::new(&feed, AgentFilter::Main, window, cx);
                     // The thumbnails of the session's images.
-                    view.set_images(link.images.clone(), cx);
+                    if let Some(images) = images {
+                        view.set_images(images, cx);
+                    }
                     view
                 });
                 let events = cx.subscribe_in(&view, window, Self::on_transcript_event);
@@ -1774,6 +1783,11 @@ impl SessionView {
             ComposerEvent::Submit(outgoing) => self.send(outgoing.clone(), window, cx),
             ComposerEvent::Stop => self.stop(window, cx),
             ComposerEvent::Cancel => self.cancel(window, cx),
+            ComposerEvent::Follow => {
+                if let Some(transcript) = self.transcript(cx).cloned() {
+                    transcript.update(cx, |transcript, cx| transcript.follow_here(cx));
+                }
+            }
             ComposerEvent::EditLast => {
                 if let Some(last) = self
                     .transcript(cx)
@@ -2704,6 +2718,10 @@ impl SessionView {
                     .update(cx, |composer, cx| composer.sent(&text, window, cx));
                 self.keep_draft(Some(&Outgoing { text, images }), cx);
                 self.composer_empty = true;
+                // The message goes to the end, and the transcript follows it.
+                if let Some(transcript) = self.transcript(cx).cloned() {
+                    transcript.update(cx, |transcript, cx| transcript.scroll_to_end(cx));
+                }
                 if let Some((session, sent)) = sent {
                     self.follow(session, sent, Given::Message(unsent), window, cx);
                 }
@@ -4865,8 +4883,7 @@ fn find_status_text(status: FindStatus, has_words: bool) -> String {
         (Some(current), total) => format!("{} of {total}", current + 1),
         // Matches, none of them on show (words that matched nothing
         // before).
-        (None, 1) => "1 match".to_string(),
-        (None, total) => format!("{total} matches"),
+        (None, total) => crate::figures::plural(total, "match", "matches"),
     }
 }
 
@@ -4975,6 +4992,7 @@ mod tests {
         };
         assert_eq!(find_status_text(status(Some(2), 12), true), "3 of 12");
         assert_eq!(find_status_text(status(None, 12), true), "12 matches");
+        assert_eq!(find_status_text(status(None, 2), true), "2 matches");
         assert_eq!(find_status_text(status(None, 1), true), "1 match");
         assert_eq!(find_status_text(status(None, 0), true), "No matches");
         assert_eq!(find_status_text(status(None, 12), false), "");
@@ -4986,6 +5004,10 @@ mod tests {
         assert_eq!(
             images_not_kept(1).as_deref(),
             Some("1 image is no longer kept")
+        );
+        assert_eq!(
+            images_not_kept(2).as_deref(),
+            Some("2 images are no longer kept")
         );
         assert_eq!(
             images_not_kept(3).as_deref(),

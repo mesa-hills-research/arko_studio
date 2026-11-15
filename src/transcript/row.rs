@@ -28,6 +28,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::find::{Ink, Place, QuestionPart};
+use crate::figures::plural;
 use crate::fonts::CodeFont as _;
 
 use super::height::Metrics;
@@ -211,11 +212,6 @@ pub(super) fn first_line(text: &str) -> (String, bool) {
     let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
     let first = lines.next().unwrap_or_default().replace("**", "");
     (first, lines.next().is_some())
-}
-
-/// `count` and its noun, one or many.
-fn plural(count: usize, one: &str, many: &str) -> String {
-    format!("{count} {}", if count == 1 { one } else { many })
 }
 
 /// Where a command's timeline stops above a `$` and starts again below it,
@@ -1352,8 +1348,7 @@ impl TranscriptView {
 pub(super) fn monitor_ended(job: &JobSummary) -> (String, bool) {
     let alerts = match job.alerts.unwrap_or(0) {
         0 => String::new(),
-        1 => " · 1 alert".to_string(),
-        count => format!(" · {count} alerts"),
+        count => format!(" · {}", plural(count, "alert", "alerts")),
     };
     match job.state {
         JobState::Expired => (
@@ -1381,10 +1376,8 @@ pub(super) fn monitor_ended(job: &JobSummary) -> (String, bool) {
 /// `/jobs` rounds them.
 pub(super) fn monitoring(alerts: u32, left: Option<i64>) -> String {
     let mut parts = vec!["Monitoring".to_string()];
-    match alerts {
-        0 => {}
-        1 => parts.push("1 alert".into()),
-        count => parts.push(format!("{count} alerts")),
+    if alerts > 0 {
+        parts.push(plural(alerts, "alert", "alerts"));
     }
     if let Some(left) = left {
         parts.push(match left.max(0) / 1000 {
