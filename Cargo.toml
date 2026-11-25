@@ -102,3 +102,14 @@ taffy = { opt-level = 3 }
 # The speech engine is far too slow to dictate with unoptimized.
 telmo = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
+
+# TEMPORARY, for the arko-0240 branch only. Arko's and the framework's
+# release commits, until arko-tui 0.24.0, arko_ai 0.4.0, arko_agents 0.10.0,
+# arko_workflows 0.11.0 and arko_index 0.3.3 are on crates.io. The switch to
+# crates.io drops this commit.
+[patch.crates-io]
+arko-tui = { git = "https://github.com/mesa-hills-research/arko", rev = "0a6013f9a8b54977131b24d27838c1026accd0b5" }
+arko_ai = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "0c1381371456b665470c6b055dec96e51d8a4b79" }
+arko_agents = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "0c1381371456b665470c6b055dec96e51d8a4b79" }
+arko_workflows = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "0c1381371456b665470c6b055dec96e51d8a4b79" }
+arko_index = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "0c1381371456b665470c6b055dec96e51d8a4b79" }
