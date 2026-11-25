@@ -12,7 +12,7 @@ use super::fields::{self, TextKind, TextSetting};
 use crate::backend::{
     API_BUDGET_VARIABLE, BillingFromEnv, SetIn, SharedBackend, WORKER_BILLING_VARIABLE,
 };
-use crate::prefs::{self, ExtraRules, NewSessions, ProjectInstructions};
+use crate::prefs::{self, NewSessions, ProjectInstructions};
 use crate::writing::WritingAids;
 
 mod keep_warm;
@@ -317,7 +317,6 @@ impl SessionsPage {
                 new.outside_access,
                 new.text_replies,
                 new.cc_compact,
-                new.extra_rules,
                 new.project_instructions,
                 new.worker_project_instructions,
             ),
@@ -518,21 +517,6 @@ impl SessionsPage {
                 defaults.cc_compact,
             )
             .keywords(["cc", "compaction", "compact", "handover"]),
-            super::choice(
-                "Extra rules",
-                &[
-                    (ExtraRules::Small, "Small models"),
-                    (ExtraRules::All, "Every agent"),
-                    (ExtraRules::Off, "No agent"),
-                ],
-                |prefs| prefs.new_sessions.extra_rules,
-                |prefs, rules| prefs.new_sessions.extra_rules = rules,
-                defaults.extra_rules,
-            )
-            .description(
-                "Plain, explicit rules in the agents’ instructions, which small models (Haiku, luna) do better with.",
-            )
-            .keywords(["small models", "instructions", "haiku"]),
             super::choice(
                 "Project instructions",
                 &[

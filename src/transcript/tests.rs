@@ -1605,14 +1605,16 @@ fn working_shows_while_the_agent_waits_on_the_model(cx: &mut TestAppContext) {
     crate::questions::ask(&feed, &[("q1", "Release or debug?")], true);
     settle(cx, window);
     assert_eq!(working_row(&view, cx), None);
+    // The answer reaches the agent at once, after the note sent before it.
     crate::questions::answer_in_message(&feed, "q1", "Release.");
     settle(cx, window);
-    let answer = *ids_of(&feed, Kind::User).last().unwrap();
+    let users = ids_of(&feed, Kind::User);
+    let (read, answer) = (users[users.len() - 2], users[users.len() - 1]);
     assert!(
         keys(&view, cx).ends_with(&[
+            RowKey::User(read),
             RowKey::User(answer),
-            RowKey::Working(answer),
-            RowKey::User(note)
+            RowKey::Working(answer)
         ]),
         "{:?}",
         keys(&view, cx)
@@ -2572,8 +2574,8 @@ fn a_call_opens_to_its_content_once(cx: &mut TestAppContext) {
 
 /// A call's line doesn't say what opening it shows: a message's names whom
 /// it went to, an MCP call's the tool. A write opens to its lines, a failure
-/// to its words only where the line cut them, and a call with nothing more
-/// to show doesn't open.
+/// to its error, which its line says only as "Failed" (Arko's outcome for a
+/// tool's error), and a call with nothing more to show doesn't open.
 #[gpui_kit::test]
 fn a_calls_line_and_its_content_say_each_thing_once(cx: &mut TestAppContext) {
     use super::row::{call_line, opens, shown_given, shown_output};
@@ -2661,8 +2663,9 @@ fn a_calls_line_and_its_content_say_each_thing_once(cx: &mut TestAppContext) {
         assert_eq!(output(2).as_deref(), Some("1  fn b() {}"));
         assert!(!opens(entry(3), true));
         assert!(shown_given(&entry(4).item).is_none());
-        assert_eq!(output(4), None);
-        assert!(!opens(entry(4), true));
+        assert_eq!(entry(4).item.outcome.as_deref(), Some("Failed"));
+        assert_eq!(output(4).as_deref(), Some("no such file"));
+        assert!(opens(entry(4), true));
         assert!(output(5).unwrap().contains("The tokenizer is in"));
     });
 }
@@ -2963,7 +2966,7 @@ fn a_worker_card_says_its_profile(cx: &mut TestAppContext) {
     assert!(!setup(cx));
     let before = height(cx);
     let mut info = WorkerInfo::new();
-    info.model = Some("gpt-6.1-sol".into());
+    info.model = Some("gpt-6.2-sol".into());
     info.effort = Some("high".into());
     info.profile = Some("3d-judge".into());
     feed.worker_info("r1", info);
@@ -3000,8 +3003,8 @@ fn a_worker_card_names_its_model_and_effort_only_when_they_are_not_the_usual(
     feed.turn_started();
     let setups = [
         ("r1", Some("gpt-6-luna"), Some("high")),
-        ("r2", Some("gpt-6.1-sol"), Some("high")),
-        ("r3", Some("gpt-6.1-sol"), Some("xhigh")),
+        ("r2", Some("gpt-6.2-sol"), Some("high")),
+        ("r3", Some("gpt-6.2-sol"), Some("xhigh")),
         ("r4", Some("gpt-6-luna"), Some("low")),
         ("r5", None, None),
     ];
@@ -3060,7 +3063,7 @@ fn a_worker_card_names_its_model_and_effort_only_when_they_are_not_the_usual(
     );
     // Workers that start on another model change which ones stand out.
     view.update(cx, |view, cx| {
-        view.set_usual(&usual("gpt-6.1-sol", "xhigh"), cx)
+        view.set_usual(&usual("gpt-6.2-sol", "xhigh"), cx)
     });
     settle(cx, window);
     assert_eq!(

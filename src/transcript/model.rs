@@ -1231,6 +1231,10 @@ enum Unit {
     Refresh(usize),
     /// A turn's count of calls (Messages), by its first call.
     Count(u64),
+    /// A note the agent hasn't read, by its index, which shows at the end
+    /// and none here. Quiet's rows take it as beside the agent's work, so a
+    /// long call it came below while it ran keeps its own row.
+    Waiting(usize),
 }
 
 /// Where each turn's count of calls (Messages) stands, and what it counts,
@@ -1319,6 +1323,7 @@ fn step<'a>(entry: &'a Entry, layout: &Layout) -> quiet::Step<'a> {
             // failed.)
             content: super::row::opens(entry, false),
             ended: item.ended,
+            settled_at: item.settled_at,
             sealed: (layout.sealed)(item.id),
         });
     }
@@ -1326,7 +1331,7 @@ fn step<'a>(entry: &'a Entry, layout: &Layout) -> quiet::Step<'a> {
     if (layout.sealed)(item.id) {
         quiet::Step::Other(item.id)
     } else {
-        quiet::Step::Thinking
+        quiet::Step::Thinking(item.id)
     }
 }
 
@@ -1358,6 +1363,7 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Laid {
         if item.pending {
             if waits(ix) {
                 waiting.push(ix);
+                units.push(Unit::Waiting(ix));
             }
             ix += 1;
             continue;
@@ -1401,8 +1407,13 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Laid {
             .iter()
             .map(|unit| match *unit {
                 Unit::Work(at) => step(&entries[at], layout),
-                Unit::Entry(at) | Unit::Refresh(at) => quiet::Step::Other(entries[at].item.id),
+                // (A note the agent read stands in time where it waited.)
+                Unit::Entry(at) | Unit::Refresh(at) => {
+                    let item = &entries[at].item;
+                    quiet::Step::Other(item.waited_as.unwrap_or(item.id))
+                }
                 Unit::Count(first) => quiet::Step::Other(first),
+                Unit::Waiting(at) => quiet::Step::Aside(entries[at].item.id),
             })
             .collect();
         quiet::rows(&steps)
@@ -1427,6 +1438,8 @@ pub(crate) fn rows(model: &Model, layout: &Layout) -> Laid {
                     rows.push(RowKey::Refresh(entries[ix].item.id), Class::Work);
                 }
                 Unit::Count(first) => rows.push(RowKey::Count(first), Class::Work),
+                // (It shows at the end, with the others waiting.)
+                Unit::Waiting(_) => {}
             },
             quiet::Piece::Row(row) => {
                 let members = row
@@ -2514,6 +2527,59 @@ mod tests {
                 block(10)
             ]
         );
+    }
+
+    /// A long call (a command) has a Quiet row of its own while it runs. A
+    /// note that came below it meanwhile keeps it there once it ends, as
+    /// Arko places it for every client, and so does the agent reading the
+    /// note, which comes again with a new id and the one it waited as.
+    #[test]
+    fn a_note_that_waits_below_a_long_call_keeps_the_call_on_its_own_row() {
+        let command = |id: u64, status, settled_at| {
+            let mut call = item(id, Kind::Call, "main", "$ cargo build");
+            call.status = Some(status);
+            call.turn = Some(1);
+            call.settled_at = settled_at;
+            call.act = Some(arko::remote::Act {
+                kind: arko::remote::ActKind::Command,
+                target: "cargo build".into(),
+                ..arko::remote::Act::default()
+            });
+            call
+        };
+        let mut note = item(4, Kind::User, "main", "Use release mode.");
+        note.delivery = Some(Delivery::Note);
+        note.pending = true;
+        let mut model = model(vec![
+            item(1, Kind::User, "main", "go"),
+            command(2, CallStatus::Ok, Some(3)),
+            command(3, CallStatus::Running, None),
+            note.clone(),
+        ]);
+        let members = |model: &Model| {
+            let laid = rows(model, &layout(View::Quiet));
+            let mut members: Vec<Vec<u64>> =
+                laid.quiet.values().map(|row| row.members.clone()).collect();
+            members.sort();
+            members
+        };
+        assert_eq!(members(&model), [vec![2], vec![3]]);
+
+        // It ends: the note came below it while it ran.
+        let mut changes = Changes::default();
+        model.apply(
+            Update::Change(command(3, CallStatus::Ok, Some(5))),
+            &mut changes,
+        );
+        assert_eq!(members(&model), [vec![2], vec![3]]);
+
+        // The agent reads the note.
+        model.apply(Update::Remove { id: 4 }, &mut changes);
+        note.id = 6;
+        note.pending = false;
+        note.waited_as = Some(4);
+        model.apply(Update::Item(note), &mut changes);
+        assert_eq!(members(&model), [vec![2], vec![3]]);
     }
 
     /// Notes that came during a run of calls, after its first call, wait at

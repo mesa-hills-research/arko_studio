@@ -643,8 +643,8 @@ mod tests {
         let root = temp.path().join("arko");
         let project = temp.path().join("project");
         write(
-            &project.join(".skills/ponytail/SKILL.md"),
-            "---\nname: ponytail\ndescription: Our coding rules\n---\nKeep it small.",
+            &project.join(".skills/ui-taste/SKILL.md"),
+            "---\nname: ui-taste\ndescription: Our interface rules\n---\nKeep it calm.",
         );
         let found = read(&root, std::slice::from_ref(&project), &[]);
         let names: Vec<&str> = found
@@ -652,16 +652,15 @@ mod tests {
             .iter()
             .map(|skill| skill.name.as_str())
             .collect();
-        assert_eq!(names, ["prose", "ponytail", "ui-taste"]);
+        assert_eq!(names, ["prose", "ui-taste", "worker-choice"]);
         assert!(!found.builtin[0].description.is_empty());
-        // prose is always in the agents' instructions, and the others load
-        // when a task calls for them.
+        // Each loads when a task calls for it.
         let always: Vec<bool> = found.builtin.iter().map(|skill| skill.auto_load).collect();
-        assert_eq!(always, [true, false, false]);
+        assert_eq!(always, [false, false, false]);
         // The user's own skill folders (a home folder may hold skills of these names) can
         // replace a built-in too, so the test looks only at the project's folder.
         let ours = project.join(".skills");
-        let replacing = ours.join("ponytail");
+        let replacing = ours.join("ui-taste");
         assert!(!found.builtin[0].replaced_by.contains(&replacing));
         assert!(found.builtin[1].replaced_by.contains(&replacing));
         // The folders hold only the folders' own skills, with a path.
@@ -677,7 +676,7 @@ mod tests {
             .find(|folder| folder.path == ours)
             .unwrap();
         assert_eq!(folder.skills.len(), 1);
-        assert_eq!(folder.skills[0].name, "ponytail");
+        assert_eq!(folder.skills[0].name, "ui-taste");
     }
 
     /// Every built-in skill is listed, the ones Arko has.

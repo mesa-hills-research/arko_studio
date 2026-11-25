@@ -48,7 +48,6 @@ pub struct SessionDefaults {
     pub outside_access: bool,
     pub text_replies: bool,
     pub cc_compact: bool,
-    pub extra_rules: arko::ExtraRules,
     pub project_instructions: arko::ProjectFiles,
     pub worker_project_instructions: bool,
     /// A new chat's instructions, `None` when there are none.
@@ -108,11 +107,6 @@ impl SessionDefaults {
             outside_access: new.outside_access,
             text_replies: new.text_replies,
             cc_compact: new.cc_compact,
-            extra_rules: match new.extra_rules {
-                prefs::ExtraRules::Small => arko::ExtraRules::Small,
-                prefs::ExtraRules::All => arko::ExtraRules::All,
-                prefs::ExtraRules::Off => arko::ExtraRules::Off,
-            },
             project_instructions: match new.project_instructions {
                 prefs::ProjectInstructions::One => arko::ProjectFiles::One,
                 prefs::ProjectInstructions::Both => arko::ProjectFiles::Both,
@@ -195,7 +189,6 @@ impl SessionDefaults {
                 options.allow_outside_workspace = self.outside_access;
                 options.text_replies = Some(self.text_replies);
                 options.cc_compact = Some(self.cc_compact);
-                options.extra_rules = Some(self.extra_rules);
                 options.project_instructions = Some(self.project_instructions);
                 options.worker_project_instructions = Some(self.worker_project_instructions);
             }
@@ -336,7 +329,6 @@ mod tests {
         assert!(!options.allow_outside_workspace);
         assert_eq!(options.text_replies, Some(true));
         assert_eq!(options.cc_compact, Some(true));
-        assert_eq!(options.extra_rules, Some(arko::ExtraRules::Small));
         assert_eq!(options.project_instructions, Some(arko::ProjectFiles::One));
         assert_eq!(options.remote, None);
         assert!(options.mcp_config.is_empty());
@@ -351,8 +343,10 @@ mod tests {
     fn the_built_in_skill_choice_reaches_new_and_resumed_sessions() {
         let mut prefs = Prefs::default();
         prefs.extensions.builtin_skills = Some(false);
-        prefs.extensions.builtin_skills_off =
-            Some(vec!["ponytail".into(), "dropped-by-a-later-arko".into()]);
+        prefs.extensions.builtin_skills_off = Some(vec![
+            "worker-choice".into(),
+            "dropped-by-a-later-arko".into(),
+        ]);
         let defaults = SessionDefaults::from_prefs(&prefs);
         for mode in [Some(Mode::Agent), Some(Mode::Chat), None] {
             let mut options = new_options();
@@ -360,7 +354,7 @@ mod tests {
             assert_eq!(options.builtin_skills, Some(false), "{mode:?}");
             assert_eq!(
                 options.builtin_skills_off,
-                Some(vec!["ponytail".to_string()]),
+                Some(vec!["worker-choice".to_string()]),
                 "{mode:?}"
             );
         }
@@ -391,7 +385,6 @@ mod tests {
         new.outside_access = true;
         new.text_replies = false;
         new.cc_compact = false;
-        new.extra_rules = prefs::ExtraRules::All;
         new.project_instructions = prefs::ProjectInstructions::Both;
         new.worker_project_instructions = false;
         new.chat_instructions = "Answer briefly.".into();
@@ -412,7 +405,6 @@ mod tests {
         assert!(options.allow_outside_workspace);
         assert_eq!(options.text_replies, Some(false));
         assert_eq!(options.cc_compact, Some(false));
-        assert_eq!(options.extra_rules, Some(arko::ExtraRules::All));
         assert_eq!(options.project_instructions, Some(arko::ProjectFiles::Both));
         assert_eq!(options.worker_project_instructions, Some(false));
         assert_eq!(options.chat_instructions, None, "an agent has no chat's");

@@ -46,6 +46,7 @@ pub fn need_title(need: &arko::Need) -> String {
             format!("{} needs your ChatGPT login.", shown(model))
         }
         arko::Need::ClaudeCode { model, .. } => format!("{} runs in Claude Code.", shown(model)),
+        arko::Need::Antigravity { model, .. } => format!("{} runs in Antigravity.", shown(model)),
     }
 }
 
@@ -244,6 +245,8 @@ impl CredentialsForm {
                 problem: arko::accounts::Problem::Outdated { version },
                 ..
             } => arko::accounts::outdated_text(version),
+            // (Arko's own words: install, sign in or update the CLI.)
+            arko::Need::Antigravity { .. } => self.need.message(),
             _ => "The key is saved in Arko’s folder, readable only by you, and the session uses it at once.".to_string(),
         }
     }

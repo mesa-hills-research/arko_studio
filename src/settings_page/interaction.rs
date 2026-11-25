@@ -1204,17 +1204,18 @@ fn the_built_in_skill_switches_reach_the_sessions_options(cx: &mut TestAppContex
         .unwrap()
     };
     assert_eq!(on(cx, "builtin-skills"), Some(true));
-    assert_eq!(on(cx, "builtin-skill-prose"), Some(true));
+    assert_eq!(on(cx, "builtin-skill-ponytail"), Some(true));
+    // (prose is a skill Arko has, which the sessions' options keep.)
     act(cx, window, |window, cx| {
-        window.click("builtin-skill-ponytail", cx)
+        window.click("builtin-skill-prose", cx)
     });
     assert_eq!(
         backend.defaults().builtin_skills_off,
-        Some(vec!["ponytail".to_string()])
+        Some(vec!["prose".to_string()])
     );
     assert_eq!(backend.defaults().builtin_skills, None);
-    assert_eq!(on(cx, "builtin-skill-ponytail"), Some(false));
-    assert_eq!(on(cx, "builtin-skill-prose"), Some(true));
+    assert_eq!(on(cx, "builtin-skill-prose"), Some(false));
+    assert_eq!(on(cx, "builtin-skill-ponytail"), Some(true));
     act(cx, window, |window, cx| window.click("builtin-skills", cx));
     assert_eq!(backend.defaults().builtin_skills, Some(false));
     assert_eq!(on(cx, "builtin-skills"), Some(false));
@@ -1222,11 +1223,11 @@ fn the_built_in_skill_switches_reach_the_sessions_options(cx: &mut TestAppContex
     // them off gets them again.
     act(cx, window, |window, cx| window.click("builtin-skills", cx));
     act(cx, window, |window, cx| {
-        window.click("builtin-skill-ponytail", cx)
+        window.click("builtin-skill-prose", cx)
     });
     assert_eq!(backend.defaults().builtin_skills, Some(true));
     assert_eq!(backend.defaults().builtin_skills_off, Some(Vec::new()));
-    assert_eq!(on(cx, "builtin-skill-ponytail"), Some(true));
+    assert_eq!(on(cx, "builtin-skill-prose"), Some(true));
 }
 
 /// MCP config files added under Advanced reach every session's options,

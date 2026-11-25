@@ -555,7 +555,7 @@ fn the_card_in_a_workers_view_follows_the_models_workers_start_with(cx: &mut Tes
     feed.worker("r2", "Count the files", WorkerChange::Started);
     let mut info = WorkerInfo::new();
     info.depth = 2;
-    info.model = Some("gpt-6.1-sol".into());
+    info.model = Some("gpt-6.2-sol".into());
     info.effort = Some("high".into());
     feed.worker_info("r2", info);
     // Workers start on `model`, with high effort.
@@ -570,7 +570,7 @@ fn the_card_in_a_workers_view_follows_the_models_workers_start_with(cx: &mut Tes
         });
         panel.draw(cx);
     };
-    start_on(cx, "gpt-6.1-sol");
+    start_on(cx, "gpt-6.2-sol");
     panel.click(cx, ("worker", 0usize));
     assert_eq!(panel.open_worker(cx).as_deref(), Some("r1"));
     let card = feed
@@ -739,14 +739,14 @@ fn a_row_names_a_workers_setup_only_when_it_is_not_the_usual_one(cx: &mut TestAp
     ];
     panel.show(cx, plain.clone());
     let short = panel.row_height(cx, 0);
-    plain[0].model = Some("gpt-6.1-sol".into());
+    plain[0].model = Some("gpt-6.2-sol".into());
     plain[0].effort = Some("high".into());
     plain[0].profile = Some("3d-judge".into());
     plain[0].cost_billed = 0.34;
     plain[0].cost_list = 0.34;
     plain[0].family_cost_billed = 0.5;
     plain[0].family_cost_list = 0.5;
-    plain[1].model = Some("gpt-6.1-sol".into());
+    plain[1].model = Some("gpt-6.2-sol".into());
     plain[1].effort = Some("high".into());
     panel.show(cx, plain);
     assert_eq!(panel.row_height(cx, 0), short);
@@ -754,7 +754,7 @@ fn a_row_names_a_workers_setup_only_when_it_is_not_the_usual_one(cx: &mut TestAp
     // A profile is always named. A model is, until workers usually run it.
     assert_eq!(panel.chip(cx, "r1").as_deref(), Some("3d-judge"));
     assert_eq!(panel.chip(cx, "r2").as_deref(), Some("sol · high"));
-    panel.set_usual(cx, "gpt-6.1-sol", "high");
+    panel.set_usual(cx, "gpt-6.2-sol", "high");
     assert_eq!(panel.chip(cx, "r1").as_deref(), Some("3d-judge"));
     assert_eq!(panel.chip(cx, "r2"), None);
     assert!(panel.bounds_in(cx, 0, "worker-chip").is_some());
@@ -858,7 +858,7 @@ fn a_change_of_billing_alone_shows_in_the_row(cx: &mut TestAppContext) {
     use arko::remote::WorkerState::Running;
     let panel = open(cx);
     let mut sol = summary("r1", None, Running, None);
-    sol.model = Some("gpt-6.1-sol".into());
+    sol.model = Some("gpt-6.2-sol".into());
     panel.show(cx, vec![sol]);
     assert_eq!(panel.chip(cx, "r1").as_deref(), Some("sol"));
     panel.panel.update(cx, |panel, cx| {

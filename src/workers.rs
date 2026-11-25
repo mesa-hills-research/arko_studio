@@ -679,7 +679,7 @@ mod tests {
     fn a_workers_setup_reads_in_a_few_words() {
         let mut worker = worker("r1", WorkerState::Running, Some(0), None);
         assert_eq!(setup_label(&worker), None);
-        worker.model = Some("gpt-6.1-sol".into());
+        worker.model = Some("gpt-6.2-sol".into());
         assert_eq!(setup_label(&worker).as_deref(), Some("sol"));
         worker.effort = Some("high".into());
         worker.profile = Some("3d-judge".into());
@@ -719,7 +719,7 @@ mod tests {
         for (model, on_login, on_key) in [
             ("claude-opus-5-5", true, true),
             ("cc:claude-opus-5-5", false, false),
-            ("gpt-6.1-sol", false, true),
+            ("gpt-6.2-sol", false, true),
         ] {
             worker.model = Some(model.into());
             assert_eq!(billed_per_token(&worker, &login), on_login, "{model}");
@@ -819,15 +819,15 @@ mod tests {
         );
         // A profile stands for the model and effort it sets.
         assert_eq!(
-            card(Some("gpt-6.1-sol"), Some("xhigh"), Some("3d-judge")).as_deref(),
+            card(Some("gpt-6.2-sol"), Some("xhigh"), Some("3d-judge")).as_deref(),
             Some("3d-judge")
         );
         assert_eq!(
-            card(Some("gpt-6.1-sol"), Some("high"), None).as_deref(),
+            card(Some("gpt-6.2-sol"), Some("high"), None).as_deref(),
             Some("sol")
         );
         assert_eq!(
-            card(Some("gpt-6.1-sol"), Some("xhigh"), None).as_deref(),
+            card(Some("gpt-6.2-sol"), Some("xhigh"), None).as_deref(),
             Some("sol · xhigh")
         );
         assert_eq!(

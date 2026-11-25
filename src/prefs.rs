@@ -191,18 +191,6 @@ pub enum NewSessionMode {
     Agent,
 }
 
-/// Which agents get the extra rules for small models in their
-/// instructions (arko's `--extra-rules`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ExtraRules {
-    /// The agents on small models (Haiku, luna).
-    #[default]
-    Small,
-    All,
-    Off,
-}
-
 /// Which of a project's AGENTS.md and CLAUDE.md the agents get (arko's
 /// `--project-instructions`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,7 +267,6 @@ pub struct NewSessions {
     /// Agents on `cc:` models let Claude Code compact their conversation at
     /// the handover size (else they hand over).
     pub cc_compact: bool,
-    pub extra_rules: ExtraRules,
     pub project_instructions: ProjectInstructions,
     /// Workers get the project's instructions too.
     pub worker_project_instructions: bool,
@@ -324,7 +311,6 @@ impl Default for NewSessions {
             outside_access: false,
             text_replies: true,
             cc_compact: true,
-            extra_rules: ExtraRules::Small,
             project_instructions: ProjectInstructions::One,
             worker_project_instructions: true,
             chat_instructions: String::new(),
@@ -1253,14 +1239,17 @@ mod tests {
         std::fs::write(
             &path,
             r#"{ "appearance": { "theme_mode": "dark", "light_theme": "Solarized Light" },
-                 "new_sessions": { "handover_at": 950000, "extra_rules": "medium" } }"#,
+                 "new_sessions": { "handover_at": 950000, "project_instructions": "medium" } }"#,
         )
         .unwrap();
         let prefs = Prefs::load(&path);
         assert_eq!(prefs.appearance.theme_mode, ThemeMode::Dark);
         assert_eq!(prefs.appearance.light_theme, "Solarized Light");
         assert_eq!(prefs.new_sessions.handover_at, Some(950_000));
-        assert_eq!(prefs.new_sessions.extra_rules, ExtraRules::Small);
+        assert_eq!(
+            prefs.new_sessions.project_instructions,
+            ProjectInstructions::One
+        );
         std::fs::write(
             &path,
             r#"{ "appearance": { "theme_mode": "dark" },
@@ -1284,7 +1273,7 @@ mod tests {
         std::fs::write(
             &path,
             r#"{ "appearance": { "zoom": 1.25, "glow": true },
-                 "new_sessions": { "extra_rules": "medium", "project_instructions": "both" },
+                 "new_sessions": { "extra_rules": "small", "project_instructions": "medium" },
                  "later": [1] }"#,
         )
         .unwrap();
@@ -1298,11 +1287,17 @@ mod tests {
         let file = saved(cx);
         assert_eq!(file["appearance"]["zoom"], 1.5);
         assert_eq!(file["appearance"]["glow"], true);
-        assert_eq!(file["new_sessions"]["extra_rules"], "medium");
-        assert_eq!(file["new_sessions"]["project_instructions"], "both");
+        assert_eq!(file["new_sessions"]["extra_rules"], "small");
+        assert_eq!(file["new_sessions"]["project_instructions"], "medium");
         assert_eq!(file["later"], serde_json::json!([1]));
-        cx.update(|cx| update(cx, |prefs| prefs.new_sessions.extra_rules = ExtraRules::All));
-        assert_eq!(saved(cx)["new_sessions"]["extra_rules"], "all");
+        cx.update(|cx| {
+            update(cx, |prefs| {
+                prefs.new_sessions.project_instructions = ProjectInstructions::Both
+            })
+        });
+        let file = saved(cx);
+        assert_eq!(file["new_sessions"]["project_instructions"], "both");
+        assert_eq!(file["new_sessions"]["extra_rules"], "small");
     }
 
     #[test]

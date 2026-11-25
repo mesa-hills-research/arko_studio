@@ -346,27 +346,20 @@ fn a_cut_row_opens_to_the_call_as_written(cx: &mut TestAppContext) {
 /// down to about 8 characters, and only then the outcome.
 #[gpui_kit::test]
 fn the_words_give_way_before_the_outcome(cx: &mut TestAppContext) {
-    use arko_agents::AgentEvent;
-
     start(cx);
     let feed = Feed::new("main");
-    feed.user("Read it", Source::App, Delivery::Turn);
+    feed.user("Find it", Source::App, Delivery::Turn);
     feed.turn_started();
-    let path = "src/a/very/long/path/to/the/stream/module/stream.rs";
-    let read = call(&feed, "main", "read_file", &[("path", path.into())]);
-    feed.event(
-        &super::tests::event(
-            "main",
-            AgentEvent::ErrorEncountered {
-                error_message: format!(
-                    "Tool 'read_file' execution failed: {path} doesn't exist, and nor does its folder."
-                ),
-                requires_approval_to_retry: false,
-                tool_call_id: Some(read),
-                error_kind: None,
-            },
-        ),
-        None,
+    let query = "where the stream module reads the long path to the file it streams";
+    let search = call(&feed, "main", "index_search", &[("query", query.into())]);
+    // (Its outcome is the first line of its result, up to 60 characters.)
+    result(
+        &feed,
+        "main",
+        search,
+        "index_search",
+        "9 results from arko_studio, arko_framework and mesquite (code, hybrid):\n\
+         src/stream.rs:1-40 · fn stream",
     );
     let (window, _view) = open(cx, &feed, AgentFilter::Main, 400.);
     cx.simulate_window_resize(

@@ -4882,7 +4882,6 @@ fn session_info(mode: ThemeMode) -> Screenshot {
     // Auto, with an hour's prompt cache.
     reading.settings.monitor_wakes_within = Some(3_240);
     reading.settings.text_replies = true;
-    reading.settings.extra_rules = arko::ExtraRules::Small;
     reading.settings.worker_project_instructions = true;
     reading.settings.message_copies = true;
     reading.models.started = true;
@@ -4923,7 +4922,6 @@ fn session_info(mode: ThemeMode) -> Screenshot {
                 workers_compact: false,
             },
             text_replies: true,
-            extra_rules: arko::ExtraRules::Small,
             cc_compact: false,
             project_files: arko::ProjectFiles::One,
             project_workers: Some(true),

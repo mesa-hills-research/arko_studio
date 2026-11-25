@@ -11,7 +11,7 @@ use std::sync::Arc;
 use arko::details::{IndexFacts, IndexWatch, McpFacts, SessionFacts, SkillsFacts};
 use arko::kept_notes::{KeptNotes, Note};
 use arko::remote::Reading;
-use arko::{ExtraRules, ModelChoice, ProjectFiles, WorkerBilling};
+use arko::{ModelChoice, ProjectFiles, WorkerBilling};
 use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
@@ -52,7 +52,6 @@ fn current(control: &str, settings: &arko::remote::LiveSettings) -> Option<Strin
         "text-replies" => switch(settings.text_replies),
         "cc-compact" => switch(settings.cc_compact),
         "project-workers" => switch(settings.worker_project_instructions),
-        "extra-rules" => Some(settings.extra_rules.name().to_string()),
         "project-instructions" => Some(settings.project_instructions.name().to_string()),
         "worker-models" => Some(settings.worker_models.name().to_string()),
         "worker-billing" => Some(settings.worker_billing.name().to_string()),
@@ -816,50 +815,6 @@ impl Render for SessionInfo {
                 })
         };
 
-        let extra_rules = {
-            let choose = ExtraRules::ALL.map(|rules| {
-                choose(
-                    "extra-rules",
-                    rules.name(),
-                    format!("/extra-rules {}", rules.name()),
-                )
-            });
-            let current = ExtraRules::ALL
-                .into_iter()
-                .find(|rules| rules.name() == shown("extra-rules"))
-                .unwrap_or(settings.extra_rules);
-            ToggleGroup::new("extra-rules")
-                .segmented()
-                .small()
-                .disabled(started)
-                .children(ExtraRules::ALL.map(|rules| {
-                    Toggle::new(rules.name())
-                        .label(match rules {
-                            ExtraRules::Small => "Small models",
-                            ExtraRules::All => "All",
-                            ExtraRules::Off => "Off",
-                        })
-                        .checked(rules == current)
-                }))
-                .on_click(move |checks, window, cx| {
-                    if let Some(ix) = clicked(checks, ExtraRules::ALL.map(|rules| rules == current))
-                    {
-                        choose[ix](window, cx)
-                    }
-                })
-        };
-        // Locked with the others, and says so on hover.
-        let extra_rules = h_flex().child(
-            div()
-                .id("extra-rules-fixed")
-                .test_support()
-                .when(started, |this| {
-                    this.managed_tooltip(|window, cx| {
-                        gpui_kit::component::tooltip::Tooltip::new(FIXED).build(window, cx)
-                    })
-                })
-                .child(extra_rules),
-        );
         let project = {
             let choose = ProjectFiles::ALL.map(|files| {
                 choose(
@@ -1096,7 +1051,6 @@ impl Render for SessionInfo {
                     ),
                     cx,
                 ))
-                .child(row(narrow, "Extra rules", extra_rules, cx))
                 .child(row(
                     narrow,
                     "Project instructions",
@@ -1729,7 +1683,6 @@ mod tests {
             "/outside on",
             "/text-replies off",
             "/cc-compact on",
-            "/extra-rules small",
             "/project-instructions both",
             "/project-instructions workers on",
         ] {
@@ -2036,7 +1989,6 @@ mod view_tests {
                     workers_compact: false,
                 },
                 text_replies: true,
-                extra_rules: arko::ExtraRules::Small,
                 cc_compact: false,
                 project_files: arko::ProjectFiles::One,
                 project_workers: None,
@@ -2442,20 +2394,15 @@ mod view_tests {
     }
 
     /// Once the conversation has started, the settings it fixes say so
-    /// when hovered, the Extra rules too. Before, they have no tooltip.
+    /// when hovered. Before, they have no tooltip.
     #[gpui_kit::test]
     fn the_settings_a_conversation_fixes_say_so_on_hover(cx: &mut TestAppContext) {
         assert!(tooltip_on(cx, true, "text-replies"));
     }
 
     #[gpui_kit::test]
-    fn the_extra_rules_say_they_are_fixed_on_hover(cx: &mut TestAppContext) {
-        assert!(tooltip_on(cx, true, "extra-rules-fixed"));
-    }
-
-    #[gpui_kit::test]
-    fn the_extra_rules_say_nothing_before_the_conversation_starts(cx: &mut TestAppContext) {
-        assert!(!tooltip_on(cx, false, "extra-rules-fixed"));
+    fn the_settings_a_conversation_fixes_say_nothing_before_it_starts(cx: &mut TestAppContext) {
+        assert!(!tooltip_on(cx, false, "text-replies"));
     }
 
     /// Who chooses the workers' models, worker billing, the daily API

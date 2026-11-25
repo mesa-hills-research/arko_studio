@@ -339,11 +339,19 @@ impl ModelChoices {
 }
 
 /// A session's models as far as Arko's billing goes: OpenAI's are reached
-/// by API key when the menu's `groups` name it so.
-fn arko_models<'a>(mut groups: impl Iterator<Item = &'a str>) -> arko::remote::Models {
-    let by_key = groups.any(|group| group == OPENAI_BY_KEY);
+/// as the menu's `groups` name it, by API key or on the ChatGPT plan. (Arko
+/// bills an OpenAI model per token when it isn't told it's on the plan.)
+fn arko_models<'a>(groups: impl Iterator<Item = &'a str>) -> arko::remote::Models {
+    let mut openai_auth = None;
+    for group in groups {
+        match group {
+            OPENAI_BY_KEY => openai_auth = Some(OPENAI_KEY_AUTH),
+            OPENAI_ON_PLAN => openai_auth = Some(CHATGPT_AUTH),
+            _ => {}
+        }
+    }
     arko::remote::Models {
-        openai_auth: by_key.then(|| OPENAI_KEY_AUTH.to_string()),
+        openai_auth: openai_auth.map(str::to_string),
         ..Default::default()
     }
 }
@@ -351,8 +359,20 @@ fn arko_models<'a>(mut groups: impl Iterator<Item = &'a str>) -> arko::remote::M
 /// Arko's name for the group of OpenAI models reached by API key.
 const OPENAI_BY_KEY: &str = "OpenAI, with your API key";
 
+/// Arko's name for the group of OpenAI models on the ChatGPT plan.
+const OPENAI_ON_PLAN: &str = "OpenAI, on your ChatGPT plan";
+
+/// Whether this app's sessions run `agy:` models, which run in the
+/// Antigravity CLI. A session runs them only through a helper its app gives
+/// it (`Options::antigravity_helper`), and this app gives none, so Arko's
+/// menus leave them out.
+const RUNS_AGY_MODELS: bool = false;
+
 /// How a session's status says it reaches OpenAI by API key.
 const OPENAI_KEY_AUTH: &str = "OpenAI API key";
+
+/// How a session's status says it reaches OpenAI on the ChatGPT plan.
+const CHATGPT_AUTH: &str = "ChatGPT login";
 
 pub use arko::openrouter::{Catalog, Listed, Settings as OpenRouterSettings};
 
@@ -453,8 +473,7 @@ pub trait Backend: Send + Sync + 'static {
     /// The models an open session whose status says `models` can switch
     /// to, and what each group needs. May run `claude`.
     fn session_models(&self, models: &arko::remote::Models) -> ModelChoices {
-        let groups =
-            arko::models::menu(models, |name| arko::models::needs(&models.reachable, name));
+        let groups = arko::models::menu(models, |name| arko::models::needs(models, name));
         ModelChoices::from_arko(groups, None)
     }
 
@@ -805,7 +824,7 @@ impl Backend for ArkoBackend {
     }
 
     fn models(&self, folder: Option<&Path>) -> ModelChoices {
-        let models = arko::models::for_new_session(&self.root, folder);
+        let models = arko::models::for_new_session(&self.root, folder, RUNS_AGY_MODELS);
         let mut choices = ModelChoices::from_arko(models.groups, models.main);
         choices.note = models.note;
         choices
@@ -1505,8 +1524,7 @@ impl Backend for FakeBackend {
         if let Some(models) = &self.session_models {
             return models.clone();
         }
-        let groups =
-            arko::models::menu(models, |name| arko::models::needs(&models.reachable, name));
+        let groups = arko::models::menu(models, |name| arko::models::needs(models, name));
         ModelChoices::from_arko(groups, None)
     }
 
@@ -1940,7 +1958,13 @@ mod tests {
         };
         for auth in [super::OPENAI_KEY_AUTH, "ChatGPT login"] {
             let (models, choices) = menu(auth);
-            for name in ["claude-opus-5-5", "cc:claude-opus-5-5", "gpt-6.1-sol"] {
+            // (gpt-6.2-sol is in the menu, gpt-6.1-sol isn't.)
+            for name in [
+                "claude-opus-5-5",
+                "cc:claude-opus-5-5",
+                "gpt-6.2-sol",
+                "gpt-6.1-sol",
+            ] {
                 assert_eq!(
                     choices.billing(name),
                     arko::models::billing(&models, name),

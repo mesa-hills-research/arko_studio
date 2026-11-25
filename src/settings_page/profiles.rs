@@ -934,7 +934,7 @@ impl ProfileForm {
     }
 
     /// The model the profile names, as the list names it: a model written
-    /// as its alias (`sol`) is the list's `gpt-6.1-sol`. A model the list
+    /// as its alias (`sol`) is the list's `gpt-6.2-sol`. A model the list
     /// doesn't have stays as written.
     fn model_value(&self, model: Option<&str>) -> SharedString {
         let Some(model) = model else {
