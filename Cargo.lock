@@ -239,9 +239,9 @@ dependencies = [
 
 [[package]]
 name = "arko-tui"
-version = "0.22.2"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5bf08015ebc3c9b098b2a5208fea2df995221477900cfbbb4d3cef812b7ceb11"
+checksum = "ed331ac31a7e1783ef0c34a2dbaebc7f9136e71092204fada783a019d2b54771"
 dependencies = [
  "arko_agents",
  "arko_ai",
@@ -302,9 +302,9 @@ dependencies = [
 
 [[package]]
 name = "arko_agents"
-version = "0.8.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f9e7e41f186210f91339502706c6de15e5e64d1dd1a26a5f371ffb8fc5b807f"
+checksum = "902e176a3f48ab048dce539725104e86e29d9b90b83f9e0217d4acb488bee42d"
 dependencies = [
  "arko_ai",
  "async-trait",
@@ -330,9 +330,9 @@ dependencies = [
 
 [[package]]
 name = "arko_ai"
-version = "0.2.6"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9290d4e70ce56c6e9e300c163388b53f8df250ddd5d73287d00085894b1fbaa"
+checksum = "db61b0c8ae97007f50bf1a65c6385efa0ff12a49f560cf870a2eece4194c0a8f"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -361,9 +361,9 @@ dependencies = [
 
 [[package]]
 name = "arko_index"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddff887a1ad8fd47da43c9e768cb2b9aee9c8f22c522030ff4764b4de6bb390a"
+checksum = "051058ab87701a507209aeb856bae5762ee8734d0074824fbd59e78aad4072e3"
 dependencies = [
  "caprock",
  "fs2",
@@ -460,9 +460,9 @@ dependencies = [
 
 [[package]]
 name = "arko_workflows"
-version = "0.9.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc098c4122d7214340476c1e9d95219fb91e455b0d23f6fc10920a35a15fa16e"
+checksum = "9f1ca5e2e69380528838824c7b4a5a7961f259271c7d5e6fd985a892ff756fcd"
 dependencies = [
  "arko_agents",
  "arko_ai",
@@ -1855,12 +1855,12 @@ dependencies = [
 
 [[package]]
 name = "darling"
-version = "0.23.0"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
+checksum = "ed17f5901b6630b993ca003def43f2f8ef4014fc13b047b57aad617ff32bc2ec"
 dependencies = [
- "darling_core 0.23.0",
- "darling_macro 0.23.0",
+ "darling_core 0.24.1",
+ "darling_macro 0.24.1",
 ]
 
 [[package]]
@@ -1879,15 +1879,15 @@ dependencies = [
 
 [[package]]
 name = "darling_core"
-version = "0.23.0"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9865a50f7c335f53564bb694ef660825eb8610e0a53d3e11bf1b0d3df31e03b0"
+checksum = "6837e2cf7485aaae18f86181d2f0e9a7ed297a025e220aeabf63fdebd3a2ddff"
 dependencies = [
  "ident_case",
  "proc-macro2",
  "quote",
  "strsim",
- "syn 2.0.119",
+ "syn 3.0.8",
 ]
 
 [[package]]
@@ -1903,13 +1903,13 @@ dependencies = [
 
 [[package]]
 name = "darling_macro"
-version = "0.23.0"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac3984ec7bd6cfa798e62b4a642426a5be0e68f9401cfc2a01e3fa9ea2fcdb8d"
+checksum = "2ac7135c3ef02b2f7833bbeb1be5ba7f966dcde8a87c6b87f65a778d71a02785"
 dependencies = [
- "darling_core 0.23.0",
+ "darling_core 0.24.1",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.8",
 ]
 
 [[package]]
@@ -2917,7 +2917,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.62.2",
+ "windows 0.57.0",
 ]
 
 [[package]]
@@ -3312,7 +3312,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -6849,9 +6849,9 @@ dependencies = [
 
 [[package]]
 name = "process-wrap"
-version = "9.1.1"
+version = "10.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f95f6259ebd0640685b7cd26d635861f39208df0f89b2b61ff5cf76310fa54f6"
+checksum = "1f21b97672d2dc848e7b25701ab4535618b92f4861c13cc3f7f7bed52ad3c8da"
 dependencies = [
  "futures",
  "indexmap",
@@ -7493,14 +7493,15 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "1.8.0"
+version = "3.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d1f571c72940a19d9532fe52dbea8bc9912bf1d766c2970bb824056b86f3f59"
+checksum = "d24a7e92f4bcaa36b97fa93c4fa7ca8f3e669eced949345b3462dba333c7f909"
 dependencies = [
- "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "futures",
+ "indexmap",
+ "libc",
  "pastey 0.2.3",
  "pin-project-lite",
  "process-wrap",
@@ -7508,24 +7509,26 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "rmcp-macros"
-version = "1.8.0"
+version = "3.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aad0035b69380782d78ea95b508327e6deaa2235909053e596eea8f27b5e1d5"
+checksum = "b3140f24a766f80f9ec1607bde85680959a69b83d46fa9ce87dadab7e67ab029"
 dependencies = [
- "darling 0.23.0",
+ "darling 0.24.1",
  "proc-macro2",
  "quote",
  "serde_json",
- "syn 2.0.119",
+ "syn 3.0.8",
 ]
 
 [[package]]
@@ -8667,9 +8670,9 @@ dependencies = [
 
 [[package]]
 name = "telmo"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "763c9912c042f194505d6ef177d0dda957f05314976ad1c0438f50168d06715b"
+checksum = "c1dd283e77e344f4e529205bc0a034df26eb2c43f93d1fa5268163d3ec91dff6"
 
 [[package]]
 name = "tempfile"
